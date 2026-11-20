@@ -21,6 +21,9 @@ export interface PendingPermissionRequest {
   toolUseId: string;
   tool: string;
   riskClass: RiskClass;
+  detached?: boolean;
+  grantChannel?: 'acp';
+  createdAt?: number;
   /** The tool input, or absent when it is larger than
    * {@link PERMISSION_INPUT_MAX_BYTES}; the client then sends the operator to
    * the session instead of deciding blind. */

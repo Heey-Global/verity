@@ -103,6 +103,34 @@ describe('protected devcontainer Server executor', () => {
     );
     expect(f.run).toHaveBeenCalledTimes(1);
   });
+  it('names the refused packet authority step next to its reference', async () => {
+    const f = fixture();
+    const correlationId = '9b1b10d5-b165-4e4e-bb68-69225a977e53';
+    f.run.mockResolvedValue({
+      stdout: JSON.stringify({
+        success: false,
+        failure: { reason: 'authority_prepare_failed', detail: 'packet_revoke', correlationId },
+      }),
+      stderr: '',
+    });
+    await expect(f.build(f.args)).rejects.toThrow(
+      `(authority_prepare_failed: packet_revoke; reference ${correlationId})`,
+    );
+  });
+  it('keeps the reason and reference when the host names an unknown step', async () => {
+    const f = fixture();
+    const correlationId = '9b1b10d5-b165-4e4e-bb68-69225a977e53';
+    f.run.mockResolvedValue({
+      stdout: JSON.stringify({
+        success: false,
+        failure: { reason: 'authority_prepare_failed', detail: 'future_step', correlationId },
+      }),
+      stderr: '',
+    });
+    await expect(f.build(f.args)).rejects.toThrow(
+      `(authority_prepare_failed; reference ${correlationId})`,
+    );
+  });
   it('passes bounded post-termination diagnostics into the existing failure recorder', async () => {
     const f = fixture();
     f.run.mockImplementation(async () => {

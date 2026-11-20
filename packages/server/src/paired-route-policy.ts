@@ -25,6 +25,14 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     { kind: 'project_creator', parameter: 'id' },
   ],
   [
+    routeScopeKey('GET', '/sessions/:id/secret-approvals'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/secret-approvals/:approvalId/reopen'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('POST', '/sessions/:id/mockups'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
@@ -148,6 +156,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
   ],
   [
     routeScopeKey('POST', '/sessions/:id/files/move'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/files/folders'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
@@ -473,7 +485,23 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
   [
+    routeScopeKey('GET', '/projects/:id/knowledge/files/backlinks'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
     routeScopeKey('POST', '/projects/:id/knowledge/files/rename'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/knowledge/files/move'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/knowledge/files'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/knowledge/folders'),
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
   // Proposed Wiki changes are read like the Wiki and decided like an edit of it.

@@ -33,6 +33,42 @@
     }
   },
   {
+    "name": "verity_session_coordinate_discover",
+    "title": "Verity · Session · Coordinate Discover",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_session_coordinate",
+      "operation": "discover"
+    }
+  },
+  {
+    "name": "verity_session_coordinate_link",
+    "title": "Verity · Session · Coordinate Link",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_session_coordinate",
+      "operation": "link"
+    }
+  },
+  {
+    "name": "verity_session_coordinate_start",
+    "title": "Verity · Session · Coordinate Start",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_session_coordinate",
+      "operation": "start"
+    }
+  },
+  {
     "name": "verity_session_list_links",
     "title": "Verity · Session · List Links",
     "entryPoint": "tool",

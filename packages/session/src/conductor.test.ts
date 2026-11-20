@@ -1,3 +1,4 @@
+import { APPROVAL_WAITING_SYSTEM_PROMPT } from './turn-system-prompt.js';
 import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -101,6 +102,7 @@ const ZERO_USAGE = {
  */
 const RESUME_SET = [
   TERMINOLOGY_SYSTEM_PROMPT,
+  APPROVAL_WAITING_SYSTEM_PROMPT,
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
   TASKS_RESUME_SYSTEM_PROMPT,
@@ -111,22 +113,8 @@ const RESUME_SET = [
   BREVITY_SYSTEM_PROMPT,
 ];
 
-/**
- * Ceiling for the assembled set, which includes the automation contract for existing sessions
- * alongside the compact autonomy convergence fragment. A tripwire on the whole re-sent payload rather
- * than a target: the cost here is per operator message, not per context, so growth that
- * is cheap in a fresh turn is not cheap in this one. Membership is checked
- * exactly by {@link expectResumeSet}; this is the only instrument that notices
- * the members themselves growing — including the two this feature does not own,
- * which is deliberate: what is charged per message is the assembled payload, not
- * whichever fragment last grew. Kept above the sandbox fragment's own ceiling
- * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
- * permits cannot fail here instead, where the message would name the wrong
- * thing. The repository-discovery directive adds 1466 characters so existing
- * sessions learn the managed module workflow too. The assembled payload is now
- * about 9300 characters; keep a small explicit allowance for separators and wording.
- */
-const RESUME_SET_BUDGET = 9500;
+/** Cap the compact directives re-sent on every message, including approval waiting. */
+const RESUME_SET_BUDGET = 10300;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present
@@ -11184,7 +11172,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     // An agent told only that "the request expired" read it as a broker failure and kept
     // retrying; it must learn that nothing ran and that the next card needs the user.
     expect(denied.decision.message).toMatch(/nothing ran/u);
-    expect(denied.decision.message).toMatch(/approval card needs an answer/u);
+    expect(denied.decision.message).toMatch(/Check whether an approval is still pending/u);
     expect(conductor.pendingPermissions('x2')).toEqual([]);
     await expect(
       conductor.decidePermission('x2', 'toolu_gone', { behavior: 'allow' }),

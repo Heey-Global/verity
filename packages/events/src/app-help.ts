@@ -93,6 +93,26 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     ],
   },
   {
+    id: 'session-coordination',
+    title: 'Coordinate sessions from chat',
+    summary: 'Ask an agent to find or start a session, link it and hand over a task.',
+    details:
+      'Ask in chat to start a session in a named project, link it and give it a task, or to find a matching existing session first; Control sessions are supported when your permissions allow. Discovery uses accessible names, status and published progress summaries, never transcripts; missing or stale summaries limit certainty, and ambiguous matches need your choice. Creation and linking use managed approval, preserve existing message allowances and grant no additional repository, tool, secret or transcript rights. Retried requests reuse their request ID to avoid duplicates; queued means accepted for delivery, not that work is running.',
+    appLink: 'verity://session/settings',
+    docsPath: 'docs/session-coordination.md',
+    keywords: [
+      'coordinate sessions',
+      'find session',
+      'existing session',
+      'link session',
+      'start control session',
+      'hand over task',
+      'session coordination',
+      'session verknüpfen',
+      'session suchen',
+    ],
+  },
+  {
     id: 'connections',
     title: 'Connectors overview',
     summary: 'Where external services are connected and how projects use them.',

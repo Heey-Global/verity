@@ -8,6 +8,9 @@ import { gatewayRequestMac, type createGatewayRequestMacKeyring } from './gatewa
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
+import { createBrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '@verity/store';
 import { CONTROL_PLANE_RUNNER_PROJECT_ID } from './embedded-support.js';
 
 type EmbeddedMcpGatewayContext = Pick<
@@ -32,6 +35,7 @@ type EmbeddedMcpGatewayContext = Pick<
 
 export function createEmbeddedMcpGateway(
   config: Pick<EmbeddedServerConfig, 'runnerSupervisor' | 'dataVolumeRoot'>,
+  db: Kysely<Database>,
   {
     secretAuditLog,
     gatewayRequestMacKeys,
@@ -58,6 +62,7 @@ export function createEmbeddedMcpGateway(
   });
   const mcpProxyTokens = createMcpGatewayTokens();
   const mcpGateway: Omit<McpGatewayDeps, 'requestApproval'> = {
+    detachedApprovals: createBrokeredToolApprovalStore(db),
     // Trusted CLI needs the project supervisor: it is the authority that proves this bearer
     // still names a live turn whose start request enabled execution. Deployments without the
     // supervisor omit the tool completely rather than advertising a permanently failing call.
@@ -70,6 +75,7 @@ export function createEmbeddedMcpGateway(
             'verity_publish_session_progress',
             'verity_send_session_message',
             'verity_project_inquiry',
+            'verity_session_coordinate',
             'verity_list_linked_sessions',
             'verity_start_planning',
             'verity_present_plan',
@@ -98,6 +104,7 @@ export function createEmbeddedMcpGateway(
             'verity_publish_session_progress',
             'verity_send_session_message',
             'verity_project_inquiry',
+            'verity_session_coordinate',
             'verity_list_linked_sessions',
             'verity_start_planning',
             'verity_present_plan',

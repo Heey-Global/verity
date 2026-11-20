@@ -9,6 +9,9 @@ import {
 export * from './people-api.js';
 export * from './session-workspace-api.js';
 import { sessionWorkspaceClient } from './session-workspace-api.js';
+export * from './knowledge-files-api.js';
+import { knowledgeFilesClient, projectGoogleDriveFilesClient } from './knowledge-files-api.js';
+import { uploadBodyWithMimeType } from './upload-body.js';
 export * from './backup-api.js';
 import {
   backupProbeJobSchema,
@@ -24,6 +27,8 @@ import {
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
 import { repositoryPullRequestsSchema } from './projectPullRequests.js';
+import { createSecretApprovalsClient, pendingPermissionRequestSchema } from './secretApprovals.js';
+export type { PendingPermissionRequest } from './secretApprovals.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -284,13 +289,6 @@ const openChoicesSchema = z.object({
 
 /** One parked permission prompt with what it asks. `input` is absent when the
  * server judged it too large to carry; the app then opens the session instead. */
-const pendingPermissionRequestSchema = z.object({
-  toolUseId: z.string().min(1),
-  tool: z.string().min(1),
-  riskClass: z.string().min(1),
-  input: z.unknown().optional(),
-});
-
 /** A mockup review: the screens the agent presented, each marked approved,
  * discarded or still open. An older server's `comment` reads as discarded, as the
  * server itself reads it. A value this build does not understand reads as absent
@@ -542,6 +540,8 @@ export const sessionActivitySchema = z.object({
    * for compatibility with older servers. The durable `permission` event carries
    * the card contents; this list is the polling/reconnect re-arm signal. */
   pendingPermissions: z.array(z.string().min(1)).optional(),
+  /** Full pending cards also restore detached approvals after a turn or server restart. */
+  pendingPermissionRequests: z.array(pendingPermissionRequestSchema).optional().catch(undefined),
   /** Whether a model switch is outstanding. Two shapes share this bit: on an older
    * server it meant "accepted, applies at the current turn's settle boundary"; on a
    * current one it means "the handover is running RIGHT NOW" — the switch interrupts
@@ -2402,31 +2402,6 @@ export interface VerityClientOptions {
   connection?: ConnectionReporter;
 }
 
-function uploadBodyWithMimeType(data: Blob): Blob {
-  if (data.type === 'application/octet-stream') return data;
-
-  // expo/fetch copies the body Blob's `type` into its native Content-Type
-  // header, overriding the one the caller set. Two ways that breaks an upload:
-  // expo-file-system's File reports `null` when iOS cannot infer a MIME type,
-  // and the native bridge accepts strings only, so the request fails before it
-  // is sent; and when iOS *does* infer one, the picked file's own type (a PDF's
-  // `application/pdf`, say) replaces the `application/octet-stream` the upload
-  // routes are declared with. Always report the binary type both upload
-  // endpoints expect — they stream raw bytes and take the real media type from
-  // the file name or an explicit header. Preserve the native file object and
-  // all of its file-backed methods; native methods are bound to the original
-  // host object because Expo host objects can reject a Proxy as their receiver.
-  return new Proxy(data, {
-    get(target, property) {
-      if (property === 'type') return 'application/octet-stream';
-      const value: unknown = Reflect.get(target, property, target);
-      if (typeof value !== 'function') return value;
-      const boundValue: unknown = value.bind(target);
-      return boundValue;
-    },
-  });
-}
-
 /** Response of `POST /secret/init` and `POST /secret/unlock`. `token` +
  *  `tokenId` are present when the server's auth gate is active (a per-device
  *  bearer token to store); absent on an unmanaged/gate-off deployment. */
@@ -2751,6 +2726,7 @@ const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestV
 export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
+  readonly secretApprovals = createSecretApprovalsClient((path, init) => this.request(path, init));
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
   readonly getProjectTeam = this.people.getProjectTeam;
@@ -2770,6 +2746,23 @@ export class VerityClient {
   private readonly workspaces = sessionWorkspaceClient((path, init) => this.request(path, init));
   readonly moveSession = this.workspaces.moveSession;
   readonly restoreSessionCodeWorkspace = this.workspaces.restoreSessionCodeWorkspace;
+  private readonly knowledgeFiles = knowledgeFilesClient(
+    (path, init) => this.request(path, init),
+    (path, init) => this.request(path, init, this.uploadFetchImpl),
+  );
+  readonly deleteKnowledgeFile = this.knowledgeFiles.deleteKnowledgeFile;
+  readonly renameKnowledgeFile = this.knowledgeFiles.renameKnowledgeFile;
+  readonly moveKnowledgeFile = this.knowledgeFiles.moveKnowledgeFile;
+  readonly uploadKnowledgeFile = this.knowledgeFiles.uploadKnowledgeFile;
+  readonly createKnowledgeFileFolder = this.knowledgeFiles.createKnowledgeFileFolder;
+  readonly listKnowledgeBacklinks = this.knowledgeFiles.listKnowledgeBacklinks;
+  readonly createSessionFolder = this.knowledgeFiles.createSessionFolder;
+  private readonly driveFiles = projectGoogleDriveFilesClient(
+    (path, init) => this.request(path, init),
+    driveFileSchema,
+  );
+  readonly createProjectGoogleDriveFolder = this.driveFiles.createProjectGoogleDriveFolder;
+  readonly updateProjectGoogleDriveFile = this.driveFiles.updateProjectGoogleDriveFile;
 
   private readonly mcpApps = mcpAppsClient(this.request.bind(this), () => this.baseUrl);
   readonly getMcpAppDocument = this.mcpApps.getMcpAppDocument;
@@ -6544,7 +6537,7 @@ export class VerityClient {
     projectId: string,
     path: string,
     content: string,
-    expectedVersion: string,
+    expectedVersion: string | null,
   ): Promise<SessionFileContent> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/knowledge/files/content`,
@@ -6598,7 +6591,7 @@ export class VerityClient {
   async writeSharedKnowledgeFile(
     path: string,
     content: string,
-    expectedVersion: string,
+    expectedVersion: string | null,
   ): Promise<SessionFileContent> {
     const res = await this.request('/knowledge/shared/files/content', {
       method: 'PUT',
@@ -6739,9 +6732,9 @@ export class VerityClient {
   async moveSessionFile(
     id: string,
     body: {
-      root: Exclude<SessionFileRoot, 'worktree'>;
+      root: SessionFileRoot;
       path: string;
-      toRoot: Exclude<SessionFileRoot, 'worktree'>;
+      toRoot: SessionFileRoot;
       toPath?: string;
       toFileName?: string;
     },

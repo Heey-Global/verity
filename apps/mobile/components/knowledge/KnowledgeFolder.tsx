@@ -1,10 +1,16 @@
-import type { SessionDirectory, VerityClient } from '@verity/mobile';
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, View } from 'react-native';
+import type { SessionDirectory, SessionFileEntry, VerityClient } from '@verity/mobile';
+import { Stack } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { FileNameDialog } from '../files/FileNameDialog';
-import { Button, Group, Row, Text, useConfirm } from '../ui';
+import { fileEntryMeta } from '../../lib/sessionFileUi';
+import { FileTabs } from '../files/FileRootTabs';
+import { FileSheetHeader, HeaderIconButton, HeaderTextButton } from '../files/FileSheetHeader';
+import { SelectionBar } from '../files/explorer/ExplorerBar';
+import { ExplorerRow } from '../files/explorer/ExplorerRow';
+import { Button, Group, Row, Text } from '../ui';
+import { KnowledgeEntryContext } from './KnowledgeEntryActions';
 import {
   DECISIONS,
   folderIcon,
@@ -13,58 +19,57 @@ import {
   listKnowledge,
   pushKnowledge,
   WIKI,
+  wikiFolder,
   wikiView,
   type KnowledgeScope,
 } from './knowledgeScope';
-import { KnowledgeEntryActions, KnowledgeEntryContext } from './KnowledgeEntryActions';
-import { useKnowledgePane } from './KnowledgePane';
-import { invalidateWikiCatalog, useWikiCatalog } from './useWikiCatalog';
+import { useKnowledgeExplorer } from './useKnowledgeExplorer';
+import { useWikiCatalog } from './useWikiCatalog';
 import { useWikiProposals } from './useWikiProposals';
 import { startWikiSetup, type WikiSetupMode } from './WikiGuide';
 import { WikiDecisions, WikiHome, WikiTopicPages } from './WikiViews';
 
 const PROJECT_AREAS = ['insights', 'sources'] as const;
 
-const DESCRIPTION: Record<KnowledgeScope['kind'], string> = {
-  shared:
-    'Reference material shared across projects. Agents can read it from every project. Administrators can edit supported text files; original sources remain protected.',
-  project:
-    'The Wiki with its decisions, and the original sources of this project. Wiki edits and file deletion require project management access.',
-};
+/** Shared's two areas, as tabs at its top like a session's Code and Drive. */
+const SHARED_TABS = [
+  { folder: 'insights', label: 'Wiki', icon: 'book-open' },
+  { folder: 'sources', label: 'Sources', icon: 'paperclip' },
+] as const;
+
+const DESCRIPTION =
+  'The Wiki with its decisions, and the original sources of this project. Wiki edits and file changes require project management access.';
 
 /**
- * One folder of a knowledge library as a list: folders first as the server
- * orders them, each row opening the next level. Where that level appears is the
- * caller's choice — its own screen on a phone, the same column in the wide
- * layout — so this draws no navigation of its own.
+ * One folder of a knowledge library. A project's top level is its two areas,
+ * Wiki and Sources; the Wiki opens on its start page, with decisions, topics
+ * and their pages drawn from its catalog. Every folder of files is the same
+ * explorer as a session's Files — rows with "⋯", swipe, selecting, the + menu
+ * and Move… — and Shared opens on its Wiki and Sources as tabs. Where the next
+ * level appears is the caller's choice, so this draws no navigation of its own.
  *
- * A project's top level is its two areas, Wiki and Sources. The Wiki opens on
- * its start page, with decisions, topics and their pages drawn from the Wiki's
- * catalog, and its files listed by title; a server without a catalog shows the
- * Wiki as a folder, Decisions first: it is the Wiki's own section, not one
- * folder among many.
+ * `header` says where the + and the selection's Select All/Done go: into the
+ * screen's navigation header (`stack`), or above the list (`inline`).
  */
 export function KnowledgeFolder({
   client,
   scope,
-  folder,
+  folder: requested,
   onOpenFolder,
   onOpenFile,
+  header = 'inline',
 }: {
   client: VerityClient;
   scope: KnowledgeScope;
   folder: string;
   onOpenFolder: (folder: string) => void;
   onOpenFile: (file: string) => void;
+  header?: 'stack' | 'inline';
 }) {
-  const [confirm, confirmSheet] = useConfirm();
-  const [deleting, setDeleting] = useState(false);
-  const [renaming, setRenaming] = useState<{ path: string; directory: boolean } | null>(null);
-  const pane = useKnowledgePane();
+  const [tab, setTab] = useState<'insights' | 'sources'>('insights');
+  const sharedTop = scope.kind === 'shared' && requested === '';
+  const folder = sharedTop ? tab : requested;
   const areas = scope.kind === 'project' && folder === '';
-  // Folders take their area names only where the areas are: a project's tree,
-  // or the top of a library. Below that, a Shared folder named `sources` is just that.
-  const known = scope.kind === 'project' || folder === '';
   const view = wikiView(scope, folder);
   const inWiki = folder === WIKI || folder.startsWith(`${WIKI}/`);
   const wiki = useWikiCatalog(client, scope.kind === 'project' && inWiki ? scope.projectId : null);
@@ -74,7 +79,6 @@ export function KnowledgeFolder({
   const fromCatalog = view !== null && view.kind !== 'files';
   const catalogFailed = fromCatalog && wiki.error !== undefined;
   const listing = !areas && (!fromCatalog || wiki.catalog === null || catalogFailed);
-  const titles = new Map((wiki.catalog?.pages ?? []).map((page) => [page.path, page]));
   const proposals = useWikiProposals(
     client,
     scope.kind === 'project' && folder === WIKI ? scope.projectId : null,
@@ -117,76 +121,125 @@ export function KnowledgeFolder({
     attempt,
   ]);
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
+  // Whether this screen's header ever carried the explorer's controls.
+  const listed = useRef(false);
+  if (listing) listed.current = true;
+  // A Wiki page reads by its title and summary from the catalog, as everywhere
+  // the Wiki is shown; a file without one keeps its name and size.
+  const titles = new Map((wiki.catalog?.pages ?? []).map((page) => [page.path, page]));
+  const entries = useMemo(() => sectionsFirst(scope, directory?.entries ?? []), [scope, directory]);
+  const explorer = useKnowledgeExplorer({
+    client,
+    scope,
+    // A Wiki view lists the folder behind it; what is added or moved lands there.
+    folder: wikiFolder(scope, folder),
+    entries,
+    reload: retry,
+    onOpenFolder,
+    onOpenFile,
+  });
 
-  const remove =
-    scope.kind === 'project'
-      ? (path: string, directory: boolean) => {
-          if (deleting) return;
-          const area = path.startsWith('sources/') ? 'the project Sources' : 'the project Wiki';
-          confirm({
-            title: directory ? 'Delete folder?' : 'Delete file?',
-            message: directory
-              ? `Permanently delete “${path.split('/').at(-1) ?? path}” and everything inside it from ${area}?`
-              : `Permanently delete “${path.split('/').at(-1) ?? path}” from ${area}?`,
-            confirmLabel: 'Delete',
-            destructive: true,
-            onConfirm: async () => {
-              setDeleting(true);
-              try {
-                await client.deleteProjectKnowledgeFile(scope.projectId, path);
-                invalidateWikiCatalog(scope.projectId);
-                retry();
-              } catch (failure) {
-                Alert.alert(
-                  'Could not delete',
-                  failure instanceof Error ? failure.message : 'Could not delete this entry.',
-                );
-                throw failure;
-              } finally {
-                setDeleting(false);
-              }
-            },
-          });
-        }
-      : undefined;
+  // The catalog's own rows (a topic's pages) open the same menu, and swipe to
+  // the same More and Delete, as the rows of a folder.
+  const catalogActions = useMemo(
+    () => ({
+      menu: (path: string) => explorer.openCatalogMenu(catalogEntry(path)),
+      remove: (path: string) => explorer.remove([path]),
+    }),
+    [explorer],
+  );
 
-  const rename =
-    scope.kind === 'project'
-      ? (path: string, directory: boolean) => setRenaming({ path, directory })
-      : undefined;
-  const submitRename = async (name: string) => {
-    if (!renaming || scope.kind !== 'project') return;
-    const renamed = await client.renameProjectKnowledgeFile(scope.projectId, renaming.path, name);
-    setRenaming(null);
-    retry();
-    pane?.moved?.(scope, renaming.path, renamed.path);
-    if (renamed.warning) Alert.alert('Renamed', renamed.warning);
-  };
+  const add =
+    listing && explorer.canAdd && !explorer.selecting ? (
+      <HeaderIconButton
+        icon="plus"
+        tint
+        busy={explorer.busy}
+        accessibilityLabel="New or upload files"
+        onPress={explorer.openAdd}
+      />
+    ) : null;
+  const selectAll = (
+    <HeaderTextButton
+      label={
+        explorer.selected.length === explorer.selectableCount && explorer.selectableCount > 0
+          ? 'Select None'
+          : 'Select All'
+      }
+      onPress={explorer.selectAll}
+    />
+  );
+  const done = <HeaderTextButton label="Done" emphasis="strong" onPress={explorer.endSelection} />;
+  const selectionTitle = `${explorer.selected.length} selected`;
 
   return (
-    <KnowledgeEntryContext.Provider
-      value={deleting ? {} : { remove, rename: renaming ? undefined : rename }}
-    >
+    <KnowledgeEntryContext.Provider value={explorer.busy ? {} : catalogActions}>
+      {header === 'stack' && (listing || listed.current) ? (
+        <Stack.Screen
+          options={
+            !listing
+              ? // A folder that turned into a Wiki view (its catalog arrived) gives
+                // the + and the selection's controls back.
+                {
+                  title: folderTitle(scope, requested),
+                  headerLeft: undefined,
+                  headerRight: undefined,
+                }
+              : explorer.selecting
+                ? {
+                    // Selecting takes over the page's header, as it does the Files sheet's.
+                    title: selectionTitle,
+                    headerLeft: () => selectAll,
+                    headerRight: () => done,
+                  }
+                : {
+                    title: folderTitle(scope, requested),
+                    headerLeft: undefined,
+                    headerRight: add ? () => add : undefined,
+                  }
+          }
+        />
+      ) : null}
       <View style={styles.root} testID="knowledge-folder">
-        {folder === '' ? (
-          <Text variant="subtitle" tone="muted">
-            {DESCRIPTION[scope.kind]}
-          </Text>
+        {header === 'inline' && listing ? (
+          explorer.selecting ? (
+            <FileSheetHeader leading={selectAll} title={selectionTitle} trailing={done} />
+          ) : add ? (
+            <View style={styles.inlineAdd}>{add}</View>
+          ) : null
         ) : null}
         {areas ? (
-          <Group>
-            {PROJECT_AREAS.map((area) => (
-              <Row
-                key={area}
-                leading={{ icon: folderIcon(area) }}
-                title={folderTitle(scope, area)}
-                subtitle={folderSubtitle(scope, area)}
-                navigates
-                onPress={() => onOpenFolder(area)}
-              />
-            ))}
-          </Group>
-        ) : fromCatalog && wiki.catalog ? (
+          <>
+            <Text variant="subtitle" tone="muted">
+              {DESCRIPTION}
+            </Text>
+            <Group>
+              {PROJECT_AREAS.map((area) => (
+                <Row
+                  key={area}
+                  leading={{ icon: folderIcon(area) }}
+                  title={folderTitle(scope, area)}
+                  subtitle={folderSubtitle(scope, area)}
+                  navigates
+                  onPress={() => onOpenFolder(area)}
+                />
+              ))}
+            </Group>
+          </>
+        ) : null}
+        {sharedTop ? (
+          <FileTabs
+            disabled={explorer.selecting}
+            tabs={SHARED_TABS.map((candidate) => ({
+              key: candidate.folder,
+              icon: candidate.icon,
+              label: candidate.label,
+              active: tab === candidate.folder,
+              onPress: () => setTab(candidate.folder),
+            }))}
+          />
+        ) : null}
+        {areas ? null : fromCatalog && wiki.catalog ? (
           view.kind === 'home' ? (
             <WikiHome
               catalog={wiki.catalog}
@@ -214,41 +267,44 @@ export function KnowledgeFolder({
           </View>
         ) : directory === undefined ? (
           <ActivityIndicator style={styles.loading} />
-        ) : directory.entries.length === 0 ? (
+        ) : entries.length === 0 ? (
           <Text variant="body" tone="muted" style={styles.message}>
             No documents in this folder.
           </Text>
         ) : (
-          <Group>
-            {sectionsFirst(scope, directory.entries).map((entry) =>
-              entry.kind === 'directory' ? (
-                <KnowledgeEntryActions
+          <View>
+            {entries.map((entry) => {
+              const row = explorer.rowProps(entry);
+              const directoryEntry = entry.kind === 'directory';
+              return (
+                <ExplorerRow
                   key={entry.path}
-                  path={entry.path}
-                  label={entry.name}
-                  directory
-                >
-                  <Row
-                    leading={{ icon: known ? folderIcon(entry.path) : 'folder' }}
-                    title={known ? folderTitle(scope, entry.path) : entry.name}
-                    subtitle={known ? folderSubtitle(scope, entry.path) : undefined}
-                    navigates
-                    onPress={() => onOpenFolder(entry.path)}
-                  />
-                </KnowledgeEntryActions>
-              ) : (
-                <KnowledgeEntryActions key={entry.path} path={entry.path} label={entry.name}>
-                  <Row
-                    leading={{ icon: 'file-text' }}
-                    title={titles.get(entry.path)?.title ?? entry.name}
-                    subtitle={titles.get(entry.path)?.summary || undefined}
-                    navigates
-                    onPress={() => onOpenFile(entry.path)}
-                  />
-                </KnowledgeEntryActions>
-              ),
-            )}
-          </Group>
+                  name={
+                    directoryEntry
+                      ? folderTitle(scope, entry.path)
+                      : (titles.get(entry.path)?.title ?? entry.name)
+                  }
+                  icon={directoryEntry ? folderIcon(entry.path) : 'file-text'}
+                  meta={
+                    directoryEntry
+                      ? folderSubtitle(scope, entry.path)
+                      : titles.get(entry.path)?.summary || fileEntryMeta(entry) || undefined
+                  }
+                  selecting={row.selecting}
+                  picked={row.picked}
+                  inert={row.inert}
+                  disabled={row.disabled}
+                  onPress={
+                    row.press ??
+                    (() => (directoryEntry ? onOpenFolder(entry.path) : onOpenFile(entry.path)))
+                  }
+                  onLongPress={row.onLongPress}
+                  onMenu={row.onMenu}
+                  onDelete={row.onDelete}
+                />
+              );
+            })}
+          </View>
         )}
         {catalogFailed ? (
           <View style={styles.message}>
@@ -263,37 +319,31 @@ export function KnowledgeFolder({
             This folder has more files than can be shown. Organize it into smaller folders.
           </Text>
         ) : null}
-        {confirmSheet}
-        {renaming ? (
-          <FileNameDialog
-            title={renaming.directory ? 'Rename folder' : 'Rename file'}
-            subtitle={
-              renaming.directory
-                ? 'Wiki pages that cite sources in this folder keep pointing to the old name.'
-                : 'Wiki pages that cite this source keep pointing to the old name.'
-            }
-            initialName={renaming.path.split('/').at(-1) ?? renaming.path}
-            confirmLabel="Rename"
-            validate={validateSourceName}
-            onSubmit={submitRename}
-            onCancel={() => setRenaming(null)}
+        {explorer.selecting ? (
+          <SelectionBar
+            count={explorer.selected.length}
+            disabled={explorer.busy || !explorer.canChangeSelected}
+            onMove={explorer.moveSelected}
+            onDelete={explorer.deleteSelected}
           />
         ) : null}
+        {explorer.overlays}
       </View>
     </KnowledgeEntryContext.Provider>
   );
 }
 
-/** What the server would refuse anyway, said before the request. */
-function validateSourceName(name: string): string | null {
-  const trimmed = name.trim();
-  if (trimmed === '') return 'Enter a name.';
-  if (trimmed !== name) return 'Remove the spaces at the start or end.';
-  if (/[\\/\0]/.test(name)) return 'Use a name without slashes.';
-  if (name === '.' || name === '..' || name === '.text') return 'This name is reserved.';
-  // The app addresses its own virtual sections with a leading colon.
-  if (name.startsWith(':')) return 'Use a name that does not start with “:”.';
-  return null;
+/** A catalog page as the explorer's entry, for its menu. Its name is the file
+ *  name, not the page's title: Rename starts from it, and a title as the new
+ *  name would drop the `.md` that makes the file a Wiki page. */
+function catalogEntry(path: string): SessionFileEntry {
+  return {
+    path,
+    name: path.split('/').at(-1) ?? path,
+    kind: 'file',
+    size: null,
+    modifiedAt: null,
+  };
 }
 
 /** A project's Decisions ahead of the Wiki's other entries; the rest keep the
@@ -311,6 +361,7 @@ function sectionsFirst(
 
 const styles = StyleSheet.create((theme) => ({
   root: { gap: theme.spacing.md },
+  inlineAdd: { flexDirection: 'row', justifyContent: 'flex-end' },
   message: { gap: theme.spacing.sm, alignItems: 'flex-start' },
   loading: { paddingVertical: theme.spacing.lg },
 }));

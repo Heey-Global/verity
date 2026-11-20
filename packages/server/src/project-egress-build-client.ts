@@ -93,7 +93,10 @@ export function createProtectedBuildClient(options: {
                 throw new ProtectedBuildFailure(
                   diagnostic?.success ? diagnostic.data.reason : 'operation_refused',
                   diagnostic?.success
-                    ? { correlationId: diagnostic.data.correlationId }
+                    ? {
+                        correlationId: diagnostic.data.correlationId,
+                        detail: diagnostic.data.detail,
+                      }
                     : undefined,
                 );
               }

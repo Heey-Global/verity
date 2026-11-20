@@ -320,13 +320,13 @@ it('records one Sandbox HTTPS request per ungranted name and caps a project', as
         },
       },
     });
-    const settle = () => vi.advanceTimersByTimeAsync(0);
-    enforcement.requestDirect!(network, 'api.example.com');
-    enforcement.requestDirect!(network, 'api.example.com');
-    // Broker names never become cards that could not take effect.
-    enforcement.requestDirect!(network, 'random.example.com');
-    enforcement.requestDirect!(network, 'mcp.exa.ai');
-    await settle();
+    await Promise.all([
+      enforcement.requestDirect!(network, 'api.example.com'),
+      enforcement.requestDirect!(network, 'api.example.com'),
+      // Broker names never become cards that could not take effect.
+      enforcement.requestDirect!(network, 'random.example.com'),
+      enforcement.requestDirect!(network, 'mcp.exa.ai'),
+    ]);
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith('a', {
       host: 'api.example.com',
@@ -334,25 +334,25 @@ it('records one Sandbox HTTPS request per ungranted name and caps a project', as
       port: 443,
     });
     await vi.advanceTimersByTimeAsync(60_001);
-    enforcement.requestDirect!(network, 'api.example.com');
-    await settle();
+    await enforcement.requestDirect!(network, 'api.example.com');
     expect(request).toHaveBeenCalledTimes(2);
     // Without configured direct authority no grant could take effect, so nothing is asked.
     authority = false;
-    enforcement.requestDirect!(network, 'down.example.com');
-    await settle();
+    await enforcement.requestDirect!(network, 'down.example.com');
     expect(request).toHaveBeenCalledTimes(2);
     authority = true;
     request.mockRejectedValueOnce(new Error('store down'));
-    enforcement.requestDirect!(network, 'down.example.com');
-    await settle();
+    await enforcement.requestDirect!(network, 'down.example.com');
     expect(reportRequestFailure).toHaveBeenCalledWith(new Error('store down'));
     // A Sandbox resolving many names files at most 20 new requests per project and minute.
     await vi.advanceTimersByTimeAsync(60_001);
     request.mockClear();
-    for (let i = 0; i < 30; i++) enforcement.requestDirect!(network, `api.example.com`);
-    for (let i = 0; i < 30; i++) enforcement.requestDirect!(network, `n${String(i)}.example.com`);
-    await settle();
+    await Promise.all([
+      ...Array.from({ length: 30 }, () => enforcement.requestDirect!(network, 'api.example.com')),
+      ...Array.from({ length: 30 }, (_, i) =>
+        enforcement.requestDirect!(network, `n${String(i)}.example.com`),
+      ),
+    ]);
     expect(request).toHaveBeenCalledTimes(20);
   } finally {
     vi.useRealTimers();
@@ -416,4 +416,42 @@ it('fences existing packet grants before inventory ACK and leaves unchanged hear
   ).rejects.toThrow('System inventory expired');
   expect(f.deadline.arm).toHaveBeenCalledOnce();
   expect(f.deadline.revoke.mock.calls.length).toBeGreaterThan(revokes);
+});
+
+it('keeps duplicate DNS refusals waiting until their shared approval record is persisted', async () => {
+  const f = fixture();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const request = vi.fn(async () => {
+    await gate;
+    return { covered: true as const };
+  });
+  const enforcement = createProjectEgressHostEnforcement({
+    deadline: f.deadline,
+    store: { readForAdmission: f.readForAdmission },
+    requests: { requestFromSandbox: request },
+    directAuthority: () => true,
+    inspect: f.inspect,
+    dependencies: {
+      inspect: async (b) => ({ ...b }),
+      apply: f.apply,
+      directTargetAllowed: async () => true,
+      destinationAllowed: async () => true,
+      resolve: async () => {
+        throw new Error('Unexpected DNS');
+      },
+    },
+  });
+  let completed = 0;
+  const calls = [0, 1].map(async () => {
+    await enforcement.requestDirect!(network, 'api.example.com');
+    completed++;
+  });
+  await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+  expect(completed).toBe(0);
+  release();
+  await Promise.all(calls);
+  expect(completed).toBe(2);
 });

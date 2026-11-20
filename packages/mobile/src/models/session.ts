@@ -1,3 +1,4 @@
+import { reconcileSessionPermissions } from './sessionPermissions.js';
 import { normalizeDetailRateLimit, toDisplayAttachment } from './sessionDetailNormalize.js';
 import {
   markSessionSwitch,
@@ -1043,9 +1044,7 @@ export class SessionModel {
         activityRequest > this._mockupDecisionAfterActivityRequest &&
         !sameMockupReview(activity.mockupReview ?? undefined, this._mockupReview);
       if (mockupChanged) this._mockupReview = activity.mockupReview ?? undefined;
-      if (activity.pendingPermissions !== undefined) {
-        this.stream.reconcilePendingPermissions(activity.pendingPermissions, seqAtRequest);
-      }
+      reconcileSessionPermissions(this.stream, activity, seqAtRequest);
       // The poll is now the authoritative `_busy` source — stop `loadDetail` from
       // seeding it. Set BEFORE the no-change short-circuit so a first poll that
       // matches the initial `false` still counts as "landed".
@@ -1177,9 +1176,7 @@ export class SessionModel {
       this._people = detail.people;
       this._viewerUserId = detail.viewerUserId;
       this._detailLoaded = true;
-      if (detail.pendingPermissions !== undefined) {
-        this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);
-      }
+      reconcileSessionPermissions(this.stream, detail, seqAtRequest);
       this._name = detail.name;
       this._projectId = detail.projectId ?? null;
       // Seed the working indicator so the Stop button + activity line are correct on

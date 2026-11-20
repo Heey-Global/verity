@@ -115,10 +115,11 @@ it('rejects stale cards after revocation and requires explicit reopening after d
   expect(((await store.request('a', 'member', target)) as EgressRequest).id).toBe(retry.id);
   const reopened = await store.reopen('a', admin, target, (await store.read('a', admin)).revision);
   expect(reopened.id).not.toBe(retry.id);
-  now += 300_000;
-  await expect(
-    store.decide('a', admin, reopened.id, reopened.revision, true),
-  ).rejects.toMatchObject({ code: 'stale' });
+  now += 7 * 24 * 3_600_000;
+  expect(await store.decide('a', admin, reopened.id, reopened.revision, false)).toMatchObject({
+    status: 'denied',
+    expiresAt: null,
+  });
 });
 it('rejects disabled managers and persists across store recreation', async () => {
   const pending = await store.reopen('a', admin, target, (await store.read('a', admin)).revision);
@@ -197,4 +198,30 @@ it('records a Sandbox request once per target, attributed to the Sandbox', async
     code: 'forbidden',
   });
   expect((await store.read('a', admin)).grants).toHaveLength(0);
+});
+
+it('keeps legacy unanswered requests after their old deadline without extending grants', async () => {
+  const legacy = {
+    id: 'legacy-pending',
+    target,
+    revision: 0,
+    requestedBy: ['sandbox'],
+    createdAt: 1,
+    expiresAt: 300_001,
+    status: 'pending',
+  };
+  const policy = { revision: 0, requests: { legacy }, grants: [] };
+  await sql`update project_egress_policy set state = ${JSON.stringify(policy)}::jsonb where project_id = 'b'`.execute(
+    ctx.db,
+  );
+  const restored = new ProjectEgressStore(ctx.db, () => now);
+  expect((await restored.read('b', admin)).requests['legacy']).toMatchObject({
+    id: legacy.id,
+    status: 'pending',
+    expiresAt: null,
+  });
+  await restored.decide('b', admin, legacy.id, 0, true);
+  const decided = await restored.read('b', admin);
+  expect(decided.grants).toHaveLength(1);
+  expect(decided.grants[0]).toMatchObject({ approvedAt: now, expiresAt: now + 3_600_000 });
 });
