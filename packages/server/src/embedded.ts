@@ -124,7 +124,6 @@ import {
   readNativeReclamation,
 } from './storage-reclamation.js';
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
-import { startNativeRetirementEvidence } from './native-buildkit.js';
 import { SessionStorage, sessionStorageDiagnostics } from './session-storage.js';
 import { sessionStorageAccess } from './session-storage-access.js';
 import { RunnerCacheStorage } from './runner-cache-storage.js';
@@ -143,7 +142,11 @@ import { createServerLogSource } from './server-log-source.js';
 import { selectBranchStatus } from './forge-status-cache.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
-import { BuildStorage } from './build-storage.js';
+import type { BuildStorage } from './build-storage.js';
+import {
+  createEmbeddedBuildStorage,
+  installEmbeddedBuildStorage,
+} from './embedded-build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
@@ -246,7 +249,6 @@ import { readOrMigrateProjectOverview } from './project-overview-file.js';
 import {
   type ProvisionerImpl,
   projectClonePath,
-  devcontainerBuilderIdle,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
   type ProjectImageRefSource,
@@ -259,7 +261,7 @@ import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 
-import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
+import { containerPathFor, DockerExecBackend } from './project-backend.js';
 import { createSandboxGit } from './sandbox-git.js';
 import { projectSettingsEnv } from './project-settings-env.js';
 import { reconcileProjectContainerStates } from './project-state.js';
@@ -271,7 +273,6 @@ import { installEmbeddedProjectRelayRuntime } from './embedded-project-relay-run
 import { originalSandbox, type ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
-import { createProtectedBuildClient } from './project-egress-build-client.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
@@ -976,20 +977,7 @@ export async function buildEmbeddedServer(
     if (config.controlPlaneRunner === true && refreshControlPlaneRunnerIdentity === undefined) {
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
-    buildStorage = new BuildStorage(
-      join(
-        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
-        'build-storage',
-      ),
-      undefined,
-      undefined,
-      undefined,
-      '/run/verity-buildkit',
-    );
-    const retirementEvidence = startNativeRetirementEvidence(
-      () => buildStorage?.retirementInventoryEmpty() === true,
-    );
-    stopNativeEvidence = () => retirementEvidence.stop();
+    ({ buildStorage, stopNativeEvidence } = createEmbeddedBuildStorage(config));
     ({ provisioner, deprovisioner } = createEmbeddedProvisioning({
       config,
       dockerBaseUrl,
@@ -2542,55 +2530,7 @@ export async function buildEmbeddedServer(
       managedDevServerManager?.hasRunningServersFor(projectId, userId),
     sleepSandbox: () => provisioner?.sleepPersonalSandbox?.bind(provisioner),
   });
-  // An interrupted build must not hold build storage until someone reboots the host.
-  // Ask at start and every five minutes whether earlier attempts provably ended.
-  if (buildStorage !== undefined) {
-    const storage = buildStorage;
-    // A recreate refused for build storage waits out its backoff otherwise; the
-    // space it waited for is free now, so let the next reconcile pass retry it.
-    storage.setReleaseListener(() => provisioner?.resetStorageRefusedRepairBackoff?.());
-    const buildDockerHost =
-      config.dockerBaseUrl === undefined ? undefined : dockerHostFor(config.dockerBaseUrl);
-    let reconciling = false;
-    const reconcileBuildStorage = async () => {
-      if (reconciling) return;
-      reconciling = true;
-      try {
-        const unresolved = await storage.reconcile({
-          ...(buildDockerHost === undefined
-            ? {}
-            : { buildkitIdle: () => devcontainerBuilderIdle(buildDockerHost) }),
-          ...(config.projectEgressSocketPath && config.projectEgressKeyPath
-            ? {
-                protectedBuildStatus: (reference: { projectId: string; attemptId: string }) =>
-                  createProtectedBuildClient({
-                    socketPath: config.projectEgressSocketPath!,
-                    token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
-                  })({ operation: 'status', ...reference }),
-                protectedBuildSlot: () =>
-                  createProtectedBuildClient({
-                    socketPath: config.projectEgressSocketPath!,
-                    token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
-                  })({ operation: 'slot' }),
-              }
-            : {}),
-        });
-        if (unresolved.length > 0)
-          app.log.warn(
-            { attempts: unresolved },
-            'Build storage holds space for earlier build attempts whose end is not yet confirmed',
-          );
-      } catch (err) {
-        app.log.warn({ err }, 'Build storage reconciliation failed');
-      } finally {
-        reconciling = false;
-      }
-    };
-    void reconcileBuildStorage();
-    const buildStorageTimer = setInterval(() => void reconcileBuildStorage(), 5 * 60_000);
-    buildStorageTimer.unref();
-    app.addHook('onClose', () => clearInterval(buildStorageTimer));
-  }
+  installEmbeddedBuildStorage(app, { config, buildStorage, provisioner });
   // Fixed-purpose counters exclude command arguments, environment values and identities.
   let previousDockerExecCounts = getDockerExecDiagnostics();
   const dockerExecDiagnosticTimer = setInterval(() => {
