@@ -251,6 +251,14 @@ describe('reconcileRetainedSandboxes', () => {
     expect(h.removeContainer).toHaveBeenCalledWith('previous');
   });
 
+  it('keeps the parked Sandbox when a foreign running container holds the live name', async () => {
+    const h = inventoryHost(new Error('unused'));
+    h.inspectContainer.mockResolvedValue({ id: 'foreign', running: true, labels: {} });
+    await reconcileRetainedSandboxes(h.value, [project], hooks);
+    expect(h.removeContainer).not.toHaveBeenCalled();
+    expect(h.resume).not.toHaveBeenCalled();
+  });
+
   it('keeps the parked Sandbox when egress protection cannot be queried', async () => {
     const h = inventoryHost(new Error('unused'));
     h.value.egressIdle = async () => {
