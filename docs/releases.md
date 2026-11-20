@@ -259,7 +259,11 @@ It also recovers the later stages the same way:
   `mobile-ota-promote.yml`;
 - a merged Staging OTA release whose `mobile-vX.Y.Z` tag does not exist yet
   dispatches `mobile-ota.yml` at the main head, which stages it exactly like
-  its merge push would have.
+  its merge push would have;
+- a published Staging OTA candidate without its matching open Production proposal
+  dispatches `mobile-ota.yml` to recover that proposal from the immutable artifact.
+  Ordinary planning pushes do not consume the two recovery attempts. An active
+  run or an approved candidate awaiting delivery holds recovery until it finishes.
 
 Ordering is waiting, not failure: an OTA promotion whose native runtime is not
 yet production, and a Staging OTA whose native runtime has not reached Staging,
@@ -416,7 +420,15 @@ each identity before offering production approval.
 A promotion manifest binds the runtime, source commit, planned version, EAS
 branch, exact update group, and release notes. The staging workflow updates the
 rolling PR only after preparing the candidate; the app-authored commit triggers
-verification of the new head. Staging dismisses approvals of older heads right
+verification of the new head. Its signed metadata commit is prepared on a temporary
+workflow-owned branch, verified, then published directly to the rolling branch
+with an expected-head lease. The rolling branch is never reset to bare `main`,
+which would let GitHub close its PR as empty. Completion requires one open,
+workflow-owned PR at the verified candidate head. Dispatch `mobile-ota.yml` on
+`main` to repair a missing proposal for the latest published Staging version;
+recovery reuses its recorded EAS groups and retained source maps.
+
+Staging dismisses approvals of older heads right
 after writing the candidate and stops if dismissal fails. Promotion independently
 rejects any remaining stale approval. Configure required checks on the protected
 branch as well.
