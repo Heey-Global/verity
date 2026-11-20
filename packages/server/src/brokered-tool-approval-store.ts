@@ -150,7 +150,15 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
           eb.or([
             eb('status', '=', 'denied'),
             eb.and([
-              eb('status', '=', 'approved'),
+              eb.or([
+                eb('status', '=', 'approved'),
+                eb.and([
+                  eb('status', '=', 'consumed'),
+                  eb('scope', 'in', ['session', 'project']),
+                  eb('scope_saved', '=', false),
+                  eb('consumed_invocation_id', 'is', null),
+                ]),
+              ]),
               eb('decided_at', '<=', new Date(now() - APPROVAL_REDEMPTION_TTL_MS)),
             ]),
           ]),
@@ -178,7 +186,15 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
             eb.or([
               eb('status', '=', 'denied'),
               eb.and([
-                eb('status', '=', 'approved'),
+                eb.or([
+                  eb('status', '=', 'approved'),
+                  eb.and([
+                    eb('status', '=', 'consumed'),
+                    eb('scope', 'in', ['session', 'project']),
+                    eb('scope_saved', '=', false),
+                    eb('consumed_invocation_id', 'is', null),
+                  ]),
+                ]),
                 eb('decided_at', '<=', new Date(now() - APPROVAL_REDEMPTION_TTL_MS)),
               ]),
             ]),

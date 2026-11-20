@@ -283,3 +283,22 @@ it('blocks concurrent recovery while a reusable grant save is pending or fails',
   expect(resumed).toBe(0);
   expect((await store.listReopenable('session'))[0]?.id).toBe(pending.id);
 });
+
+it('reopens interrupted scoped saves after restart without restoring execution authority', async () => {
+  const pending = await store.createOrFindPending(input);
+  await store.decide(pending.id, 'session', true, 'manager', 'project');
+  await store.consume(pending.id, input);
+  const restarted = createBrokeredToolApprovalStore(ctx.db, () => now);
+  expect(await restarted.reopen(pending.id, 'session')).toBeUndefined();
+  now += APPROVAL_REDEMPTION_TTL_MS;
+  expect((await restarted.listReopenable('session'))[0]?.id).toBe(pending.id);
+  expect(await restarted.listApproved('session')).toEqual([]);
+  const reopened = await restarted.reopen(pending.id, 'session');
+  expect(reopened).toMatchObject({ status: 'pending', decidedBy: null, scope: null });
+  expect(reopened?.id).not.toBe(pending.id);
+  expect(await restarted.createOrFindPending(input)).toEqual(reopened);
+  // A delayed pre-crash save completion cannot reactivate the retired receipt.
+  await restarted.markScopedSaved(pending.id, 'session');
+  expect(await restarted.listApproved('session')).toEqual([]);
+  expect(await restarted.consume(reopened!.id, input, 'retry')).toBeUndefined();
+});
