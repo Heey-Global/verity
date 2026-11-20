@@ -25,7 +25,7 @@
   "packages/server/src/preview-share-manager.test.ts": 3285,
   "packages/server/src/preview-share-manager.ts": 2155,
   "packages/server/src/provisioner.test.ts": 13770,
-  "packages/server/src/provisioner.ts": 8135,
+  "packages/server/src/provisioner.ts": 8059,
   "packages/server/src/runner-boundary-attestation.test.ts": 1611,
   "packages/server/src/runner-supervisor-feature.test.ts": 6909,
   "packages/server/src/self-update-live-smoke.ts": 3133,

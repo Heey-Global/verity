@@ -170,10 +170,20 @@ import {
 export { RUNNER_RUNTIME_GID, RUNNER_RUNTIME_UID };
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { ClaudeEgressIdentityService } from './claude-egress-identity.js';
+import { AGENT_GATEWAY_PEER_FINGERPRINT_LABEL } from './agent-gateway-projection.js';
 import {
-  AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
-  recordAgentGatewayProjection,
-} from './agent-gateway-projection.js';
+  parkForReplacement,
+  reconcileRetainedSandboxes,
+  replaceKeepingParked,
+  type ReplacementRollbackHost,
+} from './sandbox-replacement-rollback.js';
+import {
+  CLAUDE_EGRESS_KEY_FILE,
+  GH_BROKER_CAPABILITY_FILE,
+  RetainedResumeError,
+  resumeRetainedSandbox,
+  type RetainedResumeHost,
+} from './sandbox-retained-resume.js';
 import type {
   VeritySettingsRecord,
   Database,
@@ -191,7 +201,6 @@ import {
   type ContainerSpec,
   type CreateContainerResult,
 } from './docker.js';
-import { projectRelayContainerName } from './project-relay-identity.js';
 import {
   defaultContainerCommandRunner,
   NODE_MODULES_INSTALL_ENV,
@@ -250,6 +259,8 @@ export interface ProjectRelayControl {
   /** Reattach a sleeping generation and rotate every generation capability. */
   reactivate?(binding: ProjectRelayBinding): Promise<ProjectRelayActivation>;
   stop(sandbox: ProjectRelaySandboxRef): Promise<void>;
+  /** Remove the relay container of a generation no longer served (a parked Sandbox). */
+  discardGeneration?(generation: { projectId: string; containerGeneration: string }): Promise<void>;
   brokerUrl(activation: ProjectRelayActivation): string;
   claudeGatewayUrl(activation: ProjectRelayActivation): string;
   codexGatewayUrl?(activation: ProjectRelayActivation): string;
@@ -361,9 +372,6 @@ const DEVCONTAINER_NODE_FEATURE_OPTIONS = { version: '26.13.1' } as const;
 const DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS = { installRunnerSupervisor: true } as const;
 const DEVCONTAINER_TOOLKIT_ENTRYPOINT = ['/bin/sh', '-lc'];
 const DEVCONTAINER_POST_CREATE_READY_FILE = '/tmp/verity-post-create-complete';
-/** In-container path of the read-only GitHub-token-broker capability file. The
- *  credential helper / gh wrapper read it to authenticate to the token broker. */
-const GH_BROKER_CAPABILITY_FILE = '/run/verity/gh-token-capability';
 
 /** In-container path of the read-only PUBLIC SSH signing key — what
  *  `user.signingkey` points at. The `/home/dev/.ssh` spelling is mounted in home
@@ -393,7 +401,6 @@ function mountsSshSigningKey(binds: string[]): boolean {
  *  these and requires the key file to be readable by only the Runner identity. */
 const CLAUDE_EGRESS_CA_FILE = '/run/verity/claude-egress/ca.crt';
 const CLAUDE_EGRESS_CERT_FILE = '/run/verity/claude-egress/client.crt';
-const CLAUDE_EGRESS_KEY_FILE = '/run/verity/claude-egress/client.key';
 
 /** Hand a freshly written secret FILE to the Runner group without requiring the
  *  non-root Verity server to hold effective CAP_CHOWN. The sandbox's regular
@@ -2791,6 +2798,59 @@ export class ProvisionerImpl implements Provisioner {
     await this.classifyProjectSandbox(project);
   }
 
+  private replacementRollbackHost(): ReplacementRollbackHost {
+    return {
+      docker: this.opts.docker,
+      projectRelay: this.opts.projectRelay,
+      store: this.opts.store,
+      failure: (message, cause) => new ProvisioningError(message, cause),
+      describe: failureMessage,
+      egressIdle: async (projectId) =>
+        (await this.egressFor()) === undefined &&
+        (await this.opts.projectEgress?.current(projectId)) === undefined,
+      fingerprint: sandboxSleepCompatibilityFingerprint,
+      quiesce: (project) => this.quiesceProjectForSleep(project),
+      resume: (project, inspect, generation, commit) =>
+        resumeRetainedSandbox(this.retainedResumeHost(), {
+          project,
+          inspect,
+          generation,
+          egress: undefined,
+          commit,
+        }),
+    };
+  }
+
+  /** Restore or remove Sandboxes a recreate parked and never finished with. */
+  private async reconcileRetainedSandboxes(projects: readonly ProjectRecord[]): Promise<void> {
+    await reconcileRetainedSandboxes(this.replacementRollbackHost(), projects, {
+      isProvisioning: (id) => this.inFlightProvisions.has(id) || this.retiringSandboxes.has(id),
+      serialize: async (project, restore) => {
+        await this.trackProvision(
+          project.id,
+          restore().then(async () => (await this.opts.store.getProject(project.id)) ?? project),
+        );
+      },
+    });
+  }
+
+  /** What {@link resumeRetainedSandbox} needs from this provisioner. */
+  private retainedResumeHost(): RetainedResumeHost {
+    return {
+      opts: this.opts,
+      containerCommand: this.containerCommand,
+      relayBinding: (project, generation, egress) => this.relayBinding(project, generation, egress),
+      rewriteMountedSecretFile,
+      chownRunnerFile: this.opts.chownRunnerFile ?? defaultChownRunnerFile,
+      supervisorReachable: this.opts.supervisorReachable ?? serverCanReachSupervisor,
+      sandboxStarted: (project) => {
+        this.supervisorHealthy.delete(project.id);
+        this.runnerReadyNotifications.delete(project.id);
+      },
+      notifyRunnerReady: (project) => this.notifyRunnerReady(project),
+    };
+  }
+
   private notifyRunnerReady(project: ProjectRecord, repaired = false): void {
     if (this.opts.onRunnerReady === undefined) return;
     const generation = this.sandboxReplacementGenerations.get(project.id);
@@ -3630,8 +3690,6 @@ export class ProvisionerImpl implements Provisioner {
           if (this.opts.projectRelay.reactivate === undefined) {
             throw new ProvisioningError('project relay does not support wake');
           }
-          const reactivateRelay = this.opts.projectRelay.reactivate.bind(this.opts.projectRelay);
-          const sleepRelay = this.opts.projectRelay.sleep?.bind(this.opts.projectRelay);
           let inspect: ContainerInspect | null;
           try {
             inspect = await this.opts.docker.inspectContainer(project.containerName);
@@ -3733,162 +3791,22 @@ export class ProvisionerImpl implements Provisioner {
             throw new Error('compatible retained Sandbox lost its identity');
           }
 
-          let relayAwake = false;
-          let relayMissing = false;
           try {
-            const activation = await reactivateRelay(
-              await this.relayBinding(project, generation, egress),
-            ).catch((error: unknown) => {
-              // The retained relay is adopted by its generation-derived name. When
-              // it no longer exists (removed by host maintenance, a manual cleanup
-              // or an older GC), this generation can never be resumed in place.
-              relayMissing =
-                error instanceof DockerError &&
-                error.kind === 'container_not_found' &&
-                error.id ===
-                  projectRelayContainerName({
-                    projectId: project.id,
-                    containerGeneration: generation,
-                  });
-              throw error;
+            return await resumeRetainedSandbox(this.retainedResumeHost(), {
+              project,
+              inspect,
+              generation,
+              egress,
+              commit: async () =>
+                (await this.opts.store.updateProjectSleepState(project.id, 'active', {
+                  sleepCompatibilityFingerprint: null,
+                  sleepingSince: null,
+                  wakeStartedAt: null,
+                })) as ProjectRecord,
             });
-            relayAwake = true;
-            if (this.opts.gitSecretRoot !== undefined) {
-              const mountedDestinations = new Set(
-                (inspect.mounts ?? []).map((mount) => mount.destination).filter(Boolean),
-              );
-              const oldSigningDigest = inspect.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL];
-              if (oldSigningDigest !== undefined) {
-                rewriteMountedSecretFile(
-                  join(this.opts.gitSecretRoot, 'git', `signing_broker_token.${oldSigningDigest}`),
-                  activation.signingCapability,
-                  0o600,
-                );
-              }
-              if (mountedDestinations.has(GH_BROKER_CAPABILITY_FILE)) {
-                rewriteMountedSecretFile(
-                  join(this.opts.gitSecretRoot, 'git', `gh_token_capability.${project.id}`),
-                  activation.githubCapability,
-                  0o600,
-                );
-              }
-              if (
-                this.opts.claudeEgressIdentity !== undefined &&
-                mountedDestinations.has(CLAUDE_EGRESS_KEY_FILE)
-              ) {
-                const material = await this.opts.claudeEgressIdentity.sandboxMaterial({
-                  projectId: project.id,
-                  userId: await projectDefaultSandboxUser(this.opts.store, project.id),
-                });
-                rewriteMountedSecretFile(
-                  join(this.opts.gitSecretRoot, 'claude-egress', `egress_ca.${project.id}.crt`),
-                  material.caCertPem,
-                  0o644,
-                );
-                rewriteMountedSecretFile(
-                  join(this.opts.gitSecretRoot, 'claude-egress', `egress_client.${project.id}.crt`),
-                  material.clientCertPem,
-                  0o644,
-                );
-                const keyPath = join(
-                  this.opts.gitSecretRoot,
-                  'claude-egress',
-                  `egress_client.${project.id}.key`,
-                );
-                rewriteMountedSecretFile(keyPath, material.clientKeyPem, 0o600);
-                (this.opts.chownRunnerFile ?? defaultChownRunnerFile)(keyPath, {
-                  uid: this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID,
-                  gid: this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID,
-                });
-                // Sleep revoked the certificate this container was created with, so
-                // the one just written in place has a new fingerprint while the
-                // container's immutable label still names the revoked one. Record
-                // which fingerprint this exact container and generation now holds;
-                // without it the woken Sandbox fails Agent Gateway readiness on
-                // every turn and is pushed into a full recreate it does not need.
-                recordAgentGatewayProjection(this.opts.gitSecretRoot, {
-                  projectId: project.id,
-                  containerId: inspect.id,
-                  containerGeneration: generation,
-                  fingerprint256: material.fingerprint256,
-                });
-              }
-            }
-            if (egress !== undefined) {
-              await egress.start(
-                { projectId: project.id, containerGeneration: generation },
-                'sandbox',
-                inspect.id,
-              );
-              const identity = { projectId: project.id, containerGeneration: generation };
-              const address = await egress.connect(identity);
-              if (
-                !inspect.extraHosts?.length ||
-                inspect.extraHosts.some((entry) => !entry.endsWith(`:${address}`))
-              ) {
-                await egress.prepare(identity);
-                throw new Error('Retained relay projection differs from host transport binding');
-              }
-            } else await this.opts.docker.startContainer(inspect.id);
-            const running = await this.opts.docker.inspectContainer(project.containerName);
-            if (!running.running) throw new Error('Docker did not report the Sandbox as running');
-            this.supervisorHealthy.delete(project.id);
-            this.runnerReadyNotifications.delete(project.id);
-            await this.opts.onContainerStarted?.(project);
-
-            const runnerRuntimePath =
-              this.opts.runnerSupervisor === true && this.opts.dataVolumeRoot !== undefined
-                ? join(this.opts.dataVolumeRoot, 'runners', project.id)
-                : undefined;
-            const connectorEnabled =
-              this.opts.claudeEgressIdentity !== undefined &&
-              this.opts.claudeConnectorPort !== undefined &&
-              this.opts.gitSecretRoot !== undefined;
-            if (
-              (runnerRuntimePath !== undefined || connectorEnabled) &&
-              this.opts.dockerHostForBuild
-            ) {
-              await this.containerCommand({
-                containerName: project.containerName,
-                dockerHost: this.opts.dockerHostForBuild,
-                user:
-                  runnerRuntimePath !== undefined
-                    ? `0:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`
-                    : `${String(this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID)}:${String(this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID)}`,
-                workdir: runnerRuntimePath !== undefined ? RUNNER_RUNTIME_TARGET : '/',
-                command:
-                  runnerRuntimePath !== undefined
-                    ? 'verity-runner-stack-start'
-                    : 'verity-egress-connector-start --standalone',
-              });
-            }
-            if (runnerRuntimePath !== undefined) {
-              await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runnerRuntimePath);
-              this.notifyRunnerReady(project);
-            }
-            await this.opts.beforeRunnerAdmission?.(project);
-            return (await this.opts.store.updateProjectSleepState(project.id, 'active', {
-              sleepCompatibilityFingerprint: null,
-              sleepingSince: null,
-              wakeStartedAt: null,
-            })) as ProjectRecord;
-          } catch (cause) {
-            await egress
-              ?.prepare({ projectId: project.id, containerGeneration: generation })
-              .catch(() => undefined);
-            const cleanup = await Promise.allSettled([
-              this.opts.docker.stopContainer(project.containerName),
-              ...(relayAwake && sleepRelay !== undefined
-                ? [sleepRelay(originalSandbox(project.id))]
-                : []),
-              ...(this.opts.claudeEgressIdentity === undefined
-                ? []
-                : [this.opts.claudeEgressIdentity.revokeProject(project.id)]),
-            ]);
-            const cleanupFailures: unknown[] = [];
-            for (const result of cleanup) {
-              if (result.status === 'rejected') cleanupFailures.push(result.reason as unknown);
-            }
+          } catch (error) {
+            if (!(error instanceof RetainedResumeError)) throw error;
+            const { cause, relayMissing, cleanupFailures } = error;
             if (cleanupFailures.length > 0) {
               const message = `project wake rollback failed: ${cleanupFailures.map(failureMessage).join('; ')}`;
               await this.opts.store.updateProjectState(project.id, 'failed', message);
@@ -4551,6 +4469,7 @@ export class ProvisionerImpl implements Provisioner {
     let driftRecreatesThisPass = 0;
     const driftThrottledThisPass: string[] = [];
     await this.restoreSandboxRepairIntents().catch((error: unknown) => failures.push(error));
+    await this.reconcileRetainedSandboxes(projects).catch((error: unknown) => failures.push(error));
     await this.sandboxUpdateTracker.restore(
       (this.opts.store as Partial<EventStore>).sandboxUpdateState,
     );
@@ -5430,16 +5349,21 @@ export class ProvisionerImpl implements Provisioner {
     const replace = async (): Promise<ProjectRecord> => {
       if (!preflightComplete || (this.opts.sandboxUpdateRecovery && !checkRecovery))
         throw new ProvisioningError('Replacement requires service capture and preflight');
-      await this.retireEgressGeneration(project.id);
+      const parked = await parkForReplacement(this.replacementRollbackHost(), project);
+      if (parked === undefined) await this.retireEgressGeneration(project.id);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
       this.sandboxReplacementGenerations.set(
         project.id,
         (this.sandboxReplacementGenerations.get(project.id) ?? 0) + 1,
       );
-      await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
+      if (parked === undefined)
+        await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
       containerPhaseStarted = true;
-      return this.runContainerPhase(project, true, containerPhaseOpts, replacementImage);
+      const run = () => this.runContainerPhase(project, true, containerPhaseOpts, replacementImage);
+      return parked === undefined
+        ? run()
+        : replaceKeepingParked(this.replacementRollbackHost(), project, parked, run);
     };
     try {
       await this.opts.sandboxUpdateRecovery?.prepare?.();
