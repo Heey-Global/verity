@@ -82,6 +82,8 @@ function areaTarget(scope: KnowledgeScope, area: KnowledgeArea): SessionFileTarg
     protectedPaths: area === 'insights' ? ['decisions'] : [],
     // The sandbox agent edits a project's Wiki; Shared and Sources are read-only to it.
     agentWritable: scope.kind === 'project' && area === 'insights',
+    // The routes here check every path against the knowledge rules first.
+    folderMoves: true,
   };
 }
 
@@ -150,6 +152,17 @@ function knowledgeHandlers(deps: KnowledgeFileRouteDeps, resolveScope: ScopeReso
     const body = sessionFileWriteBody.parse(request.body);
     if (!isWikiEditPath(body.path))
       return reply.code(403).send({ error: 'Only Wiki files can be edited here.' });
+    // A new page is a new entry: it obeys the same rules as an upload or a new
+    // folder, so nothing is created among the recorded decisions or under a
+    // name Verity reserves.
+    if (body.expectedVersion === null) {
+      try {
+        knowledgeEntry(body.path);
+      } catch (error) {
+        if (!(error instanceof KnowledgePathRefusedError)) throw error;
+        return reply.code(403).send({ error: error.message });
+      }
+    }
     // Resolve relative to the Wiki itself so intermediate symlinks cannot reach Sources.
     return deps
       .write(reply, areaTarget(scope, 'insights'), {

@@ -89,11 +89,6 @@ export const sessionFilesStyles = StyleSheet.create((theme) => ({
   filesList: {
     flex: 1,
   },
-  filesPath: {
-    color: theme.colors.textFaint,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-  },
   filesPreview: {
     flex: 1,
   },
@@ -109,18 +104,6 @@ export const sessionFilesStyles = StyleSheet.create((theme) => ({
   filesPreviewWrap: {
     flex: 1,
     minHeight: 280,
-  },
-  // Pinned under the list while selecting: the one action that applies to the
-  // whole selection, labelled and away from the header's Done.
-  filesSelectionBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
   },
   flex: {
     flex: 1,

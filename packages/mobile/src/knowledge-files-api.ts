@@ -16,8 +16,9 @@ const linkCountSchema = z.object({ path: z.string(), links: z.number().int().non
 const knowledgeRelocatedSchema = z.object({
   path: z.string(),
   warning: z.string().optional(),
-  /** Wiki pages whose links were rewritten to follow the entry, with how many links. */
-  linksUpdated: z.array(linkCountSchema),
+  /** Wiki pages whose links were rewritten to follow the entry, with how many
+   *  links. A server from before link keeping answers without it: none were. */
+  linksUpdated: z.array(linkCountSchema).default([]),
 });
 /** A renamed or moved knowledge entry: its new path, and the Wiki pages kept linking to it. */
 export type KnowledgeRelocated = z.infer<typeof knowledgeRelocatedSchema>;
@@ -34,6 +35,9 @@ const knowledgeUploadedSchema = z.object({
 export type KnowledgeFileUploaded = z.infer<typeof knowledgeUploadedSchema>;
 
 type Request = (path: string, init: TransportRequestInit) => Promise<Response>;
+
+const isNotFound = (error: unknown) =>
+  typeof error === 'object' && error !== null && 'status' in error && error.status === 404;
 
 /** The scope's route base: `/knowledge/shared` or `/projects/:id/knowledge`. */
 function scopeBase(scope: KnowledgeFilesScope): string {
@@ -114,10 +118,18 @@ export function knowledgeFilesClient(request: Request, upload: Request) {
       scope: KnowledgeFilesScope,
       path: string,
     ): Promise<KnowledgeBacklinks> => {
-      const response = await request(
-        `${scopeBase(scope)}/files/backlinks?path=${encodeURIComponent(path)}`,
-        { method: 'GET' },
-      );
+      let response: Response;
+      try {
+        response = await request(
+          `${scopeBase(scope)}/files/backlinks?path=${encodeURIComponent(path)}`,
+          { method: 'GET' },
+        );
+      } catch (error) {
+        // A server from before link keeping has no such route and rewrites no
+        // links either: there is nothing to ask about, and the rename goes ahead.
+        if (isNotFound(error)) return { pages: [] };
+        throw error;
+      }
       return knowledgeBacklinksSchema.parse(await response.json());
     },
 

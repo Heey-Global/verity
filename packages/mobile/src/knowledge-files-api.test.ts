@@ -53,9 +53,25 @@ describe.each(scopes)('knowledge file calls for %o', (scope, base) => {
     });
   });
 
-  it('refuses a rename response without the link report', async () => {
+  // The app ships apart from the server. A rename an older server carried out
+  // must not read as a failure the operator retries into a 409.
+  it('takes a rename from a server without link keeping as done, with no links updated', async () => {
     const verity = client(respond({ path: 'insights/x.md' }));
-    await expect(verity.renameKnowledgeFile(scope, 'insights/y.md', 'x.md')).rejects.toThrow();
+    await expect(verity.renameKnowledgeFile(scope, 'insights/y.md', 'x.md')).resolves.toEqual({
+      path: 'insights/x.md',
+      linksUpdated: [],
+    });
+  });
+
+  it('finds no backlinks on a server without the route, so a rename is not blocked', async () => {
+    const verity = client(
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(JSON.stringify({ error: 'Not Found' }), { status: 404 })),
+    );
+    await expect(verity.listKnowledgeBacklinks(scope, 'insights/y.md')).resolves.toEqual({
+      pages: [],
+    });
   });
 
   it('encodes paths in the query of delete, backlinks and upload', async () => {

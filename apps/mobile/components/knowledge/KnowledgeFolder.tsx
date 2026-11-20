@@ -1,6 +1,6 @@
 import type { SessionDirectory, SessionFileEntry, VerityClient } from '@verity/mobile';
 import { Stack } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -121,6 +121,9 @@ export function KnowledgeFolder({
     attempt,
   ]);
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
+  // Whether this screen's header ever carried the explorer's controls.
+  const listed = useRef(false);
+  if (listing) listed.current = true;
   // A Wiki page reads by its title and summary from the catalog, as everywhere
   // the Wiki is shown; a file without one keeps its name and size.
   const titles = new Map((wiki.catalog?.pages ?? []).map((page) => [page.path, page]));
@@ -171,21 +174,29 @@ export function KnowledgeFolder({
 
   return (
     <KnowledgeEntryContext.Provider value={explorer.busy ? {} : catalogActions}>
-      {header === 'stack' && listing ? (
+      {header === 'stack' && (listing || listed.current) ? (
         <Stack.Screen
           options={
-            explorer.selecting
-              ? {
-                  // Selecting takes over the page's header, as it does the Files sheet's.
-                  title: selectionTitle,
-                  headerLeft: () => selectAll,
-                  headerRight: () => done,
-                }
-              : {
+            !listing
+              ? // A folder that turned into a Wiki view (its catalog arrived) gives
+                // the + and the selection's controls back.
+                {
                   title: folderTitle(scope, requested),
                   headerLeft: undefined,
-                  headerRight: add ? () => add : undefined,
+                  headerRight: undefined,
                 }
+              : explorer.selecting
+                ? {
+                    // Selecting takes over the page's header, as it does the Files sheet's.
+                    title: selectionTitle,
+                    headerLeft: () => selectAll,
+                    headerRight: () => done,
+                  }
+                : {
+                    title: folderTitle(scope, requested),
+                    headerLeft: undefined,
+                    headerRight: add ? () => add : undefined,
+                  }
           }
         />
       ) : null}

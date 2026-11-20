@@ -108,6 +108,20 @@ describe('knowledge file routes', () => {
       dir = scopeDir();
     });
 
+    it('creates a new page only where a new entry may go', async () => {
+      const create = (path: string) =>
+        app.inject({
+          method: 'PUT',
+          url: `${base}/files/content`,
+          payload: { path, content: '# New', expectedVersion: null },
+        });
+      mkdirSync(join(dir, 'insights/decisions'), { recursive: true });
+      expect((await create('insights/decisions/forged.md')).statusCode).toBe(403);
+      expect(existsSync(join(dir, 'insights/decisions/forged.md'))).toBe(false);
+      expect((await create('insights/new.md')).statusCode).toBe(200);
+      expect(read('insights/new.md')).toBe('# New');
+    });
+
     it('refuses every path the rules refuse, before touching the disk', async () => {
       write('insights/page.md', 'Page');
       write('insights/decisions/record.md', 'Decided');
@@ -382,6 +396,31 @@ describe('knowledge file routes', () => {
       writeFileSync(join(worktree, 'moved/keep.txt'), 'keep');
       expect((await move('target/moved', '')).statusCode).toBe(409);
       expect(readFileSync(join(worktree, 'moved/keep.txt'), 'utf8')).toBe('keep');
+    });
+
+    it('leaves Shared to its own routes, which are administrator-only', async () => {
+      // Without this, a session's execute permission would reach Shared knowledge.
+      expect((await createFolder({ root: 'shared', path: '', name: 'x' })).statusCode).toBe(403);
+    });
+
+    it('moves knowledge folders only through the routes that check the knowledge rules', async () => {
+      // A session root move would otherwise carry a Sources import folder into
+      // the Wiki, past the rules the knowledge routes apply.
+      const knowledge = projectKnowledgeDir(dataRoot, 'p-1');
+      mkdirSync(join(knowledge, 'sources/meetings'), { recursive: true });
+      writeFileSync(join(knowledge, 'sources/meetings/call.md'), 'Call');
+      const moved = await app.inject({
+        method: 'POST',
+        url: '/sessions/s-1/files/move',
+        payload: {
+          root: 'knowledge',
+          path: 'sources/meetings',
+          toRoot: 'knowledge',
+          toPath: 'insights',
+        },
+      });
+      expect(moved.statusCode).toBe(403);
+      expect(readFileSync(join(knowledge, 'sources/meetings/call.md'), 'utf8')).toBe('Call');
     });
   });
 });

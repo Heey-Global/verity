@@ -79,6 +79,10 @@ export interface SessionFileTarget {
   /** Whether new files and folders must stay writable for the sandbox agent, as
    *  a project's Wiki is. Unset, it follows from the root and path. */
   agentWritable?: boolean;
+  /** Whether folders may move inside this knowledge root: only the knowledge
+   *  routes set it, after their path rules (no Decisions, no import folders,
+   *  one area) have passed. The worktree moves its folders freely. */
+  folderMoves?: boolean;
 }
 
 /** Runs under the knowledge mutation lock right after an entry was renamed or
@@ -267,6 +271,12 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
         return reply
           .code(403)
           .send({ error: 'Session drafts are read-only here; edit them in their session.' });
+      // Shared knowledge is managed by administrators from Settings; a session's
+      // execute permission must not reach it through this route.
+      if (body.root === 'shared')
+        return reply
+          .code(403)
+          .send({ error: 'Shared knowledge is managed in Settings › Shared knowledge.' });
       const value = await target(id, body.root, reply);
       if (value === undefined) return reply;
       return createFolder(reply, value, body.path, body.name);

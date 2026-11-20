@@ -57,7 +57,6 @@ import { MarkdownLine, MarkdownTable } from '../../chat/MarkdownText';
 import { DragSource } from '../../DragSource';
 import { DropZone } from '../../DropZone';
 import { Icon, type IconName } from '../../Icon';
-import { tint } from '../../ui/tint';
 import { useConfirm } from '../../ui';
 import { WikiDetails } from '../../WikiDetails';
 import { CodeWorkspaceNotice } from '../CodeWorkspaceNotice';
@@ -719,7 +718,10 @@ export function SessionFilesSheet({
           ? () => void editFile(menuFor.path)
           : undefined,
       rename: changes ? () => setRenaming(menuFor.path) : undefined,
-      move: changes ? () => setMoving([menuFor.path]) : undefined,
+      // Knowledge folders move from their library page, whose rules keep
+      // Decisions and the Sources import folders in place.
+      move:
+        changes && (root === 'worktree' || !folder) ? () => setMoving([menuFor.path]) : undefined,
       delete: changes
         ? () =>
             confirmDelete([menuFor.path], (deleted) => {
@@ -1295,17 +1297,22 @@ export function SessionFilesSheet({
                 return { id: created.path, name, folder: true };
               }}
               onPick={async (destination) => {
-                for (const moved of moving)
-                  await client.moveSessionFile(sessionId, {
-                    root,
-                    path: moved,
-                    toRoot: root,
-                    toPath: destination,
-                  });
-                setMoving(null);
-                endSelection();
-                closePreview();
-                reload();
+                // One move per entry: whatever moved before a failure is listed
+                // in its new place, and leaves the selection, before the error shows.
+                try {
+                  for (const moved of moving)
+                    await client.moveSessionFile(sessionId, {
+                      root,
+                      path: moved,
+                      toRoot: root,
+                      toPath: destination,
+                    });
+                  setMoving(null);
+                  closePreview();
+                } finally {
+                  endSelection();
+                  reload();
+                }
               }}
               onCancel={() => setMoving(null)}
             />

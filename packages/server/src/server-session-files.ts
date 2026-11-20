@@ -266,6 +266,24 @@ export function registerServerSessionFiles(
   };
 
   /**
+   * Runs the link keeper after a rename or move that already happened on disk.
+   * Its failure must not turn that move into an error the app would retry —
+   * the entry is at its new path — so it becomes a warning instead.
+   */
+  const keepLinks = async (
+    afterMove: RelocationHook | undefined,
+    move: { from: string; to: string },
+  ): Promise<string | undefined> => {
+    try {
+      await afterMove?.(move);
+      return undefined;
+    } catch (err) {
+      app.log.warn({ err, path: move.to }, 'wiki link update after a move failed');
+      return 'Moved. Links in other Wiki pages could not all be updated; check them by hand.';
+    }
+  };
+
+  /**
    * Moves a folder within one root — never between roots, never into itself —
    * with the extracted text of everything inside. The caller holds the root's
    * mutation lock.
@@ -281,6 +299,12 @@ export function registerServerSessionFiles(
     if (fromRoot.root !== toRoot.root || fromRoot.dir !== toRoot.dir) {
       reply.code(400);
       return { error: 'folders can only be moved within one place' };
+    }
+    // A knowledge folder moves only through the knowledge routes, whose rules
+    // keep Decisions and the Sources import folders in place and each area apart.
+    if (fromRoot.root !== 'worktree' && fromRoot.folderMoves !== true) {
+      reply.code(403);
+      return { error: 'Move knowledge folders from the project or Shared knowledge page.' };
     }
     if (destination.rel.startsWith(`${source.rel}/`)) {
       reply.code(400);
@@ -299,7 +323,7 @@ export function registerServerSessionFiles(
         warning = 'Moved. Knowledge search may show the old place until its text is refreshed.';
       }
     }
-    await afterMove?.({ from: source.rel, to: destination.rel });
+    warning = (await keepLinks(afterMove, { from: source.rel, to: destination.rel })) ?? warning;
     return { path: destination.rel, root: toRoot.root, ...(warning ? { warning } : {}) };
   };
 
@@ -980,8 +1004,12 @@ export function registerServerSessionFiles(
           if (!movedExtraction)
             await extractKnowledgeFile(...extractionArgs(toRoot, destination.rel));
         }
-        await afterMove?.({ from: source.rel, to: destination.rel });
-        return { path: destination.rel, root: toRoot.root };
+        const linkWarning = await keepLinks(afterMove, { from: source.rel, to: destination.rel });
+        return {
+          path: destination.rel,
+          root: toRoot.root,
+          ...(linkWarning ? { warning: linkWarning } : {}),
+        };
       } catch (error) {
         if (
           typeof error === 'object' &&
@@ -1067,7 +1095,8 @@ export function registerServerSessionFiles(
           app.log.warn({ err, path: destination.rel }, 'renamed source text refresh failed');
           warning = 'Renamed. Knowledge search may show the old name until its text is refreshed.';
         }
-        await afterMove?.({ from: source.rel, to: destination.rel });
+        warning =
+          (await keepLinks(afterMove, { from: source.rel, to: destination.rel })) ?? warning;
         return warning ? { path: destination.rel, warning } : { path: destination.rel };
       } finally {
         release?.();

@@ -87,7 +87,6 @@ const styles = StyleSheet.create((theme) => ({
   inert: { opacity: 0.55 },
   main: { flex: 1, minWidth: 0 },
   name: {
-    flex: 1,
     color: theme.colors.text,
     fontFamily: theme.fonts.regular,
     fontSize: theme.typography.row.fontSize,

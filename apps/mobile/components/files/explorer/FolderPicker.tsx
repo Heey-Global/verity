@@ -121,7 +121,10 @@ export function FolderPicker({
           />
           <ScrollView style={styles.flex}>
             {error !== undefined ? (
-              <Text style={styles.message}>{error}</Text>
+              <>
+                <Text style={styles.message}>{error}</Text>
+                <HeaderTextButton label="Retry" onPress={() => setAttempt((value) => value + 1)} />
+              </>
             ) : entries === undefined ? (
               <ActivityIndicator style={styles.loading} color={theme.colors.textMuted} />
             ) : entries.length === 0 ? (

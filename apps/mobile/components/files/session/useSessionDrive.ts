@@ -257,12 +257,16 @@ export function useSessionDrive({
   const move = useCallback(
     async (files: readonly DriveFile[], destination: string) => {
       if (!projectId || !linkId) return;
-      for (const file of files)
-        await client.updateProjectGoogleDriveFile(projectId, linkId, file.id, {
-          expectedVersion: await version(file),
-          parentId: destination,
-        });
-      reload();
+      try {
+        for (const file of files)
+          await client.updateProjectGoogleDriveFile(projectId, linkId, file.id, {
+            expectedVersion: await version(file),
+            parentId: destination,
+          });
+      } finally {
+        // What moved before a failure is listed in its new place.
+        reload();
+      }
     },
     [client, linkId, projectId, reload, version],
   );

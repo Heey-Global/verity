@@ -373,13 +373,17 @@ export function useKnowledgeExplorer({
               () => setMoving(null),
               async () => {
                 const results = [];
-                for (const path of paths) {
-                  const result = await moveKnowledge(client, scope, path, destination);
-                  pane?.moved?.(scope, path, result.path);
-                  results.push(result);
+                try {
+                  for (const path of paths) {
+                    const result = await moveKnowledge(client, scope, path, destination);
+                    pane?.moved?.(scope, path, result.path);
+                    results.push(result);
+                  }
+                } finally {
+                  // What moved before a failure is listed in its new place.
+                  endSelection();
+                  changed();
                 }
-                endSelection();
-                changed();
                 reportLinks(results);
               },
             );
