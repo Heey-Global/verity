@@ -6,6 +6,21 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.98.0](https://github.com/Heey-Global/verity/compare/v4.97.2...v4.98.0) (2026-11-20)
+
+
+### Features
+
+* **mobile:** make the floating V the only way to Verity and open Shared knowledge from Home ([#2725](https://github.com/Heey-Global/verity/issues/2725)) ([67808b3](https://github.com/Heey-Global/verity/commit/67808b3184ce31e03436c53b336d1b6c005f82c9))
+* **mobile:** open linked sessions from header chips ([#2722](https://github.com/Heey-Global/verity/issues/2722)) ([b23965c](https://github.com/Heey-Global/verity/commit/b23965ca0a0b9b890506104127930e67c4f707e9))
+
+
+### Bug Fixes
+
+* **preview:** detect web services before offering previews ([#2727](https://github.com/Heey-Global/verity/issues/2727)) ([dc3d705](https://github.com/Heey-Global/verity/commit/dc3d7057b865ffc82eb499bcb6b268189c609c14))
+* **release:** preserve and recover mobile OTA production proposals ([#2730](https://github.com/Heey-Global/verity/issues/2730)) ([976d6cc](https://github.com/Heey-Global/verity/commit/976d6ccc36924cb0be1c9dca433043d19853af0c))
+* **toolkit:** resolve npm project roots that npm masks as secrets ([#2718](https://github.com/Heey-Global/verity/issues/2718)) ([eaf5528](https://github.com/Heey-Global/verity/commit/eaf5528e5c7d94ac55ffcd9ecfec56484182e010))
+
 ## [4.97.2](https://github.com/Heey-Global/verity/compare/v4.97.1...v4.97.2) (2026-11-19)
 
 
