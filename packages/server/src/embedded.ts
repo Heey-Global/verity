@@ -1,4 +1,8 @@
 import {
+  installEmbeddedLocalPreviewRecovery,
+  installEmbeddedPublicPreviewRecovery,
+} from './embedded-preview-recovery.js';
+import {
   createEmbeddedPersonalProviderCredentials,
   createEmbeddedClaudeCredentialSync,
   createEmbeddedProviderCredentialBindings,
@@ -202,12 +206,7 @@ import {
   runDockerGc,
 } from './docker-gc.js';
 import { DataVolumeUsage } from './data-volume-usage.js';
-import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
-import {
-  PreviewShareConflictError,
-  PreviewShareManager,
-  sweepOrphanedPreviewShares,
-} from './preview-share-manager.js';
+import { PreviewShareConflictError, PreviewShareManager } from './preview-share-manager.js';
 import { premiumFeatureSwitches } from './uplink-control-client.js';
 import { teamSharingStatus } from './uplink-feature-state.js';
 import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
@@ -2523,31 +2522,15 @@ export async function buildEmbeddedServer(
   // A sealed credentials read triggers feature revocation. Wait for key handover;
   // interactive boots start the client through onSecretUnlocked instead.
   if (!secretCipher.isSealed()) uplinkControl?.start();
-  if (localPreviewManager && projectDocker) {
-    const sweepLocalConnectors = () =>
-      sweepOrphanedLocalPreviews(projectDocker, hostname(), (id, shareId) =>
-        localPreviewManager.ownsConnector(id, shareId),
-      );
-    const reconcileLocal = async (): Promise<void> => {
-      if (secretCipher.isSealed()) return;
-      // Restore durable ownership before cleanup can classify surviving connectors.
-      await localPreviewManager.reconcile();
-      previewRecoveryReady = true;
-      await sweepLocalConnectors();
-    };
-    await reconcileLocal().catch((error) =>
-      app.log.warn({ err: error }, 'local preview recovery deferred until dependencies recover'),
-    );
-    const stopLocalReconciler = startRunnerSupervisorReconciler(reconcileLocal, 10_000, (error) =>
-      app.log.warn({ err: error }, 'local preview reconciliation failed'),
-    );
-    app.addHook('onClose', async () => {
-      previewRecoveryReady = false;
-      await stopLocalReconciler();
-      await managedDevServerManager?.close();
-      await localPreviewManager.close();
-    });
-  }
+  await installEmbeddedLocalPreviewRecovery(app, {
+    localPreviewManager,
+    projectDocker,
+    secretCipher,
+    managedDevServerManager,
+    setPreviewRecoveryReady: (ready) => {
+      previewRecoveryReady = ready;
+    },
+  });
   await installEmbeddedTrustedCli(app, { trustedCliOutput });
   // A person's own sandbox sleeps once nothing needs it (ADR 0023 §4), so a
   // member's container uses memory only while that member works.
@@ -2657,56 +2640,14 @@ export async function buildEmbeddedServer(
       ? (projectRelayLifecycle?.suspend() ?? Promise.resolve())
       : (projectRelayLifecycle?.close() ?? Promise.resolve()),
   );
-  if (previewShareManager !== undefined) {
-    const reconcile = async (): Promise<void> => {
-      if (secretCipher.isSealed()) return;
-      await previewShareManager.reconcile();
-    };
-    await reconcile().catch((error) =>
-      app.log.warn({ err: error }, 'public preview reconciliation failed'),
-    );
-    const stopPreviewReconciler = startRunnerSupervisorReconciler(reconcile, 30_000, (error) =>
-      app.log.warn({ err: error }, 'public preview reconciliation failed'),
-    );
-    app.addHook('onClose', async () => {
-      await stopPreviewReconciler();
-      await uplinkControl?.stop();
-    });
-  } else if (projectDocker !== undefined) {
-    // No edge control means no manager and therefore no reconciliation loop, so
-    // shares an earlier version created would run on untouched. Close them out
-    // instead of leaving live connectors and unrevocable records behind. This
-    // retries on the reconcile cadence rather than only at boot — a Docker or
-    // store hiccup during startup must not strand a share for the process
-    // lifetime — and stops the timer once a sweep completes cleanly, because
-    // without a manager nothing can create new shares to find.
-    let sweeping = false;
-    const sweep = async (): Promise<void> => {
-      if (sweeping) return;
-      sweeping = true;
-      try {
-        const swept = await sweepOrphanedPreviewShares({
-          store: eventStore,
-          docker: projectDocker,
-          onShareEnded: ({ managedInstanceId, id }) => {
-            if (managedInstanceId) managedLinkEnded.current?.(managedInstanceId, id);
-          },
-        });
-        if (swept > 0) {
-          app.log.warn({ swept }, 'revoked orphaned public preview shares');
-        }
-        clearInterval(sweepTimer);
-      } catch (error) {
-        app.log.warn({ err: error }, 'orphaned public preview sweep failed, retrying');
-      } finally {
-        sweeping = false;
-      }
-    };
-    const sweepTimer = setInterval(() => void sweep(), 30_000);
-    sweepTimer.unref?.();
-    app.addHook('onClose', () => clearInterval(sweepTimer));
-    void sweep();
-  }
+  await installEmbeddedPublicPreviewRecovery(app, {
+    previewShareManager,
+    projectDocker,
+    secretCipher,
+    uplinkControl,
+    eventStore,
+    managedLinkEnded,
+  });
 
   app.addHook('onClose', () => stopNativeEvidence?.());
 

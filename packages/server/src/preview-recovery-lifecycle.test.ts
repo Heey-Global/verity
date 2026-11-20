@@ -8,19 +8,19 @@ describe('preview recovery lifecycle wiring', () => {
   // owner can adopt them, even when both managers pass their isolated tests.
   it('restores local ownership before orphan cleanup, after the key handover', async () => {
     const embedded = await source('./embedded.ts');
-    const recovery = embedded.slice(embedded.indexOf('if (localPreviewManager && projectDocker)'));
+    const recovery = await source('./embedded-preview-recovery.ts');
     expect(recovery).toMatch(
-      /const reconcileLocal = async[^]*?if \(secretCipher\.isSealed\(\)\) return;[^]*?await localPreviewManager\.reconcile\(\);\s*previewRecoveryReady = true;\s*await sweepLocalConnectors\(\);/,
+      /const reconcileLocal = async[^]*?if \(secretCipher\.isSealed\(\)\) return;[^]*?await localPreviewManager\.reconcile\(\);\s*setPreviewRecoveryReady\(true\);\s*await sweepLocalConnectors\(\);/,
     );
     expect(embedded.indexOf('await adoptHandedOffSecretKey(')).toBeGreaterThan(-1);
     expect(embedded.indexOf('await adoptHandedOffSecretKey(')).toBeLessThan(
-      embedded.indexOf('await reconcileLocal()'),
+      embedded.indexOf('await installEmbeddedLocalPreviewRecovery('),
     );
     expect(embedded).toMatch(
       /canSupervise: \(\) => previewRecoveryReady && !secretCipher\.isSealed\(\)/,
     );
-    expect(embedded.indexOf('await localPreviewManager.reconcile()')).toBeLessThan(
-      embedded.indexOf('previewRecoveryReady = true;'),
+    expect(embedded).toMatch(
+      /setPreviewRecoveryReady: \(ready\) => \{\s*previewRecoveryReady = ready;/,
     );
     expect(embedded).toMatch(/if \(!localPreviewManager\) previewRecoveryReady = true;/);
   });
@@ -55,12 +55,12 @@ describe('preview recovery lifecycle wiring', () => {
   // Closing edges or stopping Uplink while a watchdog still restores resources
   // can resurrect a connector after the serving generation has closed.
   it('gates online recovery on unlock and drains both watchdogs before teardown', async () => {
-    const embedded = await source('./embedded.ts');
+    const embedded = await source('./embedded-preview-recovery.ts');
     expect(embedded).toMatch(
       /const reconcile = async[^]*?if \(secretCipher\.isSealed\(\)\) return;\s*await previewShareManager\.reconcile\(\);/,
     );
     expect(embedded).toMatch(
-      /previewRecoveryReady = false;\s*await stopLocalReconciler\(\);\s*await managedDevServerManager\?\.close\(\);\s*await localPreviewManager\.close\(\);/,
+      /setPreviewRecoveryReady\(false\);\s*await stopLocalReconciler\(\);\s*await managedDevServerManager\?\.close\(\);\s*await localPreviewManager\.close\(\);/,
     );
     expect(embedded).toMatch(/await stopPreviewReconciler\(\);\s*await uplinkControl\?\.stop\(\);/);
   });
