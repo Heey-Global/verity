@@ -1,3 +1,4 @@
+import { createStoredSessionLink } from './session-links.js';
 import { ProjectTeamStore } from './project-team.js';
 import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
 import {
@@ -10,6 +11,7 @@ import {
   idChunks,
 } from './message-projection.js';
 export { waitForMessageProjectionWork, waitForPendingMessageProjections };
+import { SessionCoordinationStore } from './session-coordination.js';
 import { ProjectInquiryStore } from './project-inquiries.js';
 import { SandboxUpdateStateStore } from './sandbox-update-state.js';
 import { SandboxRepairIntentStore } from './sandbox-repair-intents.js';
@@ -1598,6 +1600,7 @@ export class EventStore implements EventSink {
     this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
     this.projectInquiries = new ProjectInquiryStore(db);
+    this.sessionCoordination = new SessionCoordinationStore(db);
     this.wikiOccasions = new WikiOccasionStore(db);
     this.wikiMaintenance = new WikiMaintenanceStore(db);
     this.sandboxUpdateState = new SandboxUpdateStateStore(db);
@@ -1618,6 +1621,7 @@ export class EventStore implements EventSink {
   readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
   readonly projectInquiries: ProjectInquiryStore;
+  readonly sessionCoordination: SessionCoordinationStore;
   /** What a project's Wiki may need to reflect, until a maintenance run read it. */
   readonly wikiOccasions: WikiOccasionStore;
   readonly wikiMaintenance: WikiMaintenanceStore;
@@ -1661,47 +1665,8 @@ export class EventStore implements EventSink {
   /** One delivery at a time leaves pool capacity for conductor acceptance. */
   private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
 
-  async createSessionLink(leftId: string, rightId: string): Promise<boolean> {
-    if (leftId === rightId) throw new Error('a session cannot link to itself');
-    const [sessionA, sessionB] = [leftId, rightId].sort() as [string, string];
-    return this.db.transaction().execute(async (tx) => {
-      const sessions = await tx
-        .selectFrom('sessions')
-        .select(['session_id', 'project_id'])
-        .where('session_id', 'in', [sessionA, sessionB])
-        .orderBy('session_id')
-        .forShare()
-        .execute();
-      if (sessions.length !== 2 || !sessions[0]?.project_id || !sessions[1]?.project_id)
-        throw new Error('linked sessions must belong to projects');
-      const projectIds = [...new Set([sessions[0].project_id, sessions[1].project_id])];
-      const projects = await tx
-        .selectFrom('projects')
-        .select(['id', 'state', 'hidden_at', 'kind'])
-        .where('id', 'in', projectIds)
-        .orderBy('id')
-        .forShare()
-        .execute();
-      if (
-        projects.length !== projectIds.length ||
-        projects.some(
-          (project) =>
-            !isSessionLinkProject({
-              kind: project.kind as ProjectKind,
-              state: project.state as ProjectRecord['state'],
-              hiddenAt: project.hidden_at,
-            }),
-        )
-      )
-        throw new Error('linked sessions require available projects');
-      const inserted = await tx
-        .insertInto('session_links')
-        .values({ session_a: sessionA, session_b: sessionB, remaining_a: 6, remaining_b: 6 })
-        .onConflict((oc) => oc.columns(['session_a', 'session_b']).doNothing())
-        .returning('session_a')
-        .executeTakeFirst();
-      return inserted !== undefined;
-    });
+  async createSessionLink(leftId: string, rightId: string, requestId?: string): Promise<boolean> {
+    return createStoredSessionLink(this.db, leftId, rightId, isSessionLinkProject, requestId);
   }
 
   async deleteSessionLink(leftId: string, rightId: string): Promise<boolean> {
@@ -3222,10 +3187,7 @@ export class EventStore implements EventSink {
     return result.numUpdatedRows > 0n;
   }
 
-  /**
-   * Mark or unmark a session as an operator favorite. Returns `false` if the
-   * session id is unknown, like {@link renameSession}.
-   */
+  /** Mark a session as a favorite; returns false when the session is unknown. */
   async setSessionFavorite(sessionId: string, favorite: boolean): Promise<boolean> {
     const result = await this.db
       .updateTable('sessions')

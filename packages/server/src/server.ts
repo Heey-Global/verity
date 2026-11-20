@@ -280,6 +280,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const decidePendingLinkedMessage = registerServerMcpRoutes({
     wikiProposals,
     inquiryTool: createServerInquiryTool(ctx, () => projectInquiries),
+    coordinationSpawn: () => sessionCreate.spawn,
     deps,
     app,
     conductor,

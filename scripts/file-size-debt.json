@@ -36,7 +36,7 @@
   "packages/server/src/server-activity.test.ts": 3021,
   "packages/server/src/server-branches.test.ts": 3148,
   "packages/server/src/server-infrastructure.test.ts": 2148,
-  "packages/server/src/server-mcp-routes.ts": 2296,
+  "packages/server/src/server-mcp-routes.ts": 2221,
   "packages/server/src/server-projects.test.ts": 3958,
   "packages/server/src/server-sessions.test.ts": 3715,
   "packages/server/src/uplink-control-client.test.ts": 3380,
@@ -54,7 +54,7 @@
   "packages/store/src/projects.test.ts": 1766,
   "packages/store/src/schema.ts": 2243,
   "packages/store/src/store.test.ts": 2666,
-  "packages/store/src/store.ts": 10077,
+  "packages/store/src/store.ts": 10039,
   "scripts/ci-workflow.test.ts": 6066,
   "scripts/probes/project-egress/host-smoke.ts": 1523,
   "scripts/release-workflow.test.ts": 1842

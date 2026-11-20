@@ -601,4 +601,21 @@ migrations['0228_administrator_provider_accounts'] = {
   },
 };
 
-migrations['0229_brokered_tool_approvals'] = brokeredToolApprovalMigration;
+migrations['0229_session_coordination_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table session_coordination_requests (
+      source_session_id text not null references sessions(session_id) on delete cascade,
+      request_id text not null,
+      fingerprint text not null,
+      target_session_id text not null,
+      phase text not null default 'reserved' check (phase in ('reserved','created','linked','delivered')),
+      result jsonb,
+      primary key (source_session_id, request_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_coordination_requests`.execute(db);
+  },
+};
+
+migrations['0230_brokered_tool_approvals'] = brokeredToolApprovalMigration;

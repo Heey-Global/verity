@@ -62,6 +62,9 @@ describe('answerAppHelp', () => {
 
   it.each([
     ['How do I connect Doppler?', 'doppler'],
+    ['Find an existing session and link it to hand over a task', 'session-coordination'],
+    ['Start Control session and link session', 'session-coordination'],
+    ['Session suchen und Session verknüpfen', 'session-coordination'],
     ['Where are my secrets stored, and what if I lose the master password?', 'secrets-storage'],
     ['How can I share the web app the agent started?', 'preview-and-sharing'],
     ['Can agents read my Gmail?', 'google'],
