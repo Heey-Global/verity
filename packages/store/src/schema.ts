@@ -1,4 +1,5 @@
 import type { PeopleDatabase } from './schema-people.js';
+import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
 import type { SandboxDatabase } from './schema-sandbox.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
@@ -27,14 +28,12 @@ export interface WikiOccasionsTable {
   closed_at: Date | null;
 }
 
-/** The quiet session a project's Wiki is maintained in, and its last run. */
 export interface WikiMaintenanceTable {
   project_id: string;
   session_id: string | null;
   last_run_at: Date | null;
 }
 
-/** An automatic Sandbox repair still owed to a project after a failed recreate. */
 export interface SandboxRepairIntentsTable {
   project_id: string;
   version: number;
@@ -1794,7 +1793,7 @@ interface VulnerabilityFixesTable {
   failed: Generated<boolean>;
 }
 
-export interface Database extends PeopleDatabase, SandboxDatabase {
+export interface Database extends PeopleDatabase, SandboxDatabase, SessionCoordinationDatabase {
   project_inquiry_grants: ProjectInquiryGrantsTable;
   project_inquiry_sessions: ProjectInquirySessionsTable;
   project_inquiries: ProjectInquiriesTable;

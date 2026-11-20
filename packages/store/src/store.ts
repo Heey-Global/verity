@@ -10,6 +10,7 @@ import {
   idChunks,
 } from './message-projection.js';
 export { waitForMessageProjectionWork, waitForPendingMessageProjections };
+import { SessionCoordinationStore } from './session-coordination.js';
 import { ProjectInquiryStore } from './project-inquiries.js';
 import { SandboxUpdateStateStore } from './sandbox-update-state.js';
 import { SandboxRepairIntentStore } from './sandbox-repair-intents.js';
@@ -1598,6 +1599,7 @@ export class EventStore implements EventSink {
     this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
     this.projectInquiries = new ProjectInquiryStore(db);
+    this.sessionCoordination = new SessionCoordinationStore(db);
     this.wikiOccasions = new WikiOccasionStore(db);
     this.wikiMaintenance = new WikiMaintenanceStore(db);
     this.sandboxUpdateState = new SandboxUpdateStateStore(db);
@@ -1618,6 +1620,7 @@ export class EventStore implements EventSink {
   readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
   readonly projectInquiries: ProjectInquiryStore;
+  readonly sessionCoordination: SessionCoordinationStore;
   /** What a project's Wiki may need to reflect, until a maintenance run read it. */
   readonly wikiOccasions: WikiOccasionStore;
   readonly wikiMaintenance: WikiMaintenanceStore;
@@ -3222,10 +3225,7 @@ export class EventStore implements EventSink {
     return result.numUpdatedRows > 0n;
   }
 
-  /**
-   * Mark or unmark a session as an operator favorite. Returns `false` if the
-   * session id is unknown, like {@link renameSession}.
-   */
+  /** Mark a session as a favorite; returns false when the session is unknown. */
   async setSessionFavorite(sessionId: string, favorite: boolean): Promise<boolean> {
     const result = await this.db
       .updateTable('sessions')
