@@ -18,7 +18,7 @@ const protectedBuildReason = z.enum([
 /** Fixed host step that refused packet authority for a new build attempt. Only
  * this class name crosses to the Server and UI; the message stays in the host
  * journal under the correlation id. */
-export const protectedBuildAuthorityStep = z.enum([
+const protectedBuildAuthorityStep = z.enum([
   // Root-owned inspection record for the anchor namespace could not be written.
   'inspection_record',
   // Docker or the bridge device no longer matches the anchor that was created.
