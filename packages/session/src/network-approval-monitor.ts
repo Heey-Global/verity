@@ -3,7 +3,7 @@ import type { EventBus } from './bus.js';
 
 type ApprovalStatus = { id: string; target: string; status: string };
 
-export function startNetworkApprovalMonitor(
+function startNetworkApprovalMonitor(
   store: EventStore,
   projectId: string | null | undefined,
   notify: (text: string) => Promise<boolean>,
