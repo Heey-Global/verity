@@ -1,7 +1,7 @@
 import { verifyServerImage } from './server-image-verify.js';
 import { lstat, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { ServerUpdateController } from '../server.js';
+import type { ServerUpdateController } from '../server-update-routes.js';
 import {
   updaterUpdateChannel,
   UpdaterRequestError,

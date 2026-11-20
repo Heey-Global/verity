@@ -68,8 +68,10 @@ export async function enterDemoMode(): Promise<void> {
   }
 }
 
-export async function exitDemoMode(): Promise<void> {
-  await restoreUnprotectedAuthToken(getSavedVerityBaseUrl());
+export async function exitDemoMode(
+  restoreUrl: string | null = getSavedVerityBaseUrl(),
+): Promise<void> {
+  await restoreUnprotectedAuthToken(restoreUrl);
   await AsyncStorage.removeItem(STORAGE_KEY);
   resetDemoData();
   resetVeritySettingsStore();

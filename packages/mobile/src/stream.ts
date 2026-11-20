@@ -165,23 +165,29 @@ export class SessionStream {
     throughSeq = this.newestSeq,
     requests?: readonly PendingPermissionRequest[],
   ): void {
-    const pending = this.reducer.pendingPermission;
-    if (pending !== undefined && !toolUseIds.includes(pending.toolUseId)) {
+    const before = this.reducer.pendingPermissionIds;
+    const live = new Set(toolUseIds);
+    const retire = before.filter((id) => {
+      if (live.has(id)) return false;
       const permissionFrame = this.eventFrames.findLast(
-        (frame) => frame.event.t === 'permission' && frame.event.id === pending.toolUseId,
+        (frame) => frame.event.t === 'permission' && frame.event.id === id,
       );
-      // An older HTTP snapshot cannot retire a newer streamed or restored card.
-      const restored = this.restoredPermissions.get(pending.toolUseId);
-      if ((permissionFrame?.seq ?? restored?.throughSeq ?? 0) > throughSeq) return;
-      this.resolvedPermissions.add(pending.toolUseId);
-    }
+      const restored = this.restoredPermissions.get(id);
+      const observedSeq = permissionFrame?.seq ?? restored?.throughSeq;
+      return observedSeq !== undefined && observedSeq <= throughSeq;
+    });
+    for (const id of retire) this.resolvedPermissions.add(id);
     for (const [id, restored] of this.restoredPermissions) {
-      if (!toolUseIds.includes(id) && restored.throughSeq <= throughSeq) {
+      if (!live.has(id) && restored.throughSeq <= throughSeq) {
         this.restoredPermissions.delete(id);
         this.resolvedPermissions.add(id);
       }
     }
-    this.reducer.reconcilePendingPermissions(toolUseIds);
+    this.reducer.reconcilePendingPermissions(
+      toolUseIds.filter((id) => !this.resolvedPermissions.has(id)),
+      retire,
+      throughSeq,
+    );
     for (const request of requests ?? []) {
       if (
         !toolUseIds.includes(request.toolUseId) ||
@@ -209,13 +215,12 @@ export class SessionStream {
       });
     }
     this.restorePendingPermissions();
-    if (pending?.toolUseId !== this.reducer.pendingPermission?.toolUseId && this.caughtUp) {
-      this.opts.onUpdate?.(this.reducer.state);
-    }
+    const after = this.reducer.pendingPermissionIds;
+    const changed = after.length !== before.length || after.some((id, i) => id !== before[i]);
+    if (changed && this.caughtUp) this.opts.onUpdate?.(this.reducer.state);
   }
 
   private restorePendingPermissions(): void {
-    if (this.reducer.pendingPermission !== undefined) return;
     for (const [id, restored] of this.restoredPermissions) {
       if (this.resolvedPermissions.has(id)) continue;
       // A snapshot cannot replace a newer prompt or resurrect a tool completed since
@@ -233,7 +238,6 @@ export class SessionStream {
       )
         continue;
       this.reducer.restorePendingPermission(restored.permission);
-      return;
     }
   }
 

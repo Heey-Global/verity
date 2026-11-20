@@ -17,9 +17,9 @@ describe('modelDisplayName', () => {
     expect(modelDisplayName('claude-opus-4-8')).toBe('Claude Opus 4.8');
     expect(modelDisplayName('claude-sonnet-5')).toBe('Claude Sonnet 5');
     // A shipped CLAUDE_MODELS id whose version carries a minor part. Losing the
-    // fusion renders it "Claude Fable 5 1" in every model surface — a label that
+    // fusion renders it "Claude Fable 5 2" in every model surface — a label that
     // still looks deliberate, so nothing but this line would report it.
-    expect(modelDisplayName('claude-fable-5-1')).toBe('Claude Fable 5.1');
+    expect(modelDisplayName('claude-fable-5-2')).toBe('Claude Fable 5.2');
   });
 
   it('displays the current Haiku model version', () => {

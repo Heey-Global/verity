@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ProtectedBuildFailure } from './project-egress-build-error.js';
+import { ProtectedBuildFailure, ProtectedBuildStageError } from './project-egress-build-error.js';
 import {
   protectedBuildRequest,
   type ProtectedBuildRequest,
@@ -9,6 +9,21 @@ import type {
   ProtectedBuildAnchor,
   ProtectedBuildNetworks,
 } from './project-egress-build-network.js';
+
+/** Revocation failure must not prevent terminating an already owned workload.
+ * Run in order and preserve every failure; callers still require independent
+ * termination proof before releasing admission or removing resources. */
+export async function containProtectedBuildSteps(...steps: (() => Promise<void>)[]): Promise<void> {
+  const errors: unknown[] = [];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, 'Protected build containment steps failed');
+}
 
 export interface ProtectedBuildLaunch {
   unit: string;
@@ -180,8 +195,11 @@ export function createProtectedBuildRuntime(io: ProtectedBuildRuntimeIO): Protec
         return;
       }
       if (!sameRequest(saved.request, request)) throw new Error('Changed protected build runtime');
-      await io.authority.deny(saved.anchor);
-      await io.stop(protectedBuildLaunch(request, saved.anchor).unit);
+      const launch = protectedBuildLaunch(request, saved.anchor);
+      await containProtectedBuildSteps(
+        () => io.authority.deny(saved.anchor),
+        () => io.stop(launch.unit),
+      );
     },
     async ended(request) {
       const saved = await io.load(request);
@@ -191,21 +209,36 @@ export function createProtectedBuildRuntime(io: ProtectedBuildRuntimeIO): Protec
       return io.ended(protectedBuildLaunch(request, saved.anchor).unit);
     },
     async remove(request) {
-      const partial = await io.load(request);
+      // Each step is idempotent and retried as a whole; the stage only names
+      // where a retry stopped, for correlation in the host journal.
+      const stage = async <T>(name: string, step: () => Promise<T>): Promise<T> => {
+        try {
+          return await step();
+        } catch (cause) {
+          throw new ProtectedBuildStageError(name, { cause });
+        }
+      };
+      const partial = await stage('state.load', () => io.load(request));
       if (!partial) {
-        if (!io.endedPartial || !io.removePartial || !(await io.endedPartial(request)))
+        if (
+          !io.endedPartial ||
+          !io.removePartial ||
+          !(await stage('partial.ended', () => io.endedPartial!(request)))
+        )
           throw new Error('Protected build partial termination is unconfirmed');
-        await io.removePartial(request);
+        await stage('partial.remove', () => io.removePartial!(request));
         return;
       }
-      const saved = await state(request);
+      const saved = await stage('state.verify', () => state(request));
       const launch = protectedBuildLaunch(request, saved.anchor);
-      await io.authority.deny(saved.anchor);
-      if (!(await io.ended(launch.unit)))
+      await stage('authority.deny', () => io.authority.deny(saved.anchor));
+      if (!(await stage('unit.ended', () => io.ended(launch.unit))))
         throw new Error('Protected build termination is unconfirmed');
-      await io.authority.release(saved.anchor);
-      await io.networks.remove(saved.anchor, () => io.ended(launch.unit));
-      await io.cleanup(request, launch);
+      await stage('authority.release', () => io.authority.release(saved.anchor));
+      await stage('network.remove', () =>
+        io.networks.remove(saved.anchor, () => io.ended(launch.unit)),
+      );
+      await stage('files.cleanup', () => io.cleanup(request, launch));
     },
   };
 }

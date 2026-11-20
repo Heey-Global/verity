@@ -138,6 +138,16 @@ describe('SessionReducer', () => {
     expect(r.messages[1]).not.toHaveProperty('peer');
   });
 
+  // In a session several people write in, the app names each message's sender
+  // from the prompt's durable initiator.
+  it('carries the sender of a prompt onto the user-text message', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'prompt', text: 'hi', initiatedBy: { userId: 'lena' } });
+    expect(r.messages[0]).toMatchObject({ initiatedBy: { userId: 'lena' } });
+    r.apply(2, { t: 'prompt', text: 'automation' });
+    expect(r.messages[1]).not.toHaveProperty('initiatedBy');
+  });
+
   it('carries image attachments from a prompt event onto the user-text message', () => {
     const r = new SessionReducer();
     const attachments = [{ kind: 'image' as const, mediaType: 'image/png' as const, data: 'aGk=' }];
@@ -982,6 +992,9 @@ describe('SessionReducer — live per-tool permission (#149)', () => {
       input: {},
       riskClass: 'ask',
     });
+    // The oldest prompt leads; the second shows once the first is answered.
+    r.resolvePermission('tu_acp');
+    expect(r.pendingPermission?.toolUseId).toBe('tu_old');
     expect(r.pendingPermission).not.toHaveProperty('grantChannel');
   });
 
@@ -1076,26 +1089,6 @@ describe('SessionReducer — live per-tool permission (#149)', () => {
     });
     r.apply(2, { t: 'prompt', text: 'do something else' });
     expect(r.pendingPermission).toBeUndefined();
-  });
-
-  it('replaces the prompt when a second permission arrives (latest wins)', () => {
-    const r = new SessionReducer();
-    r.apply(1, {
-      t: 'permission',
-      id: 'tu_1',
-      tool: 'Bash',
-      input: { command: 'ls' },
-      riskClass: 'ask',
-    });
-    r.apply(2, {
-      t: 'permission',
-      id: 'tu_2',
-      tool: 'Write',
-      input: { file_path: '/z' },
-      riskClass: 'ask',
-    });
-    expect(r.pendingPermission?.toolUseId).toBe('tu_2');
-    expect(r.pendingPermission?.tool).toBe('Write');
   });
 });
 

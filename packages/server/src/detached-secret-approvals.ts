@@ -1,3 +1,7 @@
+import type { FastifyInstance } from 'fastify';
+import type { ServerDeps } from './server-deps.js';
+import { registerSecretApprovalRoutes } from './secret-approval-routes.js';
+import { legacyAdministratorId } from './view-state-routes.js';
 import type { Conductor } from '@verity/session';
 import type { EventStore } from '@verity/store';
 
@@ -31,6 +35,8 @@ export function configureDetachedSecretApprovals(input: {
       parseBrokeredDopplerBinding(record.authorizationSnapshot),
     ),
   });
+  const actorFor = (actorId: string) =>
+    input.localActor && actorId === '__local__' ? legacyAdministratorId : actorId;
   conductor.configureDetachedPermissions({
     markScopedSaved: async (sessionId, id) => {
       await approvals.markScopedSaved(id, sessionId);
@@ -45,12 +51,15 @@ export function configureDetachedSecretApprovals(input: {
     },
     resumeApproved: async (sessionId) => {
       for (const record of await approvals.listApproved(sessionId)) {
-        if (!record.decidedBy || !(await input.canExecute(record.decidedBy, record.projectId)))
+        if (
+          !record.decidedBy ||
+          !(await input.canExecute(actorFor(record.decidedBy), record.projectId))
+        )
           continue;
         await conductor.resumeDetachedPermission(
           sessionId,
           requestFor(record),
-          input.localActor && record.decidedBy === '__local__' ? undefined : record.decidedBy,
+          actorFor(record.decidedBy),
           async () => {
             const active = (await approvals.listApproved(sessionId)).some(
               (entry) => entry.id === record.id,
@@ -60,7 +69,7 @@ export function configureDetachedSecretApprovals(input: {
               !active ||
               !session ||
               (session.projectId !== null && session.projectId !== record.projectId) ||
-              !(await input.canExecute(record.decidedBy!, record.projectId))
+              !(await input.canExecute(actorFor(record.decidedBy!), record.projectId))
             )
               return false;
             const snapshot = await gateway.authorizationSnapshot?.({
@@ -105,4 +114,54 @@ export function configureDetachedSecretApprovals(input: {
       );
     },
   });
+}
+
+/** Install consent recovery and its history before admitting gateway calls. */
+export function installDetachedSecretApprovals(
+  app: FastifyInstance,
+  deps: Pick<ServerDeps, 'eventStore' | 'mcpGateway' | 'authRegistry'>,
+  conductor: Conductor,
+  canExecuteAs: (userId: string | null | undefined, projectId: string | null) => Promise<boolean>,
+) {
+  const gateway = deps.mcpGateway;
+  if (!gateway) throw new Error('Secret approval wiring requires an MCP gateway.');
+  if (gateway.detachedApprovals) {
+    configureDetachedSecretApprovals({
+      conductor,
+      store: deps.eventStore,
+      approvals: gateway.detachedApprovals,
+      gateway,
+      canExecute: (userId, projectId) =>
+        canExecuteAs(
+          userId === '__local__' && deps.authRegistry?.isEnabled() !== true ? undefined : userId,
+          projectId,
+        ),
+      localActor: deps.authRegistry?.isEnabled() !== true,
+    });
+    registerSecretApprovalRoutes(app, {
+      approvals: gateway.detachedApprovals,
+      store: deps.eventStore,
+      permitted: canExecuteAs,
+      refresh: (id) => conductor.refreshDetachedPermissions(id),
+    });
+  }
+  return {
+    ...gateway,
+    authorizeDetachedApproval: async (input: {
+      projectId: string;
+      sessionId: string;
+      turnId: string;
+      decidedBy: string | null;
+    }) => {
+      const initiator = await deps.eventStore.runningTurnInitiator(input.sessionId, input.turnId);
+      const local = deps.authRegistry?.isEnabled() !== true;
+      const callerId = initiator?.userId ?? (local ? legacyAdministratorId : undefined);
+      const approverId =
+        local && input.decidedBy === '__local__' ? legacyAdministratorId : input.decidedBy;
+      if (!callerId || callerId !== approverId)
+        throw new Error('The secret approval belongs to a different user. Nothing ran.');
+      await gateway.authorizeDetachedApproval?.(input);
+    },
+    surfaceDetachedApproval: (sessionId: string) => conductor.refreshDetachedPermissions(sessionId),
+  };
 }

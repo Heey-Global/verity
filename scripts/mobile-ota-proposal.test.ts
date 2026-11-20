@@ -10,6 +10,7 @@ import type { PullRequest } from 'release-please/build/src/pull-request.js';
 import type { Update } from 'release-please/build/src/update.js';
 import {
   createOtaManifest,
+  hasOtaProductionProposal,
   otaConfigPath,
   otaManifestPath,
   otaReleasePlan,
@@ -211,6 +212,7 @@ if (args.includes('Accept: application/vnd.github.diff')) { process.stdout.write
 if (args[0] === 'label' || args[0] === 'pr') response={};
 else if (endpoint.includes('/releases?')) response=[[${options.released ? JSON.stringify({ tag_name: 'mobile-v1.52.4', draft: false, prerelease: !options.production }) : ''}]];
 else if (endpoint.endsWith('/pulls')) response=${options.missingAssociation ? '[]' : JSON.stringify([pr])};
+else if (endpoint.includes('/pulls?') && endpoint.includes('automation')) response=[[]];
 else if (endpoint.includes('/pulls?')) response=[[${JSON.stringify(pr)}]];
 else if (endpoint.includes('/contents/')) response={content: ${JSON.stringify(Buffer.from(options.reviewedVersion ?? '1.52.4').toString('base64'))}};
 else throw new Error('Unexpected gh invocation: '+args.join(' '));
@@ -472,4 +474,43 @@ it('compares real Git patch identities across changed commit metadata and reject
   expect(releasePatchId(spaced)).not.toBe(
     releasePatchId(spaced.replace('+hello world', '+helloworld')),
   );
+});
+
+it('repairs a missing Production proposal on dispatch despite completed Staging labels', () => {
+  const result = detectFixture({ released: true, complete: true, event: 'workflow_dispatch' });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.output).toContain(`mode=stage\nversion=1.52.4\ncommit=${result.commit}`);
+});
+
+it('checks exact Production proposal ownership and candidate at its immutable head', () => {
+  vi.stubEnv('GITHUB_REPOSITORY', 'example/verity');
+  const runtime = '1.52.0';
+  const source = 'c'.repeat(40);
+  const candidate = {
+    schema: 1,
+    runtime,
+    version: '1.52.4',
+    tag: 'mobile-v1.52.4',
+    commit: source,
+    group: 'a'.repeat(36),
+  };
+  const pull = {
+    user: { login: 'github-actions[bot]' },
+    base: { ref: 'main' },
+    head: { ref: `automation/promote-mobile-ota-${runtime}`, sha: 'd'.repeat(40) },
+  };
+  const check = (pulls: unknown[], artifact = candidate) =>
+    hasOtaProductionProposal(runtime, candidate.tag, source, (command, args) => {
+      if (command === 'git') return args[0] === 'for-each-ref' ? JSON.stringify(candidate) : source;
+      if (args.some((arg) => arg.includes('/pulls?'))) return JSON.stringify([pulls]);
+      expect(args.at(-1)).toContain(`?ref=${pull.head.sha}`);
+      return JSON.stringify({ content: Buffer.from(JSON.stringify(artifact)).toString('base64') });
+    });
+  expect(check([])).toBe(false);
+  expect(check([pull])).toBe(true);
+  expect(check([pull], { ...candidate, commit: 'e'.repeat(40) })).toBe(false);
+  expect(check([pull], { ...candidate, group: 'b'.repeat(36) })).toBe(false);
+  expect(() => check([pull, pull])).toThrow('Ambiguous');
+  expect(() => check([{ ...pull, user: { login: 'unknown[bot]' } }])).toThrow('workflow-owned');
+  vi.unstubAllEnvs();
 });

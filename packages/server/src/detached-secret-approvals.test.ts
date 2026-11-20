@@ -85,3 +85,53 @@ it.each(['provider', 'rights', 'project'] as const)(
     expect(decide).not.toHaveBeenCalled();
   },
 );
+
+it.each([
+  { auth: true, caller: 'alice', approver: 'alice', allowed: true },
+  { auth: true, caller: 'bob', approver: 'alice', allowed: false },
+  { auth: true, caller: undefined, approver: 'alice', allowed: false },
+  { auth: true, caller: 'alice', approver: null, allowed: false },
+  { auth: false, caller: undefined, approver: '__local__', allowed: true },
+  { auth: true, caller: 'alice', approver: '__local__', allowed: false },
+])(
+  'redeems consent only for its answering actor ($caller / $approver / auth=$auth)',
+  async ({ auth, caller, approver, allowed }) => {
+    const { installDetachedSecretApprovals } = await import('./detached-secret-approvals.js');
+    const { legacyAdministratorId } = await import('./view-state-routes.js');
+    const upstream = vi.fn(async () => {});
+    const deps = {
+      eventStore: { runningTurnInitiator: async () => (caller ? { userId: caller } : undefined) },
+      mcpGateway: { authorizeDetachedApproval: upstream },
+      authRegistry: { isEnabled: () => auth },
+    } as unknown as Parameters<typeof installDetachedSecretApprovals>[1];
+    const gateway = installDetachedSecretApprovals(
+      {} as Parameters<typeof installDetachedSecretApprovals>[0],
+      deps,
+      {} as Conductor,
+      async () => true,
+    );
+    const check = gateway.authorizeDetachedApproval({
+      projectId: 'p',
+      sessionId: 's',
+      turnId: 't',
+      decidedBy: approver,
+    });
+    if (allowed) {
+      await expect(check).resolves.toBeUndefined();
+      expect(upstream).toHaveBeenCalledOnce();
+      if (!auth) {
+        await expect(
+          gateway.authorizeDetachedApproval({
+            projectId: 'p',
+            sessionId: 's',
+            turnId: 't',
+            decidedBy: legacyAdministratorId,
+          }),
+        ).resolves.toBeUndefined();
+      }
+    } else {
+      await expect(check).rejects.toThrow('different user');
+      expect(upstream).not.toHaveBeenCalled();
+    }
+  },
+);

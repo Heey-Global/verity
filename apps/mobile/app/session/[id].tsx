@@ -1,4 +1,6 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { TranscriptPositionCover } from '../../components/TranscriptPositionCover';
+import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
 import { SessionRepositories } from '../../components/project/SessionRepositories';
 import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { NetworkApprovalPrompt } from '../../components/NetworkApprovalPrompt';
@@ -6,7 +8,7 @@ import { SecretApprovalHistory } from '../../components/SecretApprovalHistory';
 import { SecretApprovalWaitNote } from '../../components/SecretApprovalWaitNote';
 import { WikiDetails } from '../../components/WikiDetails';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
-import { projectTitle } from '@verity/mobile';
+import { connectionFailureKind, projectTitle } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
 import { StatusTag } from '../../components/ui/Status';
 import { McpAppCard } from '../../components/McpAppCard';
@@ -20,6 +22,7 @@ import {
 } from '../../components/project/managedServerApproval';
 import { useGoogleAccountAvailability } from '../../hooks/useGoogleAccountAvailability';
 import { useFocusedSessionRead } from '../../hooks/useFocusedSessionRead';
+import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/useServerConnection';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
@@ -248,6 +251,9 @@ import { SystemNotice, SystemNoticeIndicator, useConfirm } from '../../component
 import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
 import { FileRowActions } from '../../components/files/FileRowActions';
 import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
+import { useCodeWorkspaceAvailability } from '../../components/files/useCodeWorkspaceAvailability';
+import { FileRootTabs } from '../../components/files/FileRootTabs';
+import { CodeWorkspaceNotice } from '../../components/files/CodeWorkspaceNotice';
 import { FileNameDialog } from '../../components/files/FileNameDialog';
 import {
   FileSheetHeader,
@@ -269,6 +275,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
+import { LinkedSessionChips } from '../../components/LinkedSessionChips';
 import {
   AutomationBar,
   AutomationProposalCard,
@@ -748,6 +755,8 @@ export const SessionChat = memo(function SessionChat({
     model: currentModel,
     projectId,
     googleStatus,
+    people,
+    viewerUserId,
     detailLoaded,
     switchingModel,
     modelSwitchPending,
@@ -788,6 +797,14 @@ export const SessionChat = memo(function SessionChat({
     loadOlder,
     loadOlderUntil,
   } = useSession(client, sessionId, baseUrl);
+  // A server update or outage is the header's connection bar's to show; the
+  // stream reconnects by itself, history and metadata reload once it is back.
+  const hidesHistoryError = useHidesConnectionError(historyError);
+  const hidesStreamError = useHidesConnectionError(streamError);
+  useConnectionRecovered(() => {
+    refreshMetadata();
+    if (connectionFailureKind(historyError) !== undefined) (loaded ? loadOlder : retryHistory)();
+  });
   const optionalWorkReady = useDeferredSessionWork(
     sessionId,
     initialListLoaded || (loaded && session.messages.length === 0) || locallyCreated,
@@ -844,6 +861,18 @@ export const SessionChat = memo(function SessionChat({
       })
       .finally(() => setDecidingLinkedMessage(null));
   };
+  // Beside Home the linked session replaces this one in the right pane; on its
+  // own screen it opens on top, so back returns here.
+  const openLinkedSession = (link: { sessionId: string }) =>
+    embedded
+      ? router.setParams({
+          selected: link.sessionId,
+          targetMessageId: undefined,
+          targetSearchQuery: undefined,
+          retrySecret: undefined,
+          mockups: undefined,
+        })
+      : router.push({ pathname: '/session/[id]', params: { id: link.sessionId } });
   const disconnectLinkedSession = (link: (typeof linkedSessions)[number]) => {
     Alert.alert(
       'Disconnect sessions?',
@@ -4008,31 +4037,11 @@ export const SessionChat = memo(function SessionChat({
           ) : null}
         </View>
       </View>
-      {linkedSessions.length > 0 ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.headerLinks}
-          accessibilityLabel="Linked sessions"
-        >
-          {linkedSessions.map((link) => (
-            <View key={link.sessionId} style={styles.headerLinkChip}>
-              <Icon name="link" size={13} color={theme.colors.action} />
-              <Text style={styles.headerLinkText} numberOfLines={1}>
-                {link.projectName} · {link.name ?? link.sessionId}
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Disconnect ${link.name ?? link.sessionId}`}
-                hitSlop={8}
-                onPress={() => disconnectLinkedSession(link)}
-              >
-                <Icon name="x" size={15} color={theme.colors.textMuted} />
-              </Pressable>
-            </View>
-          ))}
-        </ScrollView>
-      ) : null}
+      <LinkedSessionChips
+        links={linkedSessions}
+        onOpen={openLinkedSession}
+        onDisconnect={disconnectLinkedSession}
+      />
     </View>
   );
 
@@ -4550,7 +4559,7 @@ export const SessionChat = memo(function SessionChat({
           )}
         />
       ) : null}
-      {historyError ? (
+      {historyError && !hidesHistoryError ? (
         <>
           <Banner tone="attention" text={historyError} />
           <Button
@@ -4562,7 +4571,9 @@ export const SessionChat = memo(function SessionChat({
           />
         </>
       ) : null}
-      {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
+      {streamError && !hidesStreamError ? (
+        <Banner tone="attention" text={`Stream: ${streamError}`} />
+      ) : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
         <Banner tone="danger" text={`Model switch failed: ${switchModelError}`} />
@@ -4652,42 +4663,29 @@ export const SessionChat = memo(function SessionChat({
         // Rows stay chronological so FlashList's native chat anchoring can preserve the
         // viewport while older history is prepended and new text grows below it.
         <SessionActionsContext.Provider value={actions}>
-          <SessionFileOpenContext.Provider value={openSessionFile}>
-            <AppLinkOpenContext.Provider value={openAppLink}>
-              <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
-                <BookmarksContext.Provider value={bookmarks}>
-                  <KnowledgeSaveProvider
-                    client={client}
-                    sessionId={sessionId}
-                    projectId={projectId}
-                  >
-                    {transcriptList}
-                    {/* Keep intermediate history pages hidden while resolving a jump, and
-                cover measurement correction while restoring a saved position. */}
-                    {restoring || pendingUserJump !== null || jumpTarget !== null ? (
-                      <View style={styles.restoreCover}>
-                        <ActivityIndicator
-                          color={theme.colors.textMuted}
-                          accessibilityLabel={
-                            pendingUserJump !== null || jumpTarget !== null
-                              ? 'Jumping to message or bookmark'
-                              : 'Restoring chat position'
-                          }
-                        />
-                        {pendingUserJump !== null || jumpTarget !== null ? (
-                          <Text style={styles.emptySubtitle}>
-                            {pendingUserJump !== null
-                              ? 'Finding previous message or bookmark…'
-                              : 'Jumping to message or bookmark…'}
-                          </Text>
-                        ) : null}
-                      </View>
-                    ) : null}
-                  </KnowledgeSaveProvider>
-                </BookmarksContext.Provider>
-              </SessionFileImageSourceContext.Provider>
-            </AppLinkOpenContext.Provider>
-          </SessionFileOpenContext.Provider>
+          <SessionPeopleProvider people={people} viewerUserId={viewerUserId}>
+            <SessionFileOpenContext.Provider value={openSessionFile}>
+              <AppLinkOpenContext.Provider value={openAppLink}>
+                <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
+                  <BookmarksContext.Provider value={bookmarks}>
+                    <KnowledgeSaveProvider
+                      client={client}
+                      sessionId={sessionId}
+                      projectId={projectId}
+                    >
+                      {transcriptList}
+                      <TranscriptPositionCover
+                        restoring={restoring}
+                        finding={pendingUserJump !== null}
+                        jumping={jumpTarget !== null}
+                        styles={styles}
+                      />
+                    </KnowledgeSaveProvider>
+                  </BookmarksContext.Provider>
+                </SessionFileImageSourceContext.Provider>
+              </AppLinkOpenContext.Provider>
+            </SessionFileOpenContext.Provider>
+          </SessionPeopleProvider>
         </SessionActionsContext.Provider>
       )}
       {messages.length > 0 ? (
@@ -5236,6 +5234,12 @@ function SessionFilesSheet({
   const [confirm, confirmSheet] = useConfirm();
   const [documentSession, setDocumentSession] = useState(false);
   const [codeAvailable, setCodeAvailable] = useState(true);
+  // The server reports a missing checkout instead of handing out Documents in its place.
+  const [codeMissing, setCodeMissing] = useState(false);
+  const [restore, setRestore] = useState<{ running: boolean; failure: string | null }>({
+    running: false,
+    failure: null,
+  });
   const [documentStatus, setDocumentStatus] = useState<{
     pending: boolean;
     running: boolean;
@@ -5298,29 +5302,20 @@ function SessionFilesSheet({
       ? getServerProfile()?.endpoints.find(({ url }) => url === baseUrl)?.tlsPin
       : undefined;
 
-  // Read by the deep-link effect below, which runs before `openWith` is declared
-  // and must not refetch whenever its identity changes.
+  // The earlier deep-link effect reads `openWith` without depending on its identity.
   const openWithRef = useRef<((filePath: string) => void) | null>(null);
 
-  useEffect(() => {
-    if (codeAvailable) return;
-    let active = true;
-    const timer = setInterval(() => {
-      void client
-        .listSessionFiles(sessionId, '', 'worktree')
-        .then((dir) => {
-          if (active && dir.codeAvailable) {
-            setCodeAvailable(true);
-            if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
-          }
-        })
-        .catch(() => undefined);
-    }, 5000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [client, sessionId, codeAvailable, documentSession]);
+  useCodeWorkspaceAvailability({
+    client,
+    sessionId,
+    codeAvailable,
+    onAvailable: (dir) => {
+      setCodeAvailable(true);
+      setCodeMissing(false);
+      if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
+    },
+    onReload: () => setReloadKey((value) => value + 1),
+  });
 
   useEffect(() => {
     if (!initialFilePath) return;
@@ -5365,10 +5360,12 @@ function SessionFilesSheet({
         if (!active) return;
         setDocumentStatus(dir.documentStatus);
         setCodeAvailable(dir.codeAvailable ?? true);
+        setCodeMissing(dir.codeWorkspaceUnavailable === true);
         if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
         if (
           !initialFilePath &&
           root === 'worktree' &&
+          dir.codeWorkspaceUnavailable !== true &&
           (dir.codeAvailable === false || dir.workspaceKind === 'documents') &&
           projectId
         )
@@ -6210,6 +6207,19 @@ function SessionFilesSheet({
           },
         ];
 
+  const restoreCodeWorkspace = (): void => {
+    setRestore({ running: true, failure: null });
+    void client.restoreSessionCodeWorkspace(sessionId).then(
+      () => {
+        setRestore({ running: false, failure: null });
+        setCodeMissing(false);
+        setCodeAvailable(true);
+        setReloadKey((key) => key + 1);
+      },
+      (err: unknown) =>
+        setRestore({ running: false, failure: err instanceof Error ? err.message : String(err) }),
+    );
+  };
   const navigateRoot = (candidate: typeof root): void => {
     if (mutating || (!driveActive && candidate === root && path === '')) return;
     previewRequest.current += 1;
@@ -6293,63 +6303,23 @@ function SessionFilesSheet({
             )
           ) : null}
           {!preview ? (
-            <View style={styles.filesRootBar}>
-              <Pressable
-                disabled={mutating || documentSession || !codeAvailable}
-                onPress={() => navigateRoot('worktree')}
-                accessibilityRole="tab"
-                accessibilityState={{
-                  selected: !driveActive && root === 'worktree',
-                  disabled: documentSession || !codeAvailable,
-                }}
-                accessibilityLabel="Code"
-                style={[
-                  styles.filesRootButton,
-                  !driveActive && root === 'worktree' ? styles.filesRootButtonActive : null,
-                ]}
-              >
-                <Icon name={FILE_ROOT_ICON.worktree} size={14} color={theme.colors.textMuted} />
-                <Text
-                  style={
-                    !driveActive && root === 'worktree'
-                      ? styles.filesRootLabelActive
-                      : styles.filesRootLabel
-                  }
-                >
-                  Code
-                </Text>
-              </Pressable>
-              {projectId ? (
-                <Pressable
-                  disabled={mutating}
-                  onPress={() => {
-                    if (driveActive) return;
-                    previewRequest.current += 1;
-                    endSelection();
-                    setDriveActive(true);
-                    setLoading(true);
-                    setPreview(null);
-                    setError(null);
-                  }}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: driveActive }}
-                  accessibilityLabel="Google Drive"
-                  style={[
-                    styles.filesRootButton,
-                    driveActive ? styles.filesRootButtonActive : null,
-                  ]}
-                >
-                  <Icon
-                    name="hard-drive"
-                    size={14}
-                    color={driveActive ? theme.colors.text : theme.colors.textMuted}
-                  />
-                  <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
-                    Google Drive
-                  </Text>
-                </Pressable>
-              ) : null}
-            </View>
+            <FileRootTabs
+              codeIcon={FILE_ROOT_ICON.worktree}
+              codeActive={!driveActive && root === 'worktree'}
+              codeDisabled={documentSession || (!codeAvailable && !codeMissing)}
+              driveActive={driveActive}
+              drive={Boolean(projectId)}
+              disabled={mutating}
+              onCode={() => navigateRoot('worktree')}
+              onDrive={() => {
+                previewRequest.current += 1;
+                endSelection();
+                setDriveActive(true);
+                setLoading(true);
+                setPreview(null);
+                setError(null);
+              }}
+            />
           ) : null}
           {preview ? null : driveActive ? (
             (driveLinks.length > 1 ? drivePath.length > 0 : drivePath.length > 1) ? (
@@ -6580,6 +6550,13 @@ function SessionFilesSheet({
                 <View style={styles.sheetLoading}>
                   <ActivityIndicator color={theme.colors.textMuted} />
                 </View>
+              ) : codeMissing && root === 'worktree' ? (
+                <CodeWorkspaceNotice
+                  restoring={restore.running}
+                  failure={restore.failure}
+                  onRestore={restoreCodeWorkspace}
+                  onOpenDocuments={projectId ? () => navigateRoot('documents') : undefined}
+                />
               ) : (
                 <DropZone
                   style={styles.filesDropZone}
@@ -6948,10 +6925,11 @@ function UserBubble({ message }: { message: UserTextMessage }) {
   const pending = message.pending;
   const actions = useContext(SessionActionsContext);
   const recoverable = pending === 'failed' && actions !== null;
+  const { sender, fromOther } = useMessageSender(message);
   return (
     <View>
       <Text style={styles.turnTimestamp}>{formatTurnTimestamp(message.createdAt)}</Text>
-      <View style={[styles.userRow, message.peer ? styles.peerRow : null]}>
+      <View style={[styles.userRow, message.peer || fromOther ? styles.peerRow : null]}>
         <View
           style={[
             styles.userBubble,
@@ -6964,6 +6942,7 @@ function UserBubble({ message }: { message: UserTextMessage }) {
               Agent · {message.peer.label}
             </Text>
           ) : null}
+          {sender !== undefined ? <Text style={styles.peerSource}>{sender}</Text> : null}
           {attachments.length > 0 ? (
             <View style={styles.userImages}>
               {attachments.map((a, i) =>
@@ -7990,7 +7969,7 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
       ? actions.lastUserPrompt
       : RETRY_PROMPT;
   const recovery =
-    canRetry || descriptor.action === 'claude-login' ? (
+    canRetry || descriptor.action === 'claude-login' || descriptor.action === 'connect-account' ? (
       <>
         {canRetry ? (
           <Button
@@ -8006,11 +7985,18 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
             }
           />
         ) : null}
+        {descriptor.action === 'connect-account' ? (
+          <Button
+            label="AI Account"
+            size="compact"
+            onPress={() => router.push('/settings/ai-accounts')}
+          />
+        ) : null}
         {descriptor.action === 'claude-login' ? (
           <Button
             label="Sign in to Claude"
             size="compact"
-            onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
+            onPress={() => router.push('/settings/ai-accounts/claude?agentLogin=claude')}
           />
         ) : null}
       </>
@@ -10078,10 +10064,6 @@ function AttachMenu({
         accessibilityLabel="Close attachment menu"
       />
       <View style={[styles.menuCard, { width: MENU_WIDTH }, cardPos]}>
-        {googleCatalogLoading ? (
-          <Text style={styles.menuRowDetail}>Loading Google accounts…</Text>
-        ) : null}
-        {googleCatalogError ? <Text style={styles.menuRowDetail}>{googleCatalogError}</Text> : null}
         {rows.map((row, index) =>
           'section' in row ? (
             <Text key={row.section} style={styles.menuSectionLabel}>
@@ -10105,6 +10087,30 @@ function AttachMenu({
             </Pressable>
           ),
         )}
+        {/* Where the Connect section appears, so the menu does not jump when it
+            arrives: a first read in progress, or one that failed. */}
+        {!googleConnected && (googleCatalogLoading || googleCatalogError) ? (
+          <>
+            <View style={styles.menuDivider} />
+            <View
+              style={styles.menuRow}
+              accessible
+              accessibilityRole={googleCatalogError ? 'alert' : undefined}
+              accessibilityLabel={googleCatalogError ?? 'Checking Google accounts'}
+            >
+              {googleCatalogError ? (
+                <Icon name="alert-circle" size={20} color={theme.colors.textMuted} />
+              ) : (
+                <ActivityIndicator size="small" color={theme.colors.textMuted} />
+              )}
+              <View style={styles.menuRowText}>
+                <Text style={styles.menuRowDetail}>
+                  {googleCatalogError ?? 'Checking Google accounts…'}
+                </Text>
+              </View>
+            </View>
+          </>
+        ) : null}
       </View>
     </Modal>
   );
@@ -10646,26 +10652,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'center',
     gap: 3,
   },
-  // A quiet pill: muted caption text on a faint surface, distinct from the title.
-  headerLinks: { paddingHorizontal: 16, paddingBottom: 8, gap: 8, alignItems: 'center' },
-  headerLinkChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    maxWidth: 250,
-    paddingHorizontal: 10,
-    minHeight: 30,
-    borderRadius: theme.radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  headerLinkText: {
-    flexShrink: 1,
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-  },
   headerMetaChip: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.footnote.fontSize,
@@ -10782,35 +10768,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   // Tabs mark the active root with an underline, not a filled chip: a fill is
   // what a button looks like, and these are places, not actions.
-  filesRootBar: {
-    flexDirection: 'row',
-    gap: theme.spacing.md,
-    marginBottom: theme.spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
-  },
-  filesRootButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: theme.spacing.sm,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-    marginBottom: -StyleSheet.hairlineWidth,
-  },
-  filesRootButtonActive: {
-    borderBottomColor: theme.colors.action,
-  },
-  filesRootLabel: {
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-  },
-  filesRootLabelActive: {
-    color: theme.colors.text,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
   // The drop target wraps the list rather than the whole sheet: a drop onto the
   // preview or the header would have no directory to land in.
   filesDropZone: {

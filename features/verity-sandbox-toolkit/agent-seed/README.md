@@ -40,7 +40,9 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   transcript; the parent should only receive concise findings.
 - `bin/verity-code-review` runs the gate: `run` hands the branch diff to an
   isolated reviewer and prints only its findings, `mark` then records the
-  reviewed HEAD in `.agents/.last-code-review-sha`. The reviewer starts a fresh
+  reviewed HEAD in `.agents/.last-code-review-sha`. A completed `run` notes the
+  HEAD it reviewed in `.agents/.last-code-review-run`, and `mark` refuses any
+  other HEAD, so a commit made after the review needs another run. The reviewer starts a fresh
   context on the current session backend (Claude Opus or the prioritized Codex
   default). Codex may inspect the repository through its read-only sandbox;
   Claude receives the fenced diff without filesystem tools. Agents must not improvise
@@ -60,15 +62,19 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   repository's common Git directory, keyed by dependency inputs, configuration,
   local package sources and runtime. One preparation runs per project at a time;
   equal identities wait for the same preparation. Only a complete, policy-verified
-  inventory is published atomically. A receiving session gets independent files
-  with workspace links restored to its own sources. Existing local patches and
-  incomplete files are preserved before replacement; shared writable packages and
-  hardlinks are not used. Declared workspace executables target the receiving
+  inventory is published atomically and made read-only. A receiving session gets
+  its own directories, with package files as hard links to that read-only
+  inventory (a copy where the filesystem refuses links) and workspace links
+  restored to its own sources; `install --private` replaces the links with
+  writable copies. Existing local patches and incomplete files are preserved
+  before replacement; writable files are never shared. Declared workspace executables target the receiving
   sources; like npm, activation restores executable bits and normalizes CRLF
   shebangs. Non-regular or external executable targets are rejected; CRLF
   normalization is bounded to 1 MiB.
   New central preparations require an npm lockfile with a `packages` map,
-  project-local workspace links and no workspace-nested `node_modules` layout.
+  project-local workspace links and declared workspace dependency paths. Workspace-local
+  `node_modules` trees are activated the same way in each receiving worktree, alongside
+  the root tree; previous local trees are preserved before activation.
   Unsupported layouts fail explicitly rather than installing privately. Compatible
   existing installations remain reusable. The two ready inventory slots are
   bounded; preparation and activation locks protect active inventories during

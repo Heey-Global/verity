@@ -67,6 +67,7 @@ export function registerPackageArtifactRoutes(
               installGrant.projectId === identity.projectId &&
               installGrant.containerGeneration === identity.containerGeneration)) &&
           binding?.projectId === identity.projectId &&
+          binding.userId === identity.userId &&
           binding.containerGeneration === identity.containerGeneration
         );
       };

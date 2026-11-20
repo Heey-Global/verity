@@ -58,6 +58,11 @@ describe('AcpEventAdapter', () => {
         messageId: 'message-1',
         content: { type: 'text', text: 'child message' },
       },
+      { sessionUpdate: 'prompt_suggestions_update', suggestions: [] },
+      {
+        sessionUpdate: 'prompt_suggestions_update',
+        suggestions: [{ prompt: [{ type: 'text', text: 'Run the tests' }] }],
+      },
       { sessionUpdate: 'notice', severity: 'info', title: 'Ready' },
       { sessionUpdate: 'usage_update', used: 1, size: 100 },
       { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'echo' } },

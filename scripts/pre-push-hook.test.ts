@@ -229,6 +229,26 @@ describe('pre-push lint gate', () => {
     expect(result.stderr).not.toContain('dependencies are not installed');
   });
 
+  it('starts its helpers without the GIT_DIR git exports to hooks in a session worktree', () => {
+    // In a linked worktree that GIT_DIR points into the repository every session shares.
+    // A helper that inherits it and runs `git init` with a work tree of its own writes
+    // core.worktree into the shared config, re-pointing the main checkout for everyone.
+    const repo = repoWithPendingReview();
+    const session = join(repo, '.verity-sessions', 'agent-hook');
+    git(['-C', repo, 'worktree', 'add', '-q', '-b', 'hook-session', session]);
+    writeFileSync(
+      join(session, 'package.json'),
+      '{"scripts":{"lint":"echo \\"helper GIT_DIR=${GIT_DIR:-unset} index=${GIT_INDEX_FILE:-unset}\\" >&2"}}',
+    );
+    const adminDir = git(['-C', session, 'rev-parse', '--absolute-git-dir']).trim();
+    const result = runHook(session, {
+      env: { ...reviewEnv(), GIT_DIR: adminDir, GIT_INDEX_FILE: join(adminDir, 'index') },
+    });
+    expect(result.stderr).toContain('helper GIT_DIR=unset index=unset');
+    // Still the session's own repository: the review gate saw the session branch.
+    expect(result.stderr).toContain('pre-push code review required');
+  });
+
   it('automatically installs once and runs checks before the review gate', () => {
     const repo = repoWithPendingReview('{"scripts":{"lint":"echo checked >&2"}}');
     const result = runHook(repo, { env: reviewEnv() });
@@ -497,7 +517,7 @@ describe('pre-push review gate message', () => {
     expect(result.stderr).toContain('verity-code-review run <other-base-ref>');
   });
 
-  it('names run, rules out the improvised alternatives, and says mark verifies nothing', () => {
+  it('names run, rules out the improvised alternatives, and limits what mark accepts', () => {
     const repo = emptyRepo();
     commit(repo, 'base');
     git(['-C', repo, 'branch', 'review-base']);
@@ -527,7 +547,8 @@ describe('pre-push review gate message', () => {
     // early is not a shortcut but a defeat of the gate.
     expect(result.stderr).toContain('code_review');
     expect(result.stderr).toMatch(/not inline in the chat/i);
-    expect(result.stderr).toMatch(/without verifying anything/i);
+    expect(result.stderr).toMatch(/accepts only the HEAD the last completed 'run' reviewed/i);
+    expect(result.stderr).toMatch(/cannot\s+check the triage/i);
     expect(result.stderr).toMatch(/fixed or declined with a brief reason/i);
     expect(result.stderr).toMatch(/Re-run the review first if a fix changed HEAD/i);
   });
@@ -660,5 +681,40 @@ describe('agent-seed hook packaging', () => {
 
     expect(readFileSync(hook, 'utf8')).toContain('verity-code-review run <other-base-ref>');
     expect(readFileSync(cli, 'utf8')).toContain('verity-code-review run [base-ref]');
+  });
+});
+
+describe('pre-push unsigned commits', () => {
+  // A member's unsigned commit may only leave the sandbox re-signed by the person
+  // pushing it. The git wrapper re-signs the checked-out branch; any other ref
+  // the push names reaches this hook still unsigned and must be refused here.
+  it("refuses a signing person's push of an unsigned commit, and only theirs", () => {
+    const repo = repoWithPendingReview();
+    git(['-C', repo, 'config', 'commit.gpgsign', 'true']);
+    const tip = git(['-C', repo, 'rev-parse', 'HEAD']).trim();
+    const input = `refs/heads/other ${tip} refs/heads/other ${'0'.repeat(40)}\n`;
+    const turn = { VERITY_TURN_CAPABILITY: 'a'.repeat(43), GIT_COMMITTER_EMAIL: 'dev@example.com' };
+
+    const refused = runHook(repo, { input, env: { ...reviewEnv(), ...turn } });
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('PUSH BLOCKED - unsigned commits');
+    expect(refused.stderr).toContain('(Test)');
+
+    // Without a person, or with signing off, the gate does not apply; the push
+    // then stops at a later gate (the pending review), not at this one.
+    for (const env of [
+      reviewEnv(),
+      {
+        ...reviewEnv(),
+        ...turn,
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'commit.gpgsign',
+        GIT_CONFIG_VALUE_0: 'false',
+      },
+    ]) {
+      const passed = runHook(repo, { input, env });
+      expect(passed.stderr).not.toContain('unsigned commits');
+      expect(passed.stderr).toContain('code review required');
+    }
   });
 });

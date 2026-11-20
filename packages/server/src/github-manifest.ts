@@ -15,6 +15,7 @@
 // Runtime note: `Date.now()` / `crypto.randomBytes` are appropriate here — this
 // is the long-lived SERVER runtime, not a one-shot workflow script.
 
+import { GITHUB_USER_CALLBACK_URL } from './github-user-authorization.js';
 import { randomBytes } from 'node:crypto';
 
 import type { HttpFetch } from './github.js';
@@ -53,6 +54,10 @@ export function buildManifest(base: string): Record<string, unknown> {
     redirect_url: `${root}/github/app/manifest/callback`,
     setup_url: `${root}/github/app/manifest/installed`,
     setup_on_update: false,
+    // Each person authorizes the App for themselves (ADR 0023 §3). The app's
+    // auth session captures this link; it never needs the Server to be public.
+    callback_urls: [GITHUB_USER_CALLBACK_URL],
+    request_oauth_on_install: false,
     public: false,
     default_permissions: {
       ...PROJECT_GITHUB_TOKEN_PERMISSIONS,
@@ -169,6 +174,10 @@ interface ManifestConvertResult {
   appId: string;
   slug: string;
   privateKey: string;
+  /** The App's OAuth client, for each person's own authorization. GitHub
+   *  returns the secret only here, once; it is SECRET like the PEM. */
+  clientId?: string;
+  clientSecret?: string;
 }
 
 /** Seam for the code→App conversion so tests inject a fake instead of calling
@@ -179,6 +188,8 @@ interface GitHubManifestConversionResponse {
   id?: unknown;
   slug?: unknown;
   pem?: unknown;
+  client_id?: unknown;
+  client_secret?: unknown;
 }
 
 export interface DefaultManifestConvertOptions {
@@ -225,7 +236,7 @@ export function defaultManifestConvert(opts: DefaultManifestConvertOptions = {})
       throw new Error(`GitHub rejected the App manifest conversion (HTTP ${String(res.status)})`);
     }
     const body = (await res.json()) as GitHubManifestConversionResponse;
-    const { id, slug, pem } = body;
+    const { id, slug, pem, client_id: clientId, client_secret: clientSecret } = body;
     if (
       (typeof id !== 'string' && typeof id !== 'number') ||
       typeof slug !== 'string' ||
@@ -236,6 +247,12 @@ export function defaultManifestConvert(opts: DefaultManifestConvertOptions = {})
       // Redaction-safe: does not echo the (partial) body, which may hold the pem.
       throw new Error('GitHub returned an unexpected App manifest conversion response');
     }
-    return { appId: String(id), slug, privateKey: pem };
+    return {
+      appId: String(id),
+      slug,
+      privateKey: pem,
+      ...(typeof clientId === 'string' && clientId.length > 0 ? { clientId } : {}),
+      ...(typeof clientSecret === 'string' && clientSecret.length > 0 ? { clientSecret } : {}),
+    };
   };
 }

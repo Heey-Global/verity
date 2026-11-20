@@ -11,7 +11,7 @@ control="verity-control-${suffix}"
 network_a="verity-proj-a-${suffix}"
 network_b="verity-proj-b-${suffix}"
 control_network="verity-control-${suffix}"
-probe_image='node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68'
+probe_image='node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1'
 
 binding_name() {
   node -e "const c=require('node:crypto');process.stdout.write('project-'+c.createHash('sha256').update(process.argv[1]+'\\0'+process.argv[2]).digest('hex').slice(0,32))" "$1" "$2"

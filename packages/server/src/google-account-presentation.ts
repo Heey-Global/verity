@@ -8,8 +8,12 @@ import {
 import { resolveGoogleDriveAuthority } from './google-drive-authority.js';
 
 /** Legacy status fields remain useful, but credentials belong to the account registry. */
-export async function googleAccountSettingsStatus(store: Pick<EventStore, 'googleAccounts'>) {
-  const accounts = await store.googleAccounts.list();
+export async function googleAccountSettingsStatus(
+  store: Pick<EventStore, 'googleAccounts'>,
+  /** The signed-in person; the status describes only their own accounts. */
+  userId: string | undefined,
+) {
+  const accounts = userId === undefined ? [] : await store.googleAccounts.list(userId);
   return {
     googleDriveConnected: accounts.some((account) => hasGoogleDriveScopes(account.scopes)),
     gmailAuthorized: accounts.some((account) => hasGoogleGmailScopes(account.scopes)),
@@ -22,7 +26,14 @@ export async function googleAccountSettingsStatus(store: Pick<EventStore, 'googl
 /** Resolve display identity on the server; tool arguments cannot label another account's consent. */
 export async function googleApprovalAccount(
   store: Pick<EventStore, 'googleAccounts' | 'getSessionWorkspaceFile'>,
-  input: { sessionId: string; projectId: string; toolName: string; request: unknown },
+  input: {
+    sessionId: string;
+    projectId: string;
+    toolName: string;
+    request: unknown;
+    /** The person the turn runs for; the card names only their own account. */
+    userId: string | undefined;
+  },
 ): Promise<{ id: string; email: string } | undefined> {
   const service =
     input.toolName === 'verity_gmail'
@@ -33,7 +44,11 @@ export async function googleApprovalAccount(
           ? 'contacts'
           : undefined;
   if (service) {
-    const effective = await store.googleAccounts.effectiveAccess(input.sessionId, service);
+    const effective = await store.googleAccounts.effectiveAccess(
+      input.sessionId,
+      service,
+      input.userId,
+    );
     if (!effective) throw new Error('Google access is no longer available');
     return { id: effective.account.id, email: effective.account.email };
   }
@@ -42,6 +57,7 @@ export async function googleApprovalAccount(
       store,
       input.projectId,
       input.request as { action: string; accountId?: string; folderLinkId?: string },
+      input.userId,
     );
     return { id: authority.accountId, email: authority.accountEmail };
   }
@@ -49,7 +65,9 @@ export async function googleApprovalAccount(
     ['verity_google_docs', 'verity_google_sheets', 'verity_google_slides'].includes(input.toolName)
   ) {
     const file = await store.getSessionWorkspaceFile(input.sessionId);
-    const account = file?.accountId ? await store.googleAccounts.get(file.accountId) : undefined;
+    const account = file?.accountId
+      ? await store.googleAccounts.getOwned(file.accountId, input.userId)
+      : undefined;
     if (!account) throw new Error('The assigned Google account is no longer available');
     return { id: account.id, email: account.email };
   }

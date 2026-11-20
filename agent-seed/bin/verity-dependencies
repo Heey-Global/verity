@@ -20,9 +20,12 @@ import {
   readSync,
   statSync,
   chmodSync,
+  copyFileSync,
+  linkSync,
 } from 'node:fs';
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 
 function git(...args) {
   return execFileSync('git', args, {
@@ -375,8 +378,15 @@ function identity(root, inputs = root) {
   });
   if (version.status !== 0)
     throw new Error('Cannot determine npm version for dependency compatibility.');
+  // Diagnostic output settings cannot change the installed tree. Sessions get a
+  // private npm log directory, so hashing it would give every session its own
+  // identity and silently defeat cross-session reuse of central inventories.
   const configuration = Object.entries(process.env)
-    .filter(([key]) => /^npm_config_/i.test(key))
+    .filter(
+      ([key]) =>
+        /^npm_config_/i.test(key) &&
+        !/^npm_config_(?:logs[_-]dir|logs[_-]max|loglevel|color|progress|timing)$/i.test(key),
+    )
     .sort(([left], [right]) => left.localeCompare(right));
   hash.update(
     JSON.stringify([
@@ -408,7 +418,10 @@ function cacheable(root) {
   if (!lock?.packages) return false;
   return Object.entries(lock.packages).every(([path, value]) => {
     if (isAbsolute(path) || path.split('/').includes('..')) return false;
-    if (path.includes('/node_modules/') && !path.startsWith('node_modules/')) return false;
+    if (path.includes('/node_modules/') && !path.startsWith('node_modules/')) {
+      const project = path.slice(0, path.indexOf('/node_modules/'));
+      if (!lock.packages[project]) return false;
+    }
     if (!value.link) return true;
     if (typeof value.resolved !== 'string' || isAbsolute(value.resolved)) return false;
     const target = relative(root, resolve(root, value.resolved));
@@ -439,6 +452,43 @@ function workspaceModuleTrees(root) {
     trees.push(modules);
   }
   return trees;
+}
+// Undeclared packages inside an otherwise valid local tree can shadow hoisted versions.
+function staleWorkspaceModuleTrees(root) {
+  const lock = JSON.parse(
+    read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json')) ?? 'null',
+  );
+  return workspaceModuleTrees(root).filter((tree) => {
+    const prefix = relative(root, tree) + '/';
+    if (!Object.keys(lock?.packages ?? {}).some((path) => path.startsWith(prefix))) return true;
+    const pending = [tree];
+    while (pending.length) {
+      const modules = pending.pop();
+      if (!lstatSync(modules).isDirectory()) return true;
+      const packages = [];
+      for (const name of readdirSync(modules)) {
+        if (name.startsWith('.')) continue;
+        const entry = join(modules, name);
+        const stat = lstatSync(entry);
+        if (!stat.isDirectory() && !stat.isSymbolicLink()) continue;
+        if (!name.startsWith('@')) packages.push(entry);
+        else {
+          if (stat.isSymbolicLink()) return true;
+          for (const scoped of readdirSync(entry)) packages.push(join(entry, scoped));
+        }
+      }
+      for (const path of packages) {
+        const stat = lstatSync(path);
+        if (!stat.isDirectory() && !stat.isSymbolicLink()) continue;
+        if (!Object.hasOwn(lock.packages, relative(root, path))) return true;
+        // Linked workspaces are checked at their own project-local paths.
+        if (stat.isSymbolicLink()) continue;
+        const nested = join(path, 'node_modules');
+        if (readlinkExists(nested)) pending.push(nested);
+      }
+    }
+    return false;
+  });
 }
 function stagedInputIdentity(root) {
   const hash = createHash('sha256');
@@ -473,7 +523,7 @@ function cachedReady(root, cache, expected) {
       read(join(cache, 'receipt.json')) === expected &&
       receiptMatches(cache, expected) &&
       installed(cache) &&
-      workspaceModuleTrees(cache).length === 0 &&
+      staleWorkspaceModuleTrees(cache).length === 0 &&
       read(join(cache, '.verity-inputs.sha256')) === stagedInputIdentity(cache) &&
       identity(root, cache) === expected
     );
@@ -519,7 +569,7 @@ function readinessReason(root, expected) {
   if (!receiptMatches(root, expected))
     return 'dependency inputs, configuration or runtime differ from the installation receipt';
   if (!workspaceLinksReady(root)) return 'workspace links do not target this worktree';
-  if (workspaceModuleTrees(root).length)
+  if (staleWorkspaceModuleTrees(root).length)
     return 'stale workspace dependency directories shadow hoisted packages';
   return 'missing packages or package versions/integrities differ from the lockfile';
 }
@@ -561,13 +611,13 @@ function fixWorkspaceBin(root, source) {
     chmodSync(source, mode);
   }
 }
-function rewire(root, modules) {
+function rewire(root, modules, prefix = 'node_modules/') {
   const lock = JSON.parse(
     read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json')),
   );
   for (const [path, value] of Object.entries(lock.packages)) {
-    if (!value.link || !path.startsWith('node_modules/')) continue;
-    const target = join(modules, path.slice('node_modules/'.length));
+    if (!value.link || !path.startsWith(prefix)) continue;
+    const target = join(modules, path.slice(prefix.length));
     // Only a declared workspace symlink is replaced, never package contents.
     if (!contained(modules, realpathSync(dirname(target))))
       throw new Error('Cached workspace parent escapes the activation directory.');
@@ -593,7 +643,9 @@ function rewire(root, modules) {
       const source = resolve(root, value.resolved, entry);
       if (!contained(root, source))
         throw new Error('Workspace executable must stay inside the project.');
-      const binDirectory = join(modules, '.bin');
+      const binPath =
+        path.slice(0, path.lastIndexOf('node_modules/') + 'node_modules/'.length) + '.bin';
+      const binDirectory = join(modules, binPath.slice(prefix.length));
       if (
         readlinkExists(binDirectory) &&
         (!lstatSync(binDirectory).isDirectory() || lstatSync(binDirectory).isSymbolicLink())
@@ -605,7 +657,7 @@ function rewire(root, modules) {
       // npm skips workspace bins whose sources are absent in central staging.
       // Keep native collision choices; add only missing links to current sources.
       if (!readlinkExists(executable))
-        symlinkSync(relative(join(root, 'node_modules', '.bin'), source), executable);
+        symlinkSync(relative(join(root, binPath), source), executable);
     }
   }
 }
@@ -783,10 +835,49 @@ async function packagePolicy(root, rootLockFd, prepare = false) {
     handlers.forEach(([signal, handler]) => process.removeListener(signal, handler));
   }
 }
+/** The project clone that owns a repository opened into a session, if `root` is
+ *  one. Such a module checkout is a standalone clone, so its root is also its own
+ *  common directory, like the project clone whose shared installation must never
+ *  be replaced. It belongs to one session, though, exactly like a session
+ *  worktree. Recognize it by the location and repository marker the server
+ *  writes, and confirm that the owning project clone is a repository. */
+function moduleCheckoutProject(root) {
+  const match = /^(.+)\/\.verity-repositories\/[0-9a-f]{20}\/[0-9a-f]{20}$/u.exec(root);
+  if (!match) return undefined;
+  try {
+    if (!git('-C', root, 'config', '--local', '--get', 'verity.repositoryId')) return undefined;
+    if (git('-C', match[1], 'rev-parse', '--show-toplevel') !== match[1]) return undefined;
+  } catch {
+    return undefined;
+  }
+  return match[1];
+}
 async function main() {
+  // Git hooks export repository-location variables such as GIT_DIR. Inherited by
+  // `git -C <staging directory>`, they make the npm runtime place central
+  // staging inside the session's gitdir, so preparation from pre-push always
+  // failed as if the sandbox tooling were outdated. Every repository below is
+  // addressed explicitly, so clear the location variables before the first git
+  // call. Index and configuration variables (GIT_INDEX_FILE, `git -c`) stay: the
+  // staging directory is not a repository and only `git rev-parse` runs there, while
+  // the helper's other git calls read the session checkout the hook belongs to.
+  for (const name of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ])
+    delete process.env[name];
   const root = git('rev-parse', '--show-toplevel');
   const common = resolve(root, git('rev-parse', '--git-common-dir'));
   const base = dirname(common);
+  const moduleProject = moduleCheckoutProject(root);
+  // Inventories are keyed by content identity, so a module checkout shares the
+  // project's central inventory with the session worktrees instead of keeping one.
+  const inventoryCommon = moduleProject
+    ? resolve(moduleProject, git('-C', moduleProject, 'rev-parse', '--git-common-dir'))
+    : common;
   const action = process.argv[2] ?? 'status';
   if (!['status', 'install'].includes(action))
     throw new Error('Usage: verity-dependencies status|install');
@@ -806,11 +897,13 @@ async function main() {
       verified = true;
     }
   };
-  const ready = () =>
+  // Walking every shared file costs seconds, so only install checks for drift.
+  const ready = (thorough = false) =>
     installed(root) &&
     receiptMatches(root, identity(root)) &&
-    workspaceModuleTrees(root).length === 0;
-  if (ready()) {
+    staleWorkspaceModuleTrees(root).length === 0 &&
+    !(thorough && sharedDrift(root));
+  if (ready(action === 'install')) {
     await verify();
     if (action === 'install')
       console.log('Using existing compatible project dependencies; no install needed.');
@@ -826,10 +919,12 @@ async function main() {
       console.log('Using compatible shared project dependencies; no private install needed.');
     return;
   }
-  const cacheRoot = join(common, 'verity-dependencies');
+  const cacheRoot = join(inventoryCommon, 'verity-dependencies');
   if (action === 'status') {
     console.error(`Dependencies are not ready: ${readinessReason(root, currentIdentity)}.`);
-    console.error(`Shared project: ${readinessReason(base, currentIdentity)}.`);
+    // A module checkout is its own repository; the project's installation is not its.
+    if (moduleProject === undefined)
+      console.error(`Shared project: ${readinessReason(base, currentIdentity)}.`);
     console.error(
       cachedReady(root, join(cacheRoot, currentIdentity), currentIdentity)
         ? 'A complete central inventory is available; run verity dependencies install to activate it.'
@@ -838,7 +933,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  if (root === base)
+  if (root === base && moduleProject === undefined)
     throw new Error(
       'Dependency preparation requires a session worktree; the shared project installation is preserved.',
     );
@@ -881,7 +976,7 @@ async function main() {
       unlockIdentity = await lock(join(cacheRoot, currentIdentity + '.lock'));
     }
     checkInputs();
-    if (ready()) {
+    if (ready(true)) {
       await verify();
       return;
     }
@@ -895,16 +990,33 @@ async function main() {
           'The central dependency preparation this session waited for failed; retry explicitly after correcting the preparation error.',
         );
     }
+    const gitDir = git('rev-parse', '--absolute-git-dir');
     const preserve = (directory = modules) => {
       if (!readlinkExists(directory)) return;
-      const recovery = join(
-        git('rev-parse', '--absolute-git-dir'),
-        'verity-dependencies-preserved',
-        randomUUID(),
-      );
+      const record = activationRecord(gitDir, root, directory);
+      const unmodified = record !== undefined && unchangedSince(directory, record, true);
+      const recovery = join(gitDir, 'verity-dependencies-preserved', randomUUID());
       mkdirSync(dirname(recovery), { recursive: true });
       renameSync(directory, recovery);
-      console.log(`Preserved previous dependency files at ${recovery}.`);
+      // Checked again once withdrawn, so content written between the walk and the
+      // rename is kept. The rename changes the top directory's status, so a bare
+      // removal of a direct entry in that window is not seen; it loses no content.
+      if (unmodified && unchangedSince(recovery, record, false)) unchanged.push(recovery);
+      else console.log(`Preserved previous dependency files at ${recovery}.`);
+    };
+    // Unchanged copies are discarded only once their replacement is in place; a
+    // failed activation keeps them as ordinary preserved copies. A removal that
+    // fails part-way likewise leaves a preserved copy for the storage sweep.
+    const unchanged = [];
+    const discardUnchanged = () => {
+      for (const recovery of unchanged.splice(0)) {
+        try {
+          rmSync(recovery, { recursive: true });
+          console.log(`Discarded ${recovery}: unchanged since its activation.`);
+        } catch {
+          console.log(`Preserved previous dependency files at ${recovery}.`);
+        }
+      }
     };
     // A skeleton can use an already verified ancestor without mutating packages.
     // Shadowing private files are preserved only when a replacement is available.
@@ -914,6 +1026,7 @@ async function main() {
       for (const tree of workspaceModuleTrees(root)) preserve(tree);
       preserve();
       restoreWorkspaceLinks(root);
+      discardUnchanged();
       return;
     }
     const activate = async () => {
@@ -924,12 +1037,30 @@ async function main() {
         'verity-dependencies-copy-' + randomUUID(),
       );
       let recovery;
+      const workspaceCopies = [];
       try {
-        cpSync(join(cache, 'node_modules'), candidate, {
-          recursive: true,
-          dereference: false,
-          verbatimSymlinks: true,
-        });
+        // Root ignores permission bits, so its writes would reach every session;
+        // an inventory this process cannot seal is copied as before.
+        const share = process.getuid?.() !== 0 && sealInventory(cache);
+        const drifted = read(join(cache, 'sealed')) === 'v1' ? () => withdraw(cache) : undefined;
+        const copied = { files: 0 };
+        const recorded = new Map();
+        for (const tree of workspaceModuleTrees(cache)) {
+          const path = relative(cache, tree);
+          const destination = join(root, path);
+          if (!contained(realpathSync(root), realpathSync(dirname(destination))))
+            throw new Error('Workspace dependency parent must stay inside the project.');
+          const copy = candidate + '-workspace-' + workspaceCopies.length;
+          workspaceCopies.push({ copy, destination });
+          recorded.set(destination, shareTree(tree, copy, copied, drifted, share));
+          rewire(root, copy, path + '/');
+        }
+        recorded.set(
+          modules,
+          shareTree(join(cache, 'node_modules'), candidate, copied, drifted, share),
+        );
+        if (copied.files > 0)
+          console.log(`Copied ${copied.files} dependency files that could not be shared.`);
         rewire(root, candidate);
         checkInputs();
         // Workspace-local packages take precedence over hoisted dependencies.
@@ -938,22 +1069,42 @@ async function main() {
         // Validate at the final path; keep recovery files if activation ever fails.
         preserve();
         recovery = true;
+        // Entries below the activated roots must predate this; only the renames
+        // into place and the checks below may follow it.
+        await delay(25);
+        const placed = (() => {
+          try {
+            return statusTime(gitDir);
+          } catch {
+            return undefined;
+          }
+        })();
+        for (const { copy, destination } of workspaceCopies) renameSync(copy, destination);
         renameSync(candidate, modules);
         if (!ready()) throw new Error('Activated dependencies failed completeness validation.');
+        await recordActivation(gitDir, root, placed, recorded).catch((error) => {
+          // The record only lets a later change discard this copy; without it the
+          // copy is preserved as before, so its failure never fails activation.
+          console.warn(`Could not record the activated dependencies: ${error.message}`);
+        });
+        discardUnchanged();
         console.log(
           'Activated compatible central dependencies; copied independent files and restored session workspace links.',
         );
       } catch (error) {
         if (recovery && readlinkExists(modules)) preserve();
+        for (const kept of unchanged.splice(0))
+          console.log(`Preserved previous dependency files at ${kept}.`);
         throw error;
       } finally {
+        for (const { copy } of workspaceCopies) rmSync(copy, { recursive: true, force: true });
         rmSync(candidate, { recursive: true, force: true });
       }
     };
     if (!cachedReady(root, cache, currentIdentity)) {
       if (!cacheable(root))
         throw new Error(
-          'Central preparation requires a supported npm lockfile with project-local workspace links and no workspace-nested node_modules; no private installation was attempted.',
+          'Central preparation requires a supported npm lockfile with project-local workspace links and declared workspace dependency paths; no private installation was attempted.',
         );
       // Bound expensive preparation to one process per project, even across identities.
       console.log('Waiting for the central preparation slot (up to 90 seconds)…');
@@ -1053,6 +1204,7 @@ async function main() {
         join(stage, 'node_modules', '.verity-install.json'),
         JSON.stringify({ identity: currentIdentity }),
       );
+      sealInventory(stage);
       const publication = await lock(join(cacheRoot, 'publication.lock'));
       try {
         if (!(await snapshotSlot(cacheRoot, currentIdentity)))
@@ -1099,6 +1251,234 @@ async function main() {
     if (cancelled) process.exitCode = cancelled === 'SIGINT' ? 130 : 143;
   }
 }
+// Every activated tree is a verbatim copy of a central installation. Without this
+// record a later identity change could not tell such a copy from one carrying
+// local edits once its central identity was retired, so each change kept another
+// full copy of the dependencies in the worktree's Git directory.
+const ACTIVATION_RECORD = 'verity-dependencies-activation.json';
+function treeKey(stat) {
+  return `${stat.dev}:${stat.ino}`;
+}
+/** The filesystem's current status change time, read from a probe file. */
+function statusTime(gitDir) {
+  const probe = join(gitDir, `${ACTIVATION_RECORD}.${randomUUID()}`);
+  try {
+    writeFileSync(probe, '');
+    return lstatSync(probe, { bigint: true }).ctimeNs;
+  } finally {
+    rmSync(probe, { force: true });
+  }
+}
+async function recordActivation(gitDir, root, placed, trees) {
+  if (placed === undefined) throw new Error('activation time is unknown');
+  // Activation's own writes must have status change times strictly before the
+  // record's; a timestamp granularity coarser than this only keeps copies.
+  await delay(25);
+  const record = join(gitDir, ACTIVATION_RECORD);
+  const temporary = `${record}.${randomUUID()}`;
+  try {
+    // Stored as well: a later chmod or chown of the record moves its own status
+    // time forward, which must never move the cutoff past an edit.
+    writeFileSync(temporary, '');
+    const at = lstatSync(temporary, { bigint: true }).ctimeNs;
+    writeFileSync(
+      temporary,
+      JSON.stringify({
+        version: 2,
+        at: String(at),
+        placed: String(placed),
+        trees: Object.fromEntries(
+          [...trees].map(([tree, files]) => [
+            relative(root, tree),
+            { key: treeKey(lstatSync(tree, { bigint: true })), files },
+          ]),
+        ),
+      }),
+    );
+    renameSync(temporary, record);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+/** The recorded identity and time of `directory`'s activation, if it is the very
+ *  tree that was activated; undefined for unknown, unreadable or replaced trees. */
+function activationRecord(gitDir, root, directory) {
+  try {
+    const path = join(gitDir, ACTIVATION_RECORD);
+    const marker = lstatSync(path, { bigint: true });
+    const content = JSON.parse(readFileSync(path, 'utf8'));
+    const entry = content?.version === 2 ? content.trees?.[relative(root, directory)] : undefined;
+    const recorded = entry?.key;
+    if (typeof entry?.files !== 'string') return undefined;
+    const time = (value) =>
+      typeof value === 'string' && /^[1-9][0-9]*$/u.test(value) ? BigInt(value) : undefined;
+    const at = time(content?.at);
+    const placed = time(content?.placed);
+    if (at === undefined || placed === undefined) return undefined;
+    const top = lstatSync(directory, { bigint: true });
+    // Status times are compared only within one filesystem: another one may keep
+    // coarser timestamps or a different clock.
+    if (!marker.isFile() || marker.dev !== top.dev) return undefined;
+    if (!top.isDirectory() || recorded !== treeKey(top)) return undefined;
+    const cutoff = at < marker.ctimeNs ? at : marker.ctimeNs;
+    // A clock that is still behind the record would date later edits before it.
+    if (statusTime(gitDir) <= cutoff) return undefined;
+    // Below the roots, a change while activation finished must count as an edit.
+    const below = placed < cutoff ? placed : cutoff;
+    return { key: recorded, files: entry.files, dev: top.dev, ctimeNs: cutoff, below };
+  } catch {
+    return undefined;
+  }
+}
+/** True only when no entry changed status since the record: any write, chmod,
+ *  link, creation, removal or rename sets a status change time that file tools
+ *  cannot set back. Only a host clock stepped backwards and then forward again
+ *  past the record could hide a change. */
+function unchangedSince(directory, record, includeTop) {
+  try {
+    const files = [];
+    const pending = [directory];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      const stat = lstatSync(current, { bigint: true });
+      if (stat.dev !== record.dev) return false;
+      if (current === directory) {
+        if (!stat.isDirectory() || treeKey(stat) !== record.key) return false;
+        if (includeTop && stat.ctimeNs >= record.ctimeNs) return false;
+      } else if (stat.ctimeNs >= record.below && !stat.isDirectory()) {
+        // Directories change status with their entries, which are checked below.
+        // Sharing a file or retiring its inventory changes its status time, but a
+        // read-only file cannot be written, and a write sets its modification time.
+        if (!stat.isFile() || stat.mode & 0o222n || stat.mtimeNs >= record.below) return false;
+      }
+      if (stat.isFile()) files.push(fileIdentity(relative(directory, current), stat));
+      if (stat.isDirectory())
+        for (const entry of readdirSync(current)) pending.push(join(current, entry));
+    }
+    return filesKey(files) === record.files;
+  } catch {
+    return false;
+  }
+}
+// Sessions share the central inventory's files as read-only hardlinks: one inode
+// for every session, so an edit would change every session and the inventory.
+/** Visits every regular file below `tree`; stops once `visit` returns true. */
+function eachFile(tree, visit, strict = false, retries = 3) {
+  try {
+    for (const entry of readdirSync(tree, { recursive: true, withFileTypes: true })) {
+      const path = join(entry.parentPath ?? entry.path, entry.name);
+      const stat = entry.isFile() && lstatSync(path, { throwIfNoEntry: false });
+      if (stat && visit(path, stat)) return true;
+    }
+    return false;
+  } catch (error) {
+    // Tools create and remove cache entries meanwhile; visits are repeatable. A
+    // directory this user cannot read holds nothing it could share or edit either.
+    if (error.code === 'EACCES' && !strict) return false;
+    if (error.code !== 'ENOENT' || retries === 0) throw error;
+    return eachFile(tree, visit, strict, retries - 1);
+  }
+}
+/** A session's own trees: a symlinked `node_modules` belongs to something else. */
+function ownTrees(root) {
+  return [join(root, 'node_modules'), ...workspaceModuleTrees(root)].filter((tree) =>
+    lstatSync(tree, { throwIfNoEntry: false })?.isDirectory(),
+  );
+}
+/** Drops the write bits of an inventory's files once, under its identity lock; false when it cannot. */
+function sealInventory(cache) {
+  try {
+    if (read(join(cache, 'sealed')) !== 'v1') {
+      // Strict: a directory it cannot read would stay unsealed behind the marker.
+      const seal = (path, stat) => stat.mode & 0o222 && chmodSync(path, stat.mode & 0o7555);
+      for (const tree of ownTrees(cache)) eachFile(tree, seal, true);
+      writeFileSync(join(cache, 'sealed'), 'v1');
+    }
+    return true;
+  } catch (error) {
+    console.warn(`The dependency inventory cannot be sealed (${error.message}).`);
+    return false;
+  }
+}
+/** Rebuilds `source` at `destination`: own directories and receipts, shared files. */
+function shareTree(source, destination, copied, drifted, share) {
+  const files = [];
+  const regular = [];
+  const pending = [[source, destination]];
+  while (pending.length > 0) {
+    const [from, to] = pending.pop();
+    const stat = lstatSync(from);
+    if (stat.isSymbolicLink()) {
+      symlinkSync(readlinkSync(from), to);
+    } else if (stat.isDirectory()) {
+      mkdirSync(to);
+      chmodSync(to, (stat.mode & 0o7777) | 0o700);
+      for (const entry of readdirSync(from)) pending.push([join(from, entry), join(to, entry)]);
+    } else if (!stat.isFile()) throw new Error('Unsupported entry in the central inventory.');
+    else regular.push([from, to, stat]);
+  }
+  for (const [from, to, stat] of regular) {
+    const name = relative(source, from);
+    // A writable file of a sealed inventory may carry an edit made through a link.
+    if (drifted && stat.mode & 0o222 && dirname(from) !== source) drifted();
+    // npm rewrites its top-level receipts and generated dot-directories (`.prisma`)
+    // in place and resets command targets' modes; those stay private copies.
+    if (share && dirname(from) !== source && !name.startsWith('.') && !(stat.mode & 0o111)) {
+      try {
+        linkSync(from, to);
+        files.push(fileIdentity(name, lstatSync(from, { bigint: true })));
+        continue;
+      } catch (error) {
+        if (!['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(error.code)) throw error;
+        copied.files++;
+      }
+    }
+    copyFileSync(from, to);
+    chmodSync(to, (stat.mode & 0o7777) | 0o200);
+    files.push(fileIdentity(name, lstatSync(to, { bigint: true })));
+  }
+  return filesKey(files);
+}
+// Which inode backs each file: replacing or removing one changes it whatever its times.
+const fileIdentity = (name, stat) => `${name}\0${stat.ino}`;
+const filesKey = (files) => createHash('sha256').update(files.sort().join('\n')).digest('hex');
+/** Retires an inventory whose shared files became writable; the next install prepares it afresh. */
+function withdraw(cache) {
+  const retired = join(dirname(cache), '.retired-' + randomUUID());
+  renameSync(cache, retired);
+  rmSync(retired, { recursive: true, force: true });
+  throw new Error(
+    'A shared dependency file was made writable and may have been edited, so this central inventory was withdrawn. Run verity dependencies install again to prepare it afresh.',
+  );
+}
+/** True when a file shared with other sessions has write bits again. */
+function sharedDrift(root) {
+  return ownTrees(root).some((tree) =>
+    eachFile(tree, (_, stat) => stat.nlink > 1 && (stat.mode & 0o222) !== 0),
+  );
+}
+/** `install --private`: own copies of shared files, marked first so storage collection keeps them. */
+function privatize(root) {
+  let files = 0;
+  if (ownTrees(root).includes(join(root, 'node_modules')))
+    writeFileSync(join(root, 'node_modules', '.verity-private'), '');
+  for (const tree of ownTrees(root))
+    eachFile(tree, (path, stat) => {
+      if (stat.nlink < 2 && stat.mode & 0o200) return;
+      files++;
+      // Read-only without other names once, for example, its inventory is retired.
+      if (stat.nlink < 2) return chmodSync(path, (stat.mode & 0o7777) | 0o200);
+      const temporary = `${path}.verity-private-${randomUUID()}`;
+      try {
+        copyFileSync(path, temporary);
+        chmodSync(temporary, (stat.mode & 0o7777) | 0o200);
+        renameSync(temporary, path);
+      } finally {
+        rmSync(temporary, { force: true });
+      }
+    });
+  console.log(`Made ${files} shared dependency files private to this session.`);
+}
 function readlinkExists(path) {
   try {
     lstatSync(path);
@@ -1107,7 +1487,12 @@ function readlinkExists(path) {
     return false;
   }
 }
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode ??= 1;
-});
+main()
+  .then(() => {
+    if (process.argv[2] === 'install' && process.argv.includes('--private') && !process.exitCode)
+      privatize(git('rev-parse', '--show-toplevel'));
+  })
+  .catch((error) => {
+    console.error(error.message);
+    process.exitCode ??= 1;
+  });

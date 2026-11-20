@@ -90,6 +90,14 @@ elif command == 'systemctl':
     if mode == 'observe-failure':
         print('private host failure', file=sys.stderr)
         sys.exit(1)
+    # Per-unit states for stages of other operations.
+    other = root / 'units' / args[-1]
+    if other.exists():
+        state = other.read_text()
+        if state == 'unobservable':
+            sys.exit(1)
+        print('LoadState=loaded\nActiveState=' + state)
+        sys.exit(0)
     if mode == 'not-found' and not (root / 'submitted').exists():
         print('LoadState=not-found\nActiveState=inactive')
         sys.exit(4)
@@ -168,11 +176,100 @@ class ProvisionWrapperTests(unittest.TestCase):
 
     def test_adopts_disconnected_host_work_without_rewriting_or_starting_it(self):
         self.diagnostic(self.run_wrapper('disconnect'), 'start_unverified')
-        before = {name: (self.stage / name).read_bytes() for name in ['attempt', 'apply.sh', 'ready']}
+        attempt = (self.stage / 'attempt').read_text().strip()
         result = self.run_wrapper('adopt')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(before, {name: (self.stage / name).read_bytes() for name in before})
+        # A rewritten launcher would carry a new attempt; the adopted one completed.
+        self.assertEqual((self.stage / 'attempt').read_text().strip(), attempt)
+        self.assertEqual(json.loads((self.stage / 'result.json').read_text())['attempt'], attempt)
         self.assertEqual((self.root / 'calls').read_text().count('systemd-run '), 1)
+
+    def test_running_host_work_keeps_its_staged_payload(self):
+        self.diagnostic(self.run_wrapper('disconnect'), 'start_unverified')
+        before = {name: (self.stage / name).read_bytes() for name in ['attempt', 'apply.sh', 'ready']}
+        # Another operation's launcher must not touch a stage whose job still runs.
+        other = dict(self.env, VERITY_EGRESS_PROVISION_ID='a' * 24)
+        (self.root / 'units').mkdir()
+        (self.root / 'units' / ('verity-egress-provision-' + 'a' * 24 + '.service')).write_text('inactive')
+        (self.root / 'mode').write_text('timeout')
+        result = subprocess.run(['bash', str(self.wrapper)], env=other, text=True,
+                                capture_output=True, timeout=15)
+        # It staged and swept (then found no result for its own simulated job).
+        self.assertTrue((self.root / 'state/provision' / ('a' * 24) / 'ready').exists())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(before, {name: (self.stage / name).read_bytes() for name in before})
+        self.assertTrue((self.stage / 'release').is_dir())
+
+    def stage_of(self, identifier, payload=True, result=True):
+        stage = self.root / 'state/provision' / identifier
+        (stage / 'release').mkdir(parents=True)
+        (stage / 'release/asset').write_bytes(b'x' * 1024)
+        (stage / 'config').mkdir()
+        (stage / 'config/database.json').write_text('{"private":"secret"}')
+        for name in ['ready', 'apply.sh', 'project-egress-managed.py']:
+            (stage / name).write_text('payload')
+        if result:
+            (stage / 'attempt').write_text('A' * 12 + '\n')
+            (stage / 'result.json').write_text(json.dumps({'version': 1, 'exitCode': 0}))
+        return stage
+
+    def receipt_only(self, stage):
+        return sorted(path.name for path in stage.iterdir()) == ['attempt', 'result.json']
+
+    def test_completed_stage_keeps_only_its_receipt_and_stays_idempotent(self):
+        self.assertEqual(self.run_wrapper().returncode, 0)
+        self.assertTrue(self.receipt_only(self.stage))
+        self.assertEqual(self.run_wrapper().returncode, 0)
+        self.assertEqual((self.root / 'calls').read_text().count('systemd-run '), 1)
+        self.assertTrue(self.receipt_only(self.stage))
+
+    def test_a_retry_after_compaction_stages_a_complete_payload_again(self):
+        self.assertEqual(self.run_wrapper('unavailable').returncode, 0)
+        self.assertFalse((self.stage / 'ready').exists())
+        self.assertEqual(self.run_wrapper().returncode, 0)
+        self.assertEqual((self.root / 'calls').read_text().count('systemd-run '), 2)
+        self.assertTrue(json.loads((self.stage / 'result.json').read_text())['available'])
+
+    def test_failed_host_work_keeps_payload_for_its_retry(self):
+        self.diagnostic(self.run_wrapper('host-failure'), 'host_failed')
+        self.assertTrue((self.stage / 'ready').exists())
+        self.assertTrue((self.stage / 'release').is_dir())
+
+    def test_stopped_stages_of_other_operations_lose_only_their_payload(self):
+        units = self.root / 'units'
+        units.mkdir()
+        stopped = self.stage_of('a' * 24)
+        unreceipted = self.stage_of('b' * 24, result=False)
+        running = self.stage_of('d' * 24)
+        unobservable = self.stage_of('e' * 24)
+        (units / ('verity-egress-provision-' + 'a' * 24 + '.service')).write_text('inactive')
+        (units / ('verity-egress-provision-' + 'b' * 24 + '.service')).write_text('failed')
+        (units / ('verity-egress-provision-' + 'd' * 24 + '.service')).write_text('active')
+        (units / ('verity-egress-provision-' + 'e' * 24 + '.service')).write_text('unobservable')
+        self.assertEqual(self.run_wrapper().returncode, 0)
+        self.assertTrue(self.receipt_only(stopped))
+        self.assertEqual(sorted(path.name for path in unreceipted.iterdir()), [])
+        for kept in (running, unobservable):
+            self.assertTrue((kept / 'ready').exists())
+            self.assertTrue((kept / 'release/asset').exists())
+            self.assertTrue((kept / 'config/database.json').exists())
+
+    def test_stage_compaction_never_follows_links_or_foreign_names(self):
+        outside = self.root / 'outside'
+        (outside / 'release').mkdir(parents=True)
+        (outside / 'ready').write_text('keep')
+        provision = self.root / 'state/provision'
+        provision.mkdir(parents=True)
+        (provision / ('f' * 24)).symlink_to(outside)
+        foreign = self.stage_of('not-an-operation')
+        inner = self.stage_of('9' * 24)
+        (inner / 'release/asset').unlink()
+        (inner / 'release/linked').symlink_to(outside / 'ready')
+        self.assertEqual(self.run_wrapper().returncode, 0)
+        self.assertEqual((outside / 'ready').read_text(), 'keep')
+        self.assertTrue((outside / 'release').is_dir())
+        self.assertTrue((foreign / 'ready').exists())
+        self.assertTrue(self.receipt_only(inner))
 
     def test_start_rejection_reports_only_fixed_diagnostics(self):
         report = self.diagnostic(self.run_wrapper('reject'), 'start_unverified')

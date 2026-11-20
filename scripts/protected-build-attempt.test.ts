@@ -75,7 +75,7 @@ m = runpy.run_path(${JSON.stringify(helper)})
 g = m['check'].__globals__
 g['trusted'] = lambda path, directory=False: path
 g['os'].geteuid = lambda: 0
-g['load'] = lambda path: {'nodeFeature':'ghcr.io/example/node@sha256:'+'a'*64,'additionalFeatures':[],'nodeOptions':{'version':'26.13.0'},'toolkitOptions':{'installRunnerSupervisor':True}}
+g['load'] = lambda path: {'nodeFeature':'ghcr.io/example/node@sha256:'+'a'*64,'additionalFeatures':[],'nodeOptions':{'version':'26.13.1'},'toolkitOptions':{'installRunnerSupervisor':True}}
 try: m['check']()
 except ValueError: print('unavailable')
 else: raise AssertionError('empty whitelist falsely accepted')

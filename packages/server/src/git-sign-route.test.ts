@@ -2,13 +2,14 @@ import type { Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher, type SealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildServer } from './server.js';
+import { createTurnCredentials, type TurnCredentials } from './turn-credentials.js';
 import type { SshSignSpawner } from './git-signer.js';
 import { startProjectInternalUnixListener } from './internal-listener.js';
 import {
@@ -31,11 +32,18 @@ const SIGNING_KEY = [
 
 // Fake `ssh-keygen -Y sign`: writes a recognizable armored signature so the route
 // returns it. (The real ssh-keygen round-trip is validated separately.)
-const fakeSign: SshSignSpawner = ({ payloadPath, namespace }) => {
+// Which private key each signature was made with, so a test can tell a
+// personal signature from the instance one.
+const signedWith: string[] = [];
+const fakeSign: SshSignSpawner = ({ keyPath, payloadPath, namespace }) => {
+  signedWith.push(readFileSync(keyPath, 'utf8'));
   writeFileSync(`${payloadPath}.sig`, `-----BEGIN SSH SIGNATURE-----\nfake:${namespace}\n`);
   return Promise.resolve();
 };
 
+const ADMIN = '00000000-0000-4000-8000-000000000001';
+/** The person of the project's original (default) sandbox. */
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -67,6 +75,7 @@ function build(
   cipher: SealableSecretCipher,
   internalPathGuard?: InternalPathGuard,
   signingCapabilities?: SigningCapabilityRegistry,
+  turnCredentials?: TurnCredentials,
 ): { app: FastifyInstance; store: EventStore } {
   const store = new EventStore(ctx.db, cipher);
   const app = buildServer({
@@ -76,6 +85,7 @@ function build(
     secretCipher: cipher,
     sshSign: fakeSign,
     ...(signingCapabilities !== undefined ? { signingCapabilities } : {}),
+    ...(turnCredentials !== undefined ? { turnCredentials } : {}),
     ...(internalPathGuard ? { internalPathGuard } : {}),
   });
   return { app, store };
@@ -116,25 +126,33 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
     await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
     const listener = await startProjectInternalUnixListener(app, {
       socketRoot: root,
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       ownerUid: process.getuid?.() ?? 0,
       relayGid: process.getgid?.() ?? 0,
     });
     try {
       const valid = await capabilities.issue({
         projectId: 'p1',
+        userId: SANDBOX_USER,
         containerGeneration: 'generation-1',
       });
       expect((await postUnix(listener.socketPath, valid)).status).toBe(200);
 
       const stale = await capabilities.issue({
         projectId: 'p1',
+        userId: SANDBOX_USER,
         containerGeneration: 'generation-0',
       });
       expect((await postUnix(listener.socketPath, stale)).status).toBe(401);
 
       const crossProject = await capabilities.issue({
         projectId: 'p2',
+        userId: SANDBOX_USER,
         containerGeneration: 'generation-1',
       });
       expect((await postUnix(listener.socketPath, crossProject)).status).toBe(401);
@@ -142,6 +160,176 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
       // The fleet-derived compatibility bearer is accepted only on the legacy
       // TCP listener, never on a project-bound socket.
       expect((await postUnix(listener.socketPath, 'retired-fleet-bearer')).status).toBe(401);
+    } finally {
+      await listener.close();
+      await app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The badge is what will let the key become the signing person's own. It must
+  // only ever work inside its own project's container and stop with its turn.
+  it("signs for a turn's badge only from its own project and only while it lives", async () => {
+    const cipher = createSealableSecretCipher();
+    const capabilities = createSigningCapabilityRegistry(ctx.db);
+    const turns = createTurnCredentials();
+    const { app, store } = build(cipher, undefined, capabilities, turns);
+    const root = mkdtempSync(join(tmpdir(), 'verity-sign-turn-'));
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+    await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
+    const listener = await startProjectInternalUnixListener(app, {
+      socketRoot: root,
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
+      ownerUid: process.getuid?.() ?? 0,
+      relayGid: process.getgid?.() ?? 0,
+    });
+    try {
+      const badge = turns.issue({
+        projectId: 'p1',
+        sessionId: 's1',
+        turnId: 't1',
+        userId: ADMIN,
+      });
+      expect((await postUnix(listener.socketPath, badge)).status).toBe(200);
+
+      const foreign = turns.issue({
+        projectId: 'p2',
+        sessionId: 's2',
+        turnId: 't2',
+        userId: 'lena',
+      });
+      expect((await postUnix(listener.socketPath, foreign)).status).toBe(401);
+      // Same person as the sandbox, but another project: still refused.
+      const foreignProject = turns.issue({
+        projectId: 'p2',
+        sessionId: 's3',
+        turnId: 't3',
+        userId: ADMIN,
+      });
+      expect((await postUnix(listener.socketPath, foreignProject)).status).toBe(401);
+
+      turns.release(badge);
+      expect((await postUnix(listener.socketPath, badge)).status).toBe(401);
+
+      // The container-wide capability keeps working beside the badges.
+      const container = await capabilities.issue({
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        containerGeneration: 'generation-1',
+      });
+      expect((await postUnix(listener.socketPath, container)).status).toBe(200);
+    } finally {
+      await listener.close();
+      await app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The person whose turn commits signs it. A member without a key of their own
+  // must be refused rather than handed the administrator's (instance) key, and
+  // the administrator keeps the instance key as their fallback.
+  it("signs a turn's commit with its person's own key, never another person's", async () => {
+    const cipher = createSealableSecretCipher();
+    const turns = createTurnCredentials();
+    const { app, store } = build(cipher, undefined, createSigningCapabilityRegistry(ctx.db), turns);
+    const root = mkdtempSync(join(tmpdir(), 'verity-sign-person-'));
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+    await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'lena', role: 'member', status: 'active' })
+      .execute();
+    const listener = await startProjectInternalUnixListener(app, {
+      socketRoot: root,
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
+      ownerUid: process.getuid?.() ?? 0,
+      relayGid: process.getgid?.() ?? 0,
+    });
+    // A person's turns run in that person's own sandbox (ADR 0023 §4), so lena's
+    // badge is presented from hers rather than from the project's shared one.
+    const lenaListener = await startProjectInternalUnixListener(app, {
+      socketRoot: root,
+      identity: {
+        projectId: 'p1',
+        userId: 'lena',
+        projectDefault: false,
+        containerGeneration: 'generation-lena',
+      },
+      ownerUid: process.getuid?.() ?? 0,
+      relayGid: process.getgid?.() ?? 0,
+    });
+    const badgeFor = (userId: string) =>
+      turns.issue({ projectId: 'p1', sessionId: 's1', turnId: `t-${userId}`, userId });
+    try {
+      signedWith.length = 0;
+      const refused = await postUnix(lenaListener.socketPath, badgeFor('lena'));
+      expect(refused.status).toBe(409);
+      expect(refused.body).toContain('connect GitHub');
+      expect(signedWith).toEqual([]);
+
+      const LENA_KEY = SIGNING_KEY.replace('BEGIN OPENSSH', 'BEGIN OPENSSH lena');
+      await store.userGitIdentities.set('lena', { sshPrivateKey: LENA_KEY });
+      // Her badge carried into the project's default sandbox proves nothing there.
+      expect((await postUnix(listener.socketPath, badgeFor('lena'))).status).toBe(401);
+      expect((await postUnix(lenaListener.socketPath, badgeFor('lena'))).status).toBe(200);
+      expect((await postUnix(listener.socketPath, badgeFor(ADMIN))).status).toBe(200);
+      expect(signedWith.map((key) => key.trim())).toEqual([LENA_KEY, SIGNING_KEY]);
+    } finally {
+      await lenaListener.close();
+      await listener.close();
+      await app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The project's original sandbox belongs to its creator, who need not be the
+  // administrator. Without a badge, its container capability must sign as that
+  // owner, never fall back to the administrator's instance key.
+  it("signs in the project's original sandbox as its owner, not the administrator", async () => {
+    const cipher = createSealableSecretCipher();
+    const capabilities = createSigningCapabilityRegistry(ctx.db);
+    const { app, store } = build(cipher, undefined, capabilities);
+    const root = mkdtempSync(join(tmpdir(), 'verity-sign-owner-'));
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+    await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'mia', role: 'member', status: 'active' })
+      .execute();
+    const listener = await startProjectInternalUnixListener(app, {
+      socketRoot: root,
+      identity: {
+        projectId: 'p1',
+        userId: 'mia',
+        projectDefault: true,
+        containerGeneration: 'generation-mia',
+      },
+      ownerUid: process.getuid?.() ?? 0,
+      relayGid: process.getgid?.() ?? 0,
+    });
+    try {
+      signedWith.length = 0;
+      const capability = await capabilities.issue({
+        projectId: 'p1',
+        userId: 'mia',
+        containerGeneration: 'generation-mia',
+      });
+      const refused = await postUnix(listener.socketPath, capability);
+      expect(refused.status).toBe(409);
+      expect(signedWith).toEqual([]);
     } finally {
       await listener.close();
       await app.close();
@@ -166,13 +354,19 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
     await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
     const listener = await startProjectInternalUnixListener(app, {
       socketRoot: root,
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       ownerUid: process.getuid?.() ?? 0,
       relayGid: process.getgid?.() ?? 0,
     });
     try {
       const capability = await capabilities.issue({
         projectId: 'p1',
+        userId: SANDBOX_USER,
         containerGeneration: 'generation-1',
       });
       expect((await postUnix(listener.socketPath, capability)).status).toBe(200);

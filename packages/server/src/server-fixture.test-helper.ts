@@ -83,7 +83,7 @@ export const sendTurn = vi.fn<() => Promise<{ exitCode: number; aborted: boolean
 
 export const startSession = vi.fn<(opts: StartOptions) => Promise<{ sessionId: string }>>();
 
-export const isBusy = vi.fn<(id: string) => boolean>(() => false);
+export const isBusy = vi.fn<(id: string, options?: { turnOnly?: boolean }) => boolean>(() => false);
 
 export const queuedItems = vi.fn<
   (id: string) => { id: string; text: string; attachments?: Attachment[] }[]
@@ -395,6 +395,8 @@ export const AVAILABLE_SANDBOX_UPDATE: SandboxUpdateStatus = {
   targetRevision: null,
   selfRepair: 'converging',
   turnBlocked: false,
+  blockedBy: [],
+  lastRepairFailure: null,
 };
 
 /**

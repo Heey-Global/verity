@@ -27,6 +27,22 @@ describe('agentEventDescriptor', () => {
     });
   });
 
+  // The server refuses a shared-project turn whose sender has no account of
+  // their own for the model; the row must lead to where they connect one.
+  it('leads a turn refused for a missing own account to My AI accounts', () => {
+    expect(
+      agentEventDescriptor({
+        t: 'error',
+        kind: 'run_failed',
+        message: 'Connect your Codex account in Verity to send messages with this model.',
+      }),
+    ).toMatchObject({
+      kind: 'account-required',
+      label: 'Connect your Codex account',
+      action: 'connect-account',
+    });
+  });
+
   it('describes a compaction boundary (neutral, no detail)', () => {
     const d = agentEventDescriptor({ t: 'compaction', boundary: true });
     expect(d).toEqual({ kind: 'compaction', label: 'Context compacted', tone: 'neutral' });

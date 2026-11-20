@@ -3,8 +3,12 @@ import type { EventStore, ProjectRecord } from '@verity/store';
 import { mkdtemp, mkdir, writeFile, access, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SandboxUnavailableError } from './sandbox-git.js';
 import {
+  checkoutFailureReason,
   createSessionRepositories,
+  describeCheckoutFailure,
+  redactCheckoutOutput,
   sessionRepositoryRoot,
   removeSessionRepositoryWorkspaces,
 } from './session-repositories.js';
@@ -152,7 +156,182 @@ it('never treats parent repository discovery as a reusable module checkout', asy
     if (args.includes('clone')) throw new Error('partial checkout is not empty');
     return original(args);
   });
-  await expect(h.service.open('s', 'r')).rejects.toThrow('partial checkout');
+  await expect(h.service.open('s', 'r')).rejects.toMatchObject({
+    reason: 'clone failed',
+    cause: expect.objectContaining({ message: 'partial checkout is not empty' }),
+  });
   expect(h.git.mock.calls.some(([args]) => args.includes('checkout'))).toBe(false);
   expect(h.save).not.toHaveBeenCalled();
+});
+
+it('categorizes checkout failures so a stopped sandbox is not reported as a failed clone', async () => {
+  const h = harness();
+  const original = h.git.getMockImplementation()!;
+  h.git.mockImplementation(async (args) => {
+    if (args.includes('clone')) throw new SandboxUnavailableError('sandbox');
+    return original(args);
+  });
+  await expect(h.service.open('s', 'r')).rejects.toMatchObject({
+    reason: 'project sandbox unavailable',
+  });
+  const noProxy = harness();
+  noProxy.git.mockImplementation(async (args) => {
+    if (args.includes('--get-regexp')) throw Object.assign(new Error('exit 1'), { code: 1 });
+    return '';
+  });
+  await expect(noProxy.service.open('s', 'r')).rejects.toMatchObject({
+    reason: 'forge proxy transport unavailable',
+  });
+  // Only exit 1 means "no proxy configured"; a broken session worktree is not.
+  const broken = harness();
+  broken.git.mockImplementation(async () => {
+    throw Object.assign(new Error('not a git repository'), { code: 128 });
+  });
+  const failure = await broken.service.open('s', 'r').catch((caught: unknown) => caught);
+  expect(describeCheckoutFailure(failure)).toMatchObject({
+    reason: 'checkout failed',
+    exitCode: 128,
+  });
+  await expect(harness(true).service.open('s', 'r')).rejects.toMatchObject({
+    reason: 'planning active',
+  });
+  await expect(h.service.open('s', 'foreign')).rejects.toMatchObject({
+    reason: 'repository not connected',
+  });
+});
+
+it('reports a stopped sandbox from an unwrapped git step as unavailable, not as a git failure', () => {
+  const stopped = new SandboxUnavailableError('sandbox');
+  expect(checkoutFailureReason(stopped)).toBe('project sandbox unavailable');
+  expect(describeCheckoutFailure(stopped)).toMatchObject({ reason: 'project sandbox unavailable' });
+  expect(checkoutFailureReason(new Error('git exited 1'))).toBe('checkout failed');
+});
+
+it('redacts credentials from logged git output and never logs the command line', () => {
+  expect(
+    redactCheckoutOutput(
+      'fatal: https://user:ghp_abc123@github.com/x.git\nAuthorization: Basic Zm9v\nverity-broker-capvalue ghs_tok github_pat_11AB',
+    ),
+  ).toBe(
+    'fatal: https://[redacted]@github.com/x.git\nAuthorization: [redacted]\nverity-broker-[redacted] [redacted] [redacted]',
+  );
+  const detail = describeCheckoutFailure(
+    Object.assign(new Error('Command failed: git clone --config secret'), {
+      code: 128,
+      stderr: 'x'.repeat(5000),
+    }),
+  );
+  expect(detail).toMatchObject({ reason: 'checkout failed', exitCode: 128, causeName: 'Error' });
+  expect(String(detail.stderr)).toHaveLength(1000);
+  expect(JSON.stringify(detail)).not.toContain('Command failed');
+});
+it('never hands out a legacy Documents view as the default repository checkout', async () => {
+  const project = { id: 'p', kind: 'github', owner: 'app', repo: 'main', cloneDir: 'project' };
+  const repository = { id: 'd', projectId: 'p', isDefault: true, removedAt: null };
+  const store = {
+    getSession: vi.fn(async () => ({
+      projectId: 'p',
+      planning: 'implemented',
+      worktree: '/clones/project/.verity-document-sessions/view',
+    })),
+    getProject: vi.fn(async () => project),
+    getProjectRepository: vi.fn(async () => repository),
+    listProjectRepositories: vi.fn(async () => [repository]),
+    listSessionRepositoryWorkspaces: vi.fn(async () => []),
+  } as unknown as EventStore;
+  const service = createSessionRepositories({ store, cloneRoot: '/clones', git: () => vi.fn() });
+  // Without a branch the agent cannot tell this folder from a checkout and works in Documents.
+  await expect(service.open('s', 'd')).rejects.toMatchObject({
+    reason: 'code workspace unavailable',
+  });
+  expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+});
+
+it('keeps the Documents view as the default workspace of a local project', async () => {
+  // Recovery leaves local Documents sessions where they are; refusing them would strand them.
+  const project = { id: 'p', kind: 'local', cloneDir: 'notes' };
+  const repository = { id: 'd', projectId: 'p', isDefault: true, removedAt: null };
+  const worktree = '/clones/notes/.verity-document-sessions/view';
+  const store = {
+    getSession: vi.fn(async () => ({ projectId: 'p', planning: 'implemented', worktree })),
+    getProject: vi.fn(async () => project),
+    getProjectRepository: vi.fn(async () => repository),
+    listProjectRepositories: vi.fn(async () => [repository]),
+    listSessionRepositoryWorkspaces: vi.fn(async () => []),
+  } as unknown as EventStore;
+  const service = createSessionRepositories({ store, cloneRoot: '/clones', git: () => vi.fn() });
+  await expect(service.open('s', 'd')).resolves.toMatchObject({ workspace: { worktree } });
+  expect((await service.list('s')).repositories[0]?.workspace).toMatchObject({ worktree });
+});
+
+it.each(['github', 'local'])(
+  'refuses to expose a missing %s checkout through repository open or list',
+  async (kind) => {
+    const root = await mkdtemp(join(tmpdir(), 'missing-default-'));
+    try {
+      const project = { id: 'p', kind, cloneDir: 'project' };
+      await mkdir(join(root, 'project'));
+      await writeFile(join(root, 'project', 'index.ts'), 'export {};');
+      const repository = { id: 'd', projectId: 'p', isDefault: true };
+      const worktree = join(root, 'code-s');
+      const store = {
+        getSession: async () => ({ projectId: 'p', planning: 'implemented', worktree }),
+        getProject: async () => project,
+        getProjectRepository: async () => repository,
+        listProjectRepositories: async () => [repository],
+        listSessionRepositoryWorkspaces: async () => [],
+      } as unknown as EventStore;
+      const recoveryPending = vi.fn(async () => false);
+      const service = createSessionRepositories({
+        store,
+        cloneRoot: root,
+        sessionStorage: { hasPendingWorkspaceRecovery: recoveryPending },
+      });
+      await expect(service.open('s', 'd')).rejects.toMatchObject({
+        reason: 'code workspace unavailable',
+      });
+      expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+      await mkdir(worktree);
+      recoveryPending.mockResolvedValue(true);
+      // Partial restore leaves a directory without a usable checkout.
+      await expect(service.open('s', 'd')).rejects.toMatchObject({
+        reason: 'code workspace unavailable',
+      });
+      expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+      recoveryPending.mockResolvedValue(false);
+      await expect(service.open('s', 'd')).resolves.toMatchObject({ workspace: { worktree } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it('does not expose Documents when local code exists only in the legacy sibling', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'local-sibling-'));
+  try {
+    const worktree = join(root, '.verity-document-sessions', 'view');
+    const sibling = join(root, '.verity-sessions', 'code-s');
+    await mkdir(sibling, { recursive: true });
+    await writeFile(join(sibling, 'index.ts'), 'export {};');
+    const repository = { id: 'd', projectId: 'p', isDefault: true };
+    const store = {
+      getSession: async () => ({
+        sessionId: 's',
+        projectId: 'p',
+        planning: 'implemented',
+        worktree,
+      }),
+      getProject: async () => ({ id: 'p', kind: 'local' }),
+      getProjectRepository: async () => repository,
+      listProjectRepositories: async () => [repository],
+      listSessionRepositoryWorkspaces: async () => [],
+    } as unknown as EventStore;
+    const service = createSessionRepositories({ store });
+    await expect(service.open('s', 'd')).rejects.toMatchObject({
+      reason: 'code workspace unavailable',
+    });
+    expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

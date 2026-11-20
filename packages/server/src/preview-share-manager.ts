@@ -1,3 +1,8 @@
+import type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
+export type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
+import { phaseTimer, type PhaseTimer } from './preview-share-diagnostics.js';
+import { previewTargetIsLive, previewConnectorIsLive } from './preview-target-activity.js';
+import { validOpenCodeGatewayConfig } from './preview-artifact-validation.js';
 import {
   PreviewShareConflictError,
   PreviewNetworkProtectionError,
@@ -19,6 +24,7 @@ import { randomBytes } from 'node:crypto';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import {
   type EventStore,
+  type ProjectRecord,
   type PublicPreviewShareRecord,
   type PublicPreviewShareState,
 } from '@verity/store';
@@ -26,7 +32,7 @@ import { DockerError, type DockerClient } from './docker.js';
 import { SIGNING_BROKER_TOKEN_HASH_LABEL } from './git-signer.js';
 import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
 import {
-  sessionDevServers,
+  webSessionDevServers as sessionDevServers,
   type ListeningProcess,
   type SessionDevServer,
 } from './listening-ports.js';
@@ -34,7 +40,6 @@ import { containerPathFor } from './project-backend.js';
 import { containerGenerationOf } from './project-relay-migration.js';
 import {
   codexGatewayConfig,
-  OPENCODE_KNOWLEDGE_READ_PERMISSION,
   projectClonePath,
   projectNetworkName,
   projectNodeModulesVolumeName,
@@ -117,7 +122,19 @@ export interface PreviewEdgeControl {
   onSharingDisabled?(listener: () => void): () => void;
 }
 
+type ListenerRead = { fresh?: boolean };
 export interface PreviewShareManagerOptions {
+  /**
+   * The container and network of the sandbox a managed dev server runs in: its
+   * person's own sandbox, or the original one (ADR 0023 §4). Absent, every
+   * preview targets the project's original sandbox.
+   */
+  sandboxFor?:
+    | ((
+        project: ProjectRecord,
+        userId: string | null,
+      ) => Promise<{ containerName: string; networkName: string }>)
+    | undefined;
   store: EventStore;
   docker: DockerClient;
   edge: PreviewEdgeControl;
@@ -132,15 +149,15 @@ export interface PreviewShareManagerOptions {
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>;
     devServer: NonNullable<Awaited<ReturnType<EventStore['getDevServer']>>>;
   }) => Promise<boolean>;
-  /** Lists the sandbox's TCP listeners; absent where no project runtime exists,
-   *  which leaves session dev servers undiscoverable rather than guessed. */
-  listSessionServers?: (sessionId: string) => Promise<SessionDevServer[]>;
+  /** Missing runtime discovery leaves listeners unverified. */
+  listSessionServers?: (sessionId: string, options?: ListenerRead) => Promise<SessionDevServer[]>;
   prepareTargetPort?: (
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     port: number,
   ) => Promise<number>;
   listListeningProcesses?: (
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    options?: ListenerRead,
   ) => Promise<ListeningProcess[]>;
   now?: () => Date;
   connectorReadyTimeoutMs?: number;
@@ -157,74 +174,10 @@ export interface PreviewShareManagerOptions {
     contents?: string;
   }>;
   listArtifactDirectory?: (path: string) => Promise<string[]>;
-  /** One line per create and per stop, carrying how long each step took. A
-   * link that takes ten seconds is otherwise one opaque request: the Uplink
-   * round trip, the connector start and the wait for its edge connection all
-   * sit behind the same spinner. */
+  /** Report create/stop step durations to distinguish Uplink, start and readiness delays. */
   log?: Pick<Console, 'info' | 'warn'>;
-  /** Called once a share has ended, revoked or expired. Managed dev servers stop
-   *  when their last access ends (concept 2.6). */
+  /** Ends managed access when its last share ends (concept 2.6). */
   onShareEnded?: (share: { id: string; managedInstanceId: string | null }) => void;
-}
-
-/** Records the milliseconds spent in each named step, in the order they ran. */
-type PhaseTimer = {
-  mark(phase: string): void;
-  readonly phasesMs: Record<string, number>;
-  readonly lastPhase: string | undefined;
-  totalMs(): number;
-};
-
-function phaseTimer(): PhaseTimer {
-  const startedAt = performance.now();
-  let last = startedAt;
-  let lastPhase: string | undefined;
-  const phasesMs: Record<string, number> = {};
-  return {
-    mark(phase) {
-      const now = performance.now();
-      phasesMs[phase] = Math.round(now - last);
-      last = now;
-      lastPhase = phase;
-    },
-    phasesMs,
-    get lastPhase() {
-      return lastPhase;
-    },
-    totalMs: () => Math.round(performance.now() - startedAt),
-  };
-}
-
-export interface CreatePreviewShareInput {
-  managedInstanceId?: string | undefined;
-  projectId?: string;
-  sessionId?: string;
-  devServerId?: string;
-  staticPath?: string;
-  /** A port something in the session's worktree listens on; requires `sessionId`. */
-  targetPort?: number;
-  pin: string;
-  ttlSeconds: number;
-}
-
-export interface PublicPreviewShare {
-  managedInstanceId: string | null;
-  pinLocked?: boolean;
-  id: string;
-  projectId: string;
-  devServerId: string | null;
-  targetKind: 'dev-server' | 'static-folder';
-  targetPort: number | null;
-  staticPath: string | null;
-  sessionId: string | null;
-  state: PublicPreviewShareState;
-  publicOrigin: string | null;
-  pin: string;
-  expiresAt: Date;
-  revokedAt: Date | null;
-  failure: string | null;
-  createdAt: Date;
-  updatedAt: Date;
 }
 
 export class PreviewShareManager {
@@ -237,22 +190,41 @@ export class PreviewShareManager {
     this.now = options.now ?? (() => new Date());
   }
 
+  /** Resolve the owning sandbox before joining its container/network. */
+  async previewSandbox(
+    project: ProjectRecord,
+    managedInstanceId: string | null | undefined,
+  ): Promise<ProjectRecord & { previewNetwork: string }> {
+    const instance = managedInstanceId
+      ? await this.options.store.managedDevServers.getInstance(managedInstanceId)
+      : undefined;
+    if (instance === undefined || this.options.sandboxFor === undefined)
+      return { ...project, previewNetwork: projectNetworkName(project.id) };
+    const target = await this.options.sandboxFor(project, instance.lastRunUserId);
+    return { ...project, containerName: target.containerName, previewNetwork: target.networkName };
+  }
+
   async prepareLocalTarget(
     sessionId: string,
-    target: { targetPort?: number | undefined; staticPath?: string | undefined },
+    target: {
+      targetPort?: number | undefined;
+      staticPath?: string | undefined;
+      managedInstanceId?: string | undefined;
+    },
   ) {
     const session = await this.options.store.getSession(sessionId);
     if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
-    const project = await this.options.store.getProject(session.projectId);
-    if (!project) throw new PreviewShareNotFoundError('project not found');
-    if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
+    const loaded = await this.options.store.getProject(session.projectId);
+    if (!loaded) throw new PreviewShareNotFoundError('project not found');
+    if (loaded.state !== 'active') throw new PreviewShareConflictError('project is not active');
+    const project = await this.previewSandbox(loaded, target.managedInstanceId);
     const sandbox = await this.options.docker.inspectContainer(project.containerName);
     const generation = containerGenerationOf(sandbox);
     if (!sandbox.running || !generation)
       throw new PreviewShareConflictError('sandbox is not running');
     await assertEligibleSandbox(
       sandbox,
-      projectNetworkName(project.id),
+      project.previewNetwork,
       project.id,
       projectWorkspaceSubpath(project, this.options),
       this.options,
@@ -271,6 +243,22 @@ export class PreviewShareManager {
       throw new PreviewShareConflictError('nothing in this session listens on that port');
     }
     return { project, session, generation, staticMount };
+  }
+
+  /** Kept separate from share existence so offline URLs never hold a sandbox awake. */
+  hasLiveTarget(share: PublicPreviewShareRecord): Promise<boolean> {
+    return previewTargetIsLive(share, this.options, {
+      sandbox: (project, id) => this.previewSandbox(project, id),
+      sessionPort: (project, worktree, port) => this.sessionPortReachable(project, worktree, port),
+      staticDirectory: async (project, worktree, path) => {
+        await this.validateStaticDirectory(await this.staticSourceRoot(project, worktree), path);
+      },
+    });
+  }
+
+  async isOnline(share: PublicPreviewShareRecord): Promise<boolean> {
+    if (!share.connectorContainerId || !(await this.hasLiveTarget(share))) return false;
+    return previewConnectorIsLive(this.options.docker, share.connectorContainerId);
   }
 
   isAvailable(): boolean {
@@ -354,6 +342,7 @@ export class PreviewShareManager {
   private async sessionServers(
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     worktree: string,
+    options: { fresh?: boolean } = {},
   ): Promise<SessionDevServer[]> {
     if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) {
       throw new PreviewShareConflictError('dev server discovery is not configured');
@@ -365,21 +354,21 @@ export class PreviewShareManager {
         projectClonePath(this.options.hostCloneRoot, project),
       );
     } catch {
-      throw new PreviewShareConflictError('session worktree is outside the project checkout');
+      throw new PreviewShareConflictError('session worktree is outside the project checkout', {
+        cause: new Error('unsafe static directory'),
+      });
     }
     let processes: ListeningProcess[];
     try {
-      processes = await this.options.listListeningProcesses(project);
+      processes = await this.options.listListeningProcesses(project, options);
     } catch {
-      // A stopped sandbox or a timed-out exec is a state to report, not a 500
-      // carrying raw runner output.
+      // Probe failures remain unknown without exposing raw runner output.
       throw new PreviewShareConflictError('could not inspect the project sandbox');
     }
     return sessionDevServers(processes, sandboxWorktree);
   }
 
-  /** The connector dials the sandbox over the project network, so a listener
-   *  bound to loopback only would publish a link that can never answer. */
+  /** Only publish ports reachable over the project network or prepared forwarding. */
   private async sessionPortReachable(
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     worktree: string,
@@ -391,8 +380,8 @@ export class PreviewShareManager {
         )
       : undefined;
     const servers = session
-      ? await this.options.listSessionServers!(session.sessionId)
-      : await this.sessionServers(project, worktree);
+      ? await this.options.listSessionServers!(session.sessionId, { fresh: true })
+      : await this.sessionServers(project, worktree, { fresh: true });
     return servers.some(
       (server) =>
         server.port === port && (server.reachable || this.options.prepareTargetPort !== undefined),
@@ -510,6 +499,7 @@ export class PreviewShareManager {
     if (managed && managed.projectId !== project.id)
       throw new PreviewShareInputError('managed server does not belong to project');
     if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
+    const sandboxProject = await this.previewSandbox(project, managed?.id);
     if (devServer && !(await this.options.isDevServerRunning({ project, devServer }))) {
       throw new PreviewShareConflictError('dev server is not running');
     }
@@ -523,7 +513,7 @@ export class PreviewShareManager {
     }
     if (
       managed &&
-      !(await this.options.listListeningProcesses?.(project))?.some(
+      !(await this.options.listListeningProcesses?.(project, { fresh: true }))?.some(
         (listener) => listener.instanceId === managed.id && listener.port === managed.sandboxPort,
       )
     )
@@ -553,7 +543,7 @@ export class PreviewShareManager {
       : undefined;
     if (staticPath && staticRoot) await this.validateStaticDirectory(staticRoot, staticPath);
 
-    const sandbox = await this.options.docker.inspectContainer(project.containerName);
+    const sandbox = await this.options.docker.inspectContainer(sandboxProject.containerName);
     const generation = containerGenerationOf(sandbox);
     if (!sandbox.running || !generation) {
       throw new PreviewShareConflictError('sandbox is not running with a relay generation');
@@ -561,7 +551,7 @@ export class PreviewShareManager {
     const workspaceSubpath = projectWorkspaceSubpath(project, this.options);
     await assertEligibleSandbox(
       sandbox,
-      projectNetworkName(project.id),
+      sandboxProject.previewNetwork,
       project.id,
       workspaceSubpath,
       this.options,
@@ -719,18 +709,18 @@ export class PreviewShareManager {
       }
       connectorId = await this.createConnector(
         record,
-        project.containerName,
+        sandboxProject.containerName,
         connectorImage,
         staticMount,
         timer,
       );
-      const after = await this.options.docker.inspectContainer(project.containerName);
+      const after = await this.options.docker.inspectContainer(sandboxProject.containerName);
       if (!after.running || containerGenerationOf(after) !== generation) {
         throw new Error('sandbox generation changed while the share was being created');
       }
       await assertEligibleSandbox(
         after,
-        projectNetworkName(project.id),
+        sandboxProject.previewNetwork,
         project.id,
         workspaceSubpath,
         this.options,
@@ -813,7 +803,6 @@ export class PreviewShareManager {
     }
   }
 
-  /** Validation must not revoke a public link for a move that will be refused. */
   async beginSessionMove(projectId: string): Promise<() => void> {
     return await this.acquireLifecycleLocks([`project:${projectId}`]);
   }
@@ -831,7 +820,13 @@ export class PreviewShareManager {
   }
 
   /** Fence preview lifecycle changes while retaining every active share during GC. */
-  async withProjectStorageMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
+  async withProjectStorageMutation<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    options: { waitForIdle?: boolean } = {},
+  ): Promise<T> {
+    if (options.waitForIdle === false && this.lifecycleTails.has(`project:${projectId}`))
+      throw new PreviewShareConflictError('Project preview lifecycle is in progress');
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
       if (
         (await this.options.store.listPublicPreviewShares(projectId)).some((share) =>
@@ -845,34 +840,35 @@ export class PreviewShareManager {
 
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
-      for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
-        if (!ACTIVE_STATES.includes(share.state)) continue;
-        if (share.state !== 'active') {
-          await this.stop(share.id);
-          continue;
-        }
-        try {
-          await this.replaceConnector(share, true);
-        } catch (error) {
-          if (
-            typeof error !== 'object' ||
-            error === null ||
-            !removedUnreadyConnectorFailures.has(error)
-          )
-            throw error;
-          // The offline page is a courtesy to visitors, not a precondition of the
-          // mutation. A connector the edge refuses (an unknown share answers 404)
-          // failed every Repair of the project before its container was created.
-          // replaceConnector has already removed both connectors, so the link is
-          // simply unreachable until reconcile() brings one up again.
-          this.options.log?.warn(
-            { shareId: share.id, projectId, err: error },
-            'public preview stays unreachable during the project change: its offline connector did not start',
-          );
-        }
-      }
+      await this.retireProjectShares(projectId);
       return mutation();
     });
+  }
+
+  /** Call only while this project's lifecycle fence is held. */
+  async retireProjectShares(projectId: string): Promise<void> {
+    for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
+      if (!ACTIVE_STATES.includes(share.state)) continue;
+      if (share.state !== 'active') {
+        await this.stop(share.id);
+        continue;
+      }
+      try {
+        await this.replaceConnector(share, true);
+      } catch (error) {
+        if (
+          typeof error !== 'object' ||
+          error === null ||
+          !removedUnreadyConnectorFailures.has(error)
+        )
+          throw error;
+        // An unavailable offline page must not prevent project repair.
+        this.options.log?.warn(
+          { shareId: share.id, projectId, err: error },
+          'public preview stays unreachable during the project change: its offline connector did not start',
+        );
+      }
+    }
   }
 
   async withDevServerMutation<T>(devServerId: string, mutation: () => Promise<T>): Promise<T> {
@@ -957,7 +953,7 @@ export class PreviewShareManager {
     );
   }
 
-  /** Lease/revocation fail-closed path. The Uplink independently removes public
+  /** Confirmed entitlement or policy revocation. The Uplink independently removes public
    * edges; locally, stop every connector immediately even when the control socket
    * is already gone. */
   async disableAll(reason: string): Promise<void> {
@@ -1261,7 +1257,11 @@ export class PreviewShareManager {
     }
     const sandbox =
       project.state === 'active'
-        ? await this.options.docker.inspectContainer(project.containerName).catch(() => undefined)
+        ? await this.options.docker
+            .inspectContainer(
+              (await this.previewSandbox(project, share.managedInstanceId)).containerName,
+            )
+            .catch(() => undefined)
         : undefined;
     try {
       if (sandbox) assertPreviewNetworkSupported(sandbox);
@@ -1274,7 +1274,8 @@ export class PreviewShareManager {
     let generation = share.containerGeneration;
     if (sandbox !== undefined && instance.state === 'running' && instance.desired === 'running') {
       const currentGeneration = containerGenerationOf(sandbox);
-      const listeners = (await this.options.listListeningProcesses?.(project)) ?? [];
+      const listeners =
+        (await this.options.listListeningProcesses?.(project, { fresh: true })) ?? [];
       offline =
         !sandbox.running ||
         !currentGeneration ||
@@ -1302,7 +1303,8 @@ export class PreviewShareManager {
       wasOffline === offline &&
       (offline ||
         (share.containerGeneration === generation &&
-          origin === `http://${project.containerName}:${preparedPort}`))
+          origin ===
+            `http://${(await this.previewSandbox(project, share.managedInstanceId)).containerName}:${preparedPort}`))
     )
       return;
     await this.replaceConnector(
@@ -1326,7 +1328,7 @@ export class PreviewShareManager {
     if (!project) return;
     const id = await this.createConnector(
       share,
-      project.containerName,
+      (await this.previewSandbox(project, share.managedInstanceId)).containerName,
       await this.resolveConnectorImage(),
       staticMount,
       undefined,
@@ -1388,7 +1390,11 @@ export class PreviewShareManager {
             : [`VERITY_PREVIEW_TARGET_ORIGIN=http://${targetContainerName}:${targetPort}`]),
       ],
       ...(staticMount ? { volumeMounts: [staticMount] } : {}),
-      network: offline ? 'verity-net' : projectNetworkName(share.projectId),
+      network: offline
+        ? 'verity-net'
+        : project === undefined
+          ? projectNetworkName(share.projectId)
+          : (await this.previewSandbox(project, share.managedInstanceId)).previewNetwork,
       restartPolicy: 'on-failure' as const,
       readOnlyRootfs: true,
       tmpfs: { '/tmp': 'rw,noexec,nosuid,nodev,size=16m,mode=1777' },
@@ -1476,13 +1482,15 @@ export class PreviewShareManager {
     ) {
       throw new PreviewShareConflictError('project is outside Verity storage');
     }
-    const clone = await realpath(clonePath).catch(() => {
-      throw new PreviewShareConflictError('project checkout does not exist');
+    const clone = await realpath(clonePath).catch((cause: unknown) => {
+      throw new PreviewShareConflictError('project checkout does not exist', { cause });
     });
     if (!worktree) return clone;
     const source = resolve(worktree);
-    const canonical = await realpath(source).catch(() => undefined);
-    const within = canonical ? relative(clone, canonical).split('\\').join('/') : undefined;
+    const canonical = await realpath(source).catch((cause: unknown) => {
+      throw new PreviewShareConflictError('session worktree does not exist', { cause });
+    });
+    const within = relative(clone, canonical).split('\\').join('/');
     if (
       canonical !== source ||
       !within ||
@@ -1490,7 +1498,9 @@ export class PreviewShareManager {
       within.startsWith('../') ||
       posix.isAbsolute(within)
     ) {
-      throw new PreviewShareConflictError('session worktree is outside the project checkout');
+      throw new PreviewShareConflictError('session worktree is outside the project checkout', {
+        cause: new Error('unsafe static directory'),
+      });
     }
     return source;
   }
@@ -2052,173 +2062,6 @@ function validCodexGatewayConfig(contents: string): boolean {
       }
     }
     return [...required].every((line) => seen.has(line));
-  } catch {
-    return false;
-  }
-}
-
-function exactKeys(value: object, allowed: readonly string[]): boolean {
-  return Object.keys(value).every((key) => allowed.includes(key));
-}
-
-function validKnowledgePermission(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const actual = value as Record<string, unknown>;
-  return (
-    exactKeys(actual, Object.keys(OPENCODE_KNOWLEDGE_READ_PERMISSION)) &&
-    Object.entries(OPENCODE_KNOWLEDGE_READ_PERMISSION).every(([key, expected]) => {
-      const rule = actual[key];
-      return (
-        typeof rule === 'object' &&
-        rule !== null &&
-        !Array.isArray(rule) &&
-        exactKeys(rule, Object.keys(expected)) &&
-        Object.entries(expected).every(
-          ([pattern, action]) => (rule as Record<string, unknown>)[pattern] === action,
-        )
-      );
-    })
-  );
-}
-
-function validModelMetadata(value: object): boolean {
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (key === 'name') {
-      if (typeof child !== 'string') return false;
-    } else if (['attachment', 'reasoning', 'temperature', 'tool_call'].includes(key)) {
-      if (typeof child !== 'boolean') return false;
-    } else if (key === 'limit' || key === 'cost') {
-      if (typeof child !== 'object' || child === null || Array.isArray(child)) return false;
-      const allowed =
-        key === 'limit'
-          ? ['input', 'output', 'context']
-          : ['input', 'output', 'cache_read', 'cache_write'];
-      if (
-        !exactKeys(child, allowed) ||
-        !Object.values(child).every(
-          (number) => typeof number === 'number' && Number.isFinite(number) && number >= 0,
-        )
-      )
-        return false;
-    } else if (key === 'modalities') {
-      if (
-        typeof child !== 'object' ||
-        child === null ||
-        Array.isArray(child) ||
-        !exactKeys(child, ['input', 'output'])
-      )
-        return false;
-      if (
-        !Object.values(child).every(
-          (list) =>
-            Array.isArray(list) &&
-            list.every(
-              (item: unknown) =>
-                typeof item === 'string' &&
-                ['text', 'audio', 'image', 'video', 'pdf'].includes(item),
-            ),
-        )
-      )
-        return false;
-    } else return false;
-  }
-  return true;
-}
-
-function validOpenCodeGatewayConfig(contents: string): boolean {
-  try {
-    const parsed = JSON.parse(contents) as unknown;
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
-    if (
-      !exactKeys(parsed, [
-        '$schema',
-        'autoupdate',
-        'permission',
-        'provider',
-        'model',
-        'small_model',
-        'theme',
-        'username',
-        'logLevel',
-      ])
-    )
-      return false;
-    for (const key of ['model', 'small_model', 'theme', 'username', 'logLevel']) {
-      const value = (parsed as Record<string, unknown>)[key];
-      if (
-        value !== undefined &&
-        (typeof value !== 'string' || !/^[a-zA-Z0-9._ /:-]+$/u.test(value))
-      )
-        return false;
-    }
-    const { $schema, autoupdate, permission, provider } = parsed as {
-      $schema?: unknown;
-      autoupdate?: unknown;
-      permission?: unknown;
-      provider?: unknown;
-    };
-    if ($schema !== 'https://opencode.ai/config.json' || autoupdate !== false) return false;
-    if (permission !== undefined && !validKnowledgePermission(permission)) return false;
-    // Provisioning also emits a credential-free config when no provider is selected.
-    if (provider === undefined) return true;
-    if (typeof provider !== 'object' || provider === null || Array.isArray(provider)) return false;
-    if (!exactKeys(provider, ['verity'])) return false;
-    const verity = (provider as { verity?: unknown }).verity;
-    if (typeof verity !== 'object' || verity === null || Array.isArray(verity)) return false;
-    if (!exactKeys(verity, ['npm', 'name', 'options', 'models'])) return false;
-    const {
-      npm,
-      name,
-      options: gateway,
-      models,
-    } = verity as {
-      npm?: unknown;
-      name?: unknown;
-      options?: unknown;
-      models?: unknown;
-    };
-    if (
-      (npm !== '@opencode/ai/providers/openai-compatible' && npm !== '@ai-sdk/openai-compatible') ||
-      name !== 'OpenAI-compatible'
-    )
-      return false;
-    if (typeof gateway !== 'object' || gateway === null || Array.isArray(gateway)) return false;
-    if (!exactKeys(gateway, ['baseURL', 'apiKey', 'timeout'])) return false;
-    const timeout = (gateway as { timeout?: unknown }).timeout;
-    if (
-      timeout !== undefined &&
-      (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout < 0)
-    )
-      return false;
-    const { baseURL, apiKey } = gateway as { baseURL?: unknown; apiKey?: unknown };
-    if (
-      typeof baseURL !== 'string' ||
-      !/^http:\/\/127\.0\.0\.1:\d+\/opencode$/u.test(baseURL) ||
-      apiKey !== 'verity-opencode-gateway-placeholder-v1'
-    )
-      return false;
-    if (typeof models !== 'object' || models === null || Array.isArray(models)) return false;
-    const entries = Object.values(models as Record<string, unknown>);
-    return (
-      entries.length > 0 &&
-      entries.every((value) => {
-        if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-        return (
-          exactKeys(value, [
-            'name',
-            'limit',
-            'cost',
-            'modalities',
-            'attachment',
-            'reasoning',
-            'temperature',
-            'tool_call',
-          ]) &&
-          typeof (value as { name?: unknown }).name === 'string' &&
-          validModelMetadata(value)
-        );
-      })
-    );
   } catch {
     return false;
   }

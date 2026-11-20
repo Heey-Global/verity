@@ -1,0 +1,811 @@
+[
+  {
+    "name": "hello advertises team version 1",
+    "schema": "helloTeam",
+    "valid": true,
+    "value": {
+      "teamVersions": [1]
+    }
+  },
+  {
+    "name": "hello cannot advertise an unknown team version",
+    "schema": "helloTeam",
+    "valid": false,
+    "value": {
+      "teamVersions": [2]
+    }
+  },
+  {
+    "name": "welcome selects team version 1",
+    "schema": "welcomeTeam",
+    "valid": true,
+    "value": {
+      "teamVersion": 1
+    }
+  },
+  {
+    "name": "welcome cannot select version 0",
+    "schema": "welcomeTeam",
+    "valid": false,
+    "value": {
+      "teamVersion": 0
+    }
+  },
+  {
+    "name": "grant request needs only the envelope",
+    "schema": "grantGet",
+    "valid": true,
+    "value": {
+      "type": "team.grant.get",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1
+    }
+  },
+  {
+    "name": "grant request cannot name another installation",
+    "schema": "grantGet",
+    "valid": false,
+    "value": {
+      "type": "team.grant.get",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+    }
+  },
+  {
+    "name": "grant carries a compact JWS",
+    "schema": "grant",
+    "valid": true,
+    "value": {
+      "type": "team.grant",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "assertion": "aGVhZGVy.cGF5bG9hZA.c2lnbmF0dXJl"
+    }
+  },
+  {
+    "name": "grant rejects a JSON serialized JWS",
+    "schema": "grant",
+    "valid": false,
+    "value": {
+      "type": "team.grant",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "assertion": "{\"payload\":\"x\"}"
+    }
+  },
+  {
+    "name": "invitation binds project, permissions, commitment and Core key",
+    "schema": "inviteCreate",
+    "valid": true,
+    "value": {
+      "type": "team.invite.create",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "localInviteId": "1d2c3b4a-5e6f-4a1b-9c8d-7e6f5a4b3c2d",
+      "projectId": "project_1",
+      "permissions": ["read", "execute"],
+      "expiresAt": 1800000000,
+      "bootstrapCommitment": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3c",
+      "installationKeyFingerprint": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI"
+    }
+  },
+  {
+    "name": "invitation cannot grant execute without read",
+    "schema": "inviteCreate",
+    "valid": false,
+    "value": {
+      "type": "team.invite.create",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "localInviteId": "1d2c3b4a-5e6f-4a1b-9c8d-7e6f5a4b3c2d",
+      "projectId": "project_1",
+      "permissions": ["execute"],
+      "expiresAt": 1800000000,
+      "bootstrapCommitment": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3c",
+      "installationKeyFingerprint": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI"
+    }
+  },
+  {
+    "name": "invitation has no administrator permission",
+    "schema": "inviteCreate",
+    "valid": false,
+    "value": {
+      "type": "team.invite.create",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "localInviteId": "1d2c3b4a-5e6f-4a1b-9c8d-7e6f5a4b3c2d",
+      "projectId": "project_1",
+      "permissions": ["read", "admin"],
+      "expiresAt": 1800000000,
+      "bootstrapCommitment": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3c",
+      "installationKeyFingerprint": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI"
+    }
+  },
+  {
+    "name": "invitation permissions are ordered and unique",
+    "schema": "inviteCreate",
+    "valid": false,
+    "value": {
+      "type": "team.invite.create",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "localInviteId": "1d2c3b4a-5e6f-4a1b-9c8d-7e6f5a4b3c2d",
+      "projectId": "project_1",
+      "permissions": ["execute", "read"],
+      "expiresAt": 1800000000,
+      "bootstrapCommitment": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3c",
+      "installationKeyFingerprint": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI"
+    }
+  },
+  {
+    "name": "invitation fingerprint is the full TLS pin, not a short code",
+    "schema": "inviteCreate",
+    "valid": false,
+    "value": {
+      "type": "team.invite.create",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "localInviteId": "1d2c3b4a-5e6f-4a1b-9c8d-7e6f5a4b3c2d",
+      "projectId": "project_1",
+      "permissions": ["read", "execute"],
+      "expiresAt": 1800000000,
+      "bootstrapCommitment": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3c",
+      "installationKeyFingerprint": "4F2C9A17"
+    }
+  },
+  {
+    "name": "invitation mutation needs an operation id",
+    "schema": "inviteCreate",
+    "valid": false,
+    "value": {
+      "type": "team.invite.create",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "localInviteId": "1d2c3b4a-5e6f-4a1b-9c8d-7e6f5a4b3c2d",
+      "projectId": "project_1",
+      "permissions": ["read", "execute"],
+      "expiresAt": 1800000000,
+      "bootstrapCommitment": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3c",
+      "installationKeyFingerprint": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI"
+    }
+  },
+  {
+    "name": "invitation expiry is in seconds, not a string",
+    "schema": "inviteCreate",
+    "valid": false,
+    "value": {
+      "type": "team.invite.create",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "localInviteId": "1d2c3b4a-5e6f-4a1b-9c8d-7e6f5a4b3c2d",
+      "projectId": "project_1",
+      "permissions": ["read", "execute"],
+      "expiresAt": "1800000000",
+      "bootstrapCommitment": "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3c",
+      "installationKeyFingerprint": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI"
+    }
+  },
+  {
+    "name": "created invitation returns the service invitation id",
+    "schema": "inviteCreated",
+    "valid": true,
+    "value": {
+      "type": "team.invite.created",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "expiresAt": 1800000000
+    }
+  },
+  {
+    "name": "created invitation carries no redeem URL",
+    "schema": "inviteCreated",
+    "valid": false,
+    "value": {
+      "type": "team.invite.created",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "expiresAt": 1800000000,
+      "redeemUrl": "https://uplink.verity.build/r/x"
+    }
+  },
+  {
+    "name": "invitation id is 32 random bytes, not a short label",
+    "schema": "inviteCreated",
+    "valid": false,
+    "value": {
+      "type": "team.invite.created",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "invitationId": "invite_1",
+      "expiresAt": 1800000000
+    }
+  },
+  {
+    "name": "cancel names the invitation",
+    "schema": "inviteCancel",
+    "valid": true,
+    "value": {
+      "type": "team.invite.cancel",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM"
+    }
+  },
+  {
+    "name": "cancel cannot target an invitation by local id",
+    "schema": "inviteCancel",
+    "valid": false,
+    "value": {
+      "type": "team.invite.cancel",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "invitationId": "local_invite_1"
+    }
+  },
+  {
+    "name": "cancel reports an already committed join",
+    "schema": "inviteCancelled",
+    "valid": true,
+    "value": {
+      "type": "team.invite.cancelled",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "alreadyCommitted": true
+    }
+  },
+  {
+    "name": "cancel result must state whether a join committed",
+    "schema": "inviteCancelled",
+    "valid": false,
+    "value": {
+      "type": "team.invite.cancelled",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM"
+    }
+  },
+  {
+    "name": "join commit binds invitation, redemption and person reference",
+    "schema": "joinCommit",
+    "valid": true,
+    "value": {
+      "type": "team.join.commit",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "redemptionId": "redemption_1",
+      "membershipRef": "REREREREREREREREREREREREREREREREREREREREREQ"
+    }
+  },
+  {
+    "name": "join commit cannot carry a project; projects stay local",
+    "schema": "joinCommit",
+    "valid": false,
+    "value": {
+      "type": "team.join.commit",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "redemptionId": "redemption_1",
+      "membershipRef": "REREREREREREREREREREREREREREREREREREREREREQ",
+      "projectId": "project_1"
+    }
+  },
+  {
+    "name": "person reference is 32 random bytes",
+    "schema": "joinCommit",
+    "valid": false,
+    "value": {
+      "type": "team.join.commit",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "redemptionId": "redemption_1",
+      "membershipRef": "user_7"
+    }
+  },
+  {
+    "name": "join committed echoes the redemption",
+    "schema": "joinCommitted",
+    "valid": true,
+    "value": {
+      "type": "team.join.committed",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "redemptionId": "redemption_1"
+    }
+  },
+  {
+    "name": "join committed carries no membership reference back",
+    "schema": "joinCommitted",
+    "valid": false,
+    "value": {
+      "type": "team.join.committed",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "redemptionId": "redemption_1",
+      "membershipRef": "REREREREREREREREREREREREREREREREREREREREREQ"
+    }
+  },
+  {
+    "name": "removal carries only the opaque reference",
+    "schema": "membershipRemove",
+    "valid": true,
+    "value": {
+      "type": "team.membership.remove",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "membershipRef": "REREREREREREREREREREREREREREREREREREREREREQ",
+      "reason": "membership_removed"
+    }
+  },
+  {
+    "name": "removal reason is a closed enum",
+    "schema": "membershipRemove",
+    "valid": false,
+    "value": {
+      "type": "team.membership.remove",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "membershipRef": "REREREREREREREREREREREREREREREREREREREREREQ",
+      "reason": "account_deleted"
+    }
+  },
+  {
+    "name": "removal carries no display name",
+    "schema": "membershipRemove",
+    "valid": false,
+    "value": {
+      "type": "team.membership.remove",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "operationId": "0b7f6e5d-4c3b-4a29-8817-161514131211",
+      "membershipRef": "REREREREREREREREREREREREREREREREREREREREREQ",
+      "reason": "membership_removed",
+      "displayName": "Lena"
+    }
+  },
+  {
+    "name": "removed echoes the reference",
+    "schema": "membershipRemoved",
+    "valid": true,
+    "value": {
+      "type": "team.membership.removed",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "membershipRef": "REREREREREREREREREREREREREREREREREREREREREQ"
+    }
+  },
+  {
+    "name": "removed echoes a valid reference",
+    "schema": "membershipRemoved",
+    "valid": false,
+    "value": {
+      "type": "team.membership.removed",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "membershipRef": ""
+    }
+  },
+  {
+    "name": "state request names the known generation",
+    "schema": "stateGet",
+    "valid": true,
+    "value": {
+      "type": "team.state.get",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "knownGeneration": 0
+    }
+  },
+  {
+    "name": "known generation is nonnegative",
+    "schema": "stateGet",
+    "valid": false,
+    "value": {
+      "type": "team.state.get",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "knownGeneration": -1
+    }
+  },
+  {
+    "name": "active state carries an assertion",
+    "schema": "state",
+    "valid": true,
+    "value": {
+      "type": "team.state",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "generation": 3,
+      "assertion": "aGVhZGVy.cGF5bG9hZA.c2lnbmF0dXJl"
+    }
+  },
+  {
+    "name": "suspended state carries a reason",
+    "schema": "state",
+    "valid": true,
+    "value": {
+      "type": "team.state",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "generation": 4,
+      "suspendedReason": "revoked"
+    }
+  },
+  {
+    "name": "state cannot be both active and suspended",
+    "schema": "state",
+    "valid": false,
+    "value": {
+      "type": "team.state",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "generation": 4,
+      "assertion": "aGVhZGVy.cGF5bG9hZA.c2lnbmF0dXJl",
+      "suspendedReason": "revoked"
+    }
+  },
+  {
+    "name": "state has a closed suspension reason",
+    "schema": "state",
+    "valid": false,
+    "value": {
+      "type": "team.state",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "generation": 4,
+      "suspendedReason": "maintenance"
+    }
+  },
+  {
+    "name": "grant change event carries generation and assertion",
+    "schema": "grantChanged",
+    "valid": true,
+    "value": {
+      "type": "team.grant.changed",
+      "eventId": "9e8d7c6b-5a49-4837-a625-140302f1e0d9",
+      "teamVersion": 1,
+      "generation": 5,
+      "assertion": "aGVhZGVy.cGF5bG9hZA.c2lnbmF0dXJl"
+    }
+  },
+  {
+    "name": "grant change needs an event id, not a request id",
+    "schema": "grantChanged",
+    "valid": false,
+    "value": {
+      "type": "team.grant.changed",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "generation": 5,
+      "assertion": "aGVhZGVy.cGF5bG9hZA.c2lnbmF0dXJl"
+    }
+  },
+  {
+    "name": "grant revocation event carries the floor generation",
+    "schema": "grantRevoked",
+    "valid": true,
+    "value": {
+      "type": "team.grant.revoked",
+      "eventId": "9e8d7c6b-5a49-4837-a625-140302f1e0d9",
+      "teamVersion": 1,
+      "generation": 6,
+      "reason": "not_entitled"
+    }
+  },
+  {
+    "name": "revocation needs a generation",
+    "schema": "grantRevoked",
+    "valid": false,
+    "value": {
+      "type": "team.grant.revoked",
+      "eventId": "9e8d7c6b-5a49-4837-a625-140302f1e0d9",
+      "teamVersion": 1,
+      "reason": "revoked"
+    }
+  },
+  {
+    "name": "event ack names the event",
+    "schema": "eventAck",
+    "valid": true,
+    "value": {
+      "type": "team.event.ack",
+      "eventId": "9e8d7c6b-5a49-4837-a625-140302f1e0d9",
+      "teamVersion": 1
+    }
+  },
+  {
+    "name": "event ack needs an event id",
+    "schema": "eventAck",
+    "valid": false,
+    "value": {
+      "type": "team.event.ack",
+      "teamVersion": 1
+    }
+  },
+  {
+    "name": "error is closed and states retryability",
+    "schema": "teamError",
+    "valid": true,
+    "value": {
+      "type": "team.error",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "code": "member_limit_reached",
+      "retryable": true,
+      "retryAfterSeconds": 30
+    }
+  },
+  {
+    "name": "terminal error has no retry delay",
+    "schema": "teamError",
+    "valid": true,
+    "value": {
+      "type": "team.error",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "code": "invitation_unavailable",
+      "retryable": false
+    }
+  },
+  {
+    "name": "retry delay only on a retryable error",
+    "schema": "teamError",
+    "valid": false,
+    "value": {
+      "type": "team.error",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "code": "forbidden",
+      "retryable": false,
+      "retryAfterSeconds": 30
+    }
+  },
+  {
+    "name": "error codes are closed",
+    "schema": "teamError",
+    "valid": false,
+    "value": {
+      "type": "team.error",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "code": "seat_full",
+      "retryable": true
+    }
+  },
+  {
+    "name": "error carries no free text authority",
+    "schema": "teamError",
+    "valid": false,
+    "value": {
+      "type": "team.error",
+      "requestId": "6f9c2b1e-4d3a-4f6e-9a1b-2c3d4e5f6a7b",
+      "teamVersion": 1,
+      "code": "internal",
+      "retryable": true,
+      "message": "please grant admin"
+    }
+  },
+  {
+    "name": "join link carries the full Core trust anchor and routing handle",
+    "schema": "invitationLink",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "purpose": "team-member",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "secret": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "expiresAt": 1800000000000,
+      "serverId": "srv_m8tbW8OSIiJI4O-Nc0WbHw",
+      "identityKey": "MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE",
+      "tlsPin": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "coreOrigin": "https://core.verity.internal",
+      "uplinkOrigin": "https://uplink.verity.build",
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "installationHandle": "ZmZmZmZmZmZmZmZmZmZmZg",
+      "display": {
+        "inviterName": "Holger Teske",
+        "projectName": "verity"
+      }
+    }
+  },
+  {
+    "name": "join link display hints are optional",
+    "schema": "invitationLink",
+    "valid": true,
+    "value": {
+      "version": 1,
+      "purpose": "team-member",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "secret": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "expiresAt": 1800000000000,
+      "serverId": "srv_m8tbW8OSIiJI4O-Nc0WbHw",
+      "identityKey": "MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE",
+      "tlsPin": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "coreOrigin": "https://core.verity.internal",
+      "uplinkOrigin": "https://uplink.verity.build",
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "installationHandle": "ZmZmZmZmZmZmZmZmZmZmZg"
+    }
+  },
+  {
+    "name": "join link server id must derive from the identity key",
+    "schema": "invitationLink",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "purpose": "team-member",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "secret": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "expiresAt": 1800000000000,
+      "serverId": "srv_AQEBAQEBAQEBAQEBAQEBAQ",
+      "identityKey": "MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE",
+      "tlsPin": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "coreOrigin": "https://core.verity.internal",
+      "uplinkOrigin": "https://uplink.verity.build",
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "installationHandle": "ZmZmZmZmZmZmZmZmZmZmZg",
+      "display": {
+        "inviterName": "Holger Teske",
+        "projectName": "verity"
+      }
+    }
+  },
+  {
+    "name": "join link is for team members only",
+    "schema": "invitationLink",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "purpose": "initial-admin",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "secret": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "expiresAt": 1800000000000,
+      "serverId": "srv_m8tbW8OSIiJI4O-Nc0WbHw",
+      "identityKey": "MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE",
+      "tlsPin": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "coreOrigin": "https://core.verity.internal",
+      "uplinkOrigin": "https://uplink.verity.build",
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "installationHandle": "ZmZmZmZmZmZmZmZmZmZmZg",
+      "display": {
+        "inviterName": "Holger Teske",
+        "projectName": "verity"
+      }
+    }
+  },
+  {
+    "name": "join link expiry is in milliseconds",
+    "schema": "invitationLink",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "purpose": "team-member",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "secret": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "expiresAt": "tomorrow",
+      "serverId": "srv_m8tbW8OSIiJI4O-Nc0WbHw",
+      "identityKey": "MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE",
+      "tlsPin": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "coreOrigin": "https://core.verity.internal",
+      "uplinkOrigin": "https://uplink.verity.build",
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "installationHandle": "ZmZmZmZmZmZmZmZmZmZmZg",
+      "display": {
+        "inviterName": "Holger Teske",
+        "projectName": "verity"
+      }
+    }
+  },
+  {
+    "name": "join link core origin has no path",
+    "schema": "invitationLink",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "purpose": "team-member",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "secret": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "expiresAt": 1800000000000,
+      "serverId": "srv_m8tbW8OSIiJI4O-Nc0WbHw",
+      "identityKey": "MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE",
+      "tlsPin": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "coreOrigin": "https://core.verity.internal/api",
+      "uplinkOrigin": "https://uplink.verity.build",
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "installationHandle": "ZmZmZmZmZmZmZmZmZmZmZg",
+      "display": {
+        "inviterName": "Holger Teske",
+        "projectName": "verity"
+      }
+    }
+  },
+  {
+    "name": "join link display text is a single line",
+    "schema": "invitationLink",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "purpose": "team-member",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "secret": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "expiresAt": 1800000000000,
+      "serverId": "srv_m8tbW8OSIiJI4O-Nc0WbHw",
+      "identityKey": "MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE",
+      "tlsPin": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "coreOrigin": "https://core.verity.internal",
+      "uplinkOrigin": "https://uplink.verity.build",
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "installationHandle": "ZmZmZmZmZmZmZmZmZmZmZg",
+      "display": {
+        "inviterName": "Holger\nTeske",
+        "projectName": "verity"
+      }
+    }
+  },
+  {
+    "name": "join link display text is bounded",
+    "schema": "invitationLink",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "purpose": "team-member",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "secret": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "expiresAt": 1800000000000,
+      "serverId": "srv_m8tbW8OSIiJI4O-Nc0WbHw",
+      "identityKey": "MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE",
+      "tlsPin": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "coreOrigin": "https://core.verity.internal",
+      "uplinkOrigin": "https://uplink.verity.build",
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "installationHandle": "ZmZmZmZmZmZmZmZmZmZmZg",
+      "display": {
+        "inviterName": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "projectName": "verity"
+      }
+    }
+  },
+  {
+    "name": "join link cannot carry project or permissions as authority",
+    "schema": "invitationLink",
+    "valid": false,
+    "value": {
+      "version": 1,
+      "purpose": "team-member",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "secret": "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU",
+      "expiresAt": 1800000000000,
+      "serverId": "srv_m8tbW8OSIiJI4O-Nc0WbHw",
+      "identityKey": "MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERERERE",
+      "tlsPin": "sha256-IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI",
+      "coreOrigin": "https://core.verity.internal",
+      "uplinkOrigin": "https://uplink.verity.build",
+      "installationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "installationHandle": "ZmZmZmZmZmZmZmZmZmZmZg",
+      "display": {
+        "inviterName": "Holger Teske",
+        "projectName": "verity"
+      },
+      "projectId": "project_1"
+    }
+  }
+]

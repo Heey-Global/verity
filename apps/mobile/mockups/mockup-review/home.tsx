@@ -2,7 +2,6 @@ import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { VerityHeader } from '../../components/home/HomeInbox';
 import { HomeTabBar } from '../../components/home/HomeTabBar';
 import { Button, Card, CardHead, SectionHeader, StatusTag, Text } from '../../components/ui';
 import { MockupThumbs, SAMPLE_SCREENS } from './parts';
@@ -19,7 +18,6 @@ export default function HomeReviewMockup() {
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
-        <VerityHeader summary="1 mockup review" />
         <SectionHeader title="Needs you · 1" />
         <Card stacked>
           <CardHead

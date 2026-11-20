@@ -110,3 +110,16 @@ export function monitorNetworkApprovals(options: {
     unsubscribe?.();
   };
 }
+
+/** Bind turn steering to project-scoped feedback without owning turn lifecycle. */
+export function monitorNetworkTurn(
+  deps: { store: EventStore; bus?: EventBus | undefined },
+  projectId: string | null | undefined,
+  turn: { steer(message: { text: string }): Promise<boolean> },
+  sessionId: string | undefined,
+): () => void {
+  return startNetworkApprovalMonitor(deps.store, projectId, (text) => turn.steer({ text }), {
+    bus: deps.bus,
+    sessionId,
+  });
+}

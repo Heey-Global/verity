@@ -184,6 +184,7 @@ export function handleSupervisorRequest(
       pending: Promise<Record<string, unknown>>;
     };
     workerStatus?(turnId: string): 'live' | 'uncertain';
+    cancel?(turnId: string): Promise<Record<string, unknown>>;
     runTrustedCli?(
       request: Record<string, unknown>,
       onSpawned?: () => void,

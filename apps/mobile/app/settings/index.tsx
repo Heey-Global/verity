@@ -34,6 +34,7 @@ import { backupRowSummary } from '../../components/settings/backup/backupText';
 import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
 import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
+import { getOtherServerProfiles } from '../../lib/serverProfile';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
 import { enterDemoMode, isDemoMode } from '../../lib/demoMode';
 import {
@@ -197,10 +198,16 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               router.push({ pathname: '/settings/context', params: { kind: 'memory' } })
             }
           />
+          <SettingsNavRow
+            icon="cpu"
+            title="AI Account"
+            subtitle="Claude, Codex and OpenCode for your turns"
+            onPress={() => router.push('/settings/ai-accounts')}
+          />
         </SettingsListPanel>
       </SettingsGroup>
-      {/* The new design keeps Shared knowledge on Verity's page; until the stored
-          choice is known the group stays away rather than show and vanish. */}
+      {/* The new design opens Shared knowledge from the end of Home; until the
+          stored choice is known the group stays away rather than show and vanish. */}
       {designChoice !== false ? null : (
         <SettingsGroup title="Knowledge">
           <SettingsListPanel>
@@ -337,6 +344,18 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }}
             accessibilityLabel="Change server address"
           />
+          {!isDemoMode() ? (
+            <SettingsNavRow
+              icon="layers"
+              title="Servers"
+              subtitle={
+                getOtherServerProfiles().length === 0
+                  ? 'This server only'
+                  : `${String(getOtherServerProfiles().length + 1)} servers`
+              }
+              onPress={() => router.push('/settings/servers' as Href)}
+            />
+          ) : null}
           <SettingsNavRow
             icon="monitor"
             title="Devices & Web Browsers"

@@ -40,6 +40,6 @@ test('a model picked in a meeting wins over the faster default for that meeting 
     effective: 'claude-sonnet-5-5',
   });
   // A choice the project stopped offering falls back instead of failing the request.
-  setMeetingModel('meeting-3', 'claude-fable-5-1');
+  setMeetingModel('meeting-3', 'claude-fable-5-2');
   expect(await meetingResearchModel(client, 'session', 'meeting-3')).toBe('claude-sonnet-5-5');
 });

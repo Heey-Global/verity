@@ -1,0 +1,8 @@
+{
+  "name": "verity-cli-corepack",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "corepack": "0.36.0"
+  }
+}

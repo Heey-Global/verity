@@ -214,7 +214,7 @@ bootstrap commits are separate follow-ups.
 
 ## HTTP MCP OAuth setup
 
-In Settings, Connections, MCP, enter the remote MCP server's public HTTPS URL and
+In Settings, Connections, MCP, enter the remote MCP server's HTTPS URL and
 turn on OAuth. **Detect OAuth settings** reads the server's protected-resource
 metadata and its authorization server's OAuth or OpenID metadata. Verity can
 register a client when the provider offers Dynamic Client Registration. Otherwise,
@@ -239,8 +239,47 @@ registered callbacks or recreate the automatically registered connection.
 A Tailscale hostname or private address for the Verity server does not need to be
 reachable by the OAuth provider: your device follows the redirect, then contacts
 your server. Your device must still be able to reach Verity, and your server must
-be able to reach the public OAuth and MCP endpoints. Browser OAuth requires an
+be able to reach the OAuth and MCP endpoints. Browser OAuth requires an
 HTTPS hostname accepted by the provider; a private HTTP IP address is insufficient.
+
+### Which MCP servers Verity can reach
+
+The Verity server connects to MCP servers and their OAuth endpoints itself, so
+the addresses that count are the ones the server resolves. MCP servers may be on
+the public internet, a private network (`10.0.0.0/8`, `172.16.0.0/12`,
+`192.168.0.0/16`, `fc00::/7`) or a Tailscale tailnet (`100.64.0.0/10`,
+`fd7a:115c:a1e0::/48`), and their URLs may use an explicit port or an IP address.
+Loopback, link-local (including cloud metadata such as `169.254.169.254`),
+unspecified, multicast and translation or tunnel prefixes are always refused, as
+are known host services inside the allowed ranges (Tailscale's `100.100.100.100`
+and the cloud metadata addresses `100.100.100.200` and `fd00:ec2::254`). Private
+ranges can still contain the Docker gateway or the host's own LAN address; HTTPS
+with certificate verification is what keeps unrelated services there out of
+reach. Sandbox network access does not follow this rule and still refuses
+private and tailnet addresses.
+
+When the MCP server itself is public, its OAuth metadata, authorization server,
+client registration and token endpoint must be public too, so a public server
+cannot point Verity's requests into your network. Discovery rejects internal
+endpoint addresses named by a public server, and before every token request,
+including for endpoints entered manually under Advanced, Verity resolves the MCP
+server again and allows an internal token endpoint only when every address of the
+MCP server is internal. The classification follows DNS, so whoever controls a
+public MCP server's DNS can change it; HTTPS certificate verification still
+limits which internal services such a request can reach.
+
+The server must also be able to resolve the MCP host name. For `*.ts.net` names
+this needs Tailscale's DNS (MagicDNS) to be available to the Verity server
+container, for example by running Tailscale on the host.
+
+When **Detect OAuth settings** or adding a connection fails, the form shows the
+step that failed: the host could not be resolved, resolves to a refused address,
+could not be reached or presented an untrusted certificate, redirected, answered
+without an OAuth challenge, or returned metadata that is missing, unreadable or
+names a different resource or issuer. The same step is logged on the server as
+`verity: MCP OAuth discovery failed` with its code, host, address and HTTP status,
+never with response bodies, credentials or URL paths, which some providers use
+for access secrets.
 
 OAuth state and PKCE are bound to a user, connection and exact callback on your
 Verity server. Access and refresh tokens stay encrypted on that server. Pending

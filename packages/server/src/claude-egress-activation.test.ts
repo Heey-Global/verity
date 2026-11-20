@@ -28,6 +28,9 @@ import { startClaudeEgressMtlsGateway } from './claude-egress-mtls.js';
 
 const SERVER_NAME = 'localhost';
 const AUTHORITY = 'verity:9443';
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+const PROJECT_SANDBOX = { projectId: 'project-1', userId: SANDBOX_USER };
+const clientKey = (projectId: string, userId: string) => `${projectId}\u0000${userId}`;
 
 /** Minimal in-memory {@link ClaudeEgressIdentityStore} — the store methods are
  *  covered elsewhere; this proves the embedded WIRING with real certificates. */
@@ -44,17 +47,24 @@ class FakeStore implements ClaudeEgressIdentityStore {
     this.ca = record;
     this.clients.clear();
   }
-  async getClaudeEgressClientCert(id: string): Promise<ClaudeEgressClientCertRecord | undefined> {
-    return this.clients.get(id);
+  async getClaudeEgressClientCert(
+    id: string,
+    userId: string,
+  ): Promise<ClaudeEgressClientCertRecord | undefined> {
+    return this.clients.get(clientKey(id, userId));
   }
   async upsertClaudeEgressClientCert(record: ClaudeEgressClientCertRecord): Promise<void> {
-    this.clients.set(record.projectId, record);
+    this.clients.set(clientKey(record.projectId, record.userId), record);
   }
   async listClaudeEgressClientCerts(): Promise<ClaudeEgressClientCertRecord[]> {
     return [...this.clients.values()].sort((a, b) => a.projectId.localeCompare(b.projectId));
   }
-  async deleteClaudeEgressClientCert(id: string): Promise<void> {
-    this.clients.delete(id);
+  async deleteClaudeEgressClientCert(id: string, userId?: string): Promise<void> {
+    for (const [key, record] of this.clients) {
+      if (record.projectId === id && (userId === undefined || record.userId === userId)) {
+        this.clients.delete(key);
+      }
+    }
   }
 }
 
@@ -108,7 +118,7 @@ describe('Claude egress activation wiring', () => {
 
     // A project provisions now: the identity service issues its cert and the
     // onBindingsChanged hook refreshes the live registry — no gateway restart.
-    const sandbox = await identity.sandboxMaterial('project-1');
+    const sandbox = await identity.sandboxMaterial(PROJECT_SANDBOX);
 
     const response = await call(gateway.port, sandbox, caCertPem);
     expect(response.status).toBe(200);
@@ -121,7 +131,7 @@ describe('Claude egress activation wiring', () => {
 
   it('stops authenticating a project once it is revoked, live', async () => {
     const { identity, gateway, caCertPem } = await activate(async () => 'oauth-token');
-    const sandbox = await identity.sandboxMaterial('project-1');
+    const sandbox = await identity.sandboxMaterial(PROJECT_SANDBOX);
     await expect(call(gateway.port, sandbox, caCertPem)).resolves.toMatchObject({ status: 200 });
 
     await identity.revokeProject('project-1');
@@ -130,7 +140,7 @@ describe('Claude egress activation wiring', () => {
 
   it('fails closed with a retryable response when no OAuth token is configured', async () => {
     const { identity, gateway, forward, caCertPem } = await activate(async () => undefined);
-    const sandbox = await identity.sandboxMaterial('project-1');
+    const sandbox = await identity.sandboxMaterial(PROJECT_SANDBOX);
 
     // The peer authenticates, but the access-token adapter throws → denied, and the
     // request is never forwarded upstream (no credential-less forward).

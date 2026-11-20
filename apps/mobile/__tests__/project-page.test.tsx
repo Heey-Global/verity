@@ -658,6 +658,57 @@ describe('project page', () => {
     expect(screen.queryByRole('button', { name: 'Zod' })).toBeNull();
   });
 
+  it('reviews a command in its session and restores a dismissed item the way Home does', async () => {
+    // The project page drew a permission as a bare row and kept no fold of
+    // dismissed items; Home drew a card and offered Restore.
+    const asking = session('shell', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        { toolUseId: 't1', tool: 'Bash', riskClass: 'ask', input: { command: 'npm test' } },
+      ],
+    });
+    const dismissible = { ...question, inboxDismissed: [] as string[] };
+    const { client, onOpenSession } = await renderPage([asking, dismissible]);
+    const needs = within(screen.getByTestId('work-needs-you'));
+    // Nothing is decided here, so it is a row with its tag, not a card.
+    expect(needs.queryByTestId('inbox-item-permission')).toBeNull();
+    expect(needs.getByText('Permission')).toBeTruthy();
+    expect(needs.queryByRole('button', { name: 'Allow once' })).toBeNull();
+    expect(needs.queryByTestId('inbox-line-code')).toBeNull();
+    fireEvent.press(needs.getByRole('button', { name: 'Review' }));
+    expect(onOpenSession).toHaveBeenCalledWith('shell');
+    fireEvent.press(needs.getAllByLabelText('Dismiss').at(-1)!);
+    await act(async () => undefined);
+    expect(client.setSessionInboxDismissed).toHaveBeenCalled();
+    fireEvent.press(await screen.findByRole('button', { name: '1 hidden' }));
+    expect(screen.getByTestId('inbox-hidden-question')).toBeTruthy();
+  });
+
+  it('draws a session with a question and a ready pull request as one row', async () => {
+    // Each further item became a second row under the session's own.
+    const both = session('both', {
+      status: 'awaiting_input',
+      openChoices: { question: 'Ship it?', options: [{ label: 'Yes' }] },
+      pr: { phase: 'open', pipeline: 'success', mergeable: true },
+      pullRequest: {
+        ...openPullRequest.pullRequest!,
+        number: 551,
+        title: 'Ready change',
+        pipeline: 'success',
+        mergeable: true,
+        viewerCanMerge: true,
+      } as SessionSummary['pullRequest'],
+    });
+    await renderPage([both]);
+    const needs = within(screen.getByTestId('work-needs-you'));
+    expect(needs.getByText('Needs you · 1')).toBeTruthy();
+    expect(needs.queryByRole('button', { name: 'Merge' })).toBeNull();
+    expect(needs.getByText(/Ship it\? · Also waiting: Merge ready/)).toBeTruthy();
+    expect(needs.getByRole('button', { name: 'Yes' })).toBeTruthy();
+  });
+
   it('locks only the answered row while its answer is on the way', async () => {
     // A merge can wait on the code host for a while; one lock for the whole
     // list left every other row unanswerable until it came back.

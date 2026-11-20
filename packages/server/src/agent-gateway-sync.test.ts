@@ -60,6 +60,62 @@ describe('agent gateway configuration synchronizer', () => {
     await synchronizer.close();
   });
 
+  // A gateway that predates per-person logins ignores the personal section and
+  // would serve the administrator's account to every route. It must only ever
+  // receive the administrator's routes, also after it replaced a newer gateway.
+  it("withholds people's own sandboxes from a gateway that cannot tell people apart", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-agent-gateway-sync-'));
+    roots.push(root);
+    const socketPath = join(root, 'control.sock');
+    let capable = false;
+    const received: AgentGatewayConfiguration[] = [];
+    servers.push(
+      await startAgentGatewayControlServer({
+        socketPath,
+        configure: (next) => {
+          received.push(next);
+        },
+        status: () => ({
+          ready: true,
+          configured: true,
+          claudePeerCount: 0,
+          ...(capable ? { perUserCredentials: true } : {}),
+        }),
+      }),
+    );
+    const synchronizer = startAgentGatewaySynchronizer({
+      socketPath,
+      reconcileIntervalMs: 60_000,
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const people = (revision: string): AgentGatewayConfiguration => ({
+      revision,
+      claude: {
+        tls: { ca: 'ca', cert: 'cert', key: 'key' },
+        peerBindings: [
+          { projectId: 'p', userId: 'admin', fingerprint256: '1'.repeat(64) },
+          { projectId: 'p', userId: 'lena', fingerprint256: '2'.repeat(64) },
+          { projectId: 'runner', fingerprint256: '3'.repeat(64) },
+        ],
+      },
+      personal: { instanceUserId: 'admin', unsealKey: '6a'.repeat(32), people: [] },
+    });
+    const routedPeople = () =>
+      received.at(-1)?.claude.peerBindings.map((binding) => binding.userId ?? null);
+
+    await synchronizer.updateAndWait(people('old-gateway'));
+    expect(routedPeople()).toEqual(['admin', null]);
+    capable = true;
+    await synchronizer.updateAndWait(people('new-gateway'));
+    expect(routedPeople()).toEqual(['admin', 'lena', null]);
+    capable = false;
+    await synchronizer.updateAndWait(people('replaced-by-old'));
+    expect(routedPeople()).toEqual(['admin', null]);
+    await synchronizer.close();
+  });
+
   it('does not fail an update while the sidecar is unavailable and reconciles after restart', async () => {
     const root = await mkdtemp(join(tmpdir(), 'verity-agent-gateway-sync-'));
     roots.push(root);

@@ -1,0 +1,93 @@
+import type { FastifyInstance } from 'fastify';
+import { normalizeDisplayName, ProjectTeamError, type EventStore } from '@verity/store';
+import { z } from 'zod';
+
+import { bearerToken, type AuthTokenRegistry } from './auth.js';
+
+const bytes32 = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
+const joinBody = z
+  .object({
+    completionProtocol: z.literal(1),
+    invitationId: bytes32,
+    secret: bytes32,
+    redemptionId: z.string().min(1).max(128),
+    displayName: z.string().trim().min(1).max(80),
+    deviceLabel: z.string().trim().min(1).max(80).optional(),
+  })
+  .strict();
+
+/**
+ * Joining a project with an invitation (ADR 0023 §7; team contract): reached by
+ * the invited person's app over the channel it pinned to this server. The
+ * invitation's secret is the credential, so the route needs no operator token.
+ * It redeems the invitation exactly once and pairs this device to the new
+ * person; that person stays pending until Uplink confirms the join.
+ */
+export function registerTeamJoinRoutes(
+  app: FastifyInstance,
+  deps: { store: Pick<EventStore, 'projectTeam'>; authRegistry: AuthTokenRegistry | undefined },
+): void {
+  app.get('/team/join/capabilities', async (_request, reply) => {
+    reply.header('cache-control', 'no-store');
+    return { completion: 1 };
+  });
+  app.post('/team/join/complete', { bodyLimit: 1_024 }, async (request, reply) => {
+    reply.header('cache-control', 'no-store');
+    const token = bearerToken(request.headers.authorization);
+    if (token === undefined) return reply.code(401).send({ error: 'device credential required' });
+    try {
+      return await deps.store.projectTeam.completeJoin(token);
+    } catch (error) {
+      if (!(error instanceof ProjectTeamError)) throw error;
+      return reply.code(410).send({ error: error.message, code: 'invitation_unavailable' });
+    }
+  });
+  app.post('/team/join', { bodyLimit: 4_096 }, async (request, reply) => {
+    const registry = deps.authRegistry;
+    if (registry === undefined || !registry.isEnabled())
+      return reply.code(409).send({ error: 'device pairing is not configured' });
+    if (
+      !request.body ||
+      typeof request.body !== 'object' ||
+      !('completionProtocol' in request.body) ||
+      request.body.completionProtocol !== 1
+    )
+      return reply.code(409).send({
+        error: 'Update this app before joining this server.',
+        code: 'join_completion_required',
+      });
+    const parsed = joinBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid invitation' });
+    const body = parsed.data;
+    try {
+      normalizeDisplayName(body.displayName);
+    } catch {
+      return reply.code(400).send({ error: 'invalid name' });
+    }
+    let joined: Awaited<ReturnType<EventStore['projectTeam']['redeemInvitation']>>;
+    try {
+      joined = await deps.store.projectTeam.redeemInvitation({
+        invitationId: body.invitationId,
+        secret: body.secret,
+        redemptionId: body.redemptionId,
+        displayName: body.displayName,
+        ...(body.deviceLabel === undefined ? {} : { deviceLabel: body.deviceLabel }),
+      });
+    } catch (error) {
+      if (!(error instanceof ProjectTeamError)) throw error;
+      // One answer for every unusable invitation: a caller without the secret
+      // learns nothing about which invitations exist.
+      return reply.code(410).send({ error: error.message, code: 'invitation_unavailable' });
+    }
+    const { token, tokenId: id } = joined;
+    await registry.adoptPersisted(token, id, joined.userId);
+    reply.header('cache-control', 'no-store');
+    return {
+      token,
+      tokenId: id,
+      userId: joined.userId,
+      projectId: joined.projectId,
+      completionExpiresAt: joined.completionExpiresAt,
+    };
+  });
+}

@@ -318,7 +318,12 @@ describe('cache helper retention', () => {
     f.listContainers.mockResolvedValueOnce(
       Array.from({ length: 1001 }, (_, n) => ({ id: String(n), imageId: 'image' })),
     );
-    expect(await f.run()).toEqual({ blocked: true, removed: [], retained: [] });
+    expect(await f.run()).toEqual({
+      blocked: true,
+      blockedReason: 'Cache helper inventory exceeds the verification limit',
+      removed: [],
+      retained: [],
+    });
     expect(f.inspectContainer).not.toHaveBeenCalled();
     expect(f.removeStoppedContainer).not.toHaveBeenCalled();
   });
@@ -326,6 +331,11 @@ describe('cache helper retention', () => {
     const f = fixture();
     expect(
       await f.run({ docker: { inspectContainer: f.inspectContainer } as unknown as DockerClient }),
-    ).toEqual({ blocked: true, removed: [], retained: [] });
+    ).toEqual({
+      blocked: true,
+      blockedReason: 'Cache helper inventory is unavailable',
+      removed: [],
+      retained: [],
+    });
   });
 });

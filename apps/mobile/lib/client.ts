@@ -12,9 +12,12 @@ import {
   getServerProfile,
   hydrateServerProfile,
   saveRemoteControlDescriptor,
+  type VerityServerProfile,
 } from './serverProfile';
 import { resetVeritySettingsStore } from './settingsStore';
+import { throwIfAborted } from './abortSignal';
 import { exitDemoMode, hydrateDemoMode, isDemoMode } from './demoMode';
+import { serverConnection } from './serverConnection';
 import { DEMO_BASE_URL, demoFetch } from './demoTransport';
 
 // The control-plane base URL (e.g. a Tailscale address of the server). It is
@@ -38,6 +41,8 @@ export function subscribeVerityBaseUrl(listener: () => void): () => void {
 }
 
 function notifyBaseUrlChanged(): void {
+  // Another server's outage is not this one's.
+  serverConnection.reset();
   for (const listener of baseUrlListeners) listener();
 }
 let lastDescriptorToken: string | null = null;
@@ -114,20 +119,35 @@ export function hasConfiguredVerityBaseUrl(): boolean {
  * only), persist to AsyncStorage, and update module state. Throws if the
  * input normalizes to nothing (empty/whitespace) so a caller can't persist junk.
  */
-export async function setVerityBaseUrl(url: string): Promise<void> {
+export async function setVerityBaseUrl(
+  url: string,
+  signal?: AbortSignal,
+  onCommit?: () => void,
+): Promise<void> {
   const normalized = normalizeServerUrl(url);
   if (normalized === null) {
     throw new Error('Server URL must not be empty.');
   }
+  throwIfAborted(signal);
+  const previous = currentBaseUrl;
+  try {
+    await AsyncStorage.setItem(STORAGE_KEY, normalized);
+    // Enrollment adopts its credential only at the final commit boundary.
+    // Until then demo exit must preserve the previous connection's credential.
+    if (isDemoMode()) await exitDemoMode(onCommit === undefined ? normalized : previous);
+    throwIfAborted(signal);
+  } catch (error) {
+    if (previous === null) await AsyncStorage.removeItem(STORAGE_KEY);
+    else await AsyncStorage.setItem(STORAGE_KEY, previous);
+    throw error;
+  }
+  // No asynchronous gap after the cancellation boundary: listeners observe
+  // the matching credential, profile and URL together.
+  onCommit?.();
   if (normalized !== currentBaseUrl) resetVeritySettingsStore();
   currentBaseUrl = normalized;
   configuredBaseUrl = true;
-  if (!isDemoMode()) notifyBaseUrlChanged();
-  await AsyncStorage.setItem(STORAGE_KEY, normalized);
-  if (isDemoMode()) {
-    await exitDemoMode();
-    notifyBaseUrlChanged();
-  }
+  notifyBaseUrlChanged();
 }
 
 /** Build the API client for the current base URL, or `null` when none is set.
@@ -153,6 +173,8 @@ export function createVerityClient(): VerityClient | null {
       fetch: browserFetch,
       uploadFetch: browserFetch,
       allowBackgroundUpload: false,
+      // Bound to this server: after a switch, its late answers are ignored.
+      connection: serverConnection.reporter(),
     });
     registerBranchesClientScope(
       client,
@@ -182,6 +204,7 @@ export function createVerityClient(): VerityClient | null {
     onUnauthorized: () => {
       void clearAuthToken(serverUrl);
     },
+    connection: serverConnection.reporter(),
   });
   registerBranchesClientScope(client, () => `${serverUrl}:${getAuthTokenId(serverUrl) ?? 'guest'}`);
   const token = getAuthToken(serverUrl);
@@ -219,3 +242,46 @@ export function createVerityClient(): VerityClient | null {
   }
   return client;
 }
+
+/**
+ * A read client for a server this app knows but is not switched to, for showing
+ * its projects next to the active server's. Only over a pinned direct address
+ * and only with a credential that is already unlocked; never prompts and never
+ * changes stored state when the server refuses it.
+ */
+export function createVerityClientForProfile(profile: VerityServerProfile): VerityClient | null {
+  if (isDemoMode() || Platform.OS === 'web') return null;
+  const url = profile.activeUrl;
+  const endpoint = profile.endpoints.find((entry) => entry.url === url);
+  if (endpoint?.transport !== 'direct' || endpoint.tlsPin === undefined) return null;
+  if (getAuthToken(url) === null) return null;
+  const pinnedFetch = createPinnedFetch(endpoint.tlsPin, true);
+  return new VerityClient({
+    baseUrl: url,
+    fetch: pinnedFetch,
+    uploadFetch: pinnedFetch,
+    allowBackgroundUpload: false,
+    getToken: () => getAuthToken(url),
+  });
+}
+
+// While the server is away the connection bar checks it with the liveness probe;
+// that request reports through the monitor like any other, which ends the outage.
+serverConnection.setProbe(async () => {
+  // The demo talks to no server: nothing to check, and a demo client must
+  // never end a real outage.
+  if (isDemoMode()) {
+    serverConnection.reset();
+    return;
+  }
+  // Built per check, so it takes the route and token as they are now; a client
+  // kept from the start of the outage could keep probing a stale route.
+  const client = createVerityClient();
+  // No server is configured any more: there is nothing to be connected to,
+  // which is not the same as having reached it.
+  if (client === null) {
+    serverConnection.reset();
+    return;
+  }
+  await client.getHealth();
+});

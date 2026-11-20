@@ -31,15 +31,29 @@ export function StepIntro({
   );
 }
 
+/** The glowing brand tile at the centre of a hero: the success check, or a screen's subject
+ *  such as Verity joining a call. `attention` marks the same moment gone wrong. */
+export function BrandTile({
+  tone = 'signature',
+  children,
+}: {
+  tone?: 'signature' | 'attention';
+  children: ReactNode;
+}) {
+  return (
+    <View style={[styles.check, tone === 'attention' && styles.tileAttention]}>{children}</View>
+  );
+}
+
 /** The one brand moment at the end of a step flow: the check tile, a title and a
  *  short line under it. Pair it with `Confetti` above. */
 export function SuccessHero({ title, lead }: { title: string; lead: ReactNode }) {
   const { theme } = useUnistyles();
   return (
     <View style={styles.hero}>
-      <View style={styles.check}>
+      <BrandTile>
         <Icon name="check" size={40} color={theme.colors.signature} />
-      </View>
+      </BrandTile>
       <Text style={styles.heroTitle} accessibilityRole="header">
         {title}
       </Text>
@@ -72,6 +86,11 @@ const styles = StyleSheet.create((theme) => ({
     shadowOpacity: 0.35,
     shadowRadius: 25,
     shadowOffset: { width: 0, height: 0 },
+  },
+  tileAttention: {
+    borderColor: tint(theme.colors.attention, 'border'),
+    backgroundColor: tint(theme.colors.attention, 'fill'),
+    shadowColor: theme.colors.attention,
   },
   heroTitle: { ...theme.typography.display, color: theme.colors.text, textAlign: 'center' },
   heroLead: { ...theme.typography.body, color: theme.colors.textMuted, textAlign: 'center' },

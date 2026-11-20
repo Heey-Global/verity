@@ -1,3 +1,4 @@
+import { permitsBackgroundPr } from './pr-background-policy.js';
 import { observationFailure } from './forge-observation-error.js';
 import type { AgentEvent } from '@verity/events';
 import { randomUUID } from 'node:crypto';
@@ -67,7 +68,8 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
       stopped ||
       (deps.enabled && !(await deps.enabled())) ||
       mandate.mode !== 'automatic' ||
-      incident.state !== 'open'
+      incident.state !== 'open' ||
+      !permitsBackgroundPr(await deps.store.getProject(incident.project_id))
     )
       return;
     if (await store.sessionOrigin(incident.project_id, incident.resource)) return;
@@ -91,12 +93,17 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
     preparing.add(claim.dispatch_id);
     let dispatchAttempted = false;
     try {
+      if (!permitsBackgroundPr(await deps.store.getProject(incident.project_id))) {
+        await store.cancelReservedDispatch(claim.dispatch_id);
+        return;
+      }
       if (!(await deps.store.getSession(sessionId)))
         await deps.spawn(incident.project_id, sessionId);
       const latest = await store.mandate(incident.project_id);
       if (
         (deps.enabled && !(await deps.enabled())) ||
         (globalRevision !== undefined && (await store.qa()).revision !== globalRevision) ||
+        !permitsBackgroundPr(await deps.store.getProject(incident.project_id)) ||
         latest?.mode !== 'automatic' ||
         latest.revision !== mandate.revision ||
         !(await deps.authorized(mandate.sponsor_user_id, incident.project_id))
@@ -119,6 +126,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
             const current = await store.mandate(incident.project_id);
             return (
               !stopped &&
+              permitsBackgroundPr(await deps.store.getProject(incident.project_id)) &&
               (!deps.enabled || (await deps.enabled())) &&
               (globalRevision === undefined || (await store.qa()).revision === globalRevision) &&
               current?.mode === 'automatic' &&
@@ -178,11 +186,17 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
           continue;
         }
         const project = await deps.store.getProject(mandate.project_id);
-        if (!project || !['github', 'forgejo'].includes(project.kind ?? 'github')) continue;
+        if (
+          !permitsBackgroundPr(project) ||
+          !project ||
+          !['github', 'forgejo'].includes(project.kind ?? 'github')
+        )
+          continue;
         try {
           const pageNumber = Math.max(1, Math.min(100, Number(mandate.cursor) || 1));
           const { page, statuses } = await deps.discover(project, pageNumber);
           if (stopped || (deps.enabled && !(await deps.enabled()))) break;
+          if (!permitsBackgroundPr(await deps.store.getProject(project.id))) continue;
           for (const { branch, status } of statuses) {
             const resource = `pr:${status.number}`;
             if (status.pipeline !== 'failure')

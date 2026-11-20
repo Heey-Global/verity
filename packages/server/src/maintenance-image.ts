@@ -14,10 +14,11 @@ export class MaintenanceImageError extends Error {
   }
 }
 interface Preparation {
-  controller: AbortController;
   promise: Promise<DockerImageIdentity>;
-  users: number;
 }
+
+/** Bound for one download, independent of any caller's wait. */
+const PULL_BUDGET_MS = 30 * 60_000;
 
 /** Reserve against GC from inspection through helper use; never own a project's reservations. */
 export class MaintenanceImages {
@@ -83,30 +84,58 @@ export class MaintenanceImages {
     }
   }
 
+  /**
+   * One download per digest, owned by the preparation rather than by its
+   * callers. A caller's 30 s wait is far shorter than a sandbox image takes to
+   * download, and cancelling the download when the last caller gave up meant no
+   * attempt ever completed: each restarted it, and every cancelled download left
+   * its partial layers leased on the disk for hours. The download now finishes
+   * under its own image reservation, so a later attempt finds the image present;
+   * only shutdown or {@link PULL_BUDGET_MS} stops it.
+   */
   private async prepare(ref: string, signal: AbortSignal): Promise<DockerImageIdentity> {
     let preparation = this.preparations.get(ref);
     if (!preparation) {
       const controller = new AbortController();
+      const stop = () => controller.abort(this.shutdown.signal.reason);
+      this.shutdown.signal.addEventListener('abort', stop, { once: true });
+      if (this.shutdown.signal.aborted) stop();
+      const budget = setTimeout(
+        () => controller.abort(new DOMException('Download budget exceeded', 'TimeoutError')),
+        PULL_BUDGET_MS,
+      );
+      budget.unref?.();
+      const owner = `maintenance-download-${randomUUID()}`;
+      let reserved = false;
       const previous = this.tail;
-      const promise = previous.then(async () => {
-        controller.signal.throwIfAborted();
-        const existing = await this.docker.inspectImageIdentity?.(ref);
-        if (existing) {
-          if (!existing.repoDigests.includes(ref))
+      const promise = previous
+        .then(async () => {
+          controller.signal.throwIfAborted();
+          const existing = await this.docker.inspectImageIdentity?.(ref);
+          if (existing) {
+            if (!existing.repoDigests.includes(ref))
+              throw new MaintenanceImageError('image-unavailable');
+            return existing;
+          }
+          if (!this.docker.pullImage || !this.docker.inspectImageIdentity)
             throw new MaintenanceImageError('image-unavailable');
-          return existing;
-        }
-        if (!this.docker.pullImage || !this.docker.inspectImageIdentity)
-          throw new MaintenanceImageError('image-unavailable');
-        controller.signal.throwIfAborted();
-        await this.docker.pullImage(ref, { signal: controller.signal });
-        controller.signal.throwIfAborted();
-        const image = await this.docker.inspectImageIdentity(ref);
-        if (!image || !image.repoDigests.includes(ref))
-          throw new MaintenanceImageError('image-unavailable');
-        return image;
-      });
-      preparation = { controller, promise, users: 0 };
+          controller.signal.throwIfAborted();
+          // Held until the download settles, whether or not any caller still waits.
+          reserved = true;
+          await this.references.reserve(owner, ref);
+          await this.docker.pullImage(ref, { signal: controller.signal });
+          controller.signal.throwIfAborted();
+          const image = await this.docker.inspectImageIdentity(ref);
+          if (!image || !image.repoDigests.includes(ref))
+            throw new MaintenanceImageError('image-unavailable');
+          return image;
+        })
+        .finally(async () => {
+          clearTimeout(budget);
+          this.shutdown.signal.removeEventListener('abort', stop);
+          if (reserved) await this.references.releaseProject(owner);
+        });
+      preparation = { promise };
       this.preparations.set(ref, preparation);
       const entry = preparation;
       this.tail = promise.catch(() => undefined);
@@ -117,7 +146,6 @@ export class MaintenanceImages {
         .catch(() => undefined);
     }
     const entry = preparation;
-    entry.users++;
     let abort!: () => void;
     const cancelled = new Promise<never>((_resolve, reject) => {
       abort = () =>
@@ -135,11 +163,6 @@ export class MaintenanceImages {
       return await Promise.race([entry.promise, cancelled]);
     } finally {
       signal.removeEventListener('abort', abort);
-      if (--entry.users === 0) {
-        entry.controller.abort();
-        // Do not leave a pull using the Engine after releasing its GC reservation.
-        await entry.promise.catch(() => undefined);
-      }
     }
   }
 }

@@ -1,4 +1,9 @@
+import { verifyRecoveryInstances } from './managed-dev-server-recovery.js';
+import { ManagedDevServerLiveness } from './managed-dev-server-liveness.js';
+import type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
+export type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
 import { PreviewNetworkProtectionError } from './preview-network-policy.js';
+import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 import {
   ManagedDevServerConflictError,
   managedDevServerBindingsEqual,
@@ -86,7 +91,23 @@ export interface ManagedDevServerManagerOptions {
     projectId: string,
     bindings: readonly ManagedDevServerSecretBinding[],
     providerAuthority: string,
+    startedBy: string | null,
   ) => Promise<{ env: string; value: string }[]>;
+  /**
+   * The person an agent's request acts for: the initiator of the session's running
+   * turn, null for a turn without one, undefined when no turn runs. Its Doppler
+   * connection resolves the server's secrets (ADR 0023 §3).
+   */
+  agentPerson?: ((sessionId: string) => Promise<string | null | undefined>) | undefined;
+  /**
+   * The container of the sandbox a server runs in (ADR 0023 §4): the original
+   * sandbox for its owner and for no person, the person's own sandbox otherwise.
+   * With `start`, a person's sandbox is started when it is not running. Absent,
+   * every server runs in the project's container.
+   */
+  sandboxContainer?:
+    | ((project: ProjectRecord, userId: string | null, start: boolean) => Promise<string>)
+    | undefined;
   /** Defer supervision until durable preview ownership is loaded and the store is unlocked. */
   canSupervise?: () => boolean;
   /** Absent when local previews are unavailable; entries then run without an address. */
@@ -105,48 +126,10 @@ export interface ManagedDevServerManagerOptions {
   log?: (message: string, detail?: Record<string, unknown>) => void;
 }
 
-export interface ManagedInstanceView {
-  id: string;
-  sessionId: string;
-  state: ManagedDevServerInstanceRecord['state'];
-  desired: ManagedDevServerInstanceRecord['desired'];
-  detail: string | null;
-  /** The network address; set while the instance is published locally. */
-  url: string | null;
-  localShareId: string | null;
-  /** Internal; the app uses it only as a share target and never displays it. */
-  sandboxPort: number;
-  /** True while running without the operator's approval for local publishing. */
-  awaitingApproval: boolean;
-  /** The Local switch: on while the operator wants it published on the network. A
-   *  crash keeps it as it was; an unapproved command never reads as on. */
-  localOn: boolean;
-  /** The running command differs from the entry's current one. */
-  restartToApply: boolean;
-  startedAt: string | null;
-}
-
 export interface ManagedServerProviderSnapshot {
   provider: 'doppler';
   project: string;
   config: string;
-}
-
-export interface ManagedServerView {
-  providerSnapshot?: ManagedServerProviderSnapshot | null | undefined;
-  id: string;
-  name: string;
-  command: string;
-  workdir: string;
-  secretBindings: ManagedDevServerSecretBinding[];
-  approved: boolean;
-  /** This Core has the Local and Shared online switches (`/local`, `local` on
-   *  start and approve). Lets newer apps fall back on older Cores. */
-  accessSwitches: true;
-  /** This session's instance, if the entry ever ran here. */
-  instance: ManagedInstanceView | null;
-  /** Running or starting instances in other sessions of the project. */
-  elsewhere: Array<{ instanceId: string; sessionId: string; sessionName: string | null }>;
 }
 
 export class ManagedDevServerError extends Error {
@@ -189,7 +172,9 @@ export class ManagedDevServerManager {
   /** Last periodic status check per running instance (log trimming). */
   private readonly checkedAt = new Map<string, number>();
   /** Projects with an instance that should be running; they must not sleep. */
-  private activeProjects = new Set<string>();
+  private readonly liveness: ManagedDevServerLiveness;
+  /** Sessions with such an instance; storage collection leaves their worktrees alone. */
+  private activeSessions = new Set<string>();
   private readonly deletingSessions = new Set<string>();
   private readonly pendingLinkEnds = new Map<string, string | undefined>();
   private readonly pendingUnpublish = new Map<string, ManagedDevServerInstanceRecord>();
@@ -197,6 +182,7 @@ export class ManagedDevServerManager {
 
   constructor(private readonly options: ManagedDevServerManagerOptions) {
     this.now = options.now ?? Date.now;
+    this.liveness = new ManagedDevServerLiveness(this.now, 3 * MONITOR_INTERVAL_MS);
     this.timer = setInterval(() => void this.tick(), MONITOR_INTERVAL_MS);
     this.timer.unref?.();
     void this.refreshReserved();
@@ -204,7 +190,56 @@ export class ManagedDevServerManager {
 
   /** Running entries keep the sandbox awake, as an active share does (ADR 0020). */
   hasRunningServers(projectId: string): boolean {
-    return this.activeProjects.has(projectId);
+    return this.liveness.running(projectId);
+  }
+
+  hasVerifiedInstance(instanceId: string): boolean {
+    return this.liveness.verified(instanceId);
+  }
+
+  verifyRecoveryInstances(ids: readonly string[]): Promise<Set<string>> {
+    return verifyRecoveryInstances(
+      this.options,
+      (project, userId) => this.inSandbox(project, userId),
+      ids,
+    );
+  }
+
+  hasUnverifiedServers(projectId: string): boolean {
+    return this.liveness.unverified(projectId);
+  }
+
+  /** Whether a server should be running in this person's own sandbox (ADR 0023 §4). */
+  async hasRunningServersFor(projectId: string, userId: string): Promise<boolean> {
+    return (await this.servers.listInstances({ projectId, desired: 'running' })).some(
+      (instance) => instance.lastRunUserId === userId,
+    );
+  }
+
+  /**
+   * Stop every server a person last ran in a project, when their access ends
+   * (ADR 0023 §6). Each is marked stopped, so supervision never restarts it in
+   * their sandbox; a later start by someone else runs it as that person.
+   */
+  async stopForPerson(projectId: string, userId: string): Promise<void> {
+    const project = await this.options.store.getProject(projectId);
+    if (!project) return;
+    await this.locked(projectId, async () => {
+      for (const instance of await this.servers.listInstances({ projectId, desired: 'running' })) {
+        if (instance.lastRunUserId === userId) await this.stopInstance(project, instance, null);
+      }
+    });
+    await this.refreshReserved();
+  }
+
+  /** Whether a server this session started should be running in its worktree. */
+  hasRunningSessionServers(sessionId: string): boolean {
+    return this.activeSessions.has(sessionId);
+  }
+
+  private markActive(projectId: string, sessionId: string, instanceId: string): void {
+    this.liveness.want(instanceId, projectId);
+    this.activeSessions.add(sessionId);
   }
 
   /** Network ports reserved for instances; the ad hoc share allocator skips them. */
@@ -470,7 +505,7 @@ export class ManagedDevServerManager {
       workdir: string;
       secretBindings?: ManagedDevServerSecretBinding[] | undefined;
     },
-    options: { local?: boolean | undefined } = {},
+    options: { local?: boolean | undefined; approvedBy?: string | null | undefined } = {},
   ): Promise<ManagedServerView[]> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
@@ -495,6 +530,7 @@ export class ManagedDevServerManager {
       const approved = await this.servers.approve(entry.id, {
         ...seen,
         ...(providerAuthority === undefined ? {} : { providerAuthority }),
+        approvedBy: options.approvedBy ?? null,
       });
       if (!approved)
         throw new ManagedDevServerError(
@@ -549,9 +585,10 @@ export class ManagedDevServerManager {
     sessionId: string,
     idOrName: string,
     by: StartedBy,
-    options: { local?: boolean | undefined } = {},
+    options: { local?: boolean | undefined; person?: string | null | undefined } = {},
   ): Promise<ManagedServerView> {
     const context = await this.context(sessionId);
+    const person = await this.personFor(sessionId, by, options.person);
     const entry = await this.entry(context.project.id, idOrName);
     if (by === 'operator' || entry.secretBindings.length > 0) {
       // Switching an entry on is the operator's own act and approves what runs,
@@ -559,7 +596,9 @@ export class ManagedDevServerManager {
       if (!entry.approved)
         throw new ManagedDevServerError('Review and approve the command first', 409);
     }
-    await this.locked(context.project.id, () => this.startEntry(context, entry, by, options.local));
+    await this.locked(context.project.id, () =>
+      this.startEntry(context, entry, by, options.local, person),
+    );
     return this.viewOf(sessionId, entry.id);
   }
 
@@ -567,7 +606,12 @@ export class ManagedDevServerManager {
    * The Local switch. On starts the server if needed and publishes it; off ends
    * local access and, when no public link is left either, stops the server.
    */
-  async setLocal(sessionId: string, idOrName: string, on: boolean): Promise<ManagedServerView> {
+  async setLocal(
+    sessionId: string,
+    idOrName: string,
+    on: boolean,
+    person: string | null = null,
+  ): Promise<ManagedServerView> {
     const context = await this.context(sessionId);
     const { project } = context;
     const entry = await this.entry(project.id, idOrName);
@@ -589,7 +633,7 @@ export class ManagedDevServerManager {
           if (updated?.state === 'running') await this.publish(project, entry, updated);
           return;
         }
-        await this.startEntry(context, entry, 'operator', true);
+        await this.startEntry(context, entry, 'operator', true, person);
         return;
       }
       if (!instance) return;
@@ -653,8 +697,14 @@ export class ManagedDevServerManager {
     );
   }
 
-  async restart(sessionId: string, idOrName: string, by: StartedBy): Promise<ManagedServerView> {
+  async restart(
+    sessionId: string,
+    idOrName: string,
+    by: StartedBy,
+    operator: string | null = null,
+  ): Promise<ManagedServerView> {
     const context = await this.context(sessionId);
+    const person = await this.personFor(sessionId, by, operator);
     const entry = await this.entry(context.project.id, idOrName);
     // Refuse before stopping: a restart that cannot start must not kill what runs.
     if (
@@ -662,6 +712,8 @@ export class ManagedDevServerManager {
       (!entry.approved || !(await this.providerApproved(entry)))
     )
       throw new ManagedDevServerError('Review and approve the command first', 409);
+    // Also before stopping: someone else's approval must not cost the running server.
+    this.assertOwnApproval(entry, by, person);
     await this.locked(context.project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
       if (instance) await this.stopInstance(context.project, instance, null);
@@ -670,7 +722,7 @@ export class ManagedDevServerManager {
         instance && !instance.localAccess && (await this.hasLivePublicLink(instance))
           ? undefined
           : true;
-      await this.startEntry(context, entry, by, by === 'operator' ? local : undefined);
+      await this.startEntry(context, entry, by, by === 'operator' ? local : undefined, person);
     });
     return this.viewOf(sessionId, entry.id);
   }
@@ -717,7 +769,11 @@ export class ManagedDevServerManager {
     const entry = await this.entry(project.id, idOrName);
     const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
     if (!instance) return '';
-    return this.options.runtime.managedServerLogs(project, instance.id, lines);
+    return this.options.runtime.managedServerLogs(
+      await this.inSandbox(project, instance.lastRunUserId),
+      instance.id,
+      lines,
+    );
   }
 
   /** Snapshot IDs; admission is fenced by the durable deletion record. */
@@ -745,7 +801,11 @@ export class ManagedDevServerManager {
       if (!project) return 'clean';
       if (project.state !== 'active' || !project.containerName) return 'deferred';
       for (const instanceId of snapshot.instanceIds) {
-        await this.options.runtime.stopManagedServer(project, instanceId);
+        const instance = await this.servers.getInstance(instanceId);
+        await this.options.runtime.stopManagedServer(
+          await this.inSandbox(project, instance?.lastRunUserId ?? null),
+          instanceId,
+        );
         this.pendingUnpublish.delete(instanceId);
         this.pendingLinkEnds.delete(instanceId);
         this.publishRetryAt.delete(instanceId);
@@ -784,14 +844,68 @@ export class ManagedDevServerManager {
     return view;
   }
 
+  /** The project as seen from the sandbox a server runs in: its container is that
+   *  sandbox's. Every runtime call for an instance goes through this. */
+  private async inSandbox(
+    project: ProjectRecord,
+    userId: string | null,
+    start = false,
+  ): Promise<ProjectRecord> {
+    if (this.options.sandboxContainer === undefined) return project;
+    return {
+      ...project,
+      containerName: await this.options.sandboxContainer(project, userId, start),
+    };
+  }
+
+  /** Whose Doppler connection a start resolves secrets with; see agentPerson. */
+  private async personFor(
+    sessionId: string,
+    by: StartedBy,
+    operator: string | null | undefined,
+  ): Promise<string | null> {
+    if (by !== 'agent') return operator ?? null;
+    if (this.options.agentPerson === undefined) return null;
+    const person = await this.options.agentPerson(sessionId);
+    if (person === undefined)
+      throw new ManagedDevServerError('the session has no running turn to act for', 409);
+    return person;
+  }
+
+  /**
+   * Secrets resolve through the starter's own connection (ADR 0023 §3): they
+   * start it only on a command they approved themselves, never on another
+   * person's approval. Approvals from before the approver was recorded were
+   * assigned to the administrator by migration; one still without an approver
+   * admits no person's start.
+   */
+  private assertOwnApproval(
+    entry: ManagedDevServerRecord,
+    by: StartedBy,
+    person: string | null,
+  ): void {
+    if (
+      by !== 'recovery' &&
+      person !== null &&
+      entry.secretBindings.length > 0 &&
+      entry.approvedBy !== person
+    )
+      throw new ManagedDevServerError(
+        'Review and approve this server yourself before starting it with its secrets.',
+        409,
+      );
+  }
+
   private async startEntry(
     context: SessionContext,
     entry: ManagedDevServerRecord,
     by: StartedBy,
     local?: boolean,
+    person: string | null = null,
   ): Promise<void> {
     const { project, sessionId } = context;
     await this.assertStartAllowed(sessionId);
+    this.assertOwnApproval(entry, by, person);
     if ((project.state === 'sleeping' || project.state === 'waking') && this.options.wakeSandbox) {
       // Record the intent, wake the sandbox, and let supervision start the server
       // once it is up: an instance that should run but has no process is started.
@@ -811,6 +925,7 @@ export class ManagedDevServerManager {
           by === 'recovery' ? (instance.lastRunCommand ?? entry.command) : entry.command,
         lastRunSecretBindings:
           by === 'recovery' ? instance.lastRunSecretBindings : entry.secretBindings,
+        lastRunUserId: by === 'recovery' ? instance.lastRunUserId : person,
         lastRunWorkdir:
           by === 'recovery' ? (instance.lastRunWorkdir ?? entry.workdir) : entry.workdir,
         startedAt: new Date(this.now()),
@@ -820,7 +935,7 @@ export class ManagedDevServerManager {
             : new Date(this.now()),
       });
       await this.assertStartAllowed(sessionId);
-      this.activeProjects.add(project.id);
+      this.markActive(project.id, sessionId, instance.id);
       void this.options
         .wakeSandbox(project.id, sessionId)
         .catch((error: unknown) =>
@@ -835,8 +950,23 @@ export class ManagedDevServerManager {
     }
     if (project.state !== 'active' || !project.containerName)
       throw new ManagedDevServerError('the project sandbox is not running', 409);
+    // A server runs in the sandbox of the person it is for (ADR 0023 §4): who
+    // starts it, or on recovery who it last ran for.
+    const previous = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+    const runAs = by === 'recovery' ? (previous?.lastRunUserId ?? null) : person;
+    const target = await this.inSandbox(project, runAs, true);
+    if (
+      previous !== undefined &&
+      previous.lastRunUserId !== runAs &&
+      this.options.sandboxContainer !== undefined
+    ) {
+      // Someone else starts it now: end it where it ran, then start it in their sandbox.
+      await this.inSandbox(project, previous.lastRunUserId)
+        .then((old) => this.options.runtime.stopManagedServer(old, previous.id))
+        .catch(() => undefined);
+    }
     const processes = await this.options.runtime
-      .listListeningProcesses(project, { fresh: true })
+      .listListeningProcesses(target, { fresh: true })
       .catch(() => []);
     const busy = new Set(processes.map((process) => process.port));
     let instance = await this.servers.ensureInstance({
@@ -858,7 +988,7 @@ export class ManagedDevServerManager {
     }
     if (local === false) await this.unpublish(instance);
     const status = await this.options.runtime
-      .managedServerStatus(project, instance.id)
+      .managedServerStatus(target, instance.id)
       .catch(() => ({ alive: false, exitCode: null }));
     if (
       status.alive &&
@@ -868,7 +998,7 @@ export class ManagedDevServerManager {
       // Already up after a wake: drop the marker so supervision stops relaunching.
       if (instance.detail === WAKING_DETAIL)
         await this.servers.updateInstance(instance.id, { detail: null });
-      this.activeProjects.add(project.id);
+      this.markActive(project.id, sessionId, instance.id);
       return;
     }
     if (
@@ -879,7 +1009,7 @@ export class ManagedDevServerManager {
     )
       instance =
         (await this.servers.updateInstance(instance.id, { localAccess: true })) ?? instance;
-    if (status.alive) await this.options.runtime.stopManagedServer(project, instance.id);
+    if (status.alive) await this.options.runtime.stopManagedServer(target, instance.id);
     const holder = processes.find((process) => process.port === instance.sandboxPort);
     if (holder && holder.instanceId !== instance.id) {
       const moved = await this.servers.moveSandboxPort(instance.id, MANAGED_SANDBOX_PORTS, busy);
@@ -911,7 +1041,12 @@ export class ManagedDevServerManager {
         )
           throw new Error('provider authority changed');
         if (!this.options.resolveSecrets) throw new Error('secret resolver unavailable');
-        secrets = await this.options.resolveSecrets(project.id, secretBindings, approvedAuthority);
+        secrets = await this.options.resolveSecrets(
+          project.id,
+          secretBindings,
+          approvedAuthority,
+          runAs,
+        );
         if (
           approvedAuthority !== (await this.options.providerAuthority?.(project.id)) ||
           approvedAuthority !== (await this.servers.approvedProviderAuthority(entry.id)) ||
@@ -919,17 +1054,20 @@ export class ManagedDevServerManager {
         )
           throw new Error('provider authority changed');
       }
-    } catch {
+    } catch (error) {
       await this.servers.updateInstance(instance.id, {
         desired: 'stopped',
         state: 'crashed',
+        lastRunUserId: runAs,
         detail:
-          'Could not validate or resolve server secrets. Review the provider and approve again. No server was started.',
+          error instanceof DopplerSecretResolutionError && error.phase === 'Doppler connection'
+            ? 'Could not resolve server secrets: the person who started it has not connected Doppler for this project. No server was started.'
+            : 'Could not validate or resolve server secrets. Review the provider and approve again. No server was started.',
       });
       return;
     }
     await this.assertStartAllowed(sessionId);
-    const result = await this.options.runtime.startManagedServer(project, {
+    const result = await this.options.runtime.startManagedServer(target, {
       instanceId: instance.id,
       ...(secrets.length > 0 ? { secrets } : {}),
       command: command.replaceAll('{port}', String(instance.sandboxPort)),
@@ -942,7 +1080,7 @@ export class ManagedDevServerManager {
       },
     });
     if (await this.sessionUnavailable(sessionId)) {
-      if (result.ok) await this.options.runtime.stopManagedServer(project, instance.id);
+      if (result.ok) await this.options.runtime.stopManagedServer(target, instance.id);
       throw new ManagedDevServerError('session is being deleted', 409);
     }
     const now = new Date(this.now());
@@ -956,17 +1094,19 @@ export class ManagedDevServerManager {
             : result.reason,
         lastRunCommand: command,
         lastRunSecretBindings: secretBindings,
+        lastRunUserId: runAs,
         lastRunWorkdir: workdir,
       });
       return;
     }
-    this.activeProjects.add(project.id);
+    this.markActive(project.id, sessionId, instance.id);
     await this.servers.updateInstance(instance.id, {
       desired: 'running',
       state: 'starting',
       detail: null,
       lastRunCommand: command,
       lastRunSecretBindings: secretBindings,
+      lastRunUserId: runAs,
       lastRunWorkdir: workdir,
       startedAt: now,
       accessStartedAt:
@@ -1008,13 +1148,16 @@ export class ManagedDevServerManager {
     instance: ManagedDevServerInstanceRecord,
     detail: string | null,
   ): Promise<void> {
+    this.liveness.remove(instance.id);
     await this.servers.updateInstance(instance.id, { desired: 'stopped' });
     try {
       await this.unpublish(instance);
     } finally {
       // Edge cleanup must not prevent the server process from being stopped.
       if (project.state === 'active' && project.containerName)
-        await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
+        await this.inSandbox(project, instance.lastRunUserId)
+          .then((target) => this.options.runtime.stopManagedServer(target, instance.id))
+          .catch(() => undefined);
       await this.servers.updateInstance(instance.id, {
         state: 'stopped',
         detail,
@@ -1181,7 +1324,8 @@ export class ManagedDevServerManager {
     const byProject = new Map<string, ManagedDevServerInstanceRecord[]>();
     for (const instance of instances)
       byProject.set(instance.projectId, [...(byProject.get(instance.projectId) ?? []), instance]);
-    this.activeProjects = new Set(byProject.keys());
+    this.liveness.reconcile(instances);
+    this.activeSessions = new Set(instances.map((instance) => instance.sessionId));
     for (const [projectId, group] of byProject) {
       try {
         await this.locked(projectId, () => this.superviseProject(projectId, group));
@@ -1200,7 +1344,19 @@ export class ManagedDevServerManager {
   ): Promise<void> {
     const project = await this.options.store.getProject(projectId);
     if (!project || project.state !== 'active' || !project.containerName) return;
-    const processes = await this.options.runtime.listListeningProcesses(project);
+    // Each server is supervised in its own sandbox's container (ADR 0023 §4); a
+    // container is listed once per pass however many servers it runs.
+    const listings = new Map<string, Promise<ListeningProcess[]>>();
+    const processesIn = (target: ProjectRecord): Promise<ListeningProcess[]> => {
+      let listing = listings.get(target.containerName);
+      if (listing === undefined) {
+        // Cached discovery must never renew the short activity-evidence lease.
+        listing = this.options.runtime.listListeningProcesses(target, { fresh: true });
+        if (target.containerName !== project.containerName) listing = listing.catch(() => []);
+        listings.set(target.containerName, listing);
+      }
+      return listing;
+    };
     let changed = false;
     for (const snapshot of instances) {
       // Re-read under the project lock: a stop since the pass began wins.
@@ -1245,15 +1401,18 @@ export class ManagedDevServerManager {
         }
         continue;
       }
+      const target = await this.inSandbox(project, instance.lastRunUserId);
+      const processes = await processesIn(target);
       const tagged = processes.filter((process) => process.instanceId === instance.id);
       const onPort = tagged.find((process) => process.port === instance.sandboxPort);
       if (onPort) {
+        this.liveness.verify(instance.id);
         this.missingSince.delete(instance.id);
         if (this.now() - (this.checkedAt.get(instance.id) ?? 0) > 60_000) {
           // The status check also trims an oversized log; once a minute is enough.
           this.checkedAt.set(instance.id, this.now());
           await this.options.runtime
-            .managedServerStatus(project, instance.id)
+            .managedServerStatus(target, instance.id)
             .catch(() => undefined);
         }
         if (instance.state !== 'running') {
@@ -1264,8 +1423,9 @@ export class ManagedDevServerManager {
         await this.publish(project, entry, current);
         continue;
       }
+      this.liveness.invalidate(instance.id);
       const status = await this.options.runtime
-        .managedServerStatus(project, instance.id)
+        .managedServerStatus(target, instance.id)
         .catch(() => ({ alive: true, exitCode: null }));
       const elapsed = this.now() - (instance.startedAt?.getTime() ?? 0);
       if (!status.alive && status.exitCode === null && elapsed > 5_000) {
@@ -1323,7 +1483,9 @@ export class ManagedDevServerManager {
             : 'Did not answer on its port within 60 seconds';
       await this.unpublish(instance).catch(() => undefined);
       if (status.alive)
-        await this.options.runtime.stopManagedServer(project, instance.id).catch(() => undefined);
+        await this.inSandbox(project, instance.lastRunUserId)
+          .then((target) => this.options.runtime.stopManagedServer(target, instance.id))
+          .catch(() => undefined);
       await this.servers.updateInstance(instance.id, {
         desired: 'stopped',
         state: 'crashed',

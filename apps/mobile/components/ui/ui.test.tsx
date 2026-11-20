@@ -154,6 +154,71 @@ describe('Row', () => {
     expect(StyleSheet.flatten(container.props.style)).toBeUndefined();
   });
 
+  // The pressable stops short of the action and the answers; lighting only it
+  // splits the card into a lit and a dark part while the finger is down.
+  it.each([
+    ['answers', { answers: <Button label="Answer" onPress={jest.fn()} /> }],
+    [
+      'an action',
+      { action: <IconButton icon="x" accessibilityLabel="Answer" onPress={jest.fn()} /> },
+    ],
+    [
+      'an action and answers',
+      {
+        action: <IconButton icon="x" accessibilityLabel="Dismiss" onPress={jest.fn()} />,
+        answers: <Button label="Answer" onPress={jest.fn()} />,
+      },
+    ],
+  ])('lights the whole row while a row with %s is pressed', (_, extra) => {
+    render(<Row title="Question" onPress={jest.fn()} {...extra} />);
+    const row = screen.getByRole('button', { name: 'Question' });
+    let container = row.parent!;
+    while (container.findAllByProps({ accessibilityLabel: 'Answer' }).length === 0) {
+      container = container.parent!;
+    }
+    const pressedColor = tint(lightTheme.colors.text, 'neutral');
+    const background = (node: typeof row) =>
+      (StyleSheet.flatten(node.props.style) as { backgroundColor?: string } | undefined)
+        ?.backgroundColor;
+    expect(background(container)).toBeUndefined();
+    fireEvent(row, 'pressIn');
+    expect(background(container)).toBe(pressedColor);
+    // Lit once, on the outside: a second translucent layer would show as a step.
+    // Asked of the style function itself, since a fired event does not set the
+    // pressed state Pressable hands to it.
+    let pressable = row;
+    while (typeof pressable.props.style !== 'function') pressable = pressable.parent!;
+    const style = pressable.props.style as (state: { pressed: boolean }) => unknown;
+    expect(
+      (StyleSheet.flatten(style({ pressed: true }) as never) as { backgroundColor?: string })
+        .backgroundColor,
+    ).toBeUndefined();
+    fireEvent(row, 'pressOut');
+    expect(background(container)).toBeUndefined();
+  });
+
+  // A plain row keeps its active highlight while pressed; a wrapped one must
+  // not trade it for the pressed tint, or the selection flickers on every tap.
+  it('keeps the active highlight while an active row with answers is pressed', () => {
+    render(
+      <Row
+        title="Question"
+        active
+        onPress={jest.fn()}
+        answers={<Button label="Answer" onPress={jest.fn()} />}
+      />,
+    );
+    const row = screen.getByRole('button', { name: 'Question' });
+    let container = row.parent!;
+    while (container.findAllByProps({ accessibilityLabel: 'Answer' }).length === 0) {
+      container = container.parent!;
+    }
+    fireEvent(row, 'pressIn');
+    expect(StyleSheet.flatten(container.props.style)).toMatchObject({
+      backgroundColor: lightTheme.colors.surfaceAlt,
+    });
+  });
+
   // The chevron promises navigation; a row that only acts in place must not show it.
   it('shows the chevron only for rows that navigate', () => {
     // Count the drawn glyph (the mocked Feather host), not the wrappers around it.

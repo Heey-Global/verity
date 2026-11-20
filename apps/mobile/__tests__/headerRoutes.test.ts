@@ -15,9 +15,13 @@ describe('showsMessageSearch', () => {
 });
 
 describe('usesExpandedHeaderTitle', () => {
-  it.each(['project/[id]/vulnerability-scan', 'project/[id]/settings/index', 'settings'])(
-    'reserves more title space and a compact back button for %s',
-    (route) => expect(usesExpandedHeaderTitle(route)).toBe(true),
+  it.each([
+    'project/[id]/vulnerability-scan',
+    'project/[id]/settings/index',
+    'settings',
+    'mockups/[spec]/[mockup]',
+  ])('reserves more title space and a compact back button for %s', (route) =>
+    expect(usesExpandedHeaderTitle(route)).toBe(true),
   );
 
   it.each(['index', 'session/[id]', 'project/[id]/index'])(

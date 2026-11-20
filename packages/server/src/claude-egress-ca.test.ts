@@ -151,7 +151,7 @@ describe('Claude egress certificate issuance', () => {
     const gateway = await start(accessToken, forward);
 
     await expect(call(gateway.port, projectOne)).resolves.toEqual({ status: 200, body: 'ok' });
-    expect(accessToken).toHaveBeenCalledWith('project-1');
+    expect(accessToken).toHaveBeenCalledWith('project-1', expect.anything());
   });
 
   it('keeps an authenticated provider stream alive after Server token access disappears', async () => {

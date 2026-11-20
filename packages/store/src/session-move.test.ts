@@ -216,3 +216,57 @@ it('returns assigned tasks to their source backlog and invalidates pre-move revi
     await ctx.store.tasks.patch(task.id, owner, { projectId: 'b', sessionId: 's' }),
   ).toMatchObject({ projectId: 'b', sessionId: 's' });
 });
+
+it('relayouts a session within its project without revoking what still applies', async () => {
+  const relayout = {
+    sessionId: 's',
+    operationId: 'relayout',
+    projectId: 'a',
+    sourceWorktree: '/a/session',
+    targetWorktree: '/a/.verity-sessions/code-s',
+    branch: 'code-s',
+  };
+  await ctx.store.sessionMoves.prepareRelayout(relayout);
+  // A retried reservation must not replace the first one's backend inventory.
+  await ctx.store.sessionMoves.prepareRelayout({ ...relayout, targetWorktree: '/elsewhere' });
+  await ctx.db
+    .insertInto('secret_run_grants')
+    .values({
+      capability_hash: 'a',
+      grant_id: 'a',
+      claims_json: JSON.stringify({ sessionId: 's', projectId: 'a' }),
+      expires_at: new Date(Date.now() + 60000).toISOString(),
+    })
+    .execute();
+  await ctx.store.sessionMoves.commitRelayout('s', 'relayout', 'Relayout', '{}');
+  expect(await ctx.store.getSession('s')).toMatchObject({
+    projectId: 'a',
+    worktree: '/a/.verity-sessions/code-s',
+  });
+  // Same project, same authority: a move's revocations would break approved work.
+  expect(await ctx.db.selectFrom('secret_run_grants').select('grant_id').execute()).toEqual([
+    { grant_id: 'a' },
+  ]);
+  expect(await ctx.store.getSessionBackendStates('s')).toEqual([]);
+  expect(await ctx.store.listLiveBackendSessionIds()).toContain('old');
+  expect(await ctx.store.getSessionMoveNotice('s')).toBe('Relayout');
+  expect(await ctx.store.listSessionWorktrees()).toContain('/a/session');
+  await ctx.store.sessionMoves.commitRelayout('s', 'relayout', 'Retry', '{}');
+  expect(await ctx.store.getSessionMoveNotice('s')).toBe('Relayout');
+});
+
+it('refuses a relayout whose session changed workspace after the reservation', async () => {
+  await ctx.store.sessionMoves.prepareRelayout({
+    sessionId: 's',
+    operationId: 'relayout',
+    projectId: 'a',
+    sourceWorktree: '/a/other',
+    targetWorktree: '/a/.verity-sessions/code-s',
+    branch: 'code-s',
+  });
+  await expect(
+    ctx.store.sessionMoves.commitRelayout('s', 'relayout', 'Relayout', '{}'),
+  ).rejects.toThrow('changed during relayout');
+  expect(await ctx.store.getSession('s')).toMatchObject({ worktree: '/a/session' });
+  expect(await ctx.store.getSessionBackendStates('s')).toHaveLength(1);
+});

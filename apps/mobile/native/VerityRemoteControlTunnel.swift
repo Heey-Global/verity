@@ -2,6 +2,8 @@ internal import ExpoModulesCore
 import Foundation
 
 class VerityRemoteControlTunnel: Module {
+  private var joinTunnel: AnyObject?
+  private var joinSessionId: String?
   private var tunnel: AnyObject?
   private var retired: [AnyObject] = []
   private var lastStartFailure: String?
@@ -77,6 +79,31 @@ class VerityRemoteControlTunnel: Module {
         self.lastStartFailure = tunnel.stopReason ?? "attachment failed: \(error)"
         throw error
       }
+    }
+
+    // Joining must not replace the existing server's active Remote Control tunnel.
+    AsyncFunction("startJoin") {
+      (dataURLText: String, ticket: String, sessionId: String, coreURLText: String, capability: String) async throws -> Int in
+      guard #available(iOS 17.0, macOS 14.0, *),
+        ["team-bootstrap-v1", "remote-control-v1"].contains(capability),
+        let dataURL = URL(string: dataURLText), let coreURL = URL(string: coreURLText)
+      else { throw RemoteSmokeError.invalidInput }
+      (self.joinTunnel as? RemoteAppTunnel)?.stop()
+      let joining = try RemoteAppTunnel(dataURL: dataURL, coreURL: coreURL)
+      self.joinTunnel = joining
+      self.joinSessionId = sessionId
+      do { return try await joining.start(ticket: ticket, sessionId: sessionId, expectedCapability: capability) }
+      catch {
+        if self.joinSessionId == sessionId { self.joinTunnel = nil; self.joinSessionId = nil }
+        throw error
+      }
+    }
+
+    AsyncFunction("stopJoin") { (sessionId: String) in
+      guard #available(iOS 17.0, macOS 14.0, *), self.joinSessionId == sessionId else { return }
+      (self.joinTunnel as? RemoteAppTunnel)?.stop()
+      self.joinTunnel = nil
+      self.joinSessionId = nil
     }
 
     AsyncFunction("lastStopReason") { () -> String? in

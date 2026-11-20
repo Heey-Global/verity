@@ -111,6 +111,37 @@ describeWrapper('verity-git-sign wrapper (commit-signing broker)', () => {
     expect(Buffer.from(body.payload, 'base64').toString()).toBe('the commit payload\n');
   });
 
+  // The badge names the turn's person; the container file only the project. A
+  // malformed value must not reach the broker as a bearer, so the file wins then.
+  it("presents the turn's badge instead of the container token, and only a well-formed one", async () => {
+    const signature = '-----BEGIN SSH SIGNATURE-----\nturn\n-----END SSH SIGNATURE-----\n';
+    const badge = 'Ab_-'.repeat(10) + 'xyz';
+    for (const [presented, expected] of [
+      [badge, `Bearer ${badge}`],
+      ['not a badge', 'Bearer broker-token-abc'],
+      [`${badge}x`, 'Bearer broker-token-abc'],
+    ] as const) {
+      const mock = await mockBroker(200, JSON.stringify({ signature }));
+      broker = mock.server;
+      dir = mkdtempSync(join(tmpdir(), 'wrap-'));
+      const datafile = join(dir, 'commit-buffer');
+      const tokenFile = join(dir, 'signing_broker_token');
+      writeFileSync(datafile, 'payload\n');
+      writeFileSync(tokenFile, 'broker-token-abc\n');
+      const { code } = await runWrapper(['-Y', 'sign', '-n', 'git', '-f', '/dev/null', datafile], {
+        VERITY_SIGNING_URL: mock.url,
+        VERITY_SIGNING_TOKEN_FILE: tokenFile,
+        VERITY_TURN_CAPABILITY: presented,
+      });
+      expect(code).toBe(0);
+      expect(mock.received().auth).toBe(expected);
+      await new Promise<void>((resolve) => mock.server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+    broker = undefined;
+    dir = '';
+  });
+
   it('exits non-zero and writes no .sig when the broker rejects the request', async () => {
     const mock = await mockBroker(500, JSON.stringify({ error: 'boom' }));
     broker = mock.server;

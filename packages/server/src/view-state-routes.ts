@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 /** Deployments without the auth gate have one implicit user, as tasks and HTTP
  *  MCP connections assume; their view state belongs to that administrator. */
-const legacyAdministratorId = '00000000-0000-4000-8000-000000000001';
+export const legacyAdministratorId = '00000000-0000-4000-8000-000000000001';
 
 /** Whose overview state a request reads and writes. */
 export function viewerId(request: { localUserId: string | null | undefined }): string {

@@ -1,6 +1,5 @@
 import { ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
-import { VerityHeader } from '../../components/home/HomeInbox';
 import { HomeTabBar } from '../../components/home/HomeTabBar';
 import {
   Button,
@@ -118,7 +117,6 @@ export function HomeGroups() {
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
-        <VerityHeader summary="1 needs you · 2 in progress · 1 new result" />
         <Sections home />
       </ScrollView>
       <HomeTabBar tab="home" onChange={ignore} count={1} bottomInset={0} />
@@ -146,7 +144,6 @@ export function DesktopGroups() {
     <View style={styles.desktop}>
       <View style={styles.sidebar}>
         <ScrollView contentContainerStyle={styles.content}>
-          <VerityHeader summary="1 needs you · 2 in progress · 1 new result" />
           <Sections home selected />
         </ScrollView>
         <HomeTabBar tab="home" onChange={ignore} count={1} bottomInset={0} />

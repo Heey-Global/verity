@@ -1,3 +1,5 @@
+import { reconcileSessionPermissions } from './sessionPermissions.js';
+import { normalizeDetailRateLimit, toDisplayAttachment } from './sessionDetailNormalize.js';
 import {
   markSessionSwitch,
   sessionSwitchTiming,
@@ -60,6 +62,9 @@ interface PendingEntry extends PendingMessage {
 /** The render state the chat screen consumes. */
 export interface SessionModelState {
   googleStatus?: SessionDetail['googleStatus'];
+  /** Names by user id in a session several people write in; absent otherwise. */
+  people?: SessionDetail['people'];
+  viewerUserId?: SessionDetail['viewerUserId'];
   detailLoaded?: boolean;
   /** Live transcript + status + usage (from the stream's reducer). */
   session: SessionState;
@@ -310,6 +315,8 @@ export class SessionModel {
   private _model: string | undefined;
   private _modelSwitched = false;
   private _googleStatus: SessionDetail['googleStatus'];
+  private _people: SessionDetail['people'];
+  private _viewerUserId: SessionDetail['viewerUserId'];
   private _detailLoaded = false;
   private detailRead: AbortController | undefined;
   private _projectId: string | null | undefined;
@@ -518,6 +525,8 @@ export class SessionModel {
       model: this._model,
       projectId: this._projectId,
       googleStatus: this._googleStatus,
+      people: this._people,
+      viewerUserId: this._viewerUserId,
       detailLoaded: this._detailLoaded,
       switchingModel: this._switchingModel,
       modelSwitchPending: this._modelSwitchPending,
@@ -1035,13 +1044,7 @@ export class SessionModel {
         activityRequest > this._mockupDecisionAfterActivityRequest &&
         !sameMockupReview(activity.mockupReview ?? undefined, this._mockupReview);
       if (mockupChanged) this._mockupReview = activity.mockupReview ?? undefined;
-      if (activity.pendingPermissions !== undefined) {
-        this.stream.reconcilePendingPermissions(
-          activity.pendingPermissions,
-          seqAtRequest,
-          activity.pendingPermissionRequests,
-        );
-      }
+      reconcileSessionPermissions(this.stream, activity, seqAtRequest);
       // The poll is now the authoritative `_busy` source — stop `loadDetail` from
       // seeding it. Set BEFORE the no-change short-circuit so a first poll that
       // matches the initial `false` still counts as "landed".
@@ -1170,14 +1173,10 @@ export class SessionModel {
       });
       if (controller.signal.aborted) return;
       this._googleStatus = detail.googleStatus;
+      this._people = detail.people;
+      this._viewerUserId = detail.viewerUserId;
       this._detailLoaded = true;
-      if (detail.pendingPermissions !== undefined) {
-        this.stream.reconcilePendingPermissions(
-          detail.pendingPermissions,
-          seqAtRequest,
-          detail.pendingPermissionRequests,
-        );
-      }
+      reconcileSessionPermissions(this.stream, detail, seqAtRequest);
       this._name = detail.name;
       this._projectId = detail.projectId ?? null;
       // Seed the working indicator so the Stop button + activity line are correct on
@@ -1561,51 +1560,8 @@ function messageSeq(id: string): number {
   return Number.isNaN(seq) ? -1 : seq;
 }
 
-/** An outgoing {@link TurnRequest} attachment as the transcript renders it. The
- * upload shape (inline base64) is a valid persisted attachment, so the local echo
- * shows the real thumbnails while the send is in flight; once the `prompt` event
- * lands the transcript's own (content-addressed) attachments take over. */
-function toDisplayAttachment(upload: NonNullable<TurnRequest['attachments']>[number]): Attachment {
-  return upload.kind === 'file'
-    ? {
-        kind: 'file',
-        mediaType: upload.mediaType,
-        fileName: upload.fileName,
-        data: upload.data,
-      }
-    : { kind: 'image', mediaType: upload.mediaType, data: upload.data };
-}
-
 /** Shallow equality of two queued-item lists (order-sensitive, by id + text) — to
  * skip a no-op activity emit when the backlog hasn't changed. */
 function sameItems(a: readonly QueuedItem[], b: readonly QueuedItem[]): boolean {
   return a.length === b.length && a.every((x, i) => x.id === b[i]?.id && x.text === b[i]?.text);
-}
-
-function normalizeDetailRateLimit(
-  detail: SessionDetail,
-  currentModel: string | undefined,
-): SessionState['rateLimit'] {
-  const rateLimits = detail.rateLimits ?? (detail.rateLimit ? [detail.rateLimit] : []);
-  const currentProvider = engineLabel(currentModel);
-  const rateLimit = rateLimits
-    .filter(
-      (r) =>
-        (r.providerLabel ?? 'Claude') === currentProvider &&
-        (r.scope === undefined || r.scope === 'all_models'),
-    )
-    .sort((a, b) => {
-      const activeDelta = Number(a.status === 'allowed') - Number(b.status === 'allowed');
-      if (activeDelta !== 0) return activeDelta;
-      return b.resetsAt - a.resetsAt;
-    })[0];
-  if (rateLimit === undefined) return undefined;
-  const providerLabel = rateLimit.providerLabel ?? 'Claude';
-  return {
-    status: rateLimit.status,
-    resetsAt: rateLimit.resetsAt,
-    window: rateLimit.window,
-    ...(rateLimit.usedPercent !== undefined ? { usedPercent: rateLimit.usedPercent } : {}),
-    providerLabel,
-  };
 }

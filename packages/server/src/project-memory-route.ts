@@ -59,6 +59,7 @@ export function registerProjectMemoryRoute(
           binding === undefined ||
           socketIdentity === undefined ||
           socketIdentity.projectId !== binding.projectId ||
+          socketIdentity.userId !== binding.userId ||
           socketIdentity.containerGeneration !== binding.containerGeneration
         ) {
           reply.code(401);

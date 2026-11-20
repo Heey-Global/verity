@@ -31,21 +31,17 @@ import {
   app,
   bus,
   cancelTurn,
-  clearQueue,
   closeSession,
   conductor,
   ctx,
-  decidePermission,
   dequeue,
   dispatchTurn,
   isBusy,
   port,
   recover,
-  releaseUnconfirmedTermination,
   repeatedVerityInstructions,
   runBackendHandoff,
   startSession,
-  stopSession,
   tryRunExclusive,
   worktreeRoot,
 } from './server-fixture.test-helper.js';
@@ -1395,6 +1391,93 @@ describe('POST /sessions/:id/turns', () => {
     expect(dispatchTurn).toHaveBeenCalledWith('s1', 'keep going', expect.any(Object));
   });
 
+  // In a project several people work in, each person's turns run on their own
+  // model and account; choosing a model is theirs alone and interrupts nobody.
+  it("runs each person's turns on their own model in a shared session", async () => {
+    await ctx.store.updateVeritySettings({
+      claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
+    });
+    await ctx.store.upsertProject({
+      id: 'p-shared',
+      owner: 'heey-global',
+      repo: 'shared',
+      containerName: 'dev-heey-global-shared',
+      state: 'active',
+    });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'lena', role: 'member', status: 'active' })
+      .execute();
+    await ctx.db
+      .insertInto('project_memberships')
+      .values({
+        project_id: 'p-shared',
+        user_id: 'lena',
+        can_read: true,
+        can_execute: true,
+        can_manage: false,
+      })
+      .execute();
+    await ctx.store.createSession({
+      sessionId: 's-shared',
+      worktree: '/wt/s-shared',
+      model: 'claude-opus-5-5',
+      projectId: 'p-shared',
+    });
+    await ctx.store.userProviderConnections.set('lena', 'codex', { credential: '{}' });
+    const asLena = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listModels: () => Promise.resolve(['codex/gpt-5.5']),
+    });
+    asLena.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    try {
+      dispatchTurn.mockResolvedValueOnce({ queued: false });
+      const turn = await asLena.inject({
+        method: 'POST',
+        url: '/sessions/s-shared/turns',
+        payload: { prompt: 'go' },
+      });
+      expect(turn.statusCode).toBe(202);
+      expect(dispatchTurn).toHaveBeenLastCalledWith(
+        's-shared',
+        'go',
+        expect.objectContaining({ model: 'codex/gpt-5.5' }),
+        expect.objectContaining({ initiatedBy: { userId: 'lena' } }),
+      );
+
+      runBackendHandoff.mockClear();
+      const chosen = await asLena.inject({
+        method: 'PATCH',
+        url: '/sessions/s-shared',
+        payload: { model: 'codex/gpt-5.5' },
+      });
+      expect(chosen.statusCode).toBe(200);
+      expect(runBackendHandoff).not.toHaveBeenCalled();
+      expect((await ctx.store.getSession('s-shared'))?.model).toBe('claude-opus-5-5');
+
+      await ctx.db
+        .updateTable('users')
+        .set({ display_name: 'Lena' })
+        .where('id', '=', 'lena')
+        .execute();
+      const hers = await asLena.inject({ method: 'GET', url: '/sessions/s-shared' });
+      expect(hers.json<{ model: string }>().model).toBe('codex/gpt-5.5');
+      // Each message can name its sender; the viewer is told who they are.
+      expect(hers.json()).toMatchObject({
+        people: { lena: 'Lena', '00000000-0000-4000-8000-000000000001': 'Administrator' },
+        viewerUserId: 'lena',
+      });
+      const admins = await app.inject({ method: 'GET', url: '/sessions/s-shared' });
+      expect(admins.json<{ model: string }>().model).toBe('claude-opus-5-5');
+    } finally {
+      await asLena.close();
+    }
+  });
+
   it('forwards optional turn options to the conductor', async () => {
     dispatchTurn.mockResolvedValueOnce({ queued: false });
     await app.inject({
@@ -2058,209 +2141,6 @@ describe('POST /sessions/:id/recover-worktree', () => {
       chmodSync(worktree, 0o700);
       rmSync(projectRoot, { recursive: true, force: true });
     }
-  });
-});
-
-describe('POST /sessions/:id/cancel (#79)', () => {
-  it('stops a running turn (200, cancelled: true) with an empty backlog', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    cancelTurn.mockReturnValueOnce(true);
-    const res = await app.inject({ method: 'POST', url: '/sessions/s1/cancel' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      sessionId: 's1',
-      cancelled: true,
-      forceReleased: false,
-      droppedQueued: [],
-    });
-    expect(cancelTurn).toHaveBeenCalledWith('s1');
-  });
-
-  it('returns cancelled: false (200, no-op) when the session is idle', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    cancelTurn.mockReturnValueOnce(false);
-    const res = await app.inject({ method: 'POST', url: '/sessions/s1/cancel' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      sessionId: 's1',
-      cancelled: false,
-      forceReleased: false,
-      droppedQueued: [],
-    });
-  });
-
-  it('drops the pending backlog BEFORE cancelling the turn and returns the dropped prompts (#79)', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    // Record call order: the queue must be cleared before the turn is signalled, or
-    // the cancelled turn's settle drains a queued message into a fresh turn.
-    const order: string[] = [];
-    clearQueue.mockImplementationOnce(async () => {
-      order.push('clearQueue');
-      return [
-        { id: 'q1', prompt: 'first queued' },
-        { id: 'q2', prompt: 'second queued' },
-      ];
-    });
-    cancelTurn.mockImplementationOnce(() => {
-      order.push('cancelTurn');
-      return true;
-    });
-    const res = await app.inject({ method: 'POST', url: '/sessions/s1/cancel' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      sessionId: 's1',
-      cancelled: true,
-      forceReleased: false,
-      droppedQueued: [
-        { id: 'q1', prompt: 'first queued' },
-        { id: 'q2', prompt: 'second queued' },
-      ],
-    });
-    expect(stopSession).toHaveBeenCalledWith('s1');
-    expect(order).toEqual(['clearQueue', 'cancelTurn']);
-  });
-
-  it('404s an unknown session without touching the conductor', async () => {
-    const res = await app.inject({ method: 'POST', url: '/sessions/missing/cancel' });
-    expect(res.statusCode).toBe(404);
-    expect(res.json()).toEqual({ error: 'session missing not found' });
-    expect(cancelTurn).not.toHaveBeenCalled();
-    expect(clearQueue).not.toHaveBeenCalled();
-    expect(stopSession).not.toHaveBeenCalled();
-  });
-
-  it('leaves the unconfirmed-termination fence alone unless force is asked for', async () => {
-    // The default has to stay the safe one: an ordinary Stop must never hand the
-    // worktree on while the previous agent process is unaccounted for.
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    const res = await app.inject({ method: 'POST', url: '/sessions/s1/cancel' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ forceReleased: false });
-    expect(releaseUnconfirmedTermination).not.toHaveBeenCalled();
-  });
-
-  it('releases the fence on force, AFTER the ordinary stop has had its chance', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    const order: string[] = [];
-    stopSession.mockImplementationOnce(async () => {
-      order.push('stopSession');
-      return { cancelled: false, droppedQueued: [] };
-    });
-    releaseUnconfirmedTermination.mockImplementationOnce(async () => {
-      order.push('release');
-      return true;
-    });
-    const res = await app.inject({
-      method: 'POST',
-      url: '/sessions/s1/cancel',
-      payload: { force: true },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ forceReleased: true });
-    expect(releaseUnconfirmedTermination).toHaveBeenCalledWith('s1');
-    // The graceful path first: an override should only ever face a fence that
-    // survived a real stop attempt.
-    expect(order).toEqual(['stopSession', 'release']);
-  });
-
-  it('reports forceReleased: false when force finds nothing fenced', async () => {
-    // The button is reachable from a banner that may already be stale, so a force on
-    // a healthy session must be an honest no-op rather than a lie about a release.
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    const res = await app.inject({
-      method: 'POST',
-      url: '/sessions/s1/cancel',
-      payload: { force: true },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ forceReleased: false });
-  });
-
-  it('404s a force on an unknown session before releasing anything', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/sessions/missing/cancel',
-      payload: { force: true },
-    });
-    expect(res.statusCode).toBe(404);
-    expect(releaseUnconfirmedTermination).not.toHaveBeenCalled();
-  });
-});
-
-describe('POST /sessions/:id/permissions/:toolUseId (#27)', () => {
-  it('allows a tool: 200 decided:true, routes the decision to the conductor', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    decidePermission.mockReturnValueOnce(true);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/sessions/s1/permissions/toolu_a',
-      payload: { behavior: 'allow', updatedInput: { command: 'ls -la' } },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ sessionId: 's1', toolUseId: 'toolu_a', decided: true });
-    expect(decidePermission).toHaveBeenCalledWith(
-      's1',
-      'toolu_a',
-      {
-        behavior: 'allow',
-        updatedInput: { command: 'ls -la' },
-      },
-      { actorId: '__local__' },
-    );
-  });
-
-  it('denies a tool, defaulting the message when none is given', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    decidePermission.mockReturnValueOnce(true);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/sessions/s1/permissions/toolu_b',
-      payload: { behavior: 'deny' },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(decidePermission).toHaveBeenCalledWith(
-      's1',
-      'toolu_b',
-      {
-        behavior: 'deny',
-        message: 'Denied by the operator.',
-      },
-      { actorId: '__local__' },
-    );
-  });
-
-  it('404s when no prompt is pending under that id (already answered / turn ended)', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    decidePermission.mockReturnValueOnce(false);
-    const res = await app.inject({
-      method: 'POST',
-      url: '/sessions/s1/permissions/stale',
-      payload: { behavior: 'allow' },
-    });
-    expect(res.statusCode).toBe(404);
-    expect(res.json()).toMatchObject({ error: expect.stringContaining('stale') });
-  });
-
-  it('404s an unknown session without touching the conductor', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/sessions/missing/permissions/toolu_a',
-      payload: { behavior: 'allow' },
-    });
-    expect(res.statusCode).toBe(404);
-    expect(res.json()).toEqual({ error: 'session missing not found' });
-    expect(decidePermission).not.toHaveBeenCalled();
-  });
-
-  it('400s an invalid decision body (unknown behavior)', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    const res = await app.inject({
-      method: 'POST',
-      url: '/sessions/s1/permissions/toolu_a',
-      payload: { behavior: 'maybe' },
-    });
-    expect(res.statusCode).toBe(400);
-    expect(decidePermission).not.toHaveBeenCalled();
   });
 });
 
@@ -3400,6 +3280,83 @@ describe('POST /sessions with project field (#174)', () => {
     }
   });
 
+  // A member sees only the sessions of projects they can read, and may start one
+  // only where they can work; sessions outside any project are the
+  // administrator's.
+  it("lists and starts sessions only within a member's projects", async () => {
+    for (const id of ['p-mine', 'p-other']) {
+      await ctx.store.upsertProject({
+        id,
+        owner: 'heey-global',
+        repo: id,
+        containerName: `dev-${id}`,
+        state: 'active',
+      });
+    }
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'reader', role: 'member', status: 'active' })
+      .execute();
+    await ctx.db
+      .insertInto('project_memberships')
+      .values({
+        project_id: 'p-mine',
+        user_id: 'reader',
+        can_read: true,
+        can_execute: false,
+        can_manage: false,
+      })
+      .execute();
+    await ctx.store.createSession({
+      sessionId: 's-mine',
+      worktree: '/wt/s-mine',
+      model: 'm',
+      projectId: 'p-mine',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-other',
+      worktree: '/wt/s-other',
+      model: 'm',
+      projectId: 'p-other',
+    });
+    await ctx.store.createSession({ sessionId: 's-none', worktree: '/wt/s-none', model: 'm' });
+    const asReader = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: fakeProvisioner(),
+      projectCloneRoot: '/data/dev',
+      projectBackend: fakeProjectBackend,
+      projectWorktrees: () => fakeProjectWorktrees(),
+      worktrees: { add: vi.fn(async () => '/wt/new'), remove: vi.fn(async () => {}) },
+    });
+    asReader.addHook('onRequest', async (request) => {
+      request.localUserId = 'reader';
+    });
+    try {
+      const listed = await asReader.inject({ method: 'GET', url: '/sessions' });
+      expect(listed.json<{ sessionId: string }[]>().map((session) => session.sessionId)).toEqual([
+        's-mine',
+      ]);
+      const inProject = await asReader.inject({
+        method: 'POST',
+        url: '/sessions',
+        payload: { projectId: 'p-mine' },
+      });
+      expect(inProject.statusCode).toBe(403);
+      const elsewhere = await asReader.inject({
+        method: 'POST',
+        url: '/sessions',
+        payload: { projectId: 'p-other' },
+      });
+      expect(elsewhere.statusCode).toBe(404);
+      const outside = await asReader.inject({ method: 'POST', url: '/sessions', payload: {} });
+      expect(outside.statusCode).toBe(403);
+    } finally {
+      await asReader.close();
+    }
+  });
+
   it('uses the project default model when no model is supplied', async () => {
     await ctx.store.upsertProject({
       id: 'p-default-model',
@@ -3408,7 +3365,13 @@ describe('POST /sessions with project field (#174)', () => {
       containerName: 'dev-heey-global-verity',
       state: 'active',
     });
-    await updateProjectSettings('p-default-model', { defaultModel: 'codex/default' });
+    // The person's own project default, used because they have a Codex account.
+    await ctx.store.updateVeritySettings({ codexAuthJson: '{"tokens":{"access_token":"codex"}}' });
+    await ctx.store.userProviderConnections.setProjectDefaultModel(
+      '00000000-0000-4000-8000-000000000001',
+      'p-default-model',
+      'codex/default',
+    );
     const projectWorktrees = fakeProjectWorktrees();
     projectWorktrees.add.mockResolvedValueOnce(
       '/data/dev/heey-global-verity/.verity-sessions/agent-default-model',

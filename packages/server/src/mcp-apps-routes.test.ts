@@ -9,7 +9,7 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-function setup() {
+function setup(userId?: string) {
   const fixture = dashboardFixture();
   const connection = { id: 'c', url: 'https://mcp.example.com', authorization: 'Bearer account-a' };
   const event: McpAppEvent = {
@@ -32,6 +32,12 @@ function setup() {
   const closeSession = vi.fn(async () => undefined);
   const app = Fastify();
   apps.push(app);
+  if (userId !== undefined) {
+    app.decorateRequest('localUserId', null);
+    app.addHook('onRequest', async (request) => {
+      request.localUserId = userId;
+    });
+  }
   registerMcpAppsRoutes(app, {
     authorizeRequest,
     resolveConnection,
@@ -155,6 +161,20 @@ describe('MCP Apps scoped routes', () => {
     f.fixture.tools[0]!._meta.ui.resourceUri = 'ui://another';
     expect((await f.refresh()).statusCode).toBe(403);
     expect(f.approve).not.toHaveBeenCalled();
+  });
+});
+
+describe('MCP Apps connection rights', () => {
+  // The app was rendered by someone's turn, but the person using it now may be
+  // another member. Resolving by the originating turn would let them act with
+  // that turn's credentialed connection.
+  it('resolves the connection for the person using the app, not the originating turn', async () => {
+    const f = setup('bob');
+    expect((await f.app.inject({ method: 'GET', url: f.url })).statusCode).toBe(200);
+    expect((await f.refresh()).statusCode).toBe(200);
+    expect(f.resolveConnection).toHaveBeenCalled();
+    for (const [input] of f.resolveConnection.mock.calls as unknown as [{ principal: unknown }][])
+      expect(input.principal).toEqual({ userId: 'bob' });
   });
 });
 

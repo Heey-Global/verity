@@ -15,6 +15,8 @@ import {
   openSync,
   readSync,
   closeSync,
+  accessSync,
+  realpathSync,
   constants,
 } from 'node:fs';
 import path from 'node:path';
@@ -61,6 +63,35 @@ export function hardenCodexAcpSource(source) {
   return source.replace(automaticTrust, (match) => match.replace('"trusted"', '"untrusted"'));
 }
 
+// Corepack links `pnpm` and `yarn`, which base images often ship themselves
+// (Node images include Yarn 1). Overwriting those would silently swap the
+// project's own package manager, so these bundles only fill commands that no
+// other PATH entry provides yet.
+const FILL_ONLY_BUNDLES = new Set(['corepack']);
+
+function providedElsewhere(bin, destination) {
+  let own = destination;
+  try {
+    own = realpathSync(destination);
+  } catch {
+    /* Not installed yet. */
+  }
+  for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!directory) continue;
+    try {
+      const candidate = path.join(directory, bin);
+      accessSync(candidate, constants.X_OK);
+      const real = realpathSync(candidate);
+      // Verity's install policy shims front the real binary; they are not one.
+      if (real.startsWith(`${own}${path.sep}`) || real.startsWith('/opt/verity/')) continue;
+      return true;
+    } catch {
+      /* Not provided by this PATH entry. */
+    }
+  }
+  return false;
+}
+
 // Keep each CLI's dependency tree isolated, while exposing the same global
 // package and executable paths used by the adapter patches and spawn broker.
 export function installCli(
@@ -75,8 +106,12 @@ export function installCli(
   if (dependencies.length !== 1) throw new Error('CLI bundle must contain exactly one dependency');
   const [name, pinned] = dependencies[0];
   const version = override ?? pinned;
-  if (id === 'codex-acp' && version !== '2.5.0')
-    throw new Error('Codex ACP security hardening requires audited adapter version 2.5.0');
+  // Audited for 2.6.0: the project-trust expression is unchanged, and the new
+  // permission-profile modes cannot select the starting mode while the spawn
+  // broker sets INITIAL_AGENT_MODE, which getInitialAgentMode still honours
+  // first. The built-in modes Verity selects are unchanged from 2.5.0.
+  if (id === 'codex-acp' && version !== '2.6.0')
+    throw new Error('Codex ACP security hardening requires audited adapter version 2.6.0');
   if (!/^\d+\.\d+\.\d+(?:-[\da-zA-Z.-]+)?(?:\+[\da-zA-Z.-]+)?$/.test(version)) {
     throw new Error('CLI version must be exact');
   }
@@ -84,6 +119,7 @@ export function installCli(
   const globalRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim();
   const prefix = execFileSync('npm', ['prefix', '-g'], { encoding: 'utf8' }).trim();
   const destination = path.join(globalRoot, '.verity-cli', id);
+  const fillOnly = FILL_ONLY_BUNDLES.has(id);
   const receipt = path.join(destination, 'verity-install.json');
   const identity = createHash('sha256')
     .update(readFileSync(fileURLToPath(import.meta.url)))
@@ -103,9 +139,16 @@ export function installCli(
         typeof installed.bin === 'string'
           ? { [name.split('/').at(-1)]: installed.bin }
           : (installed.bin ?? {});
-      const linked = (link, target) =>
-        lstatSync(link).isSymbolicLink() &&
-        path.resolve(path.dirname(link), readlinkSync(link)) === target;
+      const linked = (link, target) => {
+        try {
+          return (
+            lstatSync(link).isSymbolicLink() &&
+            path.resolve(path.dirname(link), readlinkSync(link)) === target
+          );
+        } catch {
+          return false;
+        }
+      };
       if (
         saved.version === 1 &&
         saved.identity === identity &&
@@ -115,11 +158,12 @@ export function installCli(
         linked(path.join(globalRoot, name), packageDir) &&
         Object.entries(bins).every(([bin, relative]) => {
           const target = path.resolve(packageDir, relative);
+          if (path.basename(bin) !== bin || !target.startsWith(`${packageDir}${path.sep}`))
+            return false;
+          if (fillOnly && !linked(path.join(prefix, 'bin', bin), target))
+            return providedElsewhere(bin, destination);
           return (
-            path.basename(bin) === bin &&
-            target.startsWith(`${packageDir}${path.sep}`) &&
-            linked(path.join(prefix, 'bin', bin), target) &&
-            (lstatSync(target).mode & 0o111) !== 0
+            linked(path.join(prefix, 'bin', bin), target) && (lstatSync(target).mode & 0o111) !== 0
           );
         })
       ) {
@@ -197,6 +241,10 @@ export function installCli(
       throw new Error('Invalid CLI executable path');
     }
     chmodSync(target, 0o755);
+    if (fillOnly && providedElsewhere(bin, destination)) {
+      console.log(`Keeping the existing ${bin} command`);
+      continue;
+    }
     const link = path.join(prefix, 'bin', bin);
     rmSync(link, { force: true });
     symlinkSync(target, link);

@@ -2,6 +2,8 @@
 
 **Status:** Proposed; no production support is claimed.
 
+**Reconciled:** [team contract v1](uplink-team-contract-v1.md) records the current decisions and implementation status; it takes precedence where the two differ.
+
 **Authority:** [Core ADR 0023](../adr/0023-multi-user-projects-and-turn-identity.md).
 **Base transport:** [Uplink Channel Protocol](../UPLINK_CHANNEL_PROTOCOL.md).
 **Delivery:** [Coordinated implementation plan](../uplink-team-sharing-delivery.md).
@@ -31,8 +33,9 @@ Team v1 is an opt-in extension on the authenticated control connection:
 - `preview-sharing`, `remote-control` and `team-sharing` are distinct permissions.
   Product plans may bundle them; clients must not infer one from another.
 
-Unknown optional fields are ignored. Unknown message types cannot authorize
-anything. Invalid required fields fail the request. A future incompatible team
+Team messages are strict objects: unknown fields are rejected, and a new field
+needs a new team version (reconciled decision D2). Unknown message types cannot
+authorize anything. Invalid required fields fail the request. A future incompatible team
 contract negotiates a new team version; follow the base protocol's N/N−1
 rollout rule. Do not change the base version merely to add optional handshake
 fields. If implementation cannot preserve old behavior, revise this decision
@@ -124,7 +127,7 @@ must be fixed before release.
 | Request                  | Required payload                                                                                                             | Success response and payload                                    |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | `team.grant.get`         | None; instance comes from authenticated channel                                                                              | `team.grant`, `assertion`                                       |
-| `team.invite.create`     | `operationId`, `localInviteId`, `projectId`, `permissions`, `expiresAt`, `bootstrapCommitment`, `installationKeyFingerprint` | `team.invite.created`, `invitationId`, `expiresAt`, `redeemUrl` |
+| `team.invite.create`     | `operationId`, `localInviteId`, `projectId`, `permissions`, `expiresAt`, `bootstrapCommitment`, `installationKeyFingerprint` | `team.invite.created`, `invitationId`, `expiresAt`              |
 | `team.invite.cancel`     | `operationId`, `invitationId`                                                                                                | `team.invite.cancelled`, `invitationId`, `alreadyCommitted`     |
 | `team.join.commit`       | `operationId`, `invitationId`, `redemptionId`, `membershipRef`                                                               | `team.join.committed`, `redemptionId`                           |
 | `team.membership.remove` | `operationId`, `membershipRef`, `reason`                                                                                     | `team.membership.removed`, `membershipRef`                      |
@@ -139,10 +142,15 @@ The core creates a fresh, random one of at least 128 bits before
 reuses one after removal, so re-inviting a removed member is not blocked by its
 tombstone; the owner and memberships created without Uplink have none.
 `expiresAt` may be shortened by service policy; the returned deadline wins.
-`redeemUrl` is restricted to the trusted Uplink HTTPS origin and contains no
-provider credential. The bootstrap secret is not logged or sent over control;
-only its commitment is registered. The final invitation link is assembled by
-the trusted client using the reviewed bootstrap encoding.
+`installationKeyFingerprint` is `sha256-` followed by the unpadded base64url
+SHA-256 of the Core identity key (the DER SubjectPublicKeyInfo that also derives
+`serverId`), so Uplink can bind an invitation to the installation that created
+it.
+Uplink returns no redemption URL. Core hands the link fields to the inviter's
+app, which adds the pinned `tlsPin` and `coreOrigin` from its paired server
+profile and encodes the `https://verity.build/join#` link (reconciled decision
+D5). The bootstrap secret is not logged or sent over control; only its
+commitment is registered.
 
 Service events:
 
@@ -174,7 +182,7 @@ reset the persisted revocation floor.
    identity as specified above. Uplink cannot substitute a different project,
    role, device or instance in this exchange.
 4. In one local transaction the core consumes the invitation, stores membership
-   and device binding, and writes a `team.join.commit` outbox item. A unique
+   and device binding, without activating the person. Once the app durably stores the returned credential, a separate bearer-authorized completion writes the `team.join.commit` outbox item. A unique
    invitation/redemption constraint makes replay return the same receipt.
    Device credentials are delivered only inside the encrypted channel.
 5. The outbox retries until Uplink acknowledges. A timeout after the local commit

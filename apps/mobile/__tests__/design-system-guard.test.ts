@@ -53,10 +53,12 @@ const EXEMPT: Partial<Record<string, Counts>> = {
   'components/settings/settingsStyles.ts': { rawColor: 1 },
   // The pairing QR code itself: black modules on white, in either theme.
   'app/devices.tsx': { rawColor: 2 },
+  // The team invitation QR code: black modules on white, in either theme.
+  'app/project/[id]/settings/invitation.tsx': { rawColor: 2 },
   // The camera scanner sits on the live camera image: black around it, a white
   // frame and white text on a dark veil stay readable over any picture, in
   // either theme.
-  'app/onboarding/server-url.tsx': { rawColor: 4 },
+  'components/ui/QrScanner.tsx': { rawColor: 4 },
 };
 
 /** Every non-test `.ts`/`.tsx` below `dir`. Throws rather than returning

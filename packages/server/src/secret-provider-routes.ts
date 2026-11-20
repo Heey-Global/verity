@@ -114,11 +114,8 @@ export function registerSecretProviderRoutes(
     if (!params.success || !query.success) {
       return reply.code(400).send({ error: 'invalid secret-name request' });
     }
-    if (
-      (await authorizeProject(request.headers.authorization, params.data.projectId)) === undefined
-    ) {
-      return reply.code(403).send({ error: 'forbidden' });
-    }
+    const actorId = await authorizeProject(request.headers.authorization, params.data.projectId);
+    if (actorId === undefined) return reply.code(403).send({ error: 'forbidden' });
     const binding = await catalog.resolveBinding(
       {
         id: query.data.bindingId,
@@ -132,7 +129,7 @@ export function registerSecretProviderRoutes(
     }
     try {
       return reply.send({
-        names: await listSecretNames(providerBindingRecordSchema.parse(binding)),
+        names: await listSecretNames(providerBindingRecordSchema.parse(binding), actorId),
       });
     } catch {
       return reply.code(502).send({ error: 'secret names unavailable' });
@@ -170,7 +167,7 @@ export function registerSecretProviderRoutes(
       if (binding === undefined || binding.state !== 'active') {
         return reply.code(409).send({ error: 'secret permission could not be granted' });
       }
-      const names = await listSecretNames(providerBindingRecordSchema.parse(binding));
+      const names = await listSecretNames(providerBindingRecordSchema.parse(binding), actorId);
       if (!names.includes(body.data.secretName)) {
         return reply.code(409).send({ error: 'secret permission could not be granted' });
       }

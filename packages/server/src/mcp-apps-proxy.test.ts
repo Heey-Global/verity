@@ -10,6 +10,8 @@ import { registerHttpMcpProxyRoute } from './http-mcp-proxy.js';
 import { createMcpAppsInterceptor, type McpAppEvent } from './mcp-apps.js';
 import { dashboardFixture } from './mcp-apps-fixture.test-helper.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 const transport = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('node:https', async (original) => ({
   ...(await original<typeof import('node:https')>()),
@@ -71,7 +73,12 @@ it.each([false, true])(
     const directory = await mkdtemp('/tmp/mcp-app-proxy-');
     const listener = await startProjectInternalUnixListener(app, {
       socketRoot: directory,
-      identity: { projectId: 'p', containerGeneration: 'g' },
+      identity: {
+        projectId: 'p',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'g',
+      },
       ownerUid: process.getuid?.() ?? 1000,
       relayGid: process.getgid?.() ?? 1000,
     });

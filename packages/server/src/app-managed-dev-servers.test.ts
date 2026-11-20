@@ -5,9 +5,18 @@ import { expect, it, vi } from 'vitest';
 import { buildControlPlane, type ControlPlaneDeps } from './app.js';
 import { markInternalConnections } from './internal-listener.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 // Direct route tests cannot catch a manager dropped by the composition layer.
 it('forwards the managed server manager to app and agent routes', async () => {
-  const binding = { projectId: 'p1', containerGeneration: 'g1', owner: 'o', repo: 'r' };
+  const binding = {
+    projectId: 'p1',
+    userId: SANDBOX_USER,
+    projectDefault: true,
+    containerGeneration: 'g1',
+    owner: 'o',
+    repo: 'r',
+  };
   const view = vi.fn<(sessionId: string) => Promise<never[]>>(async () => []);
   const app = buildControlPlane({
     eventStore: {

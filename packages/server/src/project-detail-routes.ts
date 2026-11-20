@@ -72,6 +72,8 @@ const settingsBody = z
   })
   .strict();
 
+const defaultModelBody = z.object({ model: z.string().trim().min(1).max(200).nullable() }).strict();
+
 export interface ProjectDetailRouteDeps {
   /** The project with its sessions as `viewer` sees them (read marks, dismissals). */
   getDetail: (projectId: string, viewer: string) => Promise<unknown>;
@@ -85,7 +87,18 @@ export interface ProjectDetailRouteDeps {
   /** Folds the project for `viewer` only. */
   setCollapsed: (projectId: string, collapsed: boolean, viewer: string) => Promise<unknown>;
   isSealed: () => boolean;
-  updateSettings: (projectId: string, patch: ProjectSettingsPatch) => Promise<unknown>;
+  /** Applies a settings patch; a default model in it becomes `viewer`'s own. */
+  updateSettings: (
+    projectId: string,
+    patch: ProjectSettingsPatch,
+    viewer: string,
+  ) => Promise<unknown>;
+  /** Sets `viewer`'s own default model for the project (ADR 0023 §3). */
+  setOwnDefaultModel: (
+    projectId: string,
+    viewer: string,
+    model: string | null,
+  ) => Promise<{ defaultModel: string | null }>;
   renameProject: (projectId: string, name: string) => Promise<ProjectRecord | undefined>;
 }
 
@@ -183,7 +196,7 @@ export function registerProjectDetailRoutes(
       answer.name = renamed.name;
     }
     if (description !== undefined) {
-      const settings = (await deps.updateSettings(id, { description })) as
+      const settings = (await deps.updateSettings(id, { description }, viewerId(request))) as
         { description?: string | null } | undefined;
       if (settings === undefined) {
         reply.code(404);
@@ -192,6 +205,25 @@ export function registerProjectDetailRoutes(
       answer.description = settings.description ?? null;
     }
     return answer;
+  });
+
+  // Each person picks their own default model for a project; it needs only the
+  // permission to work in it, not to manage it.
+  app.put('/projects/:id/default-model', async (request, reply): Promise<unknown> => {
+    if (deps.isSealed()) throw new SealedError();
+    const { id } = projectParams.parse(request.params);
+    const { model } = defaultModelBody.parse(request.body);
+    if (!(await deps.projectExists(id))) {
+      reply.code(404);
+      return { error: `project ${id} not found` };
+    }
+    try {
+      return await deps.setOwnDefaultModel(id, viewerId(request), model);
+    } catch (error) {
+      if (!(error instanceof ProjectAgentNotAllowedError)) throw error;
+      reply.code(400);
+      return { error: error.message };
+    }
   });
 
   app.patch('/projects/:id/settings', async (request, reply): Promise<unknown> => {
@@ -204,7 +236,7 @@ export function registerProjectDetailRoutes(
     }
     let settings: unknown;
     try {
-      settings = await deps.updateSettings(id, patch);
+      settings = await deps.updateSettings(id, patch, viewerId(request));
     } catch (error) {
       if (!(error instanceof ProjectAgentNotAllowedError)) throw error;
       reply.code(400);

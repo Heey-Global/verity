@@ -6,7 +6,9 @@ import { completeHttpMcpOAuth } from './http-mcp-oauth.js';
 import { discoverMcpOAuth, registerMcpOAuthClient } from './http-mcp-oauth-discovery.js';
 
 vi.mock('./http-mcp-oauth.js', () => ({ completeHttpMcpOAuth: vi.fn(async () => undefined) }));
-vi.mock('./http-mcp-oauth-discovery.js', () => ({
+vi.mock('./http-mcp-oauth-discovery.js', async (original) => ({
+  parseMcpServerUrl: (await original<typeof import('./http-mcp-oauth-discovery.js')>())
+    .parseMcpServerUrl,
   discoverMcpOAuth: vi.fn(),
   registerMcpOAuthClient: vi.fn(),
 }));
@@ -174,6 +176,9 @@ describe('MCP OAuth API', () => {
           'https://trusted.tail.example/app/mcp/oauth/callback',
         ],
         'read',
+        undefined,
+        // Discovery did not report a public MCP server, so internal endpoints stay allowed.
+        true,
       );
       expect(upsert).toHaveBeenCalledWith(
         expect.objectContaining({

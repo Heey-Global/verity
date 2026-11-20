@@ -1,3 +1,4 @@
+import { useFocusEffect } from 'expo-router';
 // The project settings routes (app/project/[id]/settings/*): the index that
 // routes to them, and each screen's own behaviour. They mirror the Verity
 // settings routes — same scaffold, same row furniture, same module mocks — so
@@ -53,6 +54,24 @@ beforeEach(() => {
 afterEach(() => {
   resetSettingsHarness();
   jest.restoreAllMocks();
+});
+
+it('cleans up the previous focus effect before refocusing and unmounting', () => {
+  // A refocus that drops the previous cleanup leaves polling intervals alive
+  // after unmount, so every assertion passes while Jest never exits.
+  const cleanup = jest.fn();
+  const effect = jest.fn(() => cleanup);
+  function FocusedScreen() {
+    useFocusEffect(effect);
+    return null;
+  }
+  const view = render(<FocusedScreen />);
+  expect(effect).toHaveBeenCalledTimes(1);
+  act(() => refocus());
+  expect(cleanup).toHaveBeenCalledTimes(1);
+  expect(effect).toHaveBeenCalledTimes(2);
+  view.unmount();
+  expect(cleanup).toHaveBeenCalledTimes(2);
 });
 
 describe('project settings index — destinations', () => {
@@ -256,6 +275,8 @@ describe('project settings — sandbox', () => {
           targetRevision: null,
           selfRepair: 'converging',
           turnBlocked: false,
+          blockedBy: [],
+          lastRepairFailure: null,
         },
       },
     };
@@ -279,12 +300,51 @@ describe('project settings — sandbox', () => {
     ).toBeOnTheScreen();
   });
 
-  it('offers no Update button for an update a turn is holding off', async () => {
-    // The silent failure this guards: the Server refuses this recreate for as long
-    // as a turn runs (SBX-1), so an Update button here can only return a 409 that
-    // surfaces as "Could not update project" — the operator reads a fault where
-    // there is a turn, and pressing it again never helps. The dialog has to say
-    // what would move it and then offer nothing that would not.
+  it('keeps manual retry available when image discovery is unknown and repair stalled', async () => {
+    const base = makeDetail();
+    const detail: ProjectDetail = {
+      ...base,
+      project: {
+        ...base.project,
+        state: 'active',
+        sandboxUpdate: {
+          state: 'unknown',
+          kind: 'normal',
+          category: 'software',
+          reason: null,
+          current: null,
+          target: null,
+          currentVersion: null,
+          currentRevision: null,
+          targetVersion: null,
+          targetRevision: null,
+          selfRepair: 'stalled',
+          turnBlocked: false,
+          blockedBy: [],
+          lastRepairFailure: null,
+        },
+      },
+    };
+    const recreateProjectContainer = jest.fn().mockResolvedValue(detail.project);
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail, recreateProjectContainer }));
+    render(<ProjectSandboxScreen />);
+    fireEvent.press(await screen.findByLabelText(/^Update project sandbox(,|$)/));
+    expect(recreateProjectContainer).not.toHaveBeenCalled();
+    expect(screen.getByText('Update sandbox now?')).toBeOnTheScreen();
+    fireEvent.press(screen.getAllByRole('button', { name: 'Update now' }).at(-1)!);
+    await waitFor(() =>
+      expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
+        confirmWarnings: true,
+        forceRebuild: false,
+        interruptServices: false,
+        cancelTurns: false,
+      }),
+    );
+  });
+
+  it('dates an earlier failed update while a retry is running instead of reporting it stuck', async () => {
+    // An earlier refusal shown without a time reads as the outcome of the retry
+    // that is waiting for the build slot now.
     const base = makeDetail();
     const detail: ProjectDetail = {
       ...base,
@@ -302,32 +362,97 @@ describe('project settings — sandbox', () => {
           currentRevision: null,
           targetVersion: '2.9.2',
           targetRevision: null,
-          selfRepair: 'stalled',
-          turnBlocked: true,
+          selfRepair: 'converging',
+          turnBlocked: false,
+          blockedBy: [],
+          lastRepairFailure: {
+            at: '2026-11-10T14:41:24.000Z',
+            message: 'Build storage admission rejected',
+          },
         },
       },
     };
-    const recreateProjectContainer = jest.fn();
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail, recreateProjectContainer }));
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
     render(<ProjectSandboxScreen />);
 
     expect(
-      await screen.findByText('Update waiting for a turn to finish — cancel it to update now'),
+      await screen.findByText('Update pending — Verity is rebuilding this sandbox'),
     ).toBeOnTheScreen();
-    fireEvent.press(screen.getByLabelText(/^Update project sandbox(,|$)/));
-
-    const [title, message, buttons] = alert.mock.calls[0];
-    expect(title).toBe('Update waiting for a turn');
-    expect(message).toContain('cancel the turn first');
-    // Only an acknowledgement, no action button: nothing on this path may reach
-    // the route that would 409 — or, if SBX-1 ever stopped holding, kill the turn
-    // the message just promised was safe.
-    expect(buttons).toBeUndefined();
-    expect(screen.queryByText('Update project?')).toBeNull();
-    expect(recreateProjectContainer).not.toHaveBeenCalled();
-    alert.mockRestore();
+    expect(
+      screen.getByText(
+        /^Retrying — the previous automatic rebuild failed 10 Nov 2026, \d{2}:\d{2}: Build storage admission rejected$/,
+      ),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText(/stuck/)).toBeNull();
   });
+
+  it.each([false, true])(
+    'gates turn cancellation on server support (%s) and confirmation',
+    async (supported) => {
+      const base = makeDetail();
+      const detail: ProjectDetail = {
+        ...base,
+        project: {
+          ...base.project,
+          state: 'active',
+          sandboxUpdate: {
+            state: 'available',
+            kind: 'normal',
+            category: 'software',
+            reason: null,
+            current: null,
+            target: null,
+            currentVersion: '1.22.1',
+            currentRevision: null,
+            targetVersion: '2.9.2',
+            targetRevision: null,
+            selfRepair: 'stalled',
+            turnBlocked: true,
+            blockedBy: ['turn'],
+            lastRepairFailure: null,
+          },
+        },
+      };
+      const recreateProjectContainer = jest.fn();
+      mockCreateVerityClient.mockReturnValue(
+        makeClient({
+          detail,
+          recreateProjectContainer,
+          getHealth: jest
+            .fn()
+            .mockResolvedValue({ status: 'ok', sandboxServiceInterruptionSupported: supported }),
+        }),
+      );
+      const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+      render(<ProjectSandboxScreen />);
+
+      expect(
+        await screen.findByText('Update waiting for a turn to finish — cancel it to update now'),
+      ).toBeOnTheScreen();
+      fireEvent.press(screen.getByLabelText(/^Update project sandbox(,|$)/));
+      expect(recreateProjectContainer).not.toHaveBeenCalled();
+      if (supported) {
+        expect(screen.getByText('Cancel turn and update?')).toBeOnTheScreen();
+        fireEvent.press(screen.getAllByRole('button', { name: 'Cancel turn and update' }).at(-1)!);
+        await waitFor(() =>
+          expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
+            confirmWarnings: true,
+            forceRebuild: false,
+            interruptServices: true,
+            cancelTurns: true,
+          }),
+        );
+        expect(alert).not.toHaveBeenCalled();
+      } else {
+        const [title, message, buttons] = alert.mock.calls[0];
+        expect(title).toBe('Update waiting');
+        expect(message).toContain('does not support updating during activity');
+        expect(buttons).toBeUndefined();
+        expect(recreateProjectContainer).not.toHaveBeenCalled();
+      }
+      alert.mockRestore();
+    },
+  );
 
   // The Sandbox screen is where Start/Repair/Update live, so the finding and
   // the action that answers it are on the same surface.
@@ -543,6 +668,8 @@ describe('project settings — sandbox', () => {
       expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
         confirmWarnings: true,
         forceRebuild: true,
+        interruptServices: false,
+        cancelTurns: false,
       }),
     );
   });
@@ -746,8 +873,6 @@ describe('project settings — agents', () => {
     const client = makeClient({ detail: before });
     const getProject = client.getProject as jest.Mock;
     let finishRefresh: (() => void) | undefined;
-    const updateProjectSettings = client.updateProjectSettings as jest.Mock;
-    updateProjectSettings.mockResolvedValue({ ...before.settings, defaultModel: 'codex/default' });
     mockCreateVerityClient.mockReturnValue(client);
     render(<ProjectModelScreen />);
 
@@ -788,30 +913,32 @@ describe('project settings — agents', () => {
     expect(screen.getByLabelText(/^Use model Codex, codex\/default(,|$)/)).toBeOnTheScreen();
   });
 
-  // The choice has to reach the server as the `defaultModel` key alone — a
-  // PATCH that also carried `defaultBranch` or `memory` would clear them.
-  it('PATCHes { defaultModel } when a model is picked and null for Automatic', async () => {
-    const updateProjectSettings = jest
+  // The default model is the signed-in person's own (ADR 0023 §3): it is saved
+  // through their own route, never as a project setting everyone shares.
+  it('saves the person’s own default model when picked and null for Automatic', async () => {
+    const updateProjectSettings = jest.fn();
+    const setOwnProjectDefaultModel = jest
       .fn()
-      .mockImplementation((_id: string, patch: object) =>
-        Promise.resolve({ ...makeDetail().settings, ...patch }),
+      .mockImplementation((_id: string, model: string | null) =>
+        Promise.resolve({ defaultModel: model }),
       );
-    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({ updateProjectSettings, setOwnProjectDefaultModel }),
+    );
     render(<ProjectModelScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Use model Codex, codex\/default(,|$)/));
     await waitFor(() =>
-      expect(updateProjectSettings).toHaveBeenCalledWith('p/1', { defaultModel: 'codex/default' }),
+      expect(setOwnProjectDefaultModel).toHaveBeenCalledWith('p/1', 'codex/default'),
     );
+    expect(updateProjectSettings).not.toHaveBeenCalled();
     expect(
       (await screen.findByLabelText(/^Use model Codex, codex\/default(,|$)/)).props
         .accessibilityState.checked,
     ).toBe(true);
 
     fireEvent.press(screen.getByLabelText(/^Use the first allowed model(,|$)/));
-    await waitFor(() =>
-      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { defaultModel: null }),
-    );
+    await waitFor(() => expect(setOwnProjectDefaultModel).toHaveBeenLastCalledWith('p/1', null));
   });
 
   // The toggles PATCH the agent list alone; a list naming every agent is stored
@@ -976,7 +1103,6 @@ describe('project settings — agents', () => {
     await act(async () => finishers[0]?.());
     await waitFor(() =>
       expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', {
-        defaultModel: null,
         allowedAgents: ['claude'],
       }),
     );

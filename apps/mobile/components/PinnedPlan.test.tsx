@@ -163,6 +163,19 @@ it('shows one decision at a time and sends every answer in a single message', ()
   );
 });
 
+it('collapses once the answers are sent and reopens for the revised proposal', () => {
+  // Sending answers bypasses the composer, so no sendNonce change collapses it:
+  // the full card stayed open over the transcript while the agent worked.
+  const view = render(<PinnedPlan {...props} markdown={spec} />);
+  fireEvent.press(screen.getByLabelText('Send answers'));
+  expect(props.onAnswerDecision).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText('Show prices incl. VAT?')).toBeNull();
+  expect(screen.getByLabelText('Expand plan')).toBeOnTheScreen();
+  view.rerender(<PinnedPlan {...props} markdown={markdown} revision={2} updated />);
+  expect(screen.getByLabelText('Collapse plan')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Implement plan')).toBeOnTheScreen();
+});
+
 it('starts a new revision from its own recommendations, not the earlier selection', () => {
   const view = render(<PinnedPlan {...props} markdown={decisions} />);
   fireEvent.press(screen.getByRole('radio', { name: 'Excl. VAT' }));

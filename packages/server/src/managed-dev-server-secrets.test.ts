@@ -10,7 +10,7 @@ describe('managed dev server secret resolution', () => {
   it('resolves fresh project-scoped values for every start and zeroizes consumed buffers', async () => {
     const buffers: Uint8Array[] = [];
     let generation = 0;
-    const resolveSecret = vi.fn(async () => {
+    const resolveSecret = vi.fn<(input: { person: unknown }) => Promise<Uint8Array>>(async () => {
       const value = new TextEncoder().encode(`synthetic-key-${generation++}`);
       buffers.push(value);
       return value;
@@ -19,20 +19,25 @@ describe('managed dev server secret resolution', () => {
       getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: 'dev' }),
       resolveSecret,
     });
-    expect(await resolve('p1', bindings)).toEqual([
+    expect(await resolve('p1', bindings, undefined, 'lena')).toEqual([
       { env: 'API_KEY', value: 'synthetic-key-0' },
       { env: 'OTHER_KEY', value: 'synthetic-key-1' },
     ]);
-    expect(await resolve('p1', bindings)).toEqual([
+    expect(await resolve('p1', bindings, undefined, 'lena')).toEqual([
       { env: 'API_KEY', value: 'synthetic-key-2' },
       { env: 'OTHER_KEY', value: 'synthetic-key-3' },
     ]);
     expect(resolveSecret.mock.calls).toHaveLength(4);
+    // The starter's connection resolves every secret, recovery included.
+    expect(resolveSecret.mock.calls.map(([input]) => input.person)).toEqual(
+      new Array(4).fill({ userId: 'lena' }),
+    );
     expect(resolveSecret).toHaveBeenCalledWith({
       projectId: 'p1',
       dopplerProject: 'demo',
       dopplerConfig: 'dev',
       secretName: 'ATTENDEE_API_KEY',
+      person: { userId: 'lena' },
     });
     expect(buffers.every((value) => value.every((byte) => byte === 0))).toBe(true);
   });
@@ -47,7 +52,7 @@ describe('managed dev server secret resolution', () => {
         throw new Error('synthetic-sensitive-value');
       },
     });
-    await expect(resolve('p1', bindings)).rejects.toThrow(
+    await expect(resolve('p1', bindings, undefined, 'lena')).rejects.toThrow(
       'Could not resolve managed server secrets',
     );
     expect(first.every((byte) => byte === 0)).toBe(true);
@@ -60,7 +65,9 @@ describe('managed dev server secret resolution', () => {
         getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: 'dev' }),
         resolveSecret: async () => raw,
       });
-      await expect(resolve('p1', bindings.slice(0, 1))).rejects.toThrow('Could not resolve');
+      await expect(resolve('p1', bindings.slice(0, 1), undefined, 'lena')).rejects.toThrow(
+        'Could not resolve',
+      );
       expect(raw.every((byte) => byte === 0)).toBe(true);
     },
   );
@@ -72,9 +79,9 @@ it('rejects a changed provider before retrieving any secret', async () => {
     getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: 'production' }),
     resolveSecret,
   });
-  await expect(resolve('p1', bindings, JSON.stringify(['demo', 'staging']))).rejects.toThrow(
-    'Could not resolve',
-  );
+  await expect(
+    resolve('p1', bindings, JSON.stringify(['demo', 'staging']), 'lena'),
+  ).rejects.toThrow('Could not resolve');
   expect(resolveSecret).not.toHaveBeenCalled();
 });
 
@@ -89,7 +96,7 @@ it('discards and zeroizes values when the provider changes during resolution', a
     },
   });
   await expect(
-    resolve('p1', bindings.slice(0, 1), JSON.stringify(['demo', 'staging'])),
+    resolve('p1', bindings.slice(0, 1), JSON.stringify(['demo', 'staging']), 'lena'),
   ).rejects.toThrow('Could not resolve');
   expect(raw.every((byte) => byte === 0)).toBe(true);
 });

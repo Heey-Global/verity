@@ -2,6 +2,8 @@
 
 **Status:** Core-side feasibility review; not a selected implementation or T0 freeze.
 
+**Reconciled:** [team contract v1](uplink-team-contract-v1.md) records the current decisions and implementation status — personal Remote Control admission and tunnelling are implemented in Core, so statements here that they are missing are historical; it takes precedence where the two differ.
+
 Related: [T0 reconciliation](uplink-team-t0-reconciliation.md) and
 [team protocol](uplink-team-sharing-v1.md).
 

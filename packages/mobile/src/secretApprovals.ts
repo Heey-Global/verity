@@ -1,5 +1,16 @@
 import { z } from 'zod';
 
+export const pendingPermissionRequestSchema = z.object({
+  toolUseId: z.string().min(1),
+  tool: z.string().min(1),
+  riskClass: z.string().min(1),
+  input: z.unknown().optional(),
+  grantChannel: z.literal('acp').optional(),
+  createdAt: z.number().optional(),
+  detached: z.boolean().optional(),
+});
+export type PendingPermissionRequest = z.infer<typeof pendingPermissionRequestSchema>;
+
 const historySchema = z.object({
   requests: z.array(
     z.object({

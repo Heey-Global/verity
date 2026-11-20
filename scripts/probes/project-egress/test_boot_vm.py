@@ -11,6 +11,39 @@ spec.loader.exec_module(boot_vm)
 
 
 class BootEvidenceTests(unittest.TestCase):
+    def test_guest_apt_configuration_is_accepted_by_apt(self):
+        if not boot_vm.shutil.which('apt-config'):
+            self.skipTest('APT is only available on Debian-family hosts')
+        vm = object.__new__(boot_vm.BootVM)
+        vm.ssh = unittest.mock.Mock()
+        vm.configure_apt()
+        command = vm.ssh.call_args.args[0]
+        config = command.split("<<'APT'\n", 1)[1].rsplit('\nAPT', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'apt.conf'
+            path.write_text(config)
+            result = boot_vm.subprocess.check_output(['apt-config', '-c', str(path), 'shell',
+                'appstream', 'Acquire::IndexTargets::deb::DEP-11::DefaultEnabled',
+                'cnf', 'Acquire::IndexTargets::deb::CNF::DefaultEnabled',
+                'http', 'Acquire::http::Timeout', 'https', 'Acquire::https::Timeout',
+                'retries', 'Acquire::Retries'], text=True)
+            dump = boot_vm.subprocess.check_output(['apt-config', '-c', str(path), 'dump'], text=True)
+        self.assertIn('Acquire::Languages:: "none";', dump)
+        self.assertEqual(result, "appstream='false'\ncnf='false'\nhttp='30'\nhttps='30'\nretries='3'\n")
+
+    def test_timeout_preserves_partial_guest_diagnostics(self):
+        for output in (b'apt download stalled\n', 'docker load stalled\n', None):
+            with self.subTest(output=output), tempfile.TemporaryDirectory() as directory:
+                vm = boot_vm.BootVM('base.qcow2', directory)
+                error = boot_vm.subprocess.TimeoutExpired('ssh', 600, output=output)
+                with unittest.mock.patch.object(boot_vm.subprocess, 'check_output', side_effect=error):
+                    with self.assertRaises(boot_vm.subprocess.TimeoutExpired) as caught:
+                        vm.ssh('install', timeout=600)
+                self.assertIs(caught.exception, error)
+                expected = output.decode() if isinstance(output, bytes) else output or ''
+                self.assertEqual((Path(directory) / 'ssh-failure-001.txt').read_text(), expected)
+                vm.close()
+
     def test_guest_upload_does_not_inherit_runner_ownership_or_writable_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / 'assets.tar'
@@ -590,6 +623,32 @@ class GuestCommandEvidenceTests(unittest.TestCase):
 
 
 class ReplacementRecoveryTests(unittest.TestCase):
+    def test_replacement_waits_only_for_transient_activity_verification_and_is_bounded(self):
+        import urllib.error
+        from unittest.mock import Mock, patch
+        spec = importlib.util.spec_from_file_location('verification_guest', Path(__file__).with_name('boot-guest.py'))
+        guest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guest)
+        def refusal(code, detail):
+            error = ValueError(detail)
+            error.__cause__ = urllib.error.HTTPError('http://fixture', code, detail, {}, None)
+            return error
+        pending = refusal(409, 'activity could not be confirmed idle')
+        with patch.object(guest, 'descriptor', return_value={'projectId': 'p'}), patch.object(guest.time, 'sleep') as sleep:
+            with patch.object(guest, 'api', side_effect=[pending, {'ok': True}]) as api:
+                self.assertEqual(guest.replace_when_verified('token'), {'ok': True})
+                self.assertEqual(api.call_count, 2)
+                sleep.assert_called_once_with(0.5)
+            for error in (refusal(403, 'forbidden'), refusal(409, 'turn is running')):
+                with patch.object(guest, 'api', side_effect=error) as api:
+                    with self.assertRaises(ValueError):
+                        guest.replace_when_verified('token')
+                    api.assert_called_once()
+            with patch.object(guest, 'api', side_effect=pending) as api, patch.object(guest.time, 'monotonic', side_effect=[0, 31]):
+                with self.assertRaises(ValueError):
+                    guest.replace_when_verified('token')
+                api.assert_called_once()
+
     def test_stopped_packet_generation_uses_authenticated_replacement(self):
         import json
         import tempfile

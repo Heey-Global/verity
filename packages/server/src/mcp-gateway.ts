@@ -5,6 +5,7 @@ import type {
   BrokeredToolApprovalRecord,
 } from './brokered-tool-approval-store.js';
 import { withProjectTransportAuthority } from './project-transport-authority.js';
+import { DOPPLER_CONNECTION_REQUIRED_MESSAGE } from './doppler-credential.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
 import { capabilityVariants, capabilityArguments } from './agent-capabilities.js';
 import { presentMockupsRequestSchema } from './mockups.js';
@@ -73,6 +74,7 @@ import {
 const DOPPLER_RESOLUTION_PHASES = new Set([
   'project configuration',
   'secret alias',
+  'Doppler connection',
   'Doppler authentication',
   'Doppler request start',
   'Doppler request timeout',
@@ -83,6 +85,8 @@ const SAFE_PROJECT_CONFIGURATION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}@v[1-9]\d{
 
 function dopplerResolutionMessage(error: DopplerSecretResolutionError): string | undefined {
   if (error.phase === undefined || !DOPPLER_RESOLUTION_PHASES.has(error.phase)) return undefined;
+  // A fixed text naming no project or person: the agent relays it as the connect prompt.
+  if (error.phase === 'Doppler connection') return DOPPLER_CONNECTION_REQUIRED_MESSAGE;
   if (
     error.httpStatus !== undefined &&
     (!Number.isInteger(error.httpStatus) || error.httpStatus < 100 || error.httpStatus > 599)
@@ -199,6 +203,8 @@ export interface McpGatewayDeps {
   requestApproval(input: {
     projectId: string;
     sessionId: string;
+    /** The calling turn; the card names accounts of the person it runs for. */
+    turnId: string;
     callId: string;
     invocationId: string;
     authorizationSnapshot?: string;
@@ -227,6 +233,13 @@ export interface McpGatewayDeps {
    * never be the only place a check lives.
    */
   /** Revalidate execution rights after approval and before adapter dispatch. */
+  /** A detached receipt belongs to the person who answered it, not another session member. */
+  authorizeDetachedApproval?(
+    input: McpGatewayCaller & {
+      projectId: string;
+      decidedBy: string | null;
+    },
+  ): Promise<void>;
   authorizeExecution?(input: {
     projectId: string;
     sessionId: string;
@@ -863,13 +876,43 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     }
     const request = TOOL_SCHEMAS[toolName].safeParse(rawArguments);
     if (!request.success) {
+      // Never echo Zod issues: unknown keys and supplied values can contain secrets.
+      // These fixed hints explain common failures without exposing request content.
+      const hints: string[] = [];
+      if (toolName === 'verity_secret_run') {
+        for (const issue of request.error.issues) {
+          if (
+            issue.code === 'too_small' &&
+            issue.path.length === 1 &&
+            issue.path[0] === 'secrets'
+          ) {
+            hints.push(
+              'secrets must contain at least one entry; use the normal command tool for commands without secrets.',
+            );
+          }
+          if (
+            issue.code === 'custom' &&
+            issue.path[0] === 'command' &&
+            issue.path.length === 2 &&
+            issue.message === 'command tokens must not contain control characters'
+          ) {
+            hints.push(
+              'command tokens must not contain control characters, including newlines and tabs; use single-line inline code or an approved entryScript.',
+            );
+          }
+        }
+      }
       return reject(
         projectId,
         callId,
         'malformed_request',
         undefined,
         undefined,
-        jsonRpcError(id, INVALID_PARAMS, `${toolName} rejected the arguments`),
+        jsonRpcError(
+          id,
+          INVALID_PARAMS,
+          `${toolName} rejected the arguments${hints.length ? `: ${[...new Set(hints)].join(' ')}` : ''}`,
+        ),
       );
     }
     const keyed = await key(projectId, request.data);
@@ -1065,6 +1108,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         answer = await deps.requestApproval({
           projectId,
           sessionId,
+          turnId,
           callId,
           invocationId,
           ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
@@ -1152,6 +1196,12 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       // not a window any check could close — the request has left. What bounds that case is
       // the tool's own at-most-once fence, which keys on the turn this bearer named.
       if (detachedApproval && deps.detachedApprovals) {
+        await deps.authorizeDetachedApproval?.({
+          projectId,
+          sessionId,
+          turnId,
+          decidedBy: detachedApproval.decidedBy,
+        });
         const consumed = await deps.detachedApprovals.consume(
           detachedApproval.id,
           {

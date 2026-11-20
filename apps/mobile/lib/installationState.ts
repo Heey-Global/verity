@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { clearLegacyAuthState, clearStoredAuthState } from './authToken';
+import { clearTeamJoinProgress } from './teamJoinState';
 import { clearPairingSession } from './pairingSession';
 import { clearServerProfile, hydrateServerProfile } from './serverProfile';
 
@@ -26,6 +27,7 @@ export async function prepareInstallationState(): Promise<void> {
     }
     await clearServerProfile();
     await clearPairingSession();
+    await clearTeamJoinProgress();
   }
   await AsyncStorage.setItem(INSTALLATION_MARKER_KEY, '1');
 }

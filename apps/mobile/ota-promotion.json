@@ -1,23 +1,14 @@
 {
   "schema": 1,
-  "version": "1.83.3",
-  "runtime": "1.83.0",
+  "version": "1.91.1",
+  "runtime": "1.91.0",
   "channel": "production",
-  "commit": "12c1cc5022ca154e1ac3be74fd90738c7db37d1b",
-  "tag": "mobile-v1.83.3",
-  "branch": "staging-mobile-v1.83.3-12c1cc5022ca154e1ac3be74fd90738c7db37d1b",
-  "baseline": "mobile-v1.83.0",
-  "group": "f9496f48-e225-438d-a665-5f967ffd45ee",
+  "commit": "5148bcaa492ead6f681ec1d9fb0aade288e0be1d",
+  "tag": "mobile-v1.91.1",
+  "branch": "staging-mobile-v1.91.1-5148bcaa492ead6f681ec1d9fb0aade288e0be1d",
+  "baseline": "mobile-v1.91.0",
+  "group": "447233ab-448d-44aa-9182-4d3278fad56e",
   "notes": [
-    "show ongoing recordings on other devices (#2185)",
-    "join online meetings from watched Google calendars (#2167)",
-    "remember confirmed project decisions across chats (#2165)",
-    "restore session repairs and analyze recurring failures (#2168)",
-    "delegate and supervise project assignments (#2171)",
-    "isolate project group selection updates (#2169)",
-    "discover OAuth and complete native/web sign-ins (#2160)",
-    "renew host runtime services independently of builder admission (#2159)",
-    "preserve safe stop and export failure reasons (#2147)",
-    "add elastic memory limits and resilient OOM handling (#2142)"
+    "keep project reorder attached across tab switches (#2540)"
   ]
 }

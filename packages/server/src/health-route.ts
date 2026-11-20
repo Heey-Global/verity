@@ -20,6 +20,7 @@ export function registerHealthRoute(app: FastifyInstance, deps: HealthRouteDeps)
       // Capability, not a deployment gate: it is true wherever this build runs.
       // The app needs it because older servers silently drop `forceRebuild`.
       imageRebuildSupported: true,
+      sandboxServiceInterruptionSupported: true,
     };
     if (deps.secretJobRuntimeReadiness === undefined) {
       return { status: 'ok' as const, ...base };

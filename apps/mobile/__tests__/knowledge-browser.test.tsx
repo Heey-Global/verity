@@ -321,10 +321,8 @@ it('lists Decisions first inside a project Wiki and goes back up to the Wiki', a
 
 it('keeps only Code and Drive in session root tabs and Shared in Settings', () => {
   const session = readFileSync(join(__dirname, '../app/session/[id].tsx'), 'utf8');
-  const roots = session.slice(
-    session.indexOf('<View style={styles.filesRootBar}>'),
-    session.indexOf('<FileBreadcrumb'),
-  );
+  expect(session).toContain('<FileRootTabs');
+  const roots = readFileSync(join(__dirname, '../components/files/FileRootTabs.tsx'), 'utf8');
   expect([...roots.matchAll(/accessibilityLabel="([^"]+)"/g)].map((match) => match[1])).toEqual([
     'Code',
     'Google Drive',

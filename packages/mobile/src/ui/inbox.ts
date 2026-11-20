@@ -4,11 +4,16 @@ import { mockupProgress } from './mockups.js';
 import { projectNeedsRepair } from './projectBadge.js';
 import { projectDisplayName } from './projectName.js';
 import { pullRequestMergeButton } from './pullRequest.js';
-import { sandboxUpdateNeedsAttention, isSecuritySandboxUpdate } from './sandboxUpdate.js';
+import {
+  isSecuritySandboxUpdate,
+  sandboxUpdateBlockedInboxMessage,
+  sandboxUpdateNeedsAttention,
+  sandboxUpdateSummary,
+} from './sandboxUpdate.js';
 import { sessionLabel } from './sessionLabel.js';
 import { permissionInputText } from './permissionInput.js';
 import { permissionSummary, type PermissionLine } from './permissionSummary.js';
-import { toolCallView } from './toolCall.js';
+import { toolCallPrimaryField, toolCallView } from './toolCall.js';
 
 /**
  * Home's inbox: everything across all projects that needs the operator, each with
@@ -72,6 +77,9 @@ export interface InboxItem {
    *  with it, so the operator can always see what the tool will receive rather
    *  than only a summary of it. */
   request?: string;
+  /** The lines leave part of {@link request} unsaid, so it is shown open
+   *  rather than folded behind them. */
+  requestOpen?: boolean;
   sessionId?: string;
   projectId?: string;
   /** The screens of a mockup review, shown as thumbnails on the item. */
@@ -191,6 +199,12 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   return parts.join(' · ');
 }
 
+/** "Also waiting: Merge ready": what else a session asks, named by its items' tags,
+ *  so an overview can keep one entry per session without hiding the rest. */
+export function alsoWaiting(items: readonly InboxItem[]): string {
+  return `Also waiting: ${[...new Set(items.map((item) => item.tag))].join(', ')}`;
+}
+
 function sessionItems(
   session: SessionSummary,
   projects: ReadonlyMap<string, ProjectRecord>,
@@ -225,7 +239,12 @@ function sessionItems(
       description: null,
     });
     const summary = permissionSummary(request.tool, request.input);
-    const decidable = request.input !== undefined && !OPEN_TO_DECIDE.has(request.tool);
+    // Commands belong in the session review, not in the scan-friendly overview.
+    const reviewCommand =
+      request.tool === 'verity_secret_run' ||
+      toolCallPrimaryField(request.tool, request.input)?.field === 'command';
+    const decidable =
+      !reviewCommand && request.input !== undefined && !OPEN_TO_DECIDE.has(request.tool);
     items.push({
       ...base,
       key: `permission:${session.sessionId}:${request.toolUseId}`,
@@ -234,12 +253,19 @@ function sessionItems(
       tone: 'attention',
       title: summary.title,
       context: where,
-      ...(summary.lines.length > 0
-        ? { lines: summary.lines }
-        : view.subtitle
-          ? { message: view.subtitle }
-          : {}),
-      ...(decidable ? { request: permissionInputText(request.input) } : {}),
+      ...(reviewCommand
+        ? {}
+        : summary.lines.length > 0
+          ? { lines: summary.lines }
+          : view.subtitle
+            ? { message: view.subtitle }
+            : {}),
+      ...(decidable && !(request.tool === 'verity_list_sessions' && summary.covered)
+        ? {
+            request: permissionInputText(request.input),
+            ...(summary.covered ? {} : { requestOpen: true }),
+          }
+        : {}),
       actions: decidable
         ? [
             {
@@ -482,12 +508,18 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
     const update = project.sandboxUpdate;
     return {
       ...base,
-      key: key('update', update.targetRevision ?? update.targetVersion ?? update.target ?? ''),
+      key:
+        update.recovery?.state === 'failed'
+          ? key('update-recovery', `${update.recovery.state}:${update.recovery.at}`)
+          : key('update', update.targetRevision ?? update.targetVersion ?? update.target ?? ''),
       tag: isSecuritySandboxUpdate(update) ? 'Security update' : 'Update',
       context: 'Sandbox',
-      message: update.turnBlocked
-        ? 'A sandbox update waits for the running turn to finish.'
-        : 'The sandbox could not update itself.',
+      message:
+        update.recovery?.state === 'failed'
+          ? sandboxUpdateSummary(update)!
+          : update.turnBlocked
+            ? sandboxUpdateBlockedInboxMessage(update)
+            : 'The sandbox could not update itself.',
       actions: [openProject],
     };
   }

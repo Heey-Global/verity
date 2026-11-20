@@ -81,17 +81,23 @@ type Pickup = {
 };
 const SLOT_SPRING = { damping: 30, stiffness: 320, overshootClamping: true };
 
+/** How long a row is held before the drag picks it up. */
+export const PROJECT_PICKUP_DELAY_MS = 260;
+
 /** One recognizer on the fixed viewport owns the entire touch sequence. Neither
  * recycling a cell nor changing the content size can detach that recognizer. */
 export function useProjectReorder({
   order,
   sortable,
+  enabled = true,
   onDrop,
   sessionOrders = {},
   onDropSession,
 }: {
   order: readonly string[];
   sortable: readonly string[];
+  /** The detector stays mounted while its list is hidden. */
+  enabled?: boolean;
   onDrop: (order: readonly string[]) => void;
   sessionOrders?: Readonly<Record<string, readonly string[]>>;
   onDropSession?: (scope: string, order: readonly string[]) => void;
@@ -275,8 +281,9 @@ export function useProjectReorder({
   const gesture = useMemo(
     () =>
       Gesture.Pan()
+        .enabled(enabled)
         .withTestId('project-reorder')
-        .activateAfterLongPress(260)
+        .activateAfterLongPress(PROJECT_PICKUP_DELAY_MS)
         .failOffsetX([-12, 12])
         .failOffsetY([-12, 12])
         .maxPointers(1)
@@ -395,6 +402,7 @@ export function useProjectReorder({
           );
         }),
     [
+      enabled,
       registeredHeaders,
       sessionOverlayReady,
       hostRef,
@@ -440,6 +448,7 @@ export function useProjectReorder({
   );
   return useMemo(
     () => ({
+      cancel,
       drag,
       hostRef,
       listRef,
@@ -460,6 +469,7 @@ export function useProjectReorder({
     }),
     [
       active,
+      cancel,
       drag,
       hostRef,
       listRef,

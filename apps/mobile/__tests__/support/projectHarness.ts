@@ -63,6 +63,7 @@ export type ProjectClientOverrides = {
   getHealth?: jest.Mock;
   setProjectSetupStatus?: jest.Mock;
   updateProjectSettings?: jest.Mock;
+  setOwnProjectDefaultModel?: jest.Mock;
   listDopplerProjects?: jest.Mock;
   listDopplerConfigs?: jest.Mock;
   deleteProject?: jest.Mock;
@@ -122,6 +123,13 @@ export function makeClient(opts: ProjectClientOverrides = {}): VerityClient {
         .fn()
         .mockImplementation((_id: string, patch: object) =>
           Promise.resolve({ ...detail.settings, ...patch }),
+        ),
+    setOwnProjectDefaultModel:
+      opts.setOwnProjectDefaultModel ??
+      jest
+        .fn()
+        .mockImplementation((_id: string, model: string | null) =>
+          Promise.resolve({ defaultModel: model }),
         ),
     listDopplerProjects: opts.listDopplerProjects ?? jest.fn(notImplemented('listDopplerProjects')),
     listDopplerConfigs: opts.listDopplerConfigs ?? jest.fn(notImplemented('listDopplerConfigs')),

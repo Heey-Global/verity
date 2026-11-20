@@ -1,6 +1,6 @@
-import { registerSecretApprovalRoutes } from './secret-approval-routes.js';
-import { configureDetachedSecretApprovals } from './detached-secret-approvals.js';
+import { installDetachedSecretApprovals } from './detached-secret-approvals.js';
 import { appendProjectOverview } from './project-overview-file.js';
+import { createHandoffSessionCreator } from './handoff-session-create.js';
 import { connectorToolAvailable } from './agent-tool-availability.js';
 import {
   createQAAssignmentTool,
@@ -38,10 +38,8 @@ import {
 import { PermissionDecisionInProgressError } from '@verity/session';
 import { presentMockupsRequestSchema, type SessionMockupActions } from './mockups.js';
 import type { EventStore, SessionRecord } from '@verity/store';
-import { isLocalProject, type ProjectRecord } from '@verity/store';
+import { httpMcpConnectionUsableBy, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
-import { join } from 'node:path';
 import {
   assistantToolRefusal,
   executeAssistantTool,
@@ -70,7 +68,7 @@ import {
   googleDriveRequestSchema,
 } from './google-drive-request.js';
 import { hasGoogleWorkspaceScope } from './google-oauth-scopes.js';
-import { resolveGoogleServiceCredential } from './google-service-credentials.js';
+import { resolveGoogleServiceCredentialForTurn } from './google-service-credentials.js';
 import { assertWorkspaceWritePermission } from './google-workspace-tool-types.js';
 import { httpMcpAuthorization } from './http-mcp-oauth.js';
 import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
@@ -102,8 +100,6 @@ import {
   openPlanDecisions,
   trustedPlanInstructionConsent,
 } from './planning.js';
-import { resolveProjectDefaultModel } from './project-agent-policy.js';
-import { projectClonePath } from './provisioner.js';
 import type { ServerDeps } from './server-deps.js';
 import type {
   ModelList,
@@ -131,9 +127,8 @@ import { type SessionStatus } from './status.js';
 import { executeTasksTool } from './tasks-routes.js';
 import { createVulnerabilityScanService } from './vulnerability-scan.js';
 import { createVulnerabilityTool } from './vulnerability-tool.js';
-import { createGitWorktreeProvisioner } from './worktree.js';
 import type { WikiProposals } from './wiki-proposals.js';
-interface ServerMcpRouteDeps {
+export interface ServerMcpRouteDeps {
   deps: ServerDeps;
   /** Absent without a knowledge folder; proposing then fails like other knowledge writes. */
   wikiProposals: WikiProposals | undefined;
@@ -233,101 +228,17 @@ export function registerServerMcpRoutes({
   // reaches the same durable permission card, decide route and standing-grant check as a
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
-  const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
-  const createHandoffSession = async ({
-    projectId,
-    name,
-    idempotencyKey,
-  }: {
-    projectId: string;
-    name: string;
-    idempotencyKey: string;
-  }) => {
-    const existing = controlHandoffSessionCreates.get(idempotencyKey);
-    if (existing !== undefined) return existing;
-    const creating = (async (): Promise<{ sessionId: string }> => {
-      const digest = createHash('sha256').update(idempotencyKey).digest();
-      digest[6] = (digest[6]! & 0x0f) | 0x40;
-      digest[8] = (digest[8]! & 0x3f) | 0x80;
-      const hex = digest.subarray(0, 16).toString('hex');
-      const sessionId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-      const prior = await deps.eventStore.getSession(sessionId);
-      if (prior !== undefined) {
-        if (prior.projectId !== projectId) {
-          throw new ControlPlaneSessionToolError('new-session handoff key collision');
-        }
-        return { sessionId };
-      }
-      const project = await deps.eventStore.getProject(projectId);
-      if (
-        project === undefined ||
-        project.hiddenAt !== null ||
-        project.state !== 'active' ||
-        isControlPlaneProject(project)
-      ) {
-        throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
-      }
-      if (deps.projectCloneRoot === undefined || deps.projectBackend === undefined) {
-        throw new ControlPlaneSessionToolError('new-session handoff is not configured');
-      }
-      if (projectsBeingDeleted.has(project.id)) {
-        throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
-      }
-      if (isLocalProject(project) && !deps.dataRoot)
-        throw new ControlPlaneSessionToolError(
-          'Local projects require configured document storage.',
-        );
-      await deps.provisioner?.prepareLocalDocuments?.(project.id);
-      const releaseSpawn = beginProjectSpawn(project.id);
-      try {
-        const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(project.id);
-        const model = resolveProjectDefaultModel(
-          await availableModels({ allowLegacyCodexFallback: true }),
-          settings,
-          isProjectSessionModel,
-        );
-        if (model === undefined || !(await isConfiguredProjectSessionModel(model))) {
-          throw new ControlPlaneSessionToolError('project has no eligible default model');
-        }
-        const selectedModel = model;
-        const projectClone = projectClonePath(deps.projectCloneRoot, project);
-        const worktreeOpts = {
-          refreshBase: true,
-          ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
-        };
-        const provisioner =
-          deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-          createGitWorktreeProvisioner({
-            repoDir: projectClone,
-            worktreeRoot: join(projectClone, '.verity-sessions'),
-            ...worktreeOpts,
-          });
-        await deps.refreshProjectToken?.(project);
-        const worktree = await provisioner.add(makeBranch(name));
-        try {
-          await deps.eventStore.createSession({
-            sessionId,
-            projectId: project.id,
-            worktree,
-            model: selectedModel,
-            name,
-          });
-        } catch (error) {
-          await provisioner.remove(worktree).catch(() => undefined);
-          throw error;
-        }
-        return { sessionId };
-      } finally {
-        releaseSpawn();
-      }
-    })();
-    controlHandoffSessionCreates.set(idempotencyKey, creating);
-    try {
-      return await creating;
-    } finally {
-      controlHandoffSessionCreates.delete(idempotencyKey);
-    }
-  };
+  const createHandoffSession = createHandoffSessionCreator({
+    deps,
+    isControlPlaneProject,
+    projectsBeingDeleted,
+    beginProjectSpawn,
+    projectSettingsStore,
+    availableModels,
+    isProjectSessionModel,
+    isConfiguredProjectSessionModel,
+    makeBranch,
+  });
   const qaRepair = createQARepairTool({
     store: deps.eventStore,
     permitted: canExecuteAs,
@@ -529,6 +440,7 @@ export function registerServerMcpRoutes({
     const resolveMcpAppConnection: HttpMcpProxyDeps['resolveConnection'] = async ({
       projectId,
       connectionId,
+      principal,
     }) => {
       const [bindings, connections] = await Promise.all([
         deps.eventStore.listProjectMcpBindings(projectId),
@@ -541,6 +453,14 @@ export function registerServerMcpRoutes({
         (candidate) => candidate.id === connectionId && candidate.enabled,
       );
       if (binding === undefined || connection === undefined) return undefined;
+      // The turn that listed this server ran for one person; another member's
+      // credentialed connection must not answer for it, even by its id.
+      const userId =
+        'caller' in principal
+          ? (await runningTurnInitiator(principal.caller.sessionId, principal.caller.turnId))
+              ?.userId
+          : principal.userId;
+      if (!httpMcpConnectionUsableBy(connection, userId)) return undefined;
       const authorization = await httpMcpAuthorization(deps.eventStore, connection);
       return {
         id: connection.id,
@@ -618,27 +538,7 @@ export function registerServerMcpRoutes({
   }
 
   if (deps.mcpGateway !== undefined) {
-    const gatewayDeps = deps.mcpGateway;
-    if (gatewayDeps.detachedApprovals)
-      configureDetachedSecretApprovals({
-        conductor,
-        store: deps.eventStore,
-        approvals: gatewayDeps.detachedApprovals,
-        gateway: gatewayDeps,
-        canExecute: (userId, projectId) =>
-          canExecuteAs(
-            userId === '__local__' && deps.authRegistry?.isEnabled() !== true ? undefined : userId,
-            projectId,
-          ),
-        localActor: deps.authRegistry?.isEnabled() !== true,
-      });
-    if (gatewayDeps.detachedApprovals)
-      registerSecretApprovalRoutes(app, {
-        approvals: gatewayDeps.detachedApprovals,
-        store: deps.eventStore,
-        permitted: canExecuteAs,
-        refresh: (id) => conductor.refreshDetachedPermissions(id),
-      });
+    const gatewayDeps = installDetachedSecretApprovals(app, deps, conductor, canExecuteAs);
     const linkedSessionTarget = async (
       sourceSessionId: string,
       requestedTarget: string | undefined,
@@ -1062,7 +962,6 @@ export function registerServerMcpRoutes({
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
-      surfaceDetachedApproval: (sessionId) => conductor.refreshDetachedPermissions(sessionId),
       capabilityVersionForCaller: async (caller) => {
         const active = conductor.agentCapabilityVersion?.(caller.sessionId);
         if (active !== undefined) return active;
@@ -1088,7 +987,7 @@ export function registerServerMcpRoutes({
           )
         )
           return false;
-        return connectorToolAvailable(deps.eventStore, input);
+        return connectorToolAvailable(deps.eventStore, { ...input, userId: user?.userId });
       },
       // Approval cannot restore rights revoked from the initiating user while waiting.
       authorizeExecution: async (input) => {
@@ -1118,7 +1017,7 @@ export function registerServerMcpRoutes({
       authorizeCall: async (input) => {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
-        const { projectId, sessionId, toolName } = input;
+        const { projectId, sessionId, turnId, toolName } = input;
         if (
           (await deps.eventStore.wikiMaintenance.isSession(sessionId)) &&
           !(await isWikiMaintenanceCall(deps.eventStore, toolName, input.request, sessionId))
@@ -1220,7 +1119,12 @@ export function registerServerMcpRoutes({
           return;
         }
         if (toolName === 'verity_scheduling') {
-          await schedulingTool.authorize({ projectId, sessionId, request: input.request });
+          await schedulingTool.authorize({
+            projectId,
+            sessionId,
+            turnId,
+            request: input.request,
+          });
           return;
         }
         if (toolName === 'verity_matrix') {
@@ -1263,6 +1167,7 @@ export function registerServerMcpRoutes({
             deps.eventStore,
             projectId,
             driveRequest,
+            (await runningTurnInitiator(sessionId, turnId))?.userId,
           );
           if (
             googleDriveIsMutation(driveRequest) &&
@@ -1287,7 +1192,12 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Google access is restricted to the calling session',
               );
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'contacts',
+            );
             return;
           }
           if (toolName === 'verity_google_calendar') {
@@ -1295,7 +1205,12 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Google access is restricted to the calling session',
               );
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'calendar',
+            );
             return;
           }
           if (toolName === 'verity_gmail') {
@@ -1311,7 +1226,12 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Google access is restricted to the calling session',
               );
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'gmail',
+            );
             return;
           }
           const action = (input.request as { action?: string }).action;
@@ -1446,15 +1366,27 @@ export function registerServerMcpRoutes({
               : toolName === 'verity_google_contacts'
                 ? 'contacts'
                 : undefined;
+        // Google access is snapshotted for the person the turn runs for; another
+        // member's account must not be what the approval card binds.
+        const googleUser =
+          service !== undefined ||
+          toolName === 'verity_google_drive' ||
+          ['verity_google_docs', 'verity_google_sheets', 'verity_google_slides'].includes(toolName)
+            ? (await runningTurnInitiator(sessionId, turnId))?.userId
+            : undefined;
         if (service)
           return JSON.stringify(
-            await deps.eventStore.googleAccounts.authorizationSnapshot(sessionId, service),
+            await deps.eventStore.googleAccounts.authorizationSnapshot(
+              sessionId,
+              service,
+              googleUser,
+            ),
           );
         if (toolName === 'verity_google_drive') {
           const parsed = googleDriveRequestSchema.parse(request);
           if (parsed.action === 'capabilities') return undefined;
           return JSON.stringify(
-            await resolveGoogleDriveAuthority(deps.eventStore, projectId, parsed),
+            await resolveGoogleDriveAuthority(deps.eventStore, projectId, parsed, googleUser),
           );
         }
         if (
@@ -1462,7 +1394,8 @@ export function registerServerMcpRoutes({
         ) {
           const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
           if (!file?.accountId) throw new Error('No Google account is assigned');
-          const account = await deps.eventStore.googleAccounts.get(file.accountId);
+          const account = await deps.eventStore.googleAccounts.getOwned(file.accountId, googleUser);
+          if (!account) throw new Error('Connect your own Google account to use this file');
           const link = file.folderLinkId
             ? (await deps.eventStore.googleAccounts.folders(projectId)).find(
                 (candidate) => candidate.id === file.folderLinkId,
@@ -1515,7 +1448,7 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_scheduling') {
           if (!schedulingHasStandingAuthorization(request)) return false;
           // A refused read must fail as such, not turn into a card showing raw arguments.
-          await schedulingTool.authorize({ projectId, sessionId, request });
+          await schedulingTool.authorize({ projectId, sessionId, turnId, request });
           return true;
         }
         if (toolName === 'verity_matrix') {
@@ -1605,7 +1538,12 @@ export function registerServerMcpRoutes({
           const driveRequest = googleDriveRequestSchema.parse(request);
           if (driveRequest.action === 'capabilities') return true;
           try {
-            await resolveGoogleDriveAuthority(deps.eventStore, projectId, driveRequest);
+            await resolveGoogleDriveAuthority(
+              deps.eventStore,
+              projectId,
+              driveRequest,
+              (await runningTurnInitiator(sessionId, turnId))?.userId,
+            );
           } catch {
             return false;
           }
@@ -1614,6 +1552,7 @@ export function registerServerMcpRoutes({
               (await deps.googleDriveDocumentIsWithinProject?.({
                 projectId,
                 sessionId,
+                turnId,
                 url: driveRequest.url,
                 accountId: driveRequest.accountId,
                 folderLinkId: driveRequest.folderLinkId,
@@ -1635,7 +1574,12 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_google_contacts') {
           if (!googleContactsHasStandingAuthorization(request)) return false;
           try {
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'contacts',
+            );
             return true;
           } catch {
             return false;
@@ -1644,7 +1588,12 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_google_calendar') {
           if (!googleCalendarHasStandingAuthorization(request)) return false;
           try {
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'calendar',
+            );
             return true;
           } catch {
             return false;
@@ -1653,7 +1602,12 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_gmail') {
           if (!gmailHasStandingAuthorization(request)) return false;
           try {
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'gmail',
+            );
             return true;
           } catch {
             return false;
@@ -2201,6 +2155,7 @@ export function registerServerMcpRoutes({
       requestApproval: async ({
         projectId,
         sessionId,
+        turnId,
         callId,
         invocationId,
         authorizationSnapshot,
@@ -2233,6 +2188,7 @@ export function registerServerMcpRoutes({
           sessionId,
           toolName,
           request: input,
+          userId: (await runningTurnInitiator(sessionId, turnId))?.userId,
         });
         // The card shows the stored draft itself, never the agent's description of it.
         const scheduling =
@@ -2277,9 +2233,11 @@ export function registerServerMcpRoutes({
                   ),
                 }
               : {}),
-            // Secret tools reuse consent for their bound request shape.
+            // Secret tools reuse consent for their bound request shape, and only the
+            // calling turn's person's own consent (ADR 0023 §3).
             allowStandingGrant:
               toolName === 'verity_http_request' || toolName === 'verity_secret_run',
+            grantUserId: (await runningTurnInitiator(sessionId, turnId))?.userId ?? null,
             signal,
           });
         } catch (error) {

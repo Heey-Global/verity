@@ -1,6 +1,6 @@
 import type { Backend } from '@verity/session';
 import { createSealableSecretCipher, type ProjectRecord } from '@verity/store';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AuditLog } from './audit-log.js';
 import type { AuditRecorder } from './audit-recorder.js';
 import { createAuthTokenRegistry } from './auth.js';
@@ -336,6 +336,52 @@ describe('GET /projects (#174)', () => {
     await overview.close();
   });
 
+  it('reports the last failed recreate with its time, whether the retry is running or stalled', async () => {
+    // Without a time, an earlier refusal reads as the current attempt's while the
+    // retry waits for the build slot.
+    for (const [id, repo] of [
+      ['p-retrying', 'retrying'],
+      ['p-stuck', 'stuck'],
+      ['p-clean', 'clean'],
+    ] as const)
+      await ctx.store.upsertProject({
+        id,
+        owner: 'heey-global',
+        repo,
+        containerName: `dev-heey-global--${repo}`,
+        state: 'active',
+      });
+    const at = Date.UTC(2026, 10, 10, 14, 41, 24);
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      sandboxUpdates: availableSandboxUpdates(),
+      provisioner: {
+        provision: vi.fn(),
+        unrepairedSandboxes: () => new Set(['p-stuck']),
+        sandboxRepairLastFailures: () =>
+          new Map([
+            ['p-retrying', { at, message: 'Build storage admission rejected' }],
+            ['p-stuck', { at, message: 'Build storage admission rejected' }],
+          ]),
+      },
+    });
+    const body: Array<{
+      id: string;
+      sandboxUpdate: { selfRepair: string; lastRepairFailure: unknown };
+    }> = (await server.inject({ method: 'GET', url: '/projects' })).json();
+    const byId = Object.fromEntries(body.map((project) => [project.id, project.sandboxUpdate]));
+    const failure = { at: '2026-11-10T14:41:24.000Z', message: 'Build storage admission rejected' };
+    expect(byId['p-retrying']).toMatchObject({
+      selfRepair: 'converging',
+      lastRepairFailure: failure,
+    });
+    expect(byId['p-stuck']).toMatchObject({ selfRepair: 'stalled', lastRepairFailure: failure });
+    expect(byId['p-clean']).toMatchObject({ selfRepair: 'converging', lastRepairFailure: null });
+    await server.close();
+  });
+
   it('reports a stalled failed rebuild even when the image status is unknown', async () => {
     const project = await ctx.store.upsertProject({
       id: 'p-failed-rebuild',
@@ -449,6 +495,7 @@ describe('GET /projects (#174)', () => {
         provision: vi.fn(),
         unrepairedSandboxes: () => new Set<string>(),
         turnBlockedSandboxes: () => new Set(['p-blocked']),
+        sandboxUpdateBlockers: () => new Map([['p-blocked', ['preview'] as const]]),
       },
     });
 
@@ -461,11 +508,20 @@ describe('GET /projects (#174)', () => {
           (project) =>
             [
               project.id,
-              [project.sandboxUpdate.selfRepair, project.sandboxUpdate.turnBlocked],
+              [
+                project.sandboxUpdate.selfRepair,
+                project.sandboxUpdate.turnBlocked,
+                project.sandboxUpdate.blockedBy,
+              ],
             ] as const,
         ),
       ),
-    ).toEqual({ 'p-blocked': ['stalled', true], 'p-fine': ['converging', false] });
+      // `blockedBy` names the preview holding the update, so the app can ask for
+      // the preview to stop rather than for a turn that is not running.
+    ).toEqual({
+      'p-blocked': ['stalled', true, ['preview']],
+      'p-fine': ['converging', false, []],
+    });
 
     for (const [id, blocked] of [
       ['p-blocked', true],
@@ -1535,106 +1591,6 @@ describe('POST /projects', () => {
   });
 });
 
-describe('PATCH /projects/:id/profile', () => {
-  beforeEach(async () => {
-    await ctx.store.upsertProject({
-      id: 'p-profile',
-      owner: 'heey-global',
-      repo: 'verity',
-      containerName: 'dev-heey-global-verity',
-      state: 'active',
-    });
-  });
-
-  it('renames the project and leaves its repository identity alone', async () => {
-    const res = await app.inject({
-      method: 'PATCH',
-      url: '/projects/p-profile/profile',
-      payload: { name: '  Verity Plattform  ' },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ name: 'Verity Plattform' });
-    expect(await ctx.store.getProject('p-profile')).toMatchObject({
-      name: 'Verity Plattform',
-      owner: 'heey-global',
-      repo: 'verity',
-      containerName: 'dev-heey-global-verity',
-    });
-    // The list is memoised; the new name must reach it straight away.
-    const list = await app.inject({ method: 'GET', url: '/projects' });
-    expect(
-      list.json<{ id: string; name: string }[]>().find((p) => p.id === 'p-profile')?.name,
-    ).toBe('Verity Plattform');
-  });
-
-  it('sets and clears the description beside the name', async () => {
-    const set = await app.inject({
-      method: 'PATCH',
-      url: '/projects/p-profile/profile',
-      payload: { name: 'Verity', description: ' Agent workspace ' },
-    });
-    expect(set.json()).toEqual({ name: 'Verity', description: 'Agent workspace' });
-    const cleared = await app.inject({
-      method: 'PATCH',
-      url: '/projects/p-profile/profile',
-      payload: { description: '' },
-    });
-    expect(cleared.json()).toEqual({ description: null });
-    expect((await ctx.store.getProject('p-profile'))?.name).toBe('Verity');
-  });
-
-  it('refuses an empty name, an overlong one and an empty request', async () => {
-    for (const payload of [{ name: '   ' }, { name: 'x'.repeat(101) }, {}]) {
-      const res = await app.inject({
-        method: 'PATCH',
-        url: '/projects/p-profile/profile',
-        payload,
-      });
-      expect(res.statusCode).toBe(400);
-    }
-    expect((await ctx.store.getProject('p-profile'))?.name).toBe('verity');
-  });
-
-  it('uses the same supplementary Unicode length limit for creation and rename', async () => {
-    for (const [units, status] of [
-      [50, 201],
-      [51, 400],
-    ] as const) {
-      const name = '😀'.repeat(units);
-      const created = await app.inject({
-        method: 'POST',
-        url: '/projects',
-        payload: { kind: 'local', name },
-      });
-      expect(created.statusCode).toBe(status);
-      const renamed = await app.inject({
-        method: 'PATCH',
-        url: '/projects/p-profile/profile',
-        payload: { name },
-      });
-      expect(renamed.statusCode).toBe(status === 201 ? 200 : 400);
-    }
-  });
-
-  it('tells the app in the detail whether this person may edit them', async () => {
-    const res = await app.inject({ method: 'GET', url: '/projects/p-profile' });
-    // Without the auth gate there is one implicit administrator.
-    expect(res.json()).toMatchObject({
-      project: { name: 'verity' },
-      viewer: { canManage: true },
-    });
-  });
-
-  it('404s an unknown project', async () => {
-    const res = await app.inject({
-      method: 'PATCH',
-      url: '/projects/missing/profile',
-      payload: { name: 'Anything' },
-    });
-    expect(res.statusCode).toBe(404);
-  });
-});
-
 describe('GET /projects/:id (#174)', () => {
   it('404s an unknown project id', async () => {
     const res = await app.inject({ method: 'GET', url: '/projects/missing' });
@@ -1718,8 +1674,13 @@ describe('GET /projects/:id (#174)', () => {
     await ctx.store.updateProjectSettings('p-detail', {
       dopplerTokenRef: 'doppler://verity/prod',
       defaultBranch: 'main',
-      defaultModel: 'claude-sonnet-4-6',
     });
+    // The default model is each person's own; this request is the administrator's.
+    await ctx.store.userProviderConnections.setProjectDefaultModel(
+      '00000000-0000-4000-8000-000000000001',
+      'p-detail',
+      'claude-sonnet-4-6',
+    );
     await ctx.store.appendEvent('s-project', { t: 'status', state: 'running' });
     await ctx.store.createSession({
       sessionId: 's-other',
@@ -1755,6 +1716,46 @@ describe('GET /projects/:id (#174)', () => {
       ],
     });
     expect(JSON.stringify(res.json())).not.toContain('doppler://verity/prod');
+  });
+
+  // Each person keeps their own default model for a project; setting it needs no
+  // management right, and nobody else's view of the project changes.
+  it("keeps each person's own project default model", async () => {
+    await ctx.store.upsertProject({
+      id: 'p-own-default',
+      owner: 'heey-global',
+      repo: 'own-default',
+      containerName: 'dev-heey-global-own-default',
+      state: 'active',
+    });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'lena', role: 'member', status: 'active' })
+      .execute();
+    const asLena = buildServer({ eventStore: ctx.store, bus, conductor });
+    asLena.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    try {
+      const set = await asLena.inject({
+        method: 'PUT',
+        url: '/projects/p-own-default/default-model',
+        payload: { model: 'codex/gpt-5.5' },
+      });
+      expect(set.statusCode).toBe(200);
+      expect(set.json()).toEqual({ defaultModel: 'codex/gpt-5.5' });
+      const hers = await asLena.inject({ method: 'GET', url: '/projects/p-own-default' });
+      expect(
+        hers.json<{ settings: { defaultModel: string | null } | null }>().settings,
+      ).toMatchObject({ defaultModel: 'codex/gpt-5.5' });
+      const admins = await app.inject({ method: 'GET', url: '/projects/p-own-default' });
+      expect(
+        admins.json<{ settings: { defaultModel?: string | null } | null }>().settings
+          ?.defaultModel ?? null,
+      ).toBeNull();
+    } finally {
+      await asLena.close();
+    }
   });
 
   it('returns null settings before a project has saved settings', async () => {

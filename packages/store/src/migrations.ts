@@ -1,9 +1,9 @@
-import { brokeredToolApprovalMigration } from './brokered-tool-approval-migration.js';
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import type { Migration, MigrationProvider } from 'kysely/migration';
 import type { Database } from './schema.js';
+import { laterMigrations } from './migrations-later.js';
 import {
   backfillInlineAttachments,
   backfillToolResultImages,
@@ -5583,4 +5583,4 @@ migrations['0204_project_name'] = {
   },
 };
 
-migrations['0205_brokered_tool_approvals'] = brokeredToolApprovalMigration;
+Object.assign(migrations, laterMigrations);

@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.319}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.325}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.101.0}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.107.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -48,11 +48,11 @@ GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=github-releases depName=google/osv-scanner
 OSV_SCANNER_VERSION="${OSVSCANNERVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.167.0}"
+CODEX_VERSION="${CODEXVERSION:-0.169.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-CODEX_ACP_VERSION="${CODEXACPVERSION:-2.5.0}"
+CODEX_ACP_VERSION="${CODEXACPVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@opencode/cli
-OPENCODE_VERSION="${OPENCODEVERSION:-2.2.6}"
+OPENCODE_VERSION="${OPENCODEVERSION:-2.3.0}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -387,6 +387,13 @@ if command -v npm >/dev/null 2>&1; then
     printf '{\n  "autoupdate": false\n}\n' > "$REMOTE_HOME/.config/opencode/opencode.json"
     WRITTEN_PATHS+=("$REMOTE_HOME/.config/opencode")
   fi
+  # Node 25+ no longer bundles Corepack, so an npm-only image has no pnpm or
+  # Yarn, and the F10 install-policy shims then fail with "pnpm is not
+  # installed". Corepack provides both commands and runs the version a project
+  # names in its `packageManager` field. Commands the base image already ships
+  # are kept; the version is pinned by npm/corepack (Renovate-managed lock).
+  echo ">> verity-sandbox-toolkit: installing corepack (pnpm and yarn)"
+  node "$FEATURE_DIR/bin/verity-cli-install.mjs" corepack
 else
   echo "!! verity-sandbox-toolkit: npm not on PATH — skipping codex/opencode." >&2
   # Make the skip real state, not just a message: F10 below still reads
@@ -487,7 +494,7 @@ WRITTEN_PATHS+=("$GITCONFIG")
 # .gitignore. Git auto-loads ~/.config/git/ignore (no core.excludesFile).
 GIT_IGNORE_DIR="$REMOTE_HOME/.config/git"
 mkdir -p "$GIT_IGNORE_DIR"
-printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' '.agents/.local-checks-skip' > "$GIT_IGNORE_DIR/ignore"
+printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' '.agents/.last-code-review-run' '.agents/.local-checks-skip' > "$GIT_IGNORE_DIR/ignore"
 # Chown only the git subdir we own — NOT the `.config` parent, which on an
 # arbitrary base (python:3.12 etc.) may already hold other tooling whose
 # ownership a recursive chown would silently clobber.

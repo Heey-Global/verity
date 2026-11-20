@@ -49,7 +49,7 @@ it.each(['', fixture + ',' + fixture, fixture.replace('trust_level', 'renamed_tr
   },
 );
 
-it.each(['2.3.0', '2.5.1', '99.0.0'])(
+it.each(['2.5.0', '2.6.1', '99.0.0'])(
   'requires the pinned adapter to match the audited security version (rejects %s)',
   (version) => {
     const manifest = JSON.parse(
@@ -102,4 +102,21 @@ it('hardens the installed pinned adapter rather than only a source fixture', () 
   expect(JSON.parse(result.stdout)).toEqual({
     projects: { '/work/project': { trust_level: 'untrusted' } },
   });
+});
+
+// From 2.6.0 a configured Codex permission profile can become the starting mode.
+// Verity relies on the spawn broker's INITIAL_AGENT_MODE winning over it; an
+// adapter that consulted the profile first would start sessions in whatever
+// mode a Codex config names, with every test above still green.
+it('lets the pinned starting mode take precedence over a configured permission profile', () => {
+  const require = createRequire(import.meta.url);
+  const source = readFileSync(require.resolve('@agentclientprotocol/codex-acp'), 'utf8');
+  const start = source.indexOf('static getInitialAgentMode(');
+  expect(start, 'getInitialAgentMode is gone; re-audit the starting mode').toBeGreaterThan(-1);
+  const body = source.slice(start, source.indexOf('\n  }\n', start));
+  const pinned = body.indexOf('process.env["INITIAL_AGENT_MODE"]');
+  expect(pinned).toBeGreaterThan(-1);
+  const profile = body.indexOf('activePermissionProfileId !== null');
+  if (profile !== -1) expect(pinned).toBeLessThan(profile);
+  expect(body.slice(pinned, profile === -1 ? undefined : profile)).toMatch(/return /);
 });

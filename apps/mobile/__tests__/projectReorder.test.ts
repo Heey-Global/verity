@@ -3,12 +3,21 @@ import {
   moveProjectIdToIndex,
   projectRowPosition,
   projectSortableRange,
+  reconcileProjectOrder,
 } from '../lib/projectReorder';
 
 const order = ['control', 'a', 'b', 'c', 'orphan'];
 const sortable = ['a', 'b', 'c'];
 const heights = { control: 50, a: 60, b: 100, c: 80, orphan: 70 };
 const range = projectSortableRange(order, sortable, 'a');
+
+it('reconciles a stale drop without resurrecting removed projects or duplicating ids', () => {
+  expect(reconcileProjectOrder(['b', 'removed', 'a', 'b'], ['a', 'b', 'new'])).toEqual([
+    'b',
+    'a',
+    'new',
+  ]);
+});
 
 describe('sortable range', () => {
   // A drag that could cross the control plane or an orphan row would reorder

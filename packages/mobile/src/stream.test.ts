@@ -153,6 +153,46 @@ describe('SessionStream', () => {
     expect(stream.state.pendingPermission).toBeUndefined();
   });
 
+  it('does not revive a prompt the turn end denied from a snapshot older than that end', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitEvent(10, {
+      t: 'permission',
+      id: 'tu_1',
+      tool: 'Bash',
+      input: {},
+      riskClass: 'ask',
+    });
+    sockets[0]?.emitEvent(11, { t: 'status', state: 'completed' });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
+    // Requested at seq 10, before the turn ended: it still lists the dead prompt.
+    stream.reconcilePendingPermissions(['tu_1'], 10);
+    expect(stream.state.pendingPermission).toBeUndefined();
+  });
+
+  it('does not revive a prompt answered here from a snapshot taken before the answer', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitEvent(10, {
+      t: 'permission',
+      id: 'tu_1',
+      tool: 'verity_secret_run',
+      input: {},
+      riskClass: 'ask',
+    });
+    sockets[0]?.emitEvent(11, { t: 'status', state: 'completed' });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
+    expect(stream.state.pendingPermission).toBeUndefined();
+    // The server still holds the gateway prompt after the turn ended.
+    stream.reconcilePendingPermissions(['tu_1'], 11);
+    expect(stream.state.pendingPermission?.toolUseId).toBe('tu_1');
+    stream.resolvePermission('tu_1');
+    stream.reconcilePendingPermissions(['tu_1'], 11);
+    expect(stream.state.pendingPermission).toBeUndefined();
+  });
+
   it('ignores a prepend that is not strictly older than the loaded head', () => {
     const { connect, sockets } = recordingConnect();
     const updates: number[] = [];
@@ -493,6 +533,30 @@ it('does not restore a turn-bound descriptor after a newer terminal frame', () =
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
   });
   sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 1 }));
+  expect(stream.state.pendingPermission).toBeUndefined();
+  stream.stop();
+});
+
+it('restores multiple durable cards and keeps the next one actionable after answering the oldest', () => {
+  const { connect, sockets } = recordingConnect();
+  const stream = new SessionStream({ sessionId: 's1', transport: connect });
+  stream.start();
+  sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+  const requests = ['first', 'second'].map((id) => ({
+    toolUseId: id,
+    tool: 'verity_secret_run',
+    riskClass: 'ask',
+    input: { command: id },
+    detached: true,
+  }));
+  stream.reconcilePendingPermissions(['first', 'second'], 0, requests);
+  expect(stream.state.pendingPermission?.toolUseId).toBe('first');
+  stream.resolvePermission('first');
+  expect(stream.state.pendingPermission?.toolUseId).toBe('second');
+  stream.reconcilePendingPermissions(['first', 'second'], 0, requests);
+  stream.prependHistory([]);
+  expect(stream.state.pendingPermission?.toolUseId).toBe('second');
+  stream.resolvePermission('second');
   expect(stream.state.pendingPermission).toBeUndefined();
   stream.stop();
 });

@@ -59,6 +59,8 @@ export interface UserTextMessage {
   createdAt: number;
   text: string;
   peer?: { sessionId: string; projectId: string; label: string };
+  /** The person who sent it, in a session several people write in. */
+  initiatedBy?: { userId: string };
   /** Operator-attached images (v1) sent with this prompt, rendered as thumbnails
    * in the bubble. Omitted when the turn had no attachments. */
   attachments?: Attachment[];

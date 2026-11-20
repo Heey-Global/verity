@@ -139,15 +139,21 @@ function service(overrides: Partial<ConstructorParameters<typeof SchedulingServi
     store: {
       scheduling: ctx.store.scheduling,
       getSession: ctx.store.getSession.bind(ctx.store),
-      getGoogleServiceCredentials: async () =>
-        ({
-          refreshToken: 'refresh',
-          credentialVersion: 1,
-          accountId: 'acct',
-          accountEmail: 'sam@example.test',
-          scopes: SCOPES,
-          source: 'project',
-        }) as never,
+      // Sam's account serves only Sam; anyone else's lookup finds no credential.
+      getGoogleServiceCredentials: async (_sessionId, _service, userId) =>
+        (userId === 'sam'
+          ? {
+              refreshToken: 'refresh',
+              credentialVersion: 1,
+              accountId: 'acct',
+              accountEmail: 'sam@example.test',
+              scopes: SCOPES,
+              source: 'project',
+            }
+          : undefined) as never,
+      googleAccounts: {
+        get: async (id: string) => (id === 'acct' ? { ownerUserId: 'sam' } : undefined) as never,
+      },
     },
     googleAccessToken: async () => 'token',
     edge,
@@ -171,6 +177,7 @@ function service(overrides: Partial<ConstructorParameters<typeof SchedulingServi
 
 const input = (overrides: Partial<PrepareSchedulingInput> = {}): PrepareSchedulingInput => ({
   sessionId: 's1',
+  userId: 'sam',
   projectId: null,
   title: 'Intro call',
   durationMinutes: 30,

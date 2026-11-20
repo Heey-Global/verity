@@ -440,7 +440,7 @@ export const trustedCliRequestSchema = z
       .min(1)
       .max(MAX_TRUSTED_CLI_SECRETS)
       .describe(
-        'Every secret this one command needs, each with the environment variable that carries it. Two entries may not name the same variable.',
+        'At least one secret is required; use the normal command tool for commands without secrets. Every secret this one command needs, each with the environment variable that carries it. Two entries may not name the same variable.',
       ),
     command: z
       .array(
@@ -463,7 +463,7 @@ export const trustedCliRequestSchema = z
         message: 'command executable must be absolute',
       })
       .describe(
-        'Executable and arguments as separate tokens — ["/usr/bin/example-cli", "get", "items"], never one string. ' +
+        'Executable and arguments as separate tokens — ["/usr/bin/example-cli", "get", "items"], never one string. Tokens must not contain control characters, including newlines and tabs; use single-line inline code or an approved entryScript. ' +
           'No shell runs, so "$VAR", quotes, pipes, redirects and globs reach the program literally; to pass the ' +
           'secret write the variable name the program itself expands, or use `injection: "file"`. ' +
           'The executable must be root-owned and not group- or world-writable, which rules out anything you wrote ' +

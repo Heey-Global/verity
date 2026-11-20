@@ -24587,6 +24587,30 @@ function parseLenientJson(body) {
     return void 0;
   }
 }
+function keepFirstRecommendation(value) {
+  if (typeof value !== "object" || value === null)
+    return value;
+  const options = value.options;
+  if (!Array.isArray(options))
+    return value;
+  let seen = false;
+  return {
+    ...value,
+    options: options.map((option) => {
+      if (typeof option !== "object" || option === null)
+        return option;
+      if (option.recommended !== true)
+        return option;
+      if (!seen) {
+        seen = true;
+        return option;
+      }
+      const cleared = { ...option };
+      delete cleared.recommended;
+      return cleared;
+    })
+  };
+}
 function parseChoicesBlock(input) {
   const matches = [...input.matchAll(CHOICES_FENCE_RE)];
   if (matches.length === 0)
@@ -24596,7 +24620,7 @@ function parseChoicesBlock(input) {
     const parsedJson = parseLenientJson(matches[i][1] ?? "");
     if (parsedJson === void 0)
       continue;
-    const result3 = choicesPayloadSchema.safeParse(parsedJson);
+    const result3 = choicesPayloadSchema.safeParse(keepFirstRecommendation(parsedJson));
     if (result3.success)
       choices = result3.data;
   }
@@ -24748,7 +24772,7 @@ var COMPLETE = `\`${COMPLETE_MOCKUPS_FOCUSED_TOOL}\` (\`${COMPLETE_MOCKUPS_TOOL}
 var MOCKUPS_FIRST_PROMPT = `The plan lists mockups. Build only those first, without implementing the rest of the plan: render each listed screen as its own PNG or JPEG file in this worktree (one screen per image, composed from the app's real components and design tokens; use the project's own mockup tooling where it has one), then call ${PRESENT} with a short name and the relative path of each image, and end your turn. The user marks each screen as approved or discarded and tells you in the chat what to change. A revision replaces the round: present every screen again with ${PRESENT}, not as images in the chat. Continue with the rest of the plan only after the user tells you in the chat to implement; then call ${COMPLETE} first.`;
 
 // node_modules/@verity/events/dist/autonomy.js
-var WORK_COMPLETION_DIRECTIVE = "Wait for required reviews and tests to finish before ending the turn. For asynchronous tool calls, wait or poll until completion, inspect the result and exit status, and report the concrete failure if interrupted. A background shell command is not a managed continuation: turn completion can terminate its processes. Never promise a later automatic report unless a managed continuation has actually been established. Keep giving progress updates while waiting.";
+var WORK_COMPLETION_DIRECTIVE = "Wait for required reviews and tests to finish before ending the turn. For asynchronous tool calls, wait or poll until completion, inspect the result and exit status, and report the concrete failure if interrupted. Unless your runtime instructions say Verity holds the turn for background work, a background shell command is not a managed continuation: turn completion can terminate its processes. Never promise a later automatic report unless a managed continuation has actually been established. Keep giving progress updates while waiting.";
 var AUTONOMY_SYSTEM_PROMPT = `# Outcome ownership and decision boundaries (Verity)
 
 ${WORK_COMPLETION_DIRECTIVE}
@@ -25930,6 +25954,7 @@ var AGENT_METHODS = {
   session_archive: "session/archive",
   session_unarchive: "session/unarchive",
   session_status: "session/status",
+  session_options: "session/options",
   session_set_title: "session/set_title",
   session_resume: "session/resume",
   session_close: "session/close",
@@ -26171,6 +26196,10 @@ var zTerminal = z21.object({
   terminalId: zTerminalId,
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zSessionReference = z21.object({
+  sessionId: zSessionId,
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zToolCallContent = z21.union([
   zContent.and(z21.object({
     type: z21.literal("content")
@@ -26180,6 +26209,9 @@ var zToolCallContent = z21.union([
   })),
   zTerminal.and(z21.object({
     type: z21.literal("terminal")
+  })),
+  zSessionReference.and(z21.object({
+    type: z21.literal("session")
   }))
 ]);
 var zToolCallLocation = z21.object({
@@ -26457,6 +26489,9 @@ var zSessionArchiveCapabilities = z21.object({
 var zSessionStatusCapabilities = z21.object({
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zSessionOptionsCapabilities = z21.object({
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zSessionTitleCapabilities = z21.object({
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
@@ -26474,6 +26509,7 @@ var zSessionCapabilities = z21.object({
   fork: defaultOnError(zSessionForkCapabilities.nullish(), () => void 0),
   archive: defaultOnError(zSessionArchiveCapabilities.nullish(), () => void 0),
   status: defaultOnError(zSessionStatusCapabilities.nullish(), () => void 0),
+  options: defaultOnError(zSessionOptionsCapabilities.nullish(), () => void 0),
   title: defaultOnError(zSessionTitleCapabilities.nullish(), () => void 0),
   resume: defaultOnError(zSessionResumeCapabilities.nullish(), () => void 0),
   close: defaultOnError(zSessionCloseCapabilities.nullish(), () => void 0),
@@ -26626,6 +26662,7 @@ var zAuthState = z21.union([
 ]);
 var zAuthAccount = z21.object({
   label: z21.string(),
+  description: defaultOnError(z21.string().nullish(), () => void 0),
   active: defaultOnError(z21.boolean().nullish(), () => void 0),
   name: defaultOnError(z21.string().nullish(), () => void 0),
   email: defaultOnError(z21.string().nullish(), () => void 0),
@@ -26654,6 +26691,7 @@ var zSessionConfigOptionCategory = z21.union([
   z21.literal("mode"),
   z21.literal("model"),
   z21.literal("model_config"),
+  z21.literal("speed"),
   z21.literal("thought_level"),
   z21.string()
 ]);
@@ -26745,6 +26783,11 @@ var zSessionStatusResponse = z21.object({
   status: zSessionStatus,
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zSessionOptionsResponse = z21.object({
+  modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
+  configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zSetSessionTitleResponse = z21.object({
   title: z21.string(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
@@ -26825,6 +26868,7 @@ var zAgentResponse = z21.union([
       zArchiveSessionResponse,
       zUnarchiveSessionResponse,
       zSessionStatusResponse,
+      zSessionOptionsResponse,
       zSetSessionTitleResponse,
       zResumeSessionResponse,
       zCloseSessionResponse,
@@ -26883,22 +26927,15 @@ var zPlanItems = z21.object({
   entries: requiredDefaultOnError(vecSkipError(zPlanEntry), () => []),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
-var zPlanFile = z21.object({
-  planId: zPlanId,
-  uri: z21.string(),
-  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
-});
 var zPlanMarkdown = z21.object({
   planId: zPlanId,
   content: z21.string(),
+  path: defaultOnError(z21.string().nullish(), () => void 0),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zPlanUpdateContent = z21.union([
   zPlanItems.and(z21.object({
     type: z21.literal("items")
-  })),
-  zPlanFile.and(z21.object({
-    type: z21.literal("file")
   })),
   zPlanMarkdown.and(z21.object({
     type: z21.literal("markdown")
@@ -26981,6 +27018,14 @@ var zCompactionUpdate = z21.object({
 var zCompactionSummaryChunk = z21.object({
   compactionId: zCompactionId,
   content: zContentBlock,
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestion = z21.object({
+  prompt: z21.array(zContentBlock).min(1),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestionsUpdate = z21.object({
+  suggestions: vecSkipError(zPromptSuggestion),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zSessionCancelCapabilities = z21.object({
@@ -27136,6 +27181,9 @@ var zSessionUpdate = z21.union([
   zCompactionSummaryChunk.and(z21.object({
     sessionUpdate: z21.literal("compaction_summary_chunk")
   })),
+  zPromptSuggestionsUpdate.and(z21.object({
+    sessionUpdate: z21.literal("prompt_suggestions_update")
+  })),
   zSubagentUpdate.and(z21.object({
     sessionUpdate: z21.literal("subagent_update")
   })),
@@ -27184,10 +27232,26 @@ var zSessionConfigOptionsCapabilities = z21.object({
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zNoticeCapabilities = z21.record(z21.string(), z21.unknown());
+var zPromptSuggestionsImageCapabilities = z21.object({
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestionsAudioCapabilities = z21.object({
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestionsEmbeddedContextCapabilities = z21.object({
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestionsCapabilities = z21.object({
+  image: defaultOnError(zPromptSuggestionsImageCapabilities.nullish(), () => void 0),
+  audio: defaultOnError(zPromptSuggestionsAudioCapabilities.nullish(), () => void 0),
+  embeddedContext: defaultOnError(zPromptSuggestionsEmbeddedContextCapabilities.nullish(), () => void 0),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zClientSessionCapabilities = z21.object({
   compaction: defaultOnError(zCompactionCapabilities.nullish(), () => void 0),
   configOptions: defaultOnError(zSessionConfigOptionsCapabilities.nullish(), () => void 0),
   notices: defaultOnError(zNoticeCapabilities.nullish(), () => void 0),
+  promptSuggestions: defaultOnError(zPromptSuggestionsCapabilities.nullish(), () => void 0),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zSubagentCapabilities = z21.object({
@@ -27310,11 +27374,24 @@ var zSystemPrompt = z21.object({
   content: z21.array(zContentBlock),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zInitialSessionConfigOption = z21.intersection(z21.union([
+  z21.object({
+    type: z21.literal("boolean"),
+    value: z21.boolean()
+  }),
+  z21.object({
+    value: zSessionConfigValueId
+  })
+]), z21.object({
+  configId: zSessionConfigId,
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+}));
 var zNewSessionRequest = z21.object({
   cwd: z21.string(),
   additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
   mcpServers: defaultOnNull(z21.array(zMcpServer), () => []),
   systemPrompt: zSystemPrompt.nullish(),
+  configOptions: defaultOnNull(z21.array(zInitialSessionConfigOption), () => []).optional(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zLoadSessionRequest = z21.object({
@@ -27323,6 +27400,7 @@ var zLoadSessionRequest = z21.object({
   additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
   sessionId: zSessionId,
   systemPrompt: zSystemPrompt.nullish(),
+  configOptions: defaultOnNull(z21.array(zInitialSessionConfigOption), () => []).optional(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zSessionArchiveFilter = z21.union([
@@ -27347,6 +27425,7 @@ var zForkSessionRequest = z21.object({
   additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
   mcpServers: defaultOnNull(z21.array(zMcpServer), () => []).optional(),
   systemPrompt: zSystemPrompt.nullish(),
+  configOptions: defaultOnNull(z21.array(zInitialSessionConfigOption), () => []).optional(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zArchiveSessionRequest = z21.object({
@@ -27361,6 +27440,12 @@ var zSessionStatusRequest = z21.object({
   sessionId: zSessionId,
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zSessionOptionsRequest = z21.object({
+  cwd: z21.string(),
+  additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
+  sessionId: zSessionId.nullish(),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zSetSessionTitleRequest = z21.object({
   sessionId: zSessionId,
   title: z21.string(),
@@ -27372,6 +27457,7 @@ var zResumeSessionRequest = z21.object({
   additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
   mcpServers: defaultOnNull(z21.array(zMcpServer), () => []).optional(),
   systemPrompt: zSystemPrompt.nullish(),
+  configOptions: defaultOnNull(z21.array(zInitialSessionConfigOption), () => []).optional(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zCloseSessionRequest = z21.object({
@@ -27420,6 +27506,7 @@ var zClientRequest = z21.object({
     zArchiveSessionRequest,
     zUnarchiveSessionRequest,
     zSessionStatusRequest,
+    zSessionOptionsRequest,
     zSetSessionTitleRequest,
     zResumeSessionRequest,
     zCloseSessionRequest,
@@ -28884,6 +28971,7 @@ var methods = {
       archive: AGENT_METHODS.session_archive,
       unarchive: AGENT_METHODS.session_unarchive,
       status: AGENT_METHODS.session_status,
+      options: AGENT_METHODS.session_options,
       setTitle: AGENT_METHODS.session_set_title,
       resume: AGENT_METHODS.session_resume,
       close: AGENT_METHODS.session_close,
@@ -29379,6 +29467,7 @@ var agentRequestSpecs = {
   unstable_archiveSession: requestSpec(AGENT_METHODS.session_archive, zArchiveSessionRequest, emptyObjectResponse),
   unstable_unarchiveSession: requestSpec(AGENT_METHODS.session_unarchive, zUnarchiveSessionRequest, emptyObjectResponse),
   unstable_sessionStatus: requestSpec(AGENT_METHODS.session_status, zSessionStatusRequest),
+  unstable_sessionOptions: requestSpec(AGENT_METHODS.session_options, zSessionOptionsRequest),
   unstable_setSessionTitle: requestSpec(AGENT_METHODS.session_set_title, zSetSessionTitleRequest),
   resumeSession: requestSpec(AGENT_METHODS.session_resume, zResumeSessionRequest),
   closeSession: requestSpec(AGENT_METHODS.session_close, zCloseSessionRequest, emptyObjectResponse),
@@ -29896,6 +29985,22 @@ function lifecycleSignalsFromMeta(meta) {
           signals.push({ type: "skill", text });
         break;
       }
+      case "cycle": {
+        const phase = value["phase"];
+        if (phase === "started" || phase === "ended")
+          signals.push({ type: "cycle", phase });
+        break;
+      }
+      case "background": {
+        const live = value["live"];
+        if (!Array.isArray(live) || live.length > 1e3)
+          break;
+        const ids = live.filter((id4) => nonEmptyString(id4) !== void 0);
+        if (ids.length !== live.length)
+          break;
+        signals.push({ type: "background", live: ids });
+        break;
+      }
     }
   }
   return signals;
@@ -29906,6 +30011,8 @@ var StructuredLifecycleMapper = class {
   consume(signal) {
     if (signal.type === "skill")
       return [{ t: "skill", text: signal.text }];
+    if (signal.type === "cycle" || signal.type === "background")
+      return [];
     if (signal.type === "compaction") {
       if (signal.id !== void 0) {
         if (this.compactions.has(signal.id))
@@ -30105,6 +30212,8 @@ var AcpEventAdapter = class {
       case "current_mode_update":
       case "config_option_update":
       case "session_info_update":
+        return lifecycle;
+      case "prompt_suggestions_update":
         return lifecycle;
       case "notice":
         return lifecycle;
@@ -30495,6 +30604,127 @@ var SessionWriter = class {
     }
     this.pending.length = 0;
     return wasUnbound;
+  }
+};
+
+// packages/session/dist/background-work.js
+var BACKGROUND_HOLD_MAX_MS = 2 * 60 * 6e4;
+var BACKGROUND_QUIET_MS = 3e3;
+var BACKGROUND_HOLD_TASK_ID = "verity-background-hold";
+var BackgroundWork = class {
+  tasks = /* @__PURE__ */ new Set();
+  cycle = false;
+  prompts = 0;
+  sawWork = false;
+  // Whether the runtime has sent a complete background-task level this turn.
+  // Edges alone never hold a turn: an `ended` edge can be lost, and without a
+  // level to correct it the turn would sit out the whole hold limit. Without
+  // levels the turn ends at its prompt response, exactly as before.
+  levelSeen = false;
+  lastActivity = Date.now();
+  notify;
+  wakeExplicit;
+  // A wake that arrived while no wait was registered — for example between a
+  // wait resolving and the caller's next one. Kept until a wait consumes it.
+  wakePending = false;
+  /** Record the lifecycle facts carried by one session update's `_meta`. */
+  observe(meta) {
+    for (const signal of lifecycleSignalsFromMeta(meta))
+      this.signal(signal);
+    this.touch();
+  }
+  signal(signal) {
+    if (signal.type === "background" || signal.type === "cycle" || signal.type === "task" && this.levelSeen) {
+      this.sawWork = true;
+    }
+    switch (signal.type) {
+      case "task":
+        if (signal.phase === "started")
+          this.tasks.add(signal.id);
+        else if (signal.phase === "ended")
+          this.tasks.delete(signal.id);
+        break;
+      case "background":
+        this.levelSeen = true;
+        this.tasks.clear();
+        for (const id4 of signal.live)
+          this.tasks.add(id4);
+        break;
+      case "cycle":
+        this.cycle = signal.phase === "started";
+        break;
+      default:
+        return;
+    }
+    this.changed();
+  }
+  /** Any agent output: a reaction may follow, so the quiet window restarts. */
+  touch() {
+    this.lastActivity = Date.now();
+    this.changed();
+  }
+  /** A prompt sent into the held turn is outstanding until its response. */
+  beginPrompt() {
+    this.prompts += 1;
+    this.touch();
+  }
+  endPrompt() {
+    this.prompts = Math.max(0, this.prompts - 1);
+    this.touch();
+  }
+  /** Whether the agent reported any background work or self-started cycle at
+   * all. A task that ends during the prompt can still provoke a cycle that only
+   * starts after the prompt answers. */
+  get observedWork() {
+    return this.sawWork;
+  }
+  get busy() {
+    return this.cycle || this.prompts > 0 || this.levelSeen && this.tasks.size > 0;
+  }
+  /** Wake a pending {@link waitUntilQuiet} so its caller re-checks its own state. */
+  wake() {
+    this.wakePending = true;
+    this.changed(true);
+  }
+  /**
+   * Resolve once the agent has been idle for `quietMs`, at `deadline` (epoch ms),
+   * or as soon as {@link wake} is called.
+   */
+  async waitUntilQuiet(quietMs, deadline) {
+    for (; ; ) {
+      if (this.wakePending) {
+        this.wakePending = false;
+        return "woken";
+      }
+      const now = Date.now();
+      if (now >= deadline)
+        return "deadline";
+      const quietLeft = this.lastActivity + quietMs - now;
+      if (!this.busy && quietLeft <= 0)
+        return "quiet";
+      const wait = this.busy ? deadline - now : Math.min(quietLeft, deadline - now);
+      const woken = await new Promise((resolve4) => {
+        const timer = setTimeout(() => finish(false), wait);
+        const finish = (explicit) => {
+          clearTimeout(timer);
+          this.notify = void 0;
+          this.wakeExplicit = void 0;
+          resolve4(explicit);
+        };
+        this.notify = () => finish(false);
+        this.wakeExplicit = () => finish(true);
+      });
+      if (woken) {
+        this.wakePending = false;
+        return "woken";
+      }
+    }
+  }
+  changed(explicit = false) {
+    if (explicit)
+      this.wakeExplicit?.();
+    else
+      this.notify?.();
   }
 };
 
@@ -31057,6 +31287,13 @@ function permissionRequest(request2, name2) {
     input: recordInput(request2.toolCall.rawInput)
   };
 }
+function formatHoldLimit(ms) {
+  if (ms % 36e5 === 0)
+    return `${ms / 36e5} h`;
+  if (ms % 6e4 === 0)
+    return `${ms / 6e4} min`;
+  return `${Math.ceil(ms / 1e3)} s`;
+}
 async function writeAll(writer, events) {
   for (const event of events)
     await writer.write(event);
@@ -31131,7 +31368,13 @@ async function runAcpTurn(opts, profile) {
   let sendSteering;
   let turnHasAgentContent = false;
   let executionObserved = false;
+  const background = profile.holdsForBackgroundWork === true ? new BackgroundWork() : void 0;
+  let sendHeldPrompt;
   opts.onSteer?.((message) => {
+    if (sendHeldPrompt !== void 0 && !stopped) {
+      sendHeldPrompt(message);
+      return true;
+    }
     if (!acceptingSteering || !turnHasAgentContent || sendSteering === void 0)
       return false;
     sendSteering(message);
@@ -31140,7 +31383,9 @@ async function runAcpTurn(opts, profile) {
   const stop = (operatorCancel) => {
     stopped = true;
     acceptingSteering = false;
+    sendHeldPrompt = void 0;
     wakeRetry?.();
+    background?.wake();
     if (operatorCancel)
       aborted = true;
     if (cancelSession === void 0) {
@@ -31256,6 +31501,7 @@ async function runAcpTurn(opts, profile) {
     const connect = () => client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
       if (loadingSession || stopped)
         return Promise.resolve();
+      background?.observe(params.update._meta);
       if (isAgentContent(params.update))
         executionObserved = true;
       if (profile.telemetryBackend === "codex-acp") {
@@ -31453,6 +31699,88 @@ async function runAcpTurn(opts, profile) {
         if (stopped)
           throw new Error("ACP turn stopped during capacity retry");
         acceptingSteering = true;
+      }
+      if (background !== void 0 && !stopped && !capacityFailure && prompt.stopReason !== "cancelled") {
+        acceptingSteering = false;
+        let agentExited = false;
+        sendHeldPrompt = (message) => {
+          background.beginPrompt();
+          void agent.request(methods.agent.session.prompt, {
+            sessionId: session.sessionId,
+            prompt: [
+              { type: "text", text: message.text },
+              ...imageBlocks(message.attachments)
+            ]
+          }).then((answer) => {
+            const answerUsage = usage(answer.usage);
+            promptUsage.inputTokens += answerUsage.inputTokens;
+            promptUsage.outputTokens += answerUsage.outputTokens;
+            promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
+            promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
+          }).catch(() => {
+            if (stopped || closedOut || agentExited)
+              return;
+            updateTail = updateTail.then(() => writer.write({
+              t: "notice",
+              text: "Your message could not be delivered to the agent while it was waiting for background work. Send it again once this turn has ended."
+            })).catch(() => void 0);
+          }).finally(() => background.endPrompt());
+        };
+        await drainUpdates();
+        const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
+        if (!background.busy && background.observedWork) {
+          await background.waitUntilQuiet(quietMs, Date.now() + quietMs);
+          await drainUpdates();
+        }
+        if (!background.busy || stopped) {
+          sendHeldPrompt = void 0;
+        } else {
+          await writeAll(writer, topLevelText.flush());
+          await writer.write({
+            t: "task",
+            id: BACKGROUND_HOLD_TASK_ID,
+            phase: "started",
+            description: "Waiting for background work"
+          });
+          const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
+          const onAgentExit = () => {
+            agentExited = true;
+            sendHeldPrompt = void 0;
+            background.wake();
+          };
+          void child.exited.then(onAgentExit, onAgentExit);
+          let outcome = "woken";
+          while (outcome === "woken" && !stopped && !agentExited) {
+            outcome = await background.waitUntilQuiet(quietMs, deadline);
+          }
+          sendHeldPrompt = void 0;
+          if (stopped || agentExited) {
+            await writer.write({
+              t: "task",
+              id: BACKGROUND_HOLD_TASK_ID,
+              phase: "ended",
+              status: stopped ? "stopped" : "failed"
+            }).catch(() => void 0);
+            if (stopped)
+              throw new Error("ACP turn cancelled");
+            throw new Error("ACP agent exited while background work was running");
+          }
+          await drainUpdates();
+          await writeAll(writer, topLevelText.flush());
+          await writer.write({
+            t: "task",
+            id: BACKGROUND_HOLD_TASK_ID,
+            phase: "ended",
+            status: outcome === "deadline" ? "stopped" : "completed"
+          });
+          if (outcome === "deadline") {
+            cancelSession?.();
+            await writer.write({
+              t: "notice",
+              text: `Background work was still running after ${formatHoldLimit(opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS)}; Verity ended it with this turn.`
+            });
+          }
+        }
       }
       acceptingSteering = false;
       if (aborted)
@@ -31661,9 +31989,21 @@ ${crashMessage}`;
 
 // packages/session/dist/acp-claude-backend.js
 var UNREADABLE_AGENTS_MD_DIRECTIVE = "Repository instructions: this worktree has an AGENTS.md that Verity could not import. Read AGENTS.md at the worktree root before you start and follow it.";
+var CLAUDE_SCHEDULING_TOOLS = [
+  "ScheduleWakeup",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "RemoteTrigger"
+];
+var HOLD_HOURS = BACKGROUND_HOLD_MAX_MS / 36e5;
+var BACKGROUND_HOLD_DIRECTIVE = `## Background work (Verity)
+
+Verity holds this turn \u2014 and the agent process \u2014 open while background commands (\`run_in_background\`), Monitor watches or background subagents you started are still running, for at most ${HOLD_HOURS} hours. When one reports back you continue in the same turn, so you may start such work, say that you are waiting, end your reply and act on the result when it arrives. For a delayed check, run a background command such as \`sleep 300\`. Scheduling tools (wakeups, cron, remote triggers) are unavailable; recurring work needs a Verity automation. Never promise anything after the ${HOLD_HOURS}-hour limit or after the turn has ended, and never detach work with \`nohup\`, \`&\` or \`disown\`: Verity cannot see detached processes.`;
 var CLAUDE_ACP_PROFILE = {
   defaultCommand: "claude-agent-acp",
   telemetryBackend: "claude-acp",
+  holdsForBackgroundWork: true,
   httpMcpWhenUnspecified: true,
   enforcesToolless: true,
   enforcesGatewayToolsOnly: true,
@@ -31704,19 +32044,22 @@ ${text}`
         }
       }
     }
+    const append = opts.toolless === true || opts.gatewayToolsOnly === true ? opts.appendSystemPrompt : [opts.appendSystemPrompt, BACKGROUND_HOLD_DIRECTIVE].filter(Boolean).join("\n\n");
     return {
-      ...opts.appendSystemPrompt ? {
+      ...append ? {
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: opts.appendSystemPrompt
+          append
         }
       } : {},
       claudeCode: {
         options: {
           ...opts.model !== void 0 ? { model: opts.model } : {},
           ...opts.allowedTools !== void 0 ? { allowedTools: [...opts.allowedTools] } : {},
-          ...opts.disallowedTools !== void 0 ? { disallowedTools: [...opts.disallowedTools] } : {},
+          disallowedTools: [
+            .../* @__PURE__ */ new Set([...opts.disallowedTools ?? [], ...CLAUDE_SCHEDULING_TOOLS])
+          ],
           // Project settings and extensions cannot add another provider or MCP
           // server. Toolless queries additionally disable the built-in tool set.
           settingSources: [],
@@ -31991,6 +32334,40 @@ var AcpOpenCodeBackend = class {
   }
 };
 
+// packages/session/dist/git-author.js
+var MAX_NAME_BYTES = 200;
+var MAX_EMAIL_BYTES = 320;
+var NAME_PATTERN = /^[^\u0000-\u001f\u007f<>]+$/u;
+var EMAIL_PATTERN = /^[^\s\u0000-\u001f\u007f<>@]+@[^\s\u0000-\u001f\u007f<>@]+$/u;
+function isGitAuthor(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const { name: name2, email } = value;
+  return Object.keys(value).length === 2 && typeof name2 === "string" && typeof email === "string" && name2.trim().length > 0 && Buffer.byteLength(name2) <= MAX_NAME_BYTES && NAME_PATTERN.test(name2) && Buffer.byteLength(email) <= MAX_EMAIL_BYTES && EMAIL_PATTERN.test(email);
+}
+function gitAuthorEnv(author) {
+  return {
+    GIT_AUTHOR_NAME: author?.name,
+    GIT_AUTHOR_EMAIL: author?.email,
+    GIT_COMMITTER_NAME: author?.name,
+    GIT_COMMITTER_EMAIL: author?.email
+  };
+}
+var UNSIGNED_COMMITS_ENV = "VERITY_UNSIGNED_COMMITS";
+function unsignedCommitsConfig(env) {
+  const raw = env.GIT_CONFIG_COUNT;
+  const count3 = raw !== void 0 && /^\d{1,3}$/u.test(raw) ? Number(raw) : 0;
+  return {
+    GIT_CONFIG_COUNT: String(count3 + 1),
+    [`GIT_CONFIG_KEY_${String(count3)}`]: "commit.gpgsign",
+    [`GIT_CONFIG_VALUE_${String(count3)}`]: "false"
+  };
+}
+function gitAuthorFromEnv(env) {
+  const author = { name: env?.GIT_AUTHOR_NAME, email: env?.GIT_AUTHOR_EMAIL };
+  return isGitAuthor(author) ? author : void 0;
+}
+
 // packages/session/dist/broker-spawner.js
 import { createConnection } from "node:net";
 import { constants as osConstants2 } from "node:os";
@@ -31998,6 +32375,8 @@ import { StringDecoder } from "node:string_decoder";
 var PROTOCOL_VERSION2 = 1;
 var STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
 var MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
+var TURN_CAPABILITY_ENV = "VERITY_TURN_CAPABILITY";
+var TURN_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 var SESSION_RUNTIME_ENV_KEYS = [
   "VERITY_SESSION_BACKEND",
   "VERITY_SESSION_MODEL",
@@ -32162,6 +32541,8 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
         if (settled2)
           return;
         const sessionEnv = sessionRuntimeEnv(options.env);
+        const turnCapability = options.env?.[TURN_CAPABILITY_ENV];
+        const gitAuthor = gitAuthorFromEnv(options.env);
         send(socket, {
           protocolVersion: PROTOCOL_VERSION2,
           kind: "spawn-agent",
@@ -32173,7 +32554,11 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
             gatewayToolsOnly: true,
             ...options.gatewayToolsModel !== void 0 ? { gatewayToolsModel: options.gatewayToolsModel } : {}
           } : {},
-          ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}
+          ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {},
+          ...typeof turnCapability === "string" && TURN_CAPABILITY_PATTERN.test(turnCapability) ? { turnCapability } : {},
+          // The turn's author, as its own field for the same reason as the badge.
+          ...gitAuthor === void 0 ? {} : { gitAuthor },
+          ...options.env?.[UNSIGNED_COMMITS_ENV] === "1" ? { signCommits: false } : {}
         });
       })();
     });
@@ -33211,6 +33596,12 @@ var startTurnRequestSchema = import_zod20.z.strictObject({
   trustedCliExecution: import_zod20.z.boolean().optional(),
   mcpGatewayToken: boundedString(512).min(1).optional(),
   mcpProxyToken: boundedString(512).min(1).optional(),
+  /** The turn's badge (32 random bytes, base64url); see broker-spawner.ts. */
+  turnCapability: import_zod20.z.string().regex(/^[A-Za-z0-9_-]{43}$/u).optional(),
+  /** The person this turn's commits are authored by; see git-author.ts. */
+  gitAuthor: import_zod20.z.unknown().refine(isGitAuthor, "invalid git author").optional(),
+  /** False when the turn's person has no signing key; see git-author.ts. */
+  signCommits: import_zod20.z.literal(false).optional(),
   mcpServers: import_zod20.z.array(httpMcpServerSchema).max(16).optional(),
   sessionEnv: import_zod20.z.strictObject({
     VERITY_SESSION_BACKEND: boundedString(256).optional(),
@@ -33321,7 +33712,12 @@ var turn = await server.run(join4(turnDir, "events.jsonl"), {
   env: {
     ...process.env,
     ...request.sessionEnv,
-    ...process.env.VERITY_CONTROL_MEMORY_URL !== void 0 && request.mcpGatewayToken !== void 0 ? { VERITY_CONTROL_MEMORY_TOKEN: request.mcpGatewayToken } : {}
+    ...process.env.VERITY_CONTROL_MEMORY_URL !== void 0 && request.mcpGatewayToken !== void 0 ? { VERITY_CONTROL_MEMORY_TOKEN: request.mcpGatewayToken } : {},
+    // Set last so the container's ambient environment can never supply another one.
+    ...request.turnCapability !== void 0 ? { [TURN_CAPABILITY_ENV]: request.turnCapability } : { [TURN_CAPABILITY_ENV]: void 0 },
+    // Likewise: only this turn's own author, never one ambient in the container.
+    ...gitAuthorEnv(request.gitAuthor),
+    ...request.signCommits === false ? { [UNSIGNED_COMMITS_ENV]: "1", ...unsignedCommitsConfig(process.env) } : { [UNSIGNED_COMMITS_ENV]: void 0 }
   },
   // The gateway URL is the Sandbox's view of the Server's project-bound broker; it is
   // provisioned into the container, never carried by the request. A bearer without a

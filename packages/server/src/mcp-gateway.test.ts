@@ -7,7 +7,10 @@ import { TrustedCliDispatchError, type ExternalPermissionAnswer } from '@verity/
 import { describe, expect, it, vi } from 'vitest';
 
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
-import type { BrokeredToolApprovalInput } from './brokered-tool-approval-store.js';
+import {
+  DOPPLER_CONNECTION_REQUIRED_MESSAGE,
+  dopplerConnectionRequired,
+} from './doppler-credential.js';
 
 import {
   createMcpGateway,
@@ -16,6 +19,8 @@ import {
   type McpGatewayAuditRecord,
   type McpGatewayDeps,
 } from './mcp-gateway.js';
+
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 
 const HTTP_ARGUMENTS = {
   method: 'GET',
@@ -423,6 +428,57 @@ describe('MCP gateway — every call is recorded (ADR 0014 D3)', () => {
     );
   });
 
+  it.each([
+    {
+      command: ['/usr/bin/python3', '-I', '-c', "print('probe')"],
+      secrets: [],
+      expected: 'secrets must contain at least one entry',
+    },
+    {
+      command: ['/usr/bin/python3', '-I', '-c', "import os\nprint('private-marker')"],
+      secrets: [{ secretAlias: 'EXPO_TOKEN', env: 'TOKEN' }],
+      expected: 'command tokens must not contain control characters, including newlines and tabs',
+    },
+  ])(
+    'explains trusted CLI validation without exposing arguments ($expected)',
+    async ({ expected, ...args }) => {
+      const { gateway, requestApproval, invokeTool, records } = harness();
+      const response = await gateway.handle({
+        projectId: 'p1',
+        token: 'session-token',
+        body: call({ ...args, 'private-marker': 'private-value' }, 'verity_secret_run'),
+      });
+      expect(response.body).toMatchObject({
+        error: { code: -32602, message: expect.stringContaining(expected) },
+      });
+      expect(JSON.stringify(response.body)).not.toMatch(/private-marker|private-value|EXPO_TOKEN/);
+      expect(requestApproval).not.toHaveBeenCalled();
+      expect(invokeTool).not.toHaveBeenCalled();
+      expect(records.at(-1)).toMatchObject({
+        kind: 'gateway_call_rejected',
+        rejection: 'malformed_request',
+      });
+    },
+  );
+
+  it('passes single-line inline code with a secret through validation and approval', async () => {
+    const { gateway, requestApproval, invokeTool } = harness();
+    const args = {
+      command: ['/usr/bin/python3', '-c', "print('probe')"],
+      secrets: [{ secretAlias: 'EXPO_TOKEN', env: 'TOKEN' }],
+    };
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(args, 'verity_secret_run'),
+    });
+    expect(resultOf(response.body).isError).toBeUndefined();
+    expect(requestApproval).toHaveBeenCalledOnce();
+    expect(invokeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ request: args, approvedByCard: true }),
+    );
+  });
+
   it('hands the complete approved trusted CLI request to the turn-bound executor', async () => {
     const cli = {
       command: ['/usr/bin/kubectl', 'get', 'pods'],
@@ -816,6 +872,22 @@ describe('MCP gateway — refusals (ADR 0014 D2)', () => {
       kind: 'gateway_call_rejected',
       rejection: 'unavailable',
     });
+  });
+
+  // ADR 0023 §3: a person without their own Doppler connection is told how to
+  // connect, in a fixed text, rather than given a generic failure.
+  it('tells an ACP caller to connect their own Doppler token', async () => {
+    const { gateway } = harness({
+      invokeTool: vi.fn(async () => {
+        throw dopplerConnectionRequired();
+      }),
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).content[0]?.text).toBe(DOPPLER_CONNECTION_REQUIRED_MESSAGE);
   });
 
   it('does not trust free text on a malformed Doppler resolution error', async () => {
@@ -1320,13 +1392,17 @@ it('uses availability for listing, calls and revocation during approval', async 
 it('advertises and approves account-only Drive URL reads without linked folders', async () => {
   const store = {
     googleAccounts: {
-      list: async () => [{ id: 'a', scopes: ['https://www.googleapis.com/auth/drive'] }],
+      list: async (userId: string) =>
+        userId === 'turn-user'
+          ? [{ id: 'a', scopes: ['https://www.googleapis.com/auth/drive'] }]
+          : [],
       folders: async () => [],
     },
   } as unknown as EventStore;
   const { gateway, invokeTool, requestApproval } = harness({
     servedTools: ['verity_google_drive'],
-    toolAvailable: (input) => connectorToolAvailable(store, input),
+    // The composition passes the running turn's initiator; this stands in for it.
+    toolAvailable: (input) => connectorToolAvailable(store, { ...input, userId: 'turn-user' }),
   });
   const listed = await gateway.handle({
     projectId: 'p1',
@@ -1373,7 +1449,12 @@ it('binds provider requests to the listener generation and blocks work after ret
     token: 'session-token',
     body: call(),
     transport: {
-      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'g1',
+      },
       signal: generation.signal,
     },
   });
@@ -1398,214 +1479,15 @@ it('revalidates the initiating user after asynchronous tool credential work', as
     token: 'session-token',
     body: call(),
     transport: {
-      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'g1',
+      },
       signal: new AbortController().signal,
     },
   });
   expect(provider).not.toHaveBeenCalled();
   expect(resultOf(response.body).isError).toBe(true);
-});
-
-it.each(['caller', 'generation'] as const)(
-  'cancels approval when the %s retires',
-  async (source) => {
-    const cancellation = new AbortController();
-    let ready!: () => void;
-    const waiting = new Promise<void>((resolve) => {
-      ready = resolve;
-    });
-    const { gateway, invokeTool } = harness({
-      requestApproval: async ({ signal }) =>
-        new Promise((resolve) => {
-          const deny = () =>
-            resolve({
-              decision: { behavior: 'deny' as const, message: 'Approval cancelled; nothing ran.' },
-              decidedBy: 'card' as const,
-            });
-          if (signal.aborted) deny();
-          else signal.addEventListener('abort', deny, { once: true });
-          ready();
-        }),
-    });
-    const response = gateway.handle({
-      projectId: 'p1',
-      token: 'session-token',
-      body: call(),
-      ...(source === 'caller'
-        ? { signal: cancellation.signal }
-        : {
-            transport: {
-              identity: { projectId: 'p1', containerGeneration: 'g1' },
-              signal: cancellation.signal,
-            },
-          }),
-    });
-    await waiting;
-    cancellation.abort();
-    expect(resultOf((await response).body).content[0]?.text).toContain('Approval cancelled');
-    expect(invokeTool).not.toHaveBeenCalled();
-  },
-);
-
-it('returns an explicit durable waiting result without executing or holding the tool call open', async () => {
-  const createOrFindPending = vi.fn(async (input: BrokeredToolApprovalInput) => ({
-    ...input,
-    id: 'receipt-1',
-    status: 'pending',
-    scope: null,
-    decidedBy: null,
-    createdAt: new Date().toISOString(),
-    decidedAt: null,
-  }));
-  const surface = vi.fn(async () => {});
-  const { gateway, invokeTool, requestApproval } = harness({
-    authorizationSnapshot: async () => 'provider-snapshot',
-    detachedApprovals: {
-      createOrFindPending,
-    } as unknown as import('./brokered-tool-approval-store.js').BrokeredToolApprovalStore,
-    surfaceDetachedApproval: surface,
-  });
-  const response = await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
-  expect(resultOf(response.body).isError).not.toBe(true);
-  expect(JSON.parse(resultOf(response.body).content[0]!.text)).toMatchObject({
-    status: 'awaiting_approval',
-    approvalId: 'receipt-1',
-  });
-  expect(createOrFindPending).toHaveBeenCalledWith(
-    expect.objectContaining({
-      projectId: 'p1',
-      sessionId: 'sess-1',
-      toolName: 'verity_http_request',
-      authorizationSnapshot: 'provider-snapshot',
-      canonicalInput: expect.any(String),
-    }),
-  );
-  expect(surface).toHaveBeenCalledWith('sess-1');
-  expect(invokeTool).not.toHaveBeenCalled();
-  expect(requestApproval).not.toHaveBeenCalled();
-});
-
-it('consumes an exact detached approval once immediately before dispatch', async () => {
-  let used = false;
-  const createOrFindPending = vi.fn(async (input: BrokeredToolApprovalInput) => ({
-    ...input,
-    id: 'receipt-1',
-    status: 'approved',
-    scope: 'once',
-    decidedBy: 'user',
-    createdAt: new Date().toISOString(),
-    decidedAt: new Date().toISOString(),
-  }));
-  const consume = vi.fn(async () => {
-    if (used) return undefined;
-    used = true;
-    return { id: 'receipt-1' };
-  });
-  const { gateway, invokeTool } = harness({
-    authorizationSnapshot: async () => 'provider-snapshot',
-    detachedApprovals: {
-      createOrFindPending,
-      consume,
-    } as unknown as import('./brokered-tool-approval-store.js').BrokeredToolApprovalStore,
-  });
-  const responses = await Promise.all(
-    [1, 2].map(() => gateway.handle({ projectId: 'p1', token: 'session-token', body: call() })),
-  );
-  expect(invokeTool).toHaveBeenCalledTimes(1);
-  expect(responses.filter((response) => resultOf(response.body).isError === true)).toHaveLength(1);
-  expect(consume).toHaveBeenCalledWith(
-    'receipt-1',
-    expect.objectContaining({
-      projectId: 'p1',
-      sessionId: 'sess-1',
-      toolName: 'verity_http_request',
-      authorizationSnapshot: 'provider-snapshot',
-      canonicalInput: expect.any(String),
-    }),
-    expect.any(String),
-  );
-});
-
-it('does not consume detached consent after provider authority changes', async () => {
-  const consume = vi.fn();
-  let snapshots = 0;
-  const { gateway, invokeTool } = harness({
-    authorizationSnapshot: async () => (++snapshots === 1 ? 'original' : 'replacement'),
-    detachedApprovals: {
-      createOrFindPending: async (
-        input: import('./brokered-tool-approval-store.js').BrokeredToolApprovalInput,
-      ) => ({
-        ...input,
-        id: 'r',
-        status: 'approved',
-        scope: 'once',
-        decidedBy: 'user',
-        createdAt: '',
-        decidedAt: '',
-      }),
-      consume,
-    } as unknown as import('./brokered-tool-approval-store.js').BrokeredToolApprovalStore,
-  });
-  const response = await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
-  expect(resultOf(response.body).isError).toBe(true);
-  expect(consume).not.toHaveBeenCalled();
-  expect(invokeTool).not.toHaveBeenCalled();
-});
-
-it('rechecks cancellation after consuming a detached receipt before dispatch', async () => {
-  const cancellation = new AbortController();
-  const { gateway, invokeTool } = harness({
-    authorizationSnapshot: async () => 'original',
-    detachedApprovals: {
-      createOrFindPending: async (
-        input: import('./brokered-tool-approval-store.js').BrokeredToolApprovalInput,
-      ) => ({
-        ...input,
-        id: 'r',
-        status: 'approved',
-        scope: 'once',
-        decidedBy: 'user',
-        createdAt: '',
-        decidedAt: '',
-      }),
-      consume: async () => {
-        cancellation.abort();
-        return { id: 'r' };
-      },
-    } as unknown as import('./brokered-tool-approval-store.js').BrokeredToolApprovalStore,
-  });
-  const response = await gateway.handle({
-    projectId: 'p1',
-    token: 'session-token',
-    body: call(),
-    signal: cancellation.signal,
-  });
-  expect(resultOf(response.body).isError).toBe(true);
-  expect(invokeTool).not.toHaveBeenCalled();
-});
-
-it('names an expired granted receipt and asks for explicit review without executing', async () => {
-  const consume = vi.fn();
-  const { gateway, invokeTool } = harness({
-    authorizationSnapshot: async () => 'original',
-    detachedApprovals: {
-      createOrFindPending: async (
-        input: import('./brokered-tool-approval-store.js').BrokeredToolApprovalInput,
-      ) => ({
-        ...input,
-        id: 'r',
-        status: 'approved',
-        scope: 'once',
-        decidedBy: 'user',
-        createdAt: '',
-        decidedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
-      }),
-      consume,
-    } as unknown as import('./brokered-tool-approval-store.js').BrokeredToolApprovalStore,
-  });
-  const response = await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
-  expect(resultOf(response.body).content[0]?.text).toContain('approval_expired');
-  expect(resultOf(response.body).content[0]?.text).toContain('Previous secret requests');
-  expect(consume).not.toHaveBeenCalled();
-  expect(invokeTool).not.toHaveBeenCalled();
 });

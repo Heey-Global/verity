@@ -11,14 +11,28 @@ const PAIRS = [
   'features/verity-sandbox-toolkit/bin/verity-npm-preflight',
 ] as const;
 
+// Both export forms count: declarations exported in place, and the single
+// `export { local as name }` list a bundler writes for a module built from sources.
 const runtimeExports = (source: string): Set<string> =>
-  new Set(
-    [
+  new Set([
+    ...[
       ...source.matchAll(
         /^export\s+(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/gmu,
       ),
     ].map((match) => match[1] as string),
-  );
+    ...[...source.matchAll(/^export\s*\{([^}]*)\}\s*;/gmu)].flatMap((match) =>
+      (match[1] as string)
+        .split(',')
+        .map(
+          (entry) =>
+            entry
+              .trim()
+              .split(/\s+as\s+/u)
+              .at(-1) ?? '',
+        )
+        .filter((name) => name !== ''),
+    ),
+  ]);
 
 describe('sandbox toolkit declarations', () => {
   it.each(PAIRS)('%s declares only runtime exports that exist', (stem) => {

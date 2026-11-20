@@ -63,7 +63,12 @@ describe('Claude egress mTLS project identity', () => {
   });
 
   it('maps only an authorized peer fingerprint to its fixed project', () => {
-    const bindings = new Map([[FINGERPRINT_ONE.replaceAll(':', '').toLowerCase(), 'project-1']]);
+    const bindings = new Map([
+      [
+        FINGERPRINT_ONE.replaceAll(':', '').toLowerCase(),
+        { projectId: 'project-1', userId: '00000000-0000-4000-8000-000000000001' },
+      ],
+    ]);
 
     expect(
       resolveClaudeEgressPeerProject(
@@ -112,7 +117,7 @@ describe('Claude egress mTLS project identity', () => {
     const gateway = await start(accessToken, forward);
 
     await expect(call(gateway.port, PROJECT_ONE)).resolves.toEqual({ status: 200, body: 'ok' });
-    expect(accessToken).toHaveBeenCalledWith('project-1');
+    expect(accessToken).toHaveBeenCalledWith('project-1', expect.anything());
   });
 
   it('reloads the gateway leaf for new handshakes without restarting the listener', async () => {

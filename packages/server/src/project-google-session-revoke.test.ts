@@ -5,6 +5,9 @@ import { registerGmailRoutes } from './gmail-routes.js';
 import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 
+/** Routes without a signed-in person act for the installation's administrator. */
+const ADMIN = '00000000-0000-4000-8000-000000000001';
+
 let ctx: TestDb;
 const app = Fastify();
 beforeAll(async () => {
@@ -48,24 +51,24 @@ it.each(['gmail', 'calendar', 'contacts'] as const)(
         : service === 'calendar'
           ? ctx.store.enableSessionCalendar.bind(ctx.store)
           : ctx.store.enableSessionContacts.bind(ctx.store);
-    await enable('s1', 'me@example.test');
+    await enable('s1', 'me@example.test', ADMIN);
     expect(
       (await app.inject({ method: 'DELETE', url: `/sessions/s1/${service}` })).statusCode,
     ).toBe(204);
-    expect(await get('s1')).toBeUndefined();
+    expect(await get('s1', ADMIN)).toBeUndefined();
 
-    await ctx.store.enableProjectGoogleConnection('p1', service, 'me@example.test');
+    await ctx.store.enableProjectGoogleConnection('p1', service, 'me@example.test', ADMIN);
     const inherited = await app.inject({ method: 'DELETE', url: `/sessions/s1/${service}` });
     expect(inherited.statusCode).toBe(409);
     expect(inherited.json()).toMatchObject({ error: expect.stringContaining('project settings') });
-    expect(await get('s1')).toBeDefined();
+    expect(await get('s1', ADMIN)).toBeDefined();
 
-    await enable('s1', 'me@example.test');
+    await enable('s1', 'me@example.test', ADMIN);
     expect(
       (await app.inject({ method: 'DELETE', url: `/sessions/s1/${service}` })).statusCode,
     ).toBe(409);
-    expect(await get('s1')).toBeDefined();
-    await ctx.store.disableProjectGoogleConnection('p1', service);
-    expect(await get('s1')).toBeUndefined();
+    expect(await get('s1', ADMIN)).toBeDefined();
+    await ctx.store.disableProjectGoogleConnection('p1', service, ADMIN);
+    expect(await get('s1', ADMIN)).toBeUndefined();
   },
 );

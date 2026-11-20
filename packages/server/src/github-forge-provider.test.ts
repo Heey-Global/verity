@@ -176,7 +176,9 @@ describe('repository supervision discovery', () => {
     }));
     const forge = provider(fetch);
     expect((await forge.discover!(project, 1)).errors?.length).toBeGreaterThan(0);
-    await forge.repositoryPrService!(project).prStatusForBranch('feature');
+    await expect(
+      forge.repositoryPrService!(project).prStatusForBranch('feature'),
+    ).rejects.toMatchObject({ category: 'unavailable' });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 

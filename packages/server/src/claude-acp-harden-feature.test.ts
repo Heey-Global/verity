@@ -220,6 +220,84 @@ afterEach(async () => {
   await Promise.all(created.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+/** The 0.104 layout: dist/tools.js no longer builds titles. A renderer
+ *  dispatches each tool use to a per-tool reporter, and every report path reads
+ *  its title, kind and locations through `facts`. The reporters are reproduced
+ *  from `claude-agent-acp@0.104.1` to the extent of the defect: ReportFindings
+ *  still maps `input.findings` on faith, while Task and Write hand raw fields
+ *  back as the title and a location path. */
+const RENDERER_LAYOUT = {
+  'dist/tools.js': 'export function planEntries(input) { return input?.todos ?? []; }\n',
+  'dist/tool-calls/renderer.js': `import { reporterFor } from "./reporters/index.js";
+export class AcpToolCallRenderer {
+    /** The facts of a tool use. */
+    facts(toolUse, cwd) {
+        return reporterFor(toolUse.name).toolUse(toolUse.input, { cwd });
+    }
+    toolInfo(toolUse, cwd) {
+        const facts = this.facts(toolUse, cwd);
+        return {
+            title: facts.title,
+            kind: facts.kind,
+            content: [],
+            ...(facts.locations !== undefined ? { locations: facts.locations } : {}),
+        };
+    }
+}
+`,
+  'dist/tool-calls/reporters/index.js': `import { ReportFindingsReporter } from "./interaction.js";
+const reporters = {
+    ReportFindings: new ReportFindingsReporter(),
+    Task: { toolUse: (input) => ({ title: input?.description ? input.description : "Task", kind: "think" }) },
+    Write: { toolUse: (input) => ({ title: "Write", kind: "edit", locations: input?.file_path ? [{ path: input.file_path }] : [] }) },
+    WebSearch: { toolUse: (input) => ({ title: input?.query ? \`Search "\${input.query}"\` : "Web search", kind: "fetch" }) },
+};
+export function reporterFor(name) {
+    return Object.hasOwn(reporters, name) ? reporters[name] : { toolUse: () => ({ title: name, kind: "other" }) };
+}
+`,
+  'dist/tool-calls/reporters/interaction.js': `export class ReportFindingsReporter {
+    toolUse(input) {
+        const findings = input?.findings ?? [];
+        return {
+            title: findings.length === 0
+                ? "Report findings: none found"
+                : \`Report \${findings.length} findings\`,
+            kind: "think",
+            display: findings.map((finding) => finding.summary),
+        };
+    }
+}
+`,
+};
+
+async function rendererPackage(files = RENDERER_LAYOUT): Promise<string> {
+  const root = await mkdtemp(path.join(tmpdir(), 'verity-acp-harden-'));
+  created.push(root);
+  await writeFile(path.join(root, 'package.json'), '{"name":"acp-fixture","type":"module"}');
+  for (const [file, source] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await writeFile(path.join(root, file), source);
+  }
+  return root;
+}
+
+const rendererFile = (dir: string) => path.join(dir, 'dist', 'tool-calls', 'renderer.js');
+
+/** Render through the renderer the way every 0.104 report path does. */
+async function renderFacts(
+  dir: string,
+  toolUse: unknown,
+): Promise<{ ok: true; info: ToolInfo } | { ok: false; error: string }> {
+  const source = `const { AcpToolCallRenderer } = await import(${JSON.stringify(
+    pathToFileURL(rendererFile(dir)).href,
+  )});
+process.stdout.write(JSON.stringify(new AcpToolCallRenderer().toolInfo(${JSON.stringify(toolUse)}, '/work')));`;
+  const result = await run([], source);
+  if (result.code !== 0) return { ok: false, error: result.out };
+  return { ok: true, info: JSON.parse(result.out) as ToolInfo };
+}
+
 describe('Claude ACP tool-title hardening', () => {
   it('turns a session-killing throw into a degraded title', async () => {
     const dir = await packageDir(VULNERABLE_TOOLS_JS);
@@ -385,5 +463,67 @@ describe('Claude ACP tool-title hardening', () => {
 
     expect(result.code).toBe(1);
     expect(result.out).toContain('cannot read');
+  });
+});
+
+describe('Claude ACP tool-title hardening of the renderer layout', () => {
+  it('hardens the renderer every report reads its facts from', async () => {
+    const dir = await rendererPackage();
+    expect(await renderFacts(dir, WRONG_TYPED_FINDINGS)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('findings.map is not a function') as string,
+    });
+
+    const result = await harden(dir);
+
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('guarded ReportFindings findings');
+    // The guarded field keeps its own title; the others fall back to strings.
+    expect(await renderFacts(dir, WRONG_TYPED_FINDINGS)).toMatchObject({
+      ok: true,
+      info: { title: 'Report findings: none found' },
+    });
+    expect(await renderFacts(dir, WRONG_TYPED_TASK)).toMatchObject({
+      ok: true,
+      info: { title: 'Task' },
+    });
+    expect(await renderFacts(dir, WRONG_TYPED_WRITE)).toMatchObject({
+      ok: true,
+      info: { title: 'Write', locations: [] },
+    });
+    expect(await renderFacts(dir, WELL_FORMED_WRITE)).toMatchObject({
+      ok: true,
+      info: { title: 'Write', locations: [{ path: '/work/a.ts' }] },
+    });
+  });
+
+  it('is idempotent, so a rebuild does not stack wrappers', async () => {
+    const dir = await rendererPackage();
+    expect((await harden(dir)).code).toBe(0);
+    const once = await readFile(rendererFile(dir), 'utf8');
+
+    const again = await harden(dir);
+
+    expect(again.code).toBe(0);
+    expect(again.out).toContain('nothing to do');
+    expect(await readFile(rendererFile(dir), 'utf8')).toBe(once);
+  });
+
+  it('fails the build when the renderer seam is gone', async () => {
+    const reshaped = RENDERER_LAYOUT['dist/tool-calls/renderer.js'].replace(
+      '    facts(toolUse, cwd) {',
+      '    facts(toolUse, cwd, options = {}) {',
+    );
+    const dir = await rendererPackage({
+      ...RENDERER_LAYOUT,
+      'dist/tool-calls/renderer.js': reshaped,
+    });
+
+    const result = await harden(dir);
+
+    expect(result.code).toBe(1);
+    expect(result.out).toContain('the AcpToolCallRenderer#facts seam is gone');
+    expect(result.out).toContain('wrong-typed input still crashes');
+    expect(await readFile(rendererFile(dir), 'utf8')).toBe(reshaped);
   });
 });

@@ -32,6 +32,8 @@ import {
 } from './internal-listener.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 let ctx: TestDb;
 let sessionWorktree: string;
 beforeAll(async () => {
@@ -108,7 +110,12 @@ async function setup(options: { planningTurn?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'verity-knowledge-integration-'));
   const listener = await startProjectInternalUnixListener(app, {
     socketRoot: root,
-    identity: { projectId: 'p', containerGeneration: 'generation' },
+    identity: {
+      projectId: 'p',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation',
+    },
     ownerUid: process.getuid?.() ?? 1000,
     relayGid: process.getgid?.() ?? 1000,
   });

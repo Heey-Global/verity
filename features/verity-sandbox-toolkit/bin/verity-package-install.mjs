@@ -5,6 +5,7 @@ import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { delimiter, resolve } from 'node:path';
+import { clearInterval, setInterval } from 'node:timers';
 import { URL } from 'node:url';
 import { configurePackageArtifacts } from './verity-package-artifacts.mjs';
 import {
@@ -73,7 +74,35 @@ function realBinary() {
   throw new Error(`${manager} is not installed`);
 }
 
+// The broker answers only after verification and any human decision, which can take
+// minutes. Without output an agent reads the silence as a hang and kills the install,
+// discarding the pending approval, so report progress while a request is open.
+const HEARTBEAT_MS = /^[1-9][0-9]{0,6}$/u.test(process.env.VERITY_PACKAGE_BROKER_HEARTBEAT_MS ?? '')
+  ? Number(process.env.VERITY_PACKAGE_BROKER_HEARTBEAT_MS)
+  : 20_000;
+const WAITING = {
+  check: 'still waiting for the package installation decision',
+  configured: 'still confirming package protection',
+  verify: 'still verifying publication dates',
+};
+
 async function broker(body) {
+  const started = Date.now();
+  const heartbeat = setInterval(() => {
+    const seconds = Math.round((Date.now() - started) / 1000);
+    reportError(
+      `verity: ${WAITING[body.action] ?? 'still waiting for the package broker'} (${seconds} s)… ` +
+        'If an installation decision or release-age exception is pending, approve or cancel it in the Verity app.',
+    );
+  }, HEARTBEAT_MS);
+  try {
+    return await brokerRequest(body);
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+async function brokerRequest(body) {
   const memory = process.env.VERITY_PROJECT_MEMORY_URL ?? '';
   if (!/\/internal\/project\/memory$/u.test(memory))
     throw new Error(
@@ -249,7 +278,10 @@ async function main() {
     const decision = verifyOnly
       ? { action: 'continue' }
       : await broker({ action: 'check', ...input });
-    if (decision.action === 'cancel') throw new Error('Dependency installation cancelled.');
+    if (decision.action === 'cancel')
+      throw new Error(
+        'Dependency installation was cancelled in the Verity app or the session lost its authorization.',
+      );
     if (!['continue', 'configure'].includes(decision.action))
       throw new Error('Invalid package installation decision.');
     if (decision.action === 'configure') {
@@ -339,6 +371,10 @@ async function main() {
         packages: lock.packages,
         minimumAgeDays,
       });
+      if (checked.action === 'cancel')
+        throw new Error(
+          'npm release-age exception was cancelled in the Verity app or the session lost its authorization; installation remains blocked.',
+        );
       if (checked.action !== 'continue' || typeof checked.installToken !== 'string')
         throw new Error(
           'npm release-age verification was not approved; installation remains blocked.',
