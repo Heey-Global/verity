@@ -4,6 +4,7 @@
  * refuse. Decisions carry provenance, the Sources folders Verity imports into
  * would be recreated empty, and the libraries' own top folders hold them.
  */
+// Mirrors SOURCE_IMPORT_FOLDERS in packages/server/src/knowledge-path-rules.ts.
 const IMPORT_FOLDERS = new Set(['sources/documents', 'sources/meetings', 'sources/matrix']);
 
 export type KnowledgeArea = 'insights' | 'sources';

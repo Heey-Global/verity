@@ -164,17 +164,25 @@ function knowledgeHandlers(deps: KnowledgeFileRouteDeps, resolveScope: ScopeReso
       }
     }
     // Resolve relative to the Wiki itself so intermediate symlinks cannot reach Sources.
-    return deps
-      .write(reply, areaTarget(scope, 'insights'), {
-        ...body,
-        root: 'documents',
-        path: body.path.slice('insights/'.length),
-      })
-      .then((result) =>
-        result && typeof result === 'object' && 'path' in result
-          ? { ...result, path: body.path }
-          : result,
-      );
+    return (
+      deps
+        // Editing an existing page keeps its old reach, recorded decisions included;
+        // only creating a page is held to the new-entry rules above.
+        .write(
+          reply,
+          { ...areaTarget(scope, 'insights'), protectedPaths: [] },
+          {
+            ...body,
+            root: 'documents',
+            path: body.path.slice('insights/'.length),
+          },
+        )
+        .then((result) =>
+          result && typeof result === 'object' && 'path' in result
+            ? { ...result, path: body.path }
+            : result,
+        )
+    );
   };
 
   return {

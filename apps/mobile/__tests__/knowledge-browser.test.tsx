@@ -375,13 +375,18 @@ it('keeps structured decisions and the Sources import folders out of every chang
         { path: 'insights/decisions', name: 'decisions', kind: 'directory' },
         { path: 'sources/meetings', name: 'meetings', kind: 'directory' },
         { path: 'sources/original.txt', name: 'original.txt', kind: 'file' },
+        { path: 'sources/meetings/2026', name: '2026', kind: 'directory' },
       ],
       truncated: false,
     }),
   });
   render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
   await screen.findByText('Decisions');
+  // The row is there, with its menu: the missing Delete is the rule, not a missing row.
+  expect(screen.getByLabelText('Actions for Decisions')).toBeTruthy();
   expect(screen.queryByLabelText('Delete Decisions')).toBeNull();
+  // What an import folder holds is ordinary; only the folder itself stays.
+  expect(screen.getByLabelText('Delete 2026')).toBeTruthy();
   expect(screen.queryByLabelText('Delete meetings')).toBeNull();
   expect(screen.getByLabelText('Delete original.txt')).toBeTruthy();
   // Their menu still opens them, but offers nothing that changes them.

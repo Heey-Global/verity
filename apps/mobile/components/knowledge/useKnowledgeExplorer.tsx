@@ -131,7 +131,11 @@ export function useKnowledgeExplorer({
         onConfirm: async () => {
           setBusy(true);
           try {
-            for (const path of paths) await deleteKnowledge(client, scope, path);
+            for (const path of paths) {
+              await deleteKnowledge(client, scope, path);
+              // A retry after a failure must not ask for what is already gone.
+              setSelected((current) => current.filter((selectedPath) => selectedPath !== path));
+            }
             endSelection();
           } catch (caught) {
             Alert.alert('Could not delete', message(caught));
@@ -158,8 +162,17 @@ export function useKnowledgeExplorer({
       verb: 'Move' | 'Rename',
       target: string,
       close: () => void,
-      act: () => Promise<void>,
+      work: () => Promise<void>,
     ) => {
+      // The list holds still while entries move and their links are rewritten.
+      const act = async () => {
+        setBusy(true);
+        try {
+          await work();
+        } finally {
+          setBusy(false);
+        }
+      };
       const pages = paths.some((path) => knowledgeArea(path) === 'insights')
         ? (await Promise.all(paths.map((path) => knowledgeBacklinks(client, scope, path)))).flatMap(
             (result) => result.pages,

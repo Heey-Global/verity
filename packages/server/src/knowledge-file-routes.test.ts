@@ -120,6 +120,21 @@ describe('knowledge file routes', () => {
       expect(existsSync(join(dir, 'insights/decisions/forged.md'))).toBe(false);
       expect((await create('insights/new.md')).statusCode).toBe(200);
       expect(read('insights/new.md')).toBe('# New');
+      // An existing decision page stays editable as before; only creating one is refused.
+      write('insights/decisions/record.md', 'Decided');
+      const page = await app.inject(
+        `${base}/files/content?path=${encodeURIComponent('insights/decisions/record.md')}`,
+      );
+      const edited = await app.inject({
+        method: 'PUT',
+        url: `${base}/files/content`,
+        payload: {
+          path: 'insights/decisions/record.md',
+          content: 'Decided, with a note',
+          expectedVersion: page.json<{ version: string }>().version,
+        },
+      });
+      expect(edited.statusCode).toBe(200);
     });
 
     it('refuses every path the rules refuse, before touching the disk', async () => {

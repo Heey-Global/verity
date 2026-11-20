@@ -43,8 +43,8 @@ export function useFileExport(source: FileExportSource) {
   const openWith = useCallback(
     (filePath: string) => {
       void (async () => {
-        const url = sourceRef.current.downloadUrl(filePath);
         try {
+          const url = sourceRef.current.downloadUrl(filePath);
           if (Platform.OS === 'web') {
             const blob = await sourceRef.current.download(filePath);
             const objectUrl = URL.createObjectURL(blob);

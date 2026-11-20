@@ -718,10 +718,9 @@ export function SessionFilesSheet({
           ? () => void editFile(menuFor.path)
           : undefined,
       rename: changes ? () => setRenaming(menuFor.path) : undefined,
-      // Knowledge folders move from their library page, whose rules keep
-      // Decisions and the Sources import folders in place.
-      move:
-        changes && (root === 'worktree' || !folder) ? () => setMoving([menuFor.path]) : undefined,
+      // Knowledge moves from its library page, whose rules keep Decisions and
+      // the Sources import folders in place; here only Code moves.
+      move: changes && root === 'worktree' ? () => setMoving([menuFor.path]) : undefined,
       delete: changes
         ? () =>
             confirmDelete([menuFor.path], (deleted) => {
@@ -1129,7 +1128,7 @@ export function SessionFilesSheet({
                 <SelectionBar
                   count={selected.length}
                   disabled={root === 'drafts' || mutating}
-                  onMove={() => setMoving(selected)}
+                  onMove={root === 'worktree' ? () => setMoving(selected) : undefined}
                   onDelete={deleteSelectedFiles}
                 />
               ) : null}
