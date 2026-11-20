@@ -162,6 +162,15 @@ function workSubtitle(session: SessionSummary, unread: boolean): string | undefi
 }
 
 /** What an item asks, under its session's name: the question, else what happened. */
+/** The item carries its own answers or input, beyond a way into the session. */
+function decidedInPlace(item: InboxItem): boolean {
+  return (
+    item.request !== undefined ||
+    item.lines !== undefined ||
+    item.actions.some((action) => action.kind !== 'open_session')
+  );
+}
+
 function itemSubtitle(item: InboxItem, label: string): string | undefined {
   return item.title === label ? item.message : item.title;
 }
@@ -719,9 +728,11 @@ export function ProjectWork({
       // named on it. Each comes forward in turn once the one before is answered,
       // and the session itself shows them all.
       const also = entry.additionalItems ?? [];
-      // A permission is decided on what the tool will receive, which a row has
-      // no room for; it is drawn as its card, with the request one tap away.
-      if (item.kind === 'permission')
+      // A permission decided here is decided on what the tool will receive,
+      // which a row has no room for; it is drawn as its card, with the request
+      // one tap away. One only reviewed in its session (a command, a secret run)
+      // shows nothing a row cannot, so it stays a row like every other entry.
+      if (item.kind === 'permission' && decidedInPlace(item))
         return (
           <FeedCard
             key={session.sessionId}

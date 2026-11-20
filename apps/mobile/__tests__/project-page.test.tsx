@@ -672,7 +672,9 @@ describe('project page', () => {
     const dismissible = { ...question, inboxDismissed: [] as string[] };
     const { client, onOpenSession } = await renderPage([asking, dismissible]);
     const needs = within(screen.getByTestId('work-needs-you'));
-    expect(needs.getByTestId('inbox-item-permission')).toBeTruthy();
+    // Nothing is decided here, so it is a row with its tag, not a card.
+    expect(needs.queryByTestId('inbox-item-permission')).toBeNull();
+    expect(needs.getByText('Permission')).toBeTruthy();
     expect(needs.queryByRole('button', { name: 'Allow once' })).toBeNull();
     expect(needs.queryByTestId('inbox-line-code')).toBeNull();
     fireEvent.press(needs.getByRole('button', { name: 'Review' }));

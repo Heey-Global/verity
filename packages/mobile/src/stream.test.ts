@@ -153,6 +153,28 @@ describe('SessionStream', () => {
     expect(stream.state.pendingPermission).toBeUndefined();
   });
 
+  it('does not revive a prompt answered here from a snapshot taken before the answer', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitEvent(10, {
+      t: 'permission',
+      id: 'tu_1',
+      tool: 'verity_secret_run',
+      input: {},
+      riskClass: 'ask',
+    });
+    sockets[0]?.emitEvent(11, { t: 'status', state: 'completed' });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
+    expect(stream.state.pendingPermission).toBeUndefined();
+    // The server still holds the gateway prompt after the turn ended.
+    stream.reconcilePendingPermissions(['tu_1'], 11);
+    expect(stream.state.pendingPermission?.toolUseId).toBe('tu_1');
+    stream.resolvePermission('tu_1');
+    stream.reconcilePendingPermissions(['tu_1'], 11);
+    expect(stream.state.pendingPermission).toBeUndefined();
+  });
+
   it('ignores a prepend that is not strictly older than the loaded head', () => {
     const { connect, sockets } = recordingConnect();
     const updates: number[] = [];

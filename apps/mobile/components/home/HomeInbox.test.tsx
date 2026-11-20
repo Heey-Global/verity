@@ -485,7 +485,12 @@ it('keeps a session with a permission and a ready pull request in one card', asy
       permissionAwaitingInput: true,
       pendingPermissions: ['t1'],
       pendingPermissionRequests: [
-        { toolUseId: 't1', tool: 'Bash', riskClass: 'ask', input: { command: 'ls' } },
+        {
+          toolUseId: 't1',
+          tool: 'Write',
+          riskClass: 'ask',
+          input: { file_path: '/w/a.sh', content: 'ls' },
+        },
       ],
       pr: { phase: 'open', pipeline: 'success', mergeable: true },
       pullRequest: {
@@ -531,13 +536,18 @@ it('shows only a compact secret-run approval with a session review action', asyn
       ],
     }),
   ]);
-  expect(await screen.findByText('Run trusted command with KUBECONFIG?')).toBeOnTheScreen();
+  expect(await screen.findByText(/Run trusted command with KUBECONFIG\?/)).toBeOnTheScreen();
   expect(screen.queryByTestId('inbox-line-code')).toBeNull();
   expect(screen.queryByTestId('inbox-line-text')).toBeNull();
   expect(screen.queryByTestId('inbox-request')).toBeNull();
   expect(screen.queryByText('Full request')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Review' })).toBeOnTheScreen();
+  // With nothing to decide in place, a card only broke the list: no lead mark,
+  // the tag beside a wrapping title, no chevron. It is a row like the plan's.
+  const needs = within(screen.getByTestId('work-needs-you'));
+  expect(needs.queryByTestId('inbox-item-permission')).toBeNull();
+  expect(needs.getByText('Permission')).toBeOnTheScreen();
 });
 
 describe('dismissing', () => {
@@ -755,9 +765,10 @@ it('leads with the permission and names the session’s question on the same car
   };
   const { onCountChange } = await renderInbox([waiting]);
   const needs = within(screen.getByTestId('work-needs-you'));
-  expect(needs.getByText('Permission needed')).toBeTruthy();
-  expect(needs.getAllByTestId(/^inbox-item-/)).toHaveLength(1);
-  expect(needs.getByTestId('inbox-also')).toHaveTextContent('Also waiting: Question');
+  // Nothing to decide in place, so the session is one row naming both.
+  expect(needs.getAllByText(/Permission needed/)).toHaveLength(1);
+  expect(needs.getByText(/Permission needed · Also waiting: Question/)).toBeTruthy();
+  expect(needs.queryByText('Which validation library?')).toBeNull();
   expect(needs.queryByRole('button', { name: 'Zod' })).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(1);
 });
@@ -919,6 +930,14 @@ it('draws a decision card as an entry of the work group, filled when selected', 
     ...question,
     sessionId: 'permission',
     pendingPermissions: ['permission-1'],
+    pendingPermissionRequests: [
+      {
+        toolUseId: 'permission-1',
+        tool: 'Write',
+        riskClass: 'ask',
+        input: { file_path: '/w/a.sh', content: 'ls' },
+      },
+    ],
     permissionAwaitingInput: true,
   });
   await renderInbox([waiting], fakeClient(), { selectedSessionId: waiting.sessionId });

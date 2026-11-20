@@ -154,21 +154,28 @@ export class SessionStream {
   }
 
   reconcilePendingPermissions(toolUseIds: readonly string[], throughSeq = this.newestSeq): void {
-    const pending = this.reducer.pendingPermission;
-    if (pending !== undefined && !toolUseIds.includes(pending.toolUseId)) {
+    const before = this.reducer.pendingPermissionIds;
+    const live = new Set(toolUseIds);
+    const retire = before.filter((id) => {
+      if (live.has(id)) return false;
       const permissionFrame = this.eventFrames.findLast(
-        (frame) => frame.event.t === 'permission' && frame.event.id === pending.toolUseId,
+        (frame) => frame.event.t === 'permission' && frame.event.id === id,
       );
       // The HTTP snapshot was taken before this streamed permission arrived. It
       // cannot say whether the newer prompt is still pending, so leave the card
       // for a later poll whose request started after the event.
-      if (permissionFrame === undefined || permissionFrame.seq > throughSeq) return;
-      this.resolvedPermissions.add(pending.toolUseId);
-    }
-    this.reducer.reconcilePendingPermissions(toolUseIds);
-    if (pending !== undefined && this.reducer.pendingPermission === undefined && this.caughtUp) {
-      this.opts.onUpdate?.(this.reducer.state);
-    }
+      return permissionFrame !== undefined && permissionFrame.seq <= throughSeq;
+    });
+    for (const id of retire) this.resolvedPermissions.add(id);
+    // An id answered here stays answered: a snapshot older than the answer
+    // still lists it, and must not bring the card back.
+    this.reducer.reconcilePendingPermissions(
+      toolUseIds.filter((id) => !this.resolvedPermissions.has(id)),
+      retire,
+    );
+    const after = this.reducer.pendingPermissionIds;
+    const changed = after.length !== before.length || after.some((id, i) => id !== before[i]);
+    if (changed && this.caughtUp) this.opts.onUpdate?.(this.reducer.state);
   }
 
   /**
