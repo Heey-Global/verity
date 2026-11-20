@@ -181,7 +181,11 @@ export class SessionReducer {
   private readonly _pendingPermissions = new Map<string, PendingPermission>();
   // Prompts a turn boundary dropped. A gateway prompt outlives its turn on the
   // server, so the live pending set can bring one back (see reconcilePendingPermissions).
-  private readonly _droppedPermissions = new Map<string, PendingPermission>();
+  // Keyed by id, with the seq of the boundary that dropped it.
+  private readonly _droppedPermissions = new Map<
+    string,
+    { request: PendingPermission; droppedAt: number }
+  >();
   // True while a turn is in flight (issue #79); see SessionState.running.
   private _running = false;
   // Background tasks (sub-agents / run_in_background) still open in the current
@@ -246,7 +250,7 @@ export class SessionReducer {
         this._model = event.model;
         // A fresh-session bind is the start of its first turn (#79); a new turn
         // can't carry a stale permission prompt from a prior one (#149).
-        this.dropPendingPermissions();
+        this.dropPendingPermissions(seq);
         this._status = 'running';
         this._running = true;
         this._openTasks.clear(); // a fresh turn starts with no outstanding tasks
@@ -280,7 +284,7 @@ export class SessionReducer {
           this._running = false;
           this._openTasks.clear(); // the turn ended; its background tasks are over
           this.settleOpenSkillTools(ts);
-          this.dropPendingPermissions();
+          this.dropPendingPermissions(seq);
         }
         break;
       case 'text':
@@ -333,7 +337,7 @@ export class SessionReducer {
         // It also supersedes any unanswered permission prompt (#149) — the turn it
         // belonged to is over once a fresh prompt is dispatched.
         this.active = null;
-        this.dropPendingPermissions();
+        this.dropPendingPermissions(seq);
         this._status = 'running';
         this._running = true;
         // Steering belongs to the current turn and must retain its background work.
@@ -419,7 +423,7 @@ export class SessionReducer {
         }
         // The turn ended — no permission can still be pending (the runner
         // fail-safe-denies any un-answered prompt before the turn settles) (#149).
-        this.dropPendingPermissions();
+        this.dropPendingPermissions(seq);
         this.accrueResult(event.usage, event.permissionDenials);
         break;
       case 'task':
@@ -505,7 +509,7 @@ export class SessionReducer {
         // it belonged to is over (#149).
         this._running = false;
         this.settleOpenSkillTools(ts);
-        this.dropPendingPermissions();
+        this.dropPendingPermissions(seq);
         this.emitAgentEvent(seq, ts, event);
         break;
       case 'tasks_updated':
@@ -692,8 +696,10 @@ export class SessionReducer {
   }
 
   /** A turn boundary ends every prompt a turn held; gateway prompts may survive it. */
-  private dropPendingPermissions(): void {
-    for (const [id, request] of this._pendingPermissions) this._droppedPermissions.set(id, request);
+  private dropPendingPermissions(seq: number): void {
+    for (const [id, request] of this._pendingPermissions) {
+      this._droppedPermissions.set(id, { request, droppedAt: seq });
+    }
     this._pendingPermissions.clear();
   }
 
@@ -920,15 +926,19 @@ export class SessionReducer {
     toolUseIds: readonly string[],
     /** The prompts to retire; by default every one the live set no longer lists. */
     retire?: readonly string[],
+    /** The newest seq the server had seen when it took the live set. */
+    throughSeq = Number.POSITIVE_INFINITY,
   ): void {
     const live = new Set(toolUseIds);
     for (const id of retire ?? this.pendingPermissionIds.filter((id) => !live.has(id))) {
       this.resolvePermission(id);
     }
-    for (const [id, request] of this._droppedPermissions) {
-      if (!live.has(id)) continue;
+    for (const [id, { request, droppedAt }] of this._droppedPermissions) {
+      // A snapshot from before the boundary still lists a prompt the turn's end
+      // denied; only a later one can say it outlived the turn.
+      if (droppedAt > throughSeq) continue;
       this._droppedPermissions.delete(id);
-      this._pendingPermissions.set(id, request);
+      if (live.has(id)) this._pendingPermissions.set(id, request);
     }
   }
 

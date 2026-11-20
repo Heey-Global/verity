@@ -155,6 +155,16 @@ describe('SessionReducer', () => {
     expect(r.pendingPermission).toBeUndefined();
   });
 
+  it('forgets a dropped prompt once a later live set no longer lists it', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'permission', id: 'gone', tool: 'Bash', input: {}, riskClass: 'ask' });
+    r.apply(2, { t: 'prompt', text: 'next' });
+    r.reconcilePendingPermissions([], undefined, 2);
+    // A stale snapshot listing it again cannot bring it back once forgotten.
+    r.reconcilePendingPermissions(['gone'], undefined, 2);
+    expect(r.pendingPermission).toBeUndefined();
+  });
+
   it('keeps a replayed permission while the server still reports it pending', () => {
     const r = new SessionReducer();
     r.apply(1, { t: 'permission', id: 'tool-1', tool: 'Bash', input: {}, riskClass: 'ask' });

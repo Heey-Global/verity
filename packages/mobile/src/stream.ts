@@ -172,6 +172,7 @@ export class SessionStream {
     this.reducer.reconcilePendingPermissions(
       toolUseIds.filter((id) => !this.resolvedPermissions.has(id)),
       retire,
+      throughSeq,
     );
     const after = this.reducer.pendingPermissionIds;
     const changed = after.length !== before.length || after.some((id, i) => id !== before[i]);

@@ -161,7 +161,6 @@ function workSubtitle(session: SessionSummary, unread: boolean): string | undefi
   return session.model ? modelDisplayName(session.model) : undefined;
 }
 
-/** What an item asks, under its session's name: the question, else what happened. */
 /** The item carries its own answers or input, beyond a way into the session. */
 function decidedInPlace(item: InboxItem): boolean {
   return (
@@ -171,6 +170,7 @@ function decidedInPlace(item: InboxItem): boolean {
   );
 }
 
+/** What an item asks, under its session's name: the question, else what happened. */
 function itemSubtitle(item: InboxItem, label: string): string | undefined {
   return item.title === label ? item.message : item.title;
 }

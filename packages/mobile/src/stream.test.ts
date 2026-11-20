@@ -153,6 +153,24 @@ describe('SessionStream', () => {
     expect(stream.state.pendingPermission).toBeUndefined();
   });
 
+  it('does not revive a prompt the turn end denied from a snapshot older than that end', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitEvent(10, {
+      t: 'permission',
+      id: 'tu_1',
+      tool: 'Bash',
+      input: {},
+      riskClass: 'ask',
+    });
+    sockets[0]?.emitEvent(11, { t: 'status', state: 'completed' });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
+    // Requested at seq 10, before the turn ended: it still lists the dead prompt.
+    stream.reconcilePendingPermissions(['tu_1'], 10);
+    expect(stream.state.pendingPermission).toBeUndefined();
+  });
+
   it('does not revive a prompt answered here from a snapshot taken before the answer', () => {
     const { connect, sockets } = recordingConnect();
     const stream = new SessionStream({ sessionId: 's1', transport: connect });
