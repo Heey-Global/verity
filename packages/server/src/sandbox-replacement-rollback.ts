@@ -28,7 +28,7 @@ import { RetainedResumeError } from './sandbox-retained-resume.js';
  */
 
 /** Infix of a parked Sandbox's name: `<containerName>--retained-<generation>`. */
-export const RETAINED_SANDBOX_INFIX = '--retained-';
+const RETAINED_SANDBOX_INFIX = '--retained-';
 
 export function retainedSandboxName(containerName: string, generation: string): string {
   return `${containerName}${RETAINED_SANDBOX_INFIX}${generation}`;
@@ -67,7 +67,7 @@ export interface ReplacementRollbackHost {
 
 /** A parked Sandbox that can never be restored: it changed, or its name is taken by
  *  a container that is not the project's. Anything else may be transient. */
-export class UnrestorableParkedSandbox extends Error {
+class UnrestorableParkedSandbox extends Error {
   override readonly name = 'UnrestorableParkedSandbox';
 }
 
@@ -144,7 +144,7 @@ export async function parkForReplacement(
 }
 
 /** Remove a parked Sandbox and its relay generation. Returns what could not be removed. */
-export async function discardParkedSandbox(
+async function discardParkedSandbox(
   host: Pick<ReplacementRollbackHost, 'docker' | 'projectRelay'>,
   projectId: string,
   parked: Pick<ParkedSandbox, 'containerId' | 'generation'>,
@@ -212,7 +212,7 @@ export async function restoreParkedSandbox(
   }
 }
 
-export type ReplacementOutcome =
+type ReplacementOutcome =
   | { outcome: 'replaced'; project: ProjectRecord; leftovers: unknown[] }
   | { outcome: 'restored'; cause: unknown }
   | { outcome: 'lost'; cause: unknown; restoreError: unknown; leftovers: unknown[] };
@@ -222,7 +222,7 @@ export type ReplacementOutcome =
  * is discarded; on failure it is restored, and if that fails too it is discarded
  * so nothing is left half-alive.
  */
-export async function replaceWithParkedSandbox(
+async function replaceWithParkedSandbox(
   host: ReplacementRollbackHost,
   project: ProjectRecord,
   parked: ParkedSandbox,
