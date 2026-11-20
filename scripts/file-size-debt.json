@@ -1,6 +1,6 @@
 {
   "apps/mobile/__tests__/static-preview-sheet.test.tsx": 1967,
-  "apps/mobile/app/index.tsx": 2756,
+  "apps/mobile/app/index.tsx": 2742,
   "apps/mobile/app/meeting/[sessionId].tsx": 3392,
   "apps/mobile/app/session/[id].tsx": 12100,
   "apps/mobile/components/project/StaticPreviewSheet.tsx": 2530,

@@ -388,26 +388,25 @@ Meeting and Premium; it does not introduce a separate palette or set of effects.
 
 #### Home presence
 
-- **Identity:** reuse the Verity V mark and `signature` treatment from Meeting, with
-  the Display headline and restrained content-screen eyebrows used by Premium.
-  A compact header is sufficient; a halo is optional, dark-theme only.
+- **Entry:** Home has no Verity header and no field of its own. The floating V is the
+  one way to Verity on every layout, so Home starts with the work sections. A quiet
+  "Shared knowledge" row ends the list: the reference pages every project reads,
+  opened directly. Personal Instructions and Memory are settings and stay there.
 - **Briefing pane:** when a briefing needs its own panel, reuse the meeting pane's
   `surface`, 2 px `signature`-to-`action` edge and `signature` glow. At most one such
   surface appears on Home. A compact header does not require a surrounding pane.
   In light theme use a plain border and no glow or gradient.
-- **Capture:** one component, `CaptureField`, for Home's "Tell Verity" (which opens her
-  panel) and the panel's composer. Match the session chat composer: full-width text
+- **Capture:** one component, `CaptureField`, the composer of her panel. Match the session chat composer: full-width text
   above a row of circular microphone and send controls. Idle controls use `surface`
   with a border and muted icons; enabled send uses `action` with an `onAction` arrow.
   While dictating, the microphone uses `action` with an `onAction` check to finish
-  dictation and keep the text. The Home doorway retains its inline layout with the
-  same circular microphone. Signature identifies Verity. Listening is said once,
+  dictation and keep the text. Signature identifies Verity. Listening is said once,
   in the field. The meeting's model selector is not part of this Home pattern.
-- **Mark:** `VerityMark` is her V on its `signature` halo — with glow for her identity on
-  Home and her page, flat on the floating V, in her panel's header and before her
+- **Mark:** `VerityMark` is her V on its `signature` halo — with glow where she appears
+  as herself, flat on the floating V, in her panel's header and before her
   answers there.
 - **Floating V:** a whole circle on `surface`, a little in from the screen edge, never
-  half outside it. On a phone's Home it steps back, since Home has her header and field.
+  half outside it. It stays on Home too, where it is the only way to her.
 - **Hand-over:** her flat V in the square icon button (40, `control` corners, the default
   border) at the end of a task or issue row hands the item to her; a tap starts the work
   at once, with no confirmation. This and the floating V are the only places her
