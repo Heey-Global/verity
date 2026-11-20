@@ -1,3 +1,8 @@
+import type { FastifyBaseLogger } from 'fastify';
+import type { EventStore } from '@verity/store';
+import type { EmbeddedServerConfig } from './embedded-types.js';
+import type { ProvisionerImpl } from './provisioner.js';
+import { startRunnerSupervisorReconciler } from './embedded-support.js';
 import {
   FileTailRunnerClient,
   InMemoryEventBus,
@@ -530,4 +535,37 @@ export function runnerAuthorizationProjectId(
   runnerProjectId: string,
 ): string {
   return projectId ?? runnerProjectId;
+}
+
+/** Complete the initial recovery before starting periodic supervisor reconciliation. */
+export async function startEmbeddedRunnerRecovery({
+  config,
+  provisioner,
+  eventStore,
+  log,
+  hasClaudeEgressIdentity,
+}: {
+  config: Pick<EmbeddedServerConfig, 'runnerSupervisor' | 'runnerSupervisorReconcileIntervalMs'>;
+  provisioner: Pick<ProvisionerImpl, 'reconcileRunnerSupervisors'> | undefined;
+  eventStore: Pick<EventStore, 'listProjects'>;
+  log: Pick<FastifyBaseLogger, 'warn'>;
+  hasClaudeEgressIdentity: boolean;
+}): Promise<() => Promise<void>> {
+  if (provisioner !== undefined && (config.runnerSupervisor === true || hasClaudeEgressIdentity)) {
+    const reconcileRunnerSupervisors = async (): Promise<void> => {
+      await provisioner.reconcileRunnerSupervisors(
+        await eventStore.listProjects({ includeHidden: true }),
+      );
+    };
+    const reportReconcileError = (error: unknown): void => {
+      log.warn({ err: error }, 'Runner supervisor reconciliation failed');
+    };
+    await reconcileRunnerSupervisors().catch(reportReconcileError);
+    return startRunnerSupervisorReconciler(
+      reconcileRunnerSupervisors,
+      config.runnerSupervisorReconcileIntervalMs,
+      reportReconcileError,
+    );
+  }
+  return () => Promise.resolve();
 }

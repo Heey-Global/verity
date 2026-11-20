@@ -60,7 +60,6 @@ import {
 } from './embedded-control-plane-runner-identity.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import {
-  startRunnerSupervisorReconciler,
   CONTROL_PLANE_RUNNER_PROJECT_ID,
   SWEEP_SHUTDOWN_WAIT_MS,
   candidateRunnerProjectIds,
@@ -105,7 +104,11 @@ export {
 } from './embedded-support.js';
 import type { EmbeddedServerConfig, EmbeddedServer } from './embedded-types.js';
 export type { EmbeddedServerConfig, EmbeddedServer } from './embedded-types.js';
-import { runnerSandboxPath, RUNNER_CONTAINER_PROJECT_ROOT } from './embedded-runner-wiring.js';
+import {
+  runnerSandboxPath,
+  RUNNER_CONTAINER_PROJECT_ROOT,
+  startEmbeddedRunnerRecovery,
+} from './embedded-runner-wiring.js';
 export {
   buildRunnerConductorWiring,
   runnerSandboxPath,
@@ -769,7 +772,6 @@ export async function buildEmbeddedServer(
   // Gateway TLS server name (CN/SAN) + the SNI the connector pins — derived once
   // from the gateway URL so the identity service and the sandbox projection agree.
   let claudeEgressServerName: string | undefined;
-  let stopRunnerSupervisorReconciler = (): Promise<void> => Promise.resolve();
   let refreshProjectToken: ((project: ProjectRecord) => Promise<void>) | undefined;
   let projectTurnReconciler: ((projectId: string) => Promise<void>) | undefined;
   let projectWorktrees: ReturnType<typeof createProjectWorktreeFactory> | undefined;
@@ -2772,25 +2774,13 @@ export async function buildEmbeddedServer(
     eventStore,
     sandboxNetworkName,
   });
-  if (
-    provisioner !== undefined &&
-    (config.runnerSupervisor === true || claudeEgressIdentity !== undefined)
-  ) {
-    const reconcileRunnerSupervisors = async (): Promise<void> => {
-      await provisioner.reconcileRunnerSupervisors(
-        await eventStore.listProjects({ includeHidden: true }),
-      );
-    };
-    const reportReconcileError = (error: unknown): void => {
-      app.log.warn({ err: error }, 'Runner supervisor reconciliation failed');
-    };
-    await reconcileRunnerSupervisors().catch(reportReconcileError);
-    stopRunnerSupervisorReconciler = startRunnerSupervisorReconciler(
-      reconcileRunnerSupervisors,
-      config.runnerSupervisorReconcileIntervalMs,
-      reportReconcileError,
-    );
-  }
+  const stopRunnerSupervisorReconciler = await startEmbeddedRunnerRecovery({
+    config,
+    provisioner,
+    eventStore,
+    log: app.log,
+    hasClaudeEgressIdentity: claudeEgressIdentity !== undefined,
+  });
   // Last thing before the server object exists, because from here on the only way out is
   // the `return` below: everything that could still have thrown has run, so the caller is
   // guaranteed to receive the handle that can stop this walk.
