@@ -309,7 +309,7 @@ describe('a Sandbox parked by a recreate the Server did not finish', () => {
   }
 
   // `active` is what a restart between parking and the replacement's start leaves.
-  it.each(['failed', 'container_starting', 'active'] as const)(
+  it.each(['failed', 'container_starting', 'active', 'cloning', 'sleeping'] as const)(
     'is restored when its %s project was left without a Sandbox',
     async (state) => {
       const id = await seedActiveProject();
@@ -376,5 +376,29 @@ describe('a Sandbox parked by a recreate the Server did not finish', () => {
     expect(docker.containers.get('replacement')).toMatchObject({ name: CONTAINER_NAME });
     expect(docker.containers.has('previous')).toBe(false);
     expect(relay.reactivate).not.toHaveBeenCalled();
+  });
+});
+
+describe('a replacement that fails after egress protection was turned on', () => {
+  it('does not start the previous Sandbox outside protection', async () => {
+    const id = await seedActiveProject();
+    const docker = statefulDocker(id);
+    docker.seedRunning('previous', 'generation-previous');
+    const relay = sleepingRelay();
+    const provisioner = provisionerFor({ docker, relay: relay.control, postCreateFails: true });
+    // Parking sees protection off; the restore after the failed replacement sees it on.
+    const egress = vi.spyOn(
+      provisioner as unknown as { egressFor(): Promise<unknown> },
+      'egressFor',
+    );
+    let calls = 0;
+    egress.mockImplementation(async () => (++calls > 3 ? {} : undefined));
+
+    await expect(provisioner.recreateContainer(id, { confirmWarnings: true })).rejects.toThrow(
+      /egress protection is on/,
+    );
+    expect((await ctx.store.getProject(id))?.state).toBe('failed');
+    expect(relay.reactivate).not.toHaveBeenCalled();
+    expect(docker.containers.has('previous')).toBe(false);
   });
 });

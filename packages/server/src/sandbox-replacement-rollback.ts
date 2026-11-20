@@ -110,7 +110,20 @@ export async function parkSandboxForReplacement(
   const fingerprint = host.fingerprint(inspect);
   await host.quiesce(project);
   const name = retainedSandboxName(project.containerName, generation);
-  await host.docker.renameContainer!(inspect.id, name);
+  try {
+    await host.docker.renameContainer!(inspect.id, name);
+  } catch (error) {
+    // The caller removes the old container next; release its slept relay too.
+    await host.projectRelay
+      .discardGeneration?.({
+        projectId: project.id,
+        containerGeneration: generation,
+      })
+      .catch((cleanupError: unknown) => {
+        console.warn(`Could not discard the slept relay: ${host.describe(cleanupError)}`);
+      });
+    throw error;
+  }
   return { containerId: inspect.id, generation, name, fingerprint };
 }
 
@@ -222,6 +235,9 @@ export async function replaceWithParkedSandbox(
     replacement = await replace();
   } catch (cause) {
     try {
+      // Protection turned on meanwhile: the parked generation would start outside it.
+      if (!(await host.egressIdle(project.id).catch(() => false)))
+        throw new UnrestorableParkedSandbox('project egress protection is on');
       await restoreParkedSandbox(host, project, parked, () => restored(cause));
       return { outcome: 'restored', cause };
     } catch (restoreError) {
@@ -331,15 +347,9 @@ export async function reconcileRetainedSandboxes(
         continue;
       }
     }
-    // Only when nothing holds the Sandbox name: a container there, even a stopped
-    // one, is newer than the parked Sandbox, and the normal repair owns it. `active`
-    // counts: a restart between parking and the replacement's start leaves the row
-    // active with nothing under the name.
-    const vacant =
-      current === undefined &&
-      (project.state === 'failed' ||
-        project.state === 'container_starting' ||
-        project.state === 'active');
+    // Even a stopped container at the live name belongs to normal repair.
+    // A vacant name can be left by a restart in any provisioning phase.
+    const vacant = current === undefined;
     // Protection may have been turned on while the Server was down; a parked
     // generation would then start outside it.
     let restore = vacant && (await host.egressIdle(project.id).catch(() => false));
@@ -350,6 +360,8 @@ export async function reconcileRetainedSandboxes(
         restore = false;
         try {
           await hooks.serialize(project, async () => {
+            // Another provision may have started during the inspect/egress awaits.
+            if (hooks.isProvisioning(project.id)) throw new Error('provisioning');
             const inspect = await host.docker.inspectContainer(parked.containerId);
             // Its fingerprint from before the restart is gone; the name, label and
             // generation this Server gave it are what identify it.

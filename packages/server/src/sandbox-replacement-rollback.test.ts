@@ -57,6 +57,18 @@ describe('parkSandboxForReplacement', () => {
     expect(h.renameContainer).toHaveBeenCalledWith('previous', 'dev-p--retained-g1');
   });
 
+  it('discards the slept relay when Docker cannot rename the Sandbox', async () => {
+    const discardGeneration = vi.fn(async () => undefined);
+    const h = host();
+    h.value.projectRelay.discardGeneration = discardGeneration;
+    h.renameContainer.mockRejectedValue(new Error('rename failed'));
+    await expect(parkSandboxForReplacement(h.value, project)).rejects.toThrow('rename failed');
+    expect(discardGeneration).toHaveBeenCalledWith({
+      projectId: 'p',
+      containerGeneration: 'g1',
+    });
+  });
+
   // A protected generation cannot be kept: the host admits one per project and a
   // wake demands a fresh one. Parking it would strand the project on restore.
   it.each([
@@ -218,6 +230,17 @@ describe('reconcileRetainedSandboxes', () => {
       'previous',
       retainedSandboxName('dev-p', 'g1'),
     );
+  });
+
+  it('leaves the parked Sandbox alone when provisioning starts during inspection', async () => {
+    const h = inventoryHost(new Error('unused'));
+    const isProvisioning = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    await expect(
+      reconcileRetainedSandboxes(h.value, [failed], { ...hooks, isProvisioning }),
+    ).rejects.toThrow('reconcile failed');
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(h.removeContainer).not.toHaveBeenCalled();
+    expect(h.renameContainer).not.toHaveBeenCalled();
   });
 
   it('removes the parked Sandbox once its relay generation is gone for good', async () => {
