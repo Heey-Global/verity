@@ -189,7 +189,15 @@ describe('Forgejo connection', () => {
   });
 
   it('replaces the token and disconnects an unused instance', async () => {
-    const updateForgejoConnection = jest.fn().mockResolvedValue(forgejo);
+    // The save finishes only when the test says so, so the screen is busy at a
+    // known point on every run instead of depending on the runner's speed.
+    let finishSave: () => void = () => undefined;
+    const updateForgejoConnection = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          finishSave = () => resolve(forgejo);
+        }),
+    );
     const deleteConnection = jest.fn().mockResolvedValue(undefined);
     const client = useClient({
       forgejo: true,
@@ -215,7 +223,13 @@ describe('Forgejo connection', () => {
         token: 'rotated-fixture',
       }),
     );
-    fireEvent.press(screen.getByRole('button', { name: 'Disconnect Forgejo' }));
+    // While the save is in flight Disconnect is disabled and a press is ignored;
+    // pressing only after it re-enables keeps the confirmation from going missing.
+    const disconnect = () => screen.getByRole('button', { name: 'Disconnect Forgejo' });
+    expect(disconnect()).toBeDisabled();
+    await act(async () => finishSave());
+    await waitFor(() => expect(disconnect()).toBeEnabled());
+    fireEvent.press(disconnect());
     fireEvent.press(await screen.findByRole('button', { name: 'Disconnect' }));
     await waitFor(() => expect(deleteConnection).toHaveBeenCalledWith('forgejo-1'));
     expect(mockBack).toHaveBeenCalled();
