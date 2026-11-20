@@ -16,6 +16,7 @@ export interface SessionCoordinationDeps {
     | 'listSessions'
     | 'createSessionLink'
     | 'listSessionLinks'
+    | 'projectInquiries'
   >;
   authorized(userId: string | null, projectId: string): Promise<boolean>;
   spawn(projectId: string, sessionId: string, name: string, userId: string | null): Promise<void>;
@@ -73,7 +74,12 @@ export function createSessionCoordination(deps: SessionCoordinationDeps) {
     await sourceProject(sourceSessionId, userId);
     await available(userId, targetProjectId);
     const session = await deps.store.getSession(targetSessionId);
-    if (!session || session.projectId !== targetProjectId || targetSessionId === sourceSessionId)
+    if (
+      !session ||
+      session.projectId !== targetProjectId ||
+      targetSessionId === sourceSessionId ||
+      (await deps.store.projectInquiries.isTarget(targetSessionId))
+    )
       throw new Error('Target session is unavailable');
   }
   return async (input: {
@@ -119,6 +125,7 @@ export function createSessionCoordination(deps: SessionCoordinationDeps) {
       let scanned = 0;
       for (const session of candidates.slice(sessionOffset, sessionOffset + scanLimit)) {
         scanned++;
+        if (await deps.store.projectInquiries.isTarget(session.sessionId)) continue;
         const project = allowed.get(session.projectId!)!;
         const progress = await deps.readProgress(session.sessionId);
         const summary = progress.summary?.slice(0, 1000);
@@ -155,6 +162,9 @@ export function createSessionCoordination(deps: SessionCoordinationDeps) {
           : null;
       await validateSource();
       for (const project of projectPage) await available(userId, project.id);
+      for (const session of sessions)
+        await target(sourceSessionId, userId, session.projectId, session.sessionId);
+      await validateSource();
       return {
         projects: projectPage.map((project) => ({
           projectId: project.id,

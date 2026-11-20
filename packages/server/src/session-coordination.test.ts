@@ -45,6 +45,9 @@ function harness() {
   const granted = new Set(['app', 'control']);
   const links = new Set<string>();
   const store = {
+    projectInquiries: {
+      isTarget: vi.fn<(sessionId: string) => Promise<boolean>>(async () => false),
+    },
     getProject: vi.fn(async (id: string) => projects.get(id)),
     listProjects: vi.fn(async () => [...projects.values()]),
     getSession: vi.fn(async (id: string) => sessions.get(id)),
@@ -388,4 +391,38 @@ describe('user-requested session coordination', () => {
       await h.call({ operation: 'discover', query: 'Private', projectOffset: 1 }),
     ).toMatchObject({ projects: [], sessions: [], nextProjectOffset: null });
   });
+  it('does not offer or link inquiry targets that cannot receive linked messages', async () => {
+    const h = harness();
+    h.store.projectInquiries.isTarget.mockImplementation(async (id) => id === 'peer');
+    expect(await h.call({ operation: 'discover', query: 'rendering' })).toMatchObject({
+      sessions: [],
+    });
+    expect(h.readProgress).not.toHaveBeenCalledWith('peer');
+    await expect(h.call(link)).rejects.toThrow('unavailable');
+    expect(h.store.createSessionLink).not.toHaveBeenCalled();
+    expect(h.deliver).not.toHaveBeenCalled();
+  });
+
+  it.each(['moved', 'revoked'])(
+    'revalidates earlier session matches after later summary reads: %s',
+    async (change) => {
+      const h = harness();
+      const source = h.sessions.get('source')!;
+      const earlier = h.sessions.get('control-peer')!;
+      const later = h.sessions.get('peer')!;
+      h.sessions.clear();
+      for (const session of [source, earlier, later]) h.sessions.set(session.sessionId, session);
+      h.readProgress.mockImplementation(async (id) => {
+        if (id === 'peer') {
+          if (change === 'moved') earlier.projectId = 'private';
+          else h.granted.delete('control');
+        }
+        return { summary: 'Expo evidence' };
+      });
+      await expect(h.call({ operation: 'discover', query: 'Expo' })).rejects.toThrow(
+        /unavailable|not permitted/,
+      );
+      expect(h.readProgress).toHaveBeenCalledTimes(2);
+    },
+  );
 });
