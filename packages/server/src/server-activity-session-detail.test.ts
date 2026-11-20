@@ -26,6 +26,7 @@ describe('GET /sessions/:id', () => {
       projectId: null,
       status: 'running',
       pendingPermissions: [],
+      pendingPermissionRequests: [],
       usage: ZERO_USAGE,
       resumable: false,
       eventCount: 0,

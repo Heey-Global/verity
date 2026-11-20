@@ -2977,20 +2977,19 @@ export class Conductor {
       decidedByUser?: string;
     },
   ): Promise<boolean> {
-    await this.refreshDetachedPermissions(sessionId);
-    const detached = await this.detachedPermissions.answer({
-      sessionId,
-      toolUseId,
-      decision,
-      options,
-    });
+    const detached = this.pendingPermissionRequests.get(sessionId)?.has(toolUseId)
+      ? undefined
+      : await this.detachedPermissions.refreshAndAnswer({
+          sessionId,
+          toolUseId,
+          decision,
+          options,
+        });
     if (detached !== undefined) return detached;
     const pending = this.pendingPermissionRequests.get(sessionId);
     const turn = this.turns.get(sessionId);
     const claim = `${sessionId}\0${toolUseId}`;
-    // A gateway prompt is answered by resolving its caller's promise, not by writing
-    // over a turn's stdin, so it is decidable with no turn in flight — which is the
-    // normal case for it (ADR 0014 D2).
+    // Gateway prompts resolve their caller without a live turn (ADR 0014 D2).
     const external = this.externalPermissions.get(claim);
     // Only a still-parked id resolves — a settled turn (fail-safe-denied), an
     // already-answered id, or an unknown session/id all report `false` so the caller

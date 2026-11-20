@@ -92,6 +92,11 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
     }
   }
 
+  async refreshAndAnswer(input: Parameters<DetachedApprovalLifecycle['answer']>[0]) {
+    await this.refreshForSession(input.sessionId);
+    return this.answer(input);
+  }
+
   async answer(
     input: Omit<
       Parameters<typeof decideDetachedPermission>[0],
