@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import {
+  chmodSync,
   closeSync,
   constants,
   fchmodSync,
@@ -348,6 +349,25 @@ function admitted(inputs: BuildInputs | null, path: string, directory: boolean):
   return directory ? inputs.dirs.has(path) : inputs.files.has(path);
 }
 
+/**
+ * The mode a copied file gets. A tracked file gets the mode a fresh checkout of it
+ * would have: 0755 when its owner may execute it, 0644 otherwise. Agents write under
+ * `umask 0077`, so a file an agent rewrote (an edit, a checkout, a merge) is 0600 in
+ * the clone while the same commit checked out anywhere else is 0644. `COPY` keeps the
+ * context's mode, so the image then held a root-owned 0600 file that the container's
+ * non-root user cannot read — and a repository that verifies its baked copies against
+ * the checkout saw identical bytes as a mismatch on every rebuild, with or without
+ * cache. The executable bit is taken from the worktree, like the bytes, so an
+ * unstaged `chmod +x` still builds. Untracked files (an uncommitted `.devcontainer`,
+ * or the whole clone when no index is readable) keep their own mode. Directories are
+ * always 0755 (see the copy): they expose names only, and the snapshot root itself
+ * stays private.
+ */
+function buildInputMode(inputs: BuildInputs | null, path: string, actual: number): number {
+  if (!inputs?.files.has(path)) return actual & 0o777;
+  return (actual & 0o100) !== 0 ? 0o755 : 0o644;
+}
+
 export interface DevcontainerBuildSnapshot {
   workspaceFolder: string;
   configFile: string;
@@ -407,7 +427,9 @@ export async function createDevcontainerBuildSnapshot(
         );
         try {
           if (!verifyOpenedInput(fd, stat).isDirectory()) refuse('non-directory build input');
+          // Explicit, so the Server's own umask cannot narrow what the image holds.
           mkdirSync(target);
+          chmodSync(target, 0o755);
           await copyDirectory(fd, target, `${relativePath}/`);
         } finally {
           closeSync(fd);
@@ -422,7 +444,8 @@ export async function createDevcontainerBuildSnapshot(
           if (!actual.isFile()) refuse('non-regular build input');
           if (bytes + actual.size > 2 * 1024 ** 3)
             refuse('project exceeds the 2 GiB build input limit');
-          const out = openSync(target, 'wx', actual.mode & 0o777);
+          const mode = buildInputMode(inputs, relativePath, actual.mode);
+          const out = openSync(target, 'wx', mode);
           try {
             const buffer = Buffer.allocUnsafe(64 * 1024);
             let count: number;
@@ -437,7 +460,7 @@ export async function createDevcontainerBuildSnapshot(
               let offset = 0;
               while (offset < count) offset += writeSync(out, buffer, offset, count - offset);
             }
-            fchmodSync(out, actual.mode & 0o777);
+            fchmodSync(out, mode);
           } finally {
             closeSync(out);
           }

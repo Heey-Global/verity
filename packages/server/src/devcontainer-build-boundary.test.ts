@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -181,6 +183,40 @@ describe('devcontainer build filesystem boundary', () => {
       for (const absent of ['.venv', '.verity-sessions', 'scratch.log', '.git']) {
         expect(at(absent)).toBe(false);
       }
+    });
+
+    // Agents write under umask 0077. A file they merged in is 0600 in the clone, and
+    // copied as such the image held it root-owned and unreadable to the container's
+    // user: a repository comparing its baked copy with the checkout then reported
+    // identical bytes as stale on every rebuild, cache or no cache.
+    it('gives tracked files the mode a fresh checkout has, not the narrowed one', async () => {
+      const root = repository();
+      writeFileSync(join(root, 'run.sh'), '#!/bin/sh\n');
+      chmodSync(join(root, 'run.sh'), 0o755);
+      git(root, 'add', 'run.sh');
+      git(root, 'commit', '-q', '-m', 'script');
+      chmodSync(join(root, 'app.js'), 0o600);
+      chmodSync(join(root, 'lib', 'util.js'), 0o640);
+      chmodSync(join(root, 'lib'), 0o700);
+      chmodSync(join(root, 'run.sh'), 0o700);
+      writeFileSync(join(root, '.devcontainer', 'local.env'), 'x\n', { mode: 0o600 });
+      const result = await snapshot(root);
+      const mode = (path: string) => statSync(join(result.workspaceFolder, path)).mode & 0o777;
+      expect(mode('app.js')).toBe(0o644);
+      expect(mode('lib/util.js')).toBe(0o644);
+      expect(mode('lib')).toBe(0o755);
+      expect(mode('run.sh')).toBe(0o755);
+      // Never committed: nothing says what a checkout of it would look like.
+      expect(mode('.devcontainer/local.env')).toBe(0o600);
+    });
+
+    // The bytes come from the worktree, so the executable bit has to as well: a script
+    // made executable but not yet staged must not reach the image without it.
+    it('keeps an unstaged executable bit on a tracked file', async () => {
+      const root = repository();
+      chmodSync(join(root, 'app.js'), 0o700);
+      const result = await snapshot(root);
+      expect(statSync(join(result.workspaceFolder, 'app.js')).mode & 0o777).toBe(0o755);
     });
 
     it('still refuses a committed link out of the project, and names it', async () => {
