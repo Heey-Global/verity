@@ -10,6 +10,7 @@ import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { nativePathKind } from './mobile-native-compatibility.mjs';
 import { pendingReleasePrs } from './pending-release-prs.mjs';
 import { isReleaseBotLogin } from './release-bot-logins.mjs';
+import { hasOtaProductionProposal } from './mobile-ota-proposal.mjs';
 import { promotionIdentity, parseRecoveryReceipt } from './promotion-recovery.mjs';
 
 const repository = process.env.GITHUB_REPOSITORY;
@@ -575,7 +576,32 @@ function reconcileOtaStaging() {
   // decides on every push; there is nothing published to recover.
   if (!match || match[3] === '0' || `${match[1]}.${match[2]}.0` !== native) return;
   const tag = `mobile-v${version}`;
-  if (published.some((entry) => entry.tag_name === tag && !entry.draft)) return;
+  const staged = published.find((entry) => entry.tag_name === tag && !entry.draft);
+  if (staged && !staged.prerelease) return;
+  let missingProposal = false;
+  if (staged) {
+    const source = git('log', '-1', '--format=%H', '--', versionPath);
+    if (hasOtaProductionProposal(native, tag, source)) return;
+    // A merged approval is owned by delivery, including an older candidate.
+    // Its existing recovery path must finish before Staging refreshes proposals.
+    if (existsSync(otaManifest)) {
+      /** @type {unknown} */
+      const rawApproved = JSON.parse(readFileSync(otaManifest, 'utf8'));
+      const approved = /** @type {Record<string, unknown>} */ (rawApproved);
+      const approvedTag = promotionTag('ota', approved);
+      if (
+        approved.runtime === native &&
+        approvedTag &&
+        !published.some(
+          (entry) => entry.tag_name === approvedTag && !entry.draft && !entry.prerelease,
+        )
+      ) {
+        notes.push(`OTA Production: ${tag} waits for approved ${approvedTag} delivery.`);
+        return;
+      }
+    }
+    missingProposal = true;
+  }
   const mergedAt = Date.parse(git('log', '-1', '--format=%cI', '--', versionPath));
   if (!Number.isFinite(mergedAt)) throw new Error('OTA version marker has no history');
   if (mergedAt > now - graceMs) {
@@ -596,22 +622,33 @@ function reconcileOtaStaging() {
     otaWorkflow,
     Number.isFinite(runtimeAt) ? Math.max(mergedAt, runtimeAt) : mergedAt,
   );
-  const latest = runs.find((run) => run.status !== 'completed') ?? runs[0];
+  // Ordinary planning pushes cannot exhaust proposal repair attempts. Only
+  // explicit recovery dispatches count after the candidate was published.
+  const attempts = missingProposal
+    ? runs.filter(
+        (run) =>
+          run.event === 'workflow_dispatch' &&
+          Date.parse(run.created_at) >=
+            Math.max(mergedAt, Date.parse(staged?.published_at ?? '') || mergedAt),
+      )
+    : runs;
+  const latest = runs.find((run) => run.status !== 'completed') ?? attempts[0];
+  const label = missingProposal ? 'OTA Production proposal' : 'OTA Staging';
   if (latest && latest.status !== 'completed') {
-    notes.push(`OTA Staging: run ${latest.html_url} for ${tag} is still ${latest.status}.`);
-  } else if (!latest || runs.length < 2) {
+    notes.push(`${label}: run ${latest.html_url} for ${tag} is still ${latest.status}.`);
+  } else if (!latest || attempts.length < 2) {
     // One more run covers a lost push, a transient failure, and a run that
     // waited for its native runtime before that runtime was published.
     gh('workflow', 'run', otaWorkflow, '--ref', 'main');
     dispatched.push(otaWorkflow);
     notes.push(
       latest
-        ? `OTA Staging: ${tag} is still unpublished after ${latest.html_url} ended with ${latest.conclusion ?? 'no conclusion'}; running it once more.`
-        : `OTA Staging: ${tag} is merged and no OTA run followed its merge.`,
+        ? `${label}: ${tag} is still missing after ${latest.html_url} ended with ${latest.conclusion ?? 'no conclusion'}; running it once more.`
+        : `${label}: ${tag} needs recovery and no recovery run followed its publication.`,
     );
   } else {
     problems.push(
-      `OTA Staging: ${tag} is merged but unpublished after ${runs.length} runs, the last ${latest.html_url} ended with ${latest.conclusion ?? 'no conclusion'}; inspect it before dispatching ${otaWorkflow} again.`,
+      `${label}: ${tag} is ${missingProposal ? 'published without an open approval' : 'merged but unpublished'} after ${attempts.length} runs, the last ${latest.html_url} ended with ${latest.conclusion ?? 'no conclusion'}; inspect it before dispatching ${otaWorkflow} again.`,
     );
   }
 }

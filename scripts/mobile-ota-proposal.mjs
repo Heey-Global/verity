@@ -298,6 +298,84 @@ function mergedVersion(runtime) {
   };
 }
 
+/**
+ * A Staging tag proves publication, not that its Production approval survived.
+ * Read the candidate at the exact bot-owned PR head instead of trusting a title.
+ * @param {string} runtime
+ * @param {string} tag
+ * @param {string} source
+ * @param {(command: string, args: string[]) => string} [execute]
+ */
+export function hasOtaProductionProposal(runtime, tag, source, execute = run) {
+  const branch = `automation/promote-mobile-ota-${runtime}`;
+  /** @type {unknown} */
+  const rawPages = JSON.parse(
+    execute('gh', [
+      'api',
+      '--paginate',
+      '--slurp',
+      `repos/${repository()}/pulls?state=open&base=main&head=${encodeURIComponent(`${repository().split('/')[0]}:${branch}`)}&per_page=100`,
+    ]),
+  );
+  const pages = /** @type {Pull[][]} */ (rawPages);
+  if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page)))
+    throw new Error('Invalid OTA Production proposal listing');
+  const pulls = /** @type {Pull[]} */ (pages.flat());
+  if (pulls.length > 1) throw new Error('Ambiguous OTA Production proposals');
+  const pull = pulls[0];
+  if (!pull) return false;
+  if (
+    pull.base?.ref !== 'main' ||
+    pull.head?.ref !== branch ||
+    !shaPattern.test(pull.head.sha) ||
+    !isReleaseBotLogin(pull.user?.login)
+  )
+    throw new Error('OTA Production proposal is not exclusively workflow-owned');
+  /** @type {unknown} */
+  const rawFile = JSON.parse(
+    execute('gh', [
+      'api',
+      `repos/${repository()}/contents/apps/mobile/ota-promotion.json?ref=${pull.head.sha}`,
+    ]),
+  );
+  const file = /** @type {{content: string}} */ (rawFile);
+  /** @type {unknown} */
+  const rawCandidate = JSON.parse(Buffer.from(file.content, 'base64').toString());
+  const candidate = /** @type {Record<string, unknown>} */ (rawCandidate);
+  const artifactTag = `ota-artifact/${tag}/${source}`;
+  const record = execute('git', [
+    'for-each-ref',
+    '--format=%(contents)',
+    `refs/tags/${artifactTag}`,
+  ]);
+  if (!record || execute('git', ['rev-list', '-n', '1', artifactTag]) !== source)
+    throw new Error('Staging OTA has no matching immutable artifact reservation');
+  /** @type {unknown} */
+  const rawArtifact = JSON.parse(record);
+  const artifact = /** @type {Record<string, unknown>} */ (rawArtifact);
+  if (
+    artifact.schema !== 1 ||
+    artifact.runtime !== runtime ||
+    artifact.tag !== tag ||
+    artifact.version !== tag.slice('mobile-v'.length) ||
+    artifact.commit !== source ||
+    typeof artifact.group !== 'string' ||
+    !/^[0-9a-f-]{36}$/u.test(artifact.group)
+  )
+    throw new Error('Invalid immutable Staging OTA artifact reservation');
+  return [
+    'schema',
+    'runtime',
+    'tag',
+    'version',
+    'commit',
+    'group',
+    'branch',
+    'baseline',
+    'channel',
+  ].every((key) => candidate[key] === artifact[key]);
+}
+
 function detect() {
   const output = process.env.GITHUB_OUTPUT;
   if (!output) throw new Error('GITHUB_OUTPUT is required');
@@ -324,7 +402,10 @@ function detect() {
   }
   // New merges must keep planning Staging while delivery's dispatch resumes
   // the latest completed release whose Production proposal was deferred.
-  const resume = merged.deferred && process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
+  const resume =
+    process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' &&
+    (merged.deferred ||
+      (release?.prerelease && !hasOtaProductionProposal(runtime, release.tag_name, merged.commit)));
   if (release && ((merged.complete && !resume) || !release.prerelease)) {
     if (!merged.complete) complete(String(merged.pr));
     appendFileSync(output, 'mode=plan\n');

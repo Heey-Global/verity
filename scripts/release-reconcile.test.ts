@@ -51,6 +51,7 @@ type Fixture = {
   nativeVersion?: string;
   website?: { path?: string; open?: boolean };
   openOta?: boolean;
+  otaProposal?: 'matching' | 'stale' | 'untrusted';
   otaRuns?: Run[];
   message?: string;
   native?: {
@@ -214,6 +215,24 @@ function sweep(fixture: Fixture) {
     git('commit', '-qm', 'fix fixture');
   }
   const head = git('rev-parse', 'HEAD');
+  if (fixture.otaStaging) {
+    const source = git('log', '-1', '--format=%H', '--', 'apps/mobile/ota/version.txt');
+    git(
+      'tag',
+      '-a',
+      `ota-artifact/mobile-v${fixture.otaStaging.version}/${source}`,
+      source,
+      '-m',
+      JSON.stringify({
+        schema: 1,
+        runtime: fixture.otaStaging.native ?? '1.32.0',
+        version: fixture.otaStaging.version,
+        tag: `mobile-v${fixture.otaStaging.version}`,
+        commit: source,
+        group: 'a'.repeat(36),
+      }),
+    );
+  }
   mkdirSync(join(cwd, 'bin'));
   writeFileSync(join(cwd, 'bin/npm'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const log = join(cwd, 'gh.log');
@@ -236,6 +255,12 @@ if (joined.includes('/git/ref/heads/main')) {
   const moved = fixture.promotionMainMoved || fixture.native?.oldHead || (fixture.native?.mainMoved && existsSync(seen));
   writeFileSync(seen, '1');
   process.stdout.write(JSON.stringify({object:{sha:moved ? 'f'.repeat(40) : process.env.RECONCILE_HEAD}}));
+} else if (joined.includes('/pulls?state=open') && joined.includes('automation')) {
+  const rows = fixture.otaProposal ? [{user:{login:fixture.otaProposal==='untrusted'?'unknown[bot]':'github-actions[bot]'},base:{ref:'main'},head:{ref:'automation/promote-mobile-ota-1.32.0',sha:process.env.RECONCILE_HEAD}}] : [];
+  process.stdout.write(JSON.stringify([rows]));
+} else if (joined.includes('/contents/apps/mobile/ota-promotion.json?')) {
+  const candidate = {schema:1,runtime:'1.32.0',version:'1.32.2',tag:'mobile-v1.32.2',commit:fixture.otaProposal==='stale'?'a'.repeat(40):process.env.RECONCILE_HEAD,group:'a'.repeat(36)};
+  process.stdout.write(JSON.stringify({content:Buffer.from(JSON.stringify(candidate)).toString('base64')}));
 } else if (joined.includes('/pulls?state=open')) {
   process.stdout.write(joined.includes('components--mobile-ota') ? (fixture.openOta ? '42' : '') : joined.includes('components--website') ? (fixture.website?.open ? '42' : '') : (fixture.native?.open ? '42' : ''));
 } else if (/\\/pulls\\/42$/.test(joined)) {
@@ -933,7 +958,10 @@ describe('merged Staging OTA recovery', () => {
     expect(result.dispatches).toEqual([ota]);
   });
   it('leaves a staged version alone', () => {
-    const result = sweepStaging({ releases: [{ tag_name: 'mobile-v1.32.2', prerelease: true }] });
+    const result = sweepStaging({
+      releases: [{ tag_name: 'mobile-v1.32.2', prerelease: true }],
+      otaProposal: 'matching',
+    });
     expect(result.status, result.stderr).toBe(0);
     expect(result.dispatches).toEqual([]);
   });
@@ -1223,4 +1251,54 @@ it('recovers setup failures whose GitHub receipt step was skipped without output
   const fixed = sweep({ pipelineFix: true, runsBeforeFix: true, promoteRuns: [failure, failure] });
   expect(fixed.status, fixed.stdout + fixed.stderr).toBe(0);
   expect(fixed.dispatches).toEqual([promote]);
+});
+
+describe('missing OTA Production proposal recovery', () => {
+  const recover = (extra: Fixture = {}) =>
+    sweep({
+      ota: false,
+      otaStaging: { version: '1.32.2' },
+      releases: [{ tag_name: 'mobile-v1.32.2', prerelease: true }],
+      ...extra,
+    });
+  it('recovers a published Staging candidate whose approval vanished', () => {
+    const result = recover();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).toEqual(['workflow run mobile-ota.yml --ref main']);
+    expect(result.stdout).toContain('OTA Production proposal');
+  });
+  it('repairs a stale proposal without treating it as current', () => {
+    expect(recover({ otaProposal: 'stale' }).dispatches).toEqual([
+      'workflow run mobile-ota.yml --ref main',
+    ]);
+  });
+  it('ignores ordinary planning runs but bounds recovery dispatches', () => {
+    expect(
+      recover({ otaRuns: [run({ event: 'push' }), run({ event: 'push' })] }).dispatches,
+    ).toHaveLength(1);
+    const exhausted = recover({
+      otaRuns: [run({ event: 'workflow_dispatch' }), run({ event: 'workflow_dispatch' })],
+    });
+    expect(exhausted.dispatches).toEqual([]);
+    expect(exhausted.status).toBe(1);
+    expect(exhausted.stdout).toContain('published without an open approval');
+  });
+  it('leaves a merged same-runtime approval to its delivery recovery path', () => {
+    const result = recover({ ota: true });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.dispatches).not.toContain('workflow run mobile-ota.yml --ref main');
+    expect(result.stdout).toContain('waits for approved mobile-v1.33.1 delivery');
+  });
+  it('waits for active work and a missing native runtime', () => {
+    expect(
+      recover({ otaRuns: [run({ status: 'in_progress', conclusion: null })] }).dispatches,
+    ).toEqual([]);
+    expect(recover({ otaRuntime: 'missing' }).dispatches).toEqual([]);
+  });
+  it('fails closed for an untrusted proposal and ignores delivered versions', () => {
+    const untrusted = recover({ otaProposal: 'untrusted' });
+    expect(untrusted.status).not.toBe(0);
+    expect(untrusted.dispatches).toEqual([]);
+    expect(recover({ releases: [{ tag_name: 'mobile-v1.32.2' }] }).dispatches).toEqual([]);
+  });
 });

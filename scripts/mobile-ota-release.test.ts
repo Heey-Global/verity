@@ -239,6 +239,13 @@ describe('published OTA map binding', () => {
 
 interface ServiceState {
   calls: string[];
+  pullClosed?: boolean;
+  autoCloseEmpty?: boolean;
+  temporaryHeads?: Record<string, string>;
+  invalidSignature?: boolean;
+  racePublication?: boolean;
+  closeAfterEdit?: boolean;
+  wrongProposalParent?: boolean;
   stagingOAuth?: string;
   wrongBundle?: boolean;
   artifactArchive?: string;
@@ -292,6 +299,8 @@ function serviceFixture(changes: Partial<ServiceState> = {}) {
     tags: {},
     released: 'mobile-v1.33.2',
     releaseReads: 0,
+    modelMetadataCommit: true,
+    noPullHistory: !changes.rollingHead && !changes.racedHead,
     ...changes,
   };
   writeFileSync(statePath, JSON.stringify(initial));
@@ -335,15 +344,23 @@ if(tool === 'git') {
     const i=args.indexOf('-a'); s.tags[args[i+1]]={commit:args[i+2],message:args[args.indexOf('-m')+1]}; out('');
   }
   if(args[0] === 'tag') {s.tags[args[1]]={commit:args[2],message:''};out('');}
-  if(args[0] === 'push') { if(args.at(-1).includes(':refs/heads/')) s.rollingHead=args.at(-1).split(':')[0]; out(''); }
-  if(args[0] === 'rev-list' && args.includes('--parents')) out(s.rollingHead+' '+sha);
+  if(args[0] === 'push') {
+    const refspec=args.at(-1);
+    if(refspec.includes(':refs/heads/')) {
+      const [head,ref]=refspec.split(':');
+      if(ref.includes('/ota-proposal-tmp/')) {s.temporaryHeads??={};const expected=args.find(a=>a.startsWith('--force-with-lease=')).split(':').at(-1);if((s.temporaryHeads[ref]??'')!==expected)fail();if(head)s.temporaryHeads[ref]=head;else delete s.temporaryHeads[ref];}
+      else {if(s.racePublication && head==='d'.repeat(40)) fail();s.rollingHead=head;if(s.autoCloseEmpty && head===(s.proposalBase??sha))s.pullClosed=true;}
+    }
+    out('');
+  }
+  if(args[0] === 'rev-list' && args.includes('--parents')) out(args.at(-1)+' '+(s.wrongProposalParent?'e'.repeat(40):(s.proposalBase??sha)));
   if(args[0] === 'rev-list') out(s.tags[args.at(-1)]?.commit ?? '');
   if(args[0] === 'diff') out(s.invalidMetadata ? 'unrelated.txt' : 'apps/mobile/ota-promotion.json');
   if(args[0] === 'for-each-ref') out(s.tags[args.at(-1).replace('refs/tags/','')]?.message ?? '');
   if(args[0] === 'show') { if(s.sourceManifestMissing && s.rollingHead===sha) fail(); out(candidate); }
 }
 if(tool === 'gh') {
-  if(args[0] === 'api' && args.includes('graphql')) {if(s.loseMetadata){s.loseMetadata=false;fail();}if(s.modelMetadataCommit){s.rollingHead='d'.repeat(40);const contents=args.find(a=>a.startsWith('contents=')).slice(9);fs.writeFileSync(process.env.OTA_FAKE_CWD+'/apps/mobile/ota-promotion.json',Buffer.from(contents,'base64'));}out({data:{createCommitOnBranch:{commit:{oid:s.modelMetadataCommit?s.rollingHead:sha,signature:{isValid:true}}}}});}
+  if(args[0] === 'api' && args.includes('graphql')) {if(s.loseMetadata){s.loseMetadata=false;fail();}if(s.modelMetadataCommit){const branch=args.find(a=>a.startsWith('branch=')).slice(7);if(branch.startsWith('automation/ota-proposal-tmp/')){s.temporaryHeads['refs/heads/'+branch]='d'.repeat(40);}else s.rollingHead='d'.repeat(40);const contents=args.find(a=>a.startsWith('contents=')).slice(9);fs.writeFileSync(process.env.OTA_FAKE_CWD+'/apps/mobile/ota-promotion.json',Buffer.from(contents,'base64'));}out({data:{createCommitOnBranch:{commit:{oid:s.modelMetadataCommit?'d'.repeat(40):sha,signature:{isValid:!s.invalidSignature}}}}});}
   if(args[0] === 'api') {
     const endpoint=args.find(a=>a.startsWith('repos/'));
     if(endpoint?.includes('/actions/artifacts?')) out({artifacts:s.artifactArchive?[{id:1,expired:false}]:[]});
@@ -369,8 +386,9 @@ if(tool === 'gh') {
     if(endpoint?.includes('/contents/')) out({content:Buffer.from(JSON.stringify(endpoint.includes('ref=main')?onMain():candidate)).toString('base64')});
     if(endpoint?.includes('/check-runs?')) out([{check_runs:[{id:123,name:'ci-checks',conclusion:'success',app:{slug:'github-actions'}}]}]);
   }
-  if(args[0] === 'pr' && args[1] === 'list') out(!s.noPullHistory && args.includes('--head') && (s.racedHead || s.rollingHead)?[{number:51,headRefOid:s.racedHead?'c'.repeat(40):s.rollingHead,author:{login:'app/github-actions'}}]:[]);
-  if(args[0] === 'pr' && args[1] === 'create') {if(s.losePullCreation){s.losePullCreation=false;fail();}s.noPullHistory=false;out('https://github.com/example/repo/pull/51');}
+  if(args[0] === 'pr' && args[1] === 'list') out((args.includes('all') || !s.pullClosed) && !s.noPullHistory && args.includes('--head') && (s.racedHead || s.rollingHead)?[{number:51,headRefOid:s.racedHead?'c'.repeat(40):s.rollingHead,author:{login:'app/github-actions'}}]:[]);
+  if(args[0] === 'pr' && args[1] === 'create') {if(s.losePullCreation){s.losePullCreation=false;fail();}s.noPullHistory=false;s.pullClosed=false;out('https://github.com/example/repo/pull/51');}
+  if(args[0] === 'pr' && args[1] === 'edit' && s.closeAfterEdit)s.pullClosed=true;
   if(args[0] === 'pr' || args[0] === 'workflow') out('');
   if(args[0] === 'release' && args[1] === 'create') {if(args.includes('--prerelease')){s.stagedVersion=args[2];}else s.draft=true;out('');}
   if(args[0] === 'release' && args[1] === 'edit') {
@@ -676,11 +694,48 @@ describe('OTA CLI interrupted external operations', () => {
       false,
     );
   });
+  it('keeps a refreshed production PR open when GitHub closes branches reset to main', () => {
+    const service = serviceFixture({ rollingHead: 'c'.repeat(40), autoCloseEmpty: true });
+    const result = service.run('stage');
+    expect(result.status, result.stderr).toBe(0);
+    expect(service.state().pullClosed).not.toBe(true);
+    expect(service.state().rollingHead).toBe('d'.repeat(40));
+  });
+
+  it('recovers a previously closed empty proposal from its recorded artifact', () => {
+    const service = serviceFixture({ rollingHead: 'c'.repeat(40) });
+    const first = service.run('stage');
+    expect(first.status, first.stderr).toBe(0);
+    service.update({ pullClosed: true, rollingHead: sha });
+    const retry = service.run('stage');
+    expect(retry.status, retry.stderr).toBe(0);
+    expect(service.state().pullClosed).toBe(false);
+    expect(service.state().rollingHead).toBe('d'.repeat(40));
+    expect(
+      service.state().calls.filter((call) => call.startsWith('npx --yes eas-cli@21.0.1 update ')),
+    ).toHaveLength(2);
+  });
+
+  it.each(['invalidSignature', 'wrongProposalParent', 'racePublication'] as const)(
+    'preserves the live proposal when %s rejects publication',
+    (failure) => {
+      const service = serviceFixture({ rollingHead: 'c'.repeat(40), [failure]: true });
+      expect(service.run('stage').status).not.toBe(0);
+      expect(service.state().rollingHead).toBe('c'.repeat(40));
+    },
+  );
+  it('does not report completion when the proposal closes during its update', () => {
+    const service = serviceFixture({ rollingHead: 'c'.repeat(40), closeAfterEdit: true });
+    const result = service.run('stage');
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('not open at the verified candidate head');
+  });
+
   it('dismisses stale approvals for the new candidate while preserving exact-head approval', () => {
     const service = serviceFixture({
       reviews: [
         { id: 1, state: 'APPROVED', commit_id: 'b'.repeat(40) },
-        { id: 2, state: 'APPROVED', commit_id: sha },
+        { id: 2, state: 'APPROVED', commit_id: 'd'.repeat(40) },
       ],
     });
     const result = service.run('stage');
@@ -724,7 +779,7 @@ describe('OTA CLI interrupted external operations', () => {
       false,
     );
   });
-  it('recovers an interrupted rolling reset whose source has no promotion manifest', () => {
+  it('preserves the live proposal when metadata creation fails and resumes without another upload', () => {
     const service = serviceFixture({
       rollingHead: 'c'.repeat(40),
       sourceManifestMissing: true,
@@ -732,16 +787,8 @@ describe('OTA CLI interrupted external operations', () => {
     });
     const first = service.run('stage');
     expect(first.status).not.toBe(0);
-    expect(service.state().rollingHead).toBe(sha);
+    expect(service.state().rollingHead).toBe('c'.repeat(40));
     expect(service.state().calls.some((call) => call.includes('graphql'))).toBe(true);
-    // Simulate a reset performed before proposal-base reservations existed.
-    service.update({
-      tags: Object.fromEntries(
-        Object.entries(service.state().tags).filter(
-          ([tag]) => !tag.startsWith('ota-proposal-base/'),
-        ),
-      ),
-    });
     const retry = service.run('stage');
     expect(retry.stderr).toBe('');
     expect(retry.status).toBe(0);
@@ -798,9 +845,9 @@ describe('OTA CLI interrupted external operations', () => {
       noPullHistory: true,
       losePullCreation: true,
       modelMetadataCommit: true,
-      invalidMetadata: true,
     });
     expect(service.run('stage').status).not.toBe(0);
+    service.update({ invalidMetadata: true });
     const pushCount = service
       .state()
       .calls.filter((call) => call.includes('--force-with-lease')).length;
@@ -896,7 +943,7 @@ describe('OTA CLI interrupted external operations', () => {
     expect(recovered.some((call) => call.startsWith('gh pr create'))).toBe(true);
     expect(
       recovered.some((call) =>
-        call.includes(`${proposalBase}:refs/heads/automation/promote-mobile-ota-`),
+        call.includes(`${'d'.repeat(40)}:refs/heads/automation/promote-mobile-ota-`),
       ),
     ).toBe(true);
     expect(recovered.some((call) => call.includes(`expected=${proposalBase}`))).toBe(true);
