@@ -158,7 +158,16 @@ describe('independent listener discovery', () => {
       const child = vi.mocked(spawn).mock.results.at(-1)!.value;
       (child.stdout as PassThrough).emit('data', Buffer.from('changed\n'));
       const fresh = discovery.listListeningProcesses(project, { fresh: true });
-      release([{ port: 3000, pid: 1, cwd: '/work/a', command: 'old', bind: 'any' }]);
+      release([
+        {
+          port: 3000,
+          pid: 1,
+          cwd: '/work/a',
+          command: 'old',
+          webProtocol: 'http' as const,
+          bind: 'any',
+        },
+      ]);
       await expect(read).resolves.toEqual([]);
       await expect(fresh).resolves.toEqual([]);
       expect(scan).toHaveBeenCalledTimes(2);
@@ -185,7 +194,14 @@ describe('independent listener discovery', () => {
       appendEvent: vi.fn(async () => ({ seq: 1, ts: 0 })),
     } as unknown as EventStore;
     const old: ListeningProcess[] = [
-      { port: 3000, pid: 1, cwd: '/work/a', command: 'old', bind: 'any' },
+      {
+        port: 3000,
+        pid: 1,
+        cwd: '/work/a',
+        command: 'old',
+        webProtocol: 'http' as const,
+        bind: 'any',
+      },
     ];
     let release!: (processes: ListeningProcess[]) => void;
     const scan = vi
@@ -357,7 +373,16 @@ describe('independent listener discovery', () => {
       project.containerName = 'replacement';
       const replacement = discovery.reconcile();
       await new Promise((done) => setImmediate(done));
-      release([{ port: 5173, pid: 1, cwd: '/work/a', command: 'old', bind: 'any' }]);
+      release([
+        {
+          port: 5173,
+          pid: 1,
+          cwd: '/work/a',
+          command: 'old',
+          webProtocol: 'http' as const,
+          bind: 'any',
+        },
+      ]);
       await Promise.all([oldRefresh, replacement]);
       expect(await discovery.listSessionDevServers('a')).toEqual([]);
       expect(scan).toHaveBeenCalledTimes(4);
@@ -387,9 +412,32 @@ describe('independent listener discovery', () => {
       bus: new InMemoryEventBus(),
       hostCloneRoot: '/data',
       scan: async () => [
-        { port: 5173, pid: 1, cwd: '/tmp', command: 'vite', bind: 'loopback', sessionId: 'a' },
-        { port: 8000, pid: 2, cwd: '/work/b', command: 'node api', bind: 'any', sessionId: 'b' },
-        { port: 8080, pid: 3, cwd: '/work', command: 'node server', bind: 'any' },
+        {
+          port: 5173,
+          pid: 1,
+          cwd: '/tmp',
+          command: 'vite',
+          webProtocol: 'http' as const,
+          bind: 'loopback',
+          sessionId: 'a',
+        },
+        {
+          port: 8000,
+          pid: 2,
+          cwd: '/work/b',
+          command: 'node api',
+          webProtocol: 'http' as const,
+          bind: 'any',
+          sessionId: 'b',
+        },
+        {
+          port: 8080,
+          pid: 3,
+          cwd: '/work',
+          command: 'node server',
+          webProtocol: 'http' as const,
+          bind: 'any',
+        },
       ],
     });
     // Listing must work without provisioning a public share manager or entitlement.
@@ -445,7 +493,16 @@ describe('independent listener discovery', () => {
     // An empty first scan must not make a previously read session look unread.
     await refresh();
     expect(appendEvent).not.toHaveBeenCalled();
-    processes = [{ port: 5173, pid: 1, cwd: '/work/a', command: 'vite', bind: 'any' }];
+    processes = [
+      {
+        port: 5173,
+        pid: 1,
+        cwd: '/work/a',
+        command: 'vite',
+        webProtocol: 'http' as const,
+        bind: 'any',
+      },
+    ];
     await refresh();
     expect(appendEvent).toHaveBeenCalledTimes(1);
     // The next server process rediscovers the same listener, not new activity.
@@ -481,7 +538,16 @@ describe('independent listener discovery', () => {
       eventStore: store,
       bus: new InMemoryEventBus(),
       hostCloneRoot: '/data',
-      scan: async () => [{ port: 5173, pid: 1, cwd: '/work/a', command: 'vite', bind: 'any' }],
+      scan: async () => [
+        {
+          port: 5173,
+          pid: 1,
+          cwd: '/work/a',
+          command: 'vite',
+          webProtocol: 'http' as const,
+          bind: 'any',
+        },
+      ],
     });
     try {
       await discovery.reconcile();
@@ -495,7 +561,7 @@ describe('independent listener discovery', () => {
       discovery.close();
     }
   });
-  it('retains healthy results on errors, clears inactive results and stops replaced watchers', async () => {
+  it('discards stale results after watcher exit, clears inactive results and stops replaced watchers', async () => {
     const project = {
       id: 'p',
       owner: 'org',
@@ -514,7 +580,14 @@ describe('independent listener discovery', () => {
       getLatestDevServersEvent: vi.fn(async () => undefined),
     } as unknown as EventStore;
     const scan = vi.fn(async () => [
-      { port: 5173, pid: 1, cwd: '/work/a', command: 'vite', bind: 'any' as const },
+      {
+        port: 5173,
+        pid: 1,
+        cwd: '/work/a',
+        command: 'vite',
+        webProtocol: 'http' as const,
+        bind: 'any' as const,
+      },
     ]);
     const discovery = new ListenerDiscovery({
       eventStore: store,
@@ -529,7 +602,7 @@ describe('independent listener discovery', () => {
       (child as EventEmitter).emit('exit', 1);
       scan.mockRejectedValueOnce(new Error('Docker unavailable'));
       const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 3_000);
-      expect(await discovery.listSessionDevServers('a')).toHaveLength(1);
+      expect(await discovery.listSessionDevServers('a')).toEqual([]);
       clock.mockRestore();
       const recoveredChild = vi.mocked(spawn).mock.results.at(-1)!.value;
       (recoveredChild as EventEmitter).emit('exit', 1);
@@ -573,7 +646,14 @@ it('uses strict fresh evidence for shares while retaining cached discovery for t
     getSession: async () => session,
     listSessions: async () => [session],
   } as unknown as EventStore;
-  const listener = { port: 3000, pid: 1, cwd: '/work/s', command: 'node', bind: 'any' as const };
+  const listener = {
+    port: 3000,
+    pid: 1,
+    cwd: '/work/s',
+    command: 'node',
+    webProtocol: 'http' as const,
+    bind: 'any' as const,
+  };
   const scan = vi.fn(async () => [listener]);
   const discovery = new ListenerDiscovery({
     eventStore: store,
@@ -610,6 +690,55 @@ it('uses strict fresh evidence for shares while retaining cached discovery for t
     // UI discovery can still show its last snapshot; share probes cannot renew it.
     expect(await discovery.listSessionDevServers('s')).toHaveLength(1);
   } finally {
+    discovery.close();
+  }
+});
+
+it('rechecks HTTP readiness on an unchanged socket and forgets offers after watcher restart', async () => {
+  const project = {
+    id: 'p',
+    owner: 'org',
+    repo: 'repo',
+    containerName: 'sandbox',
+    state: 'active',
+  } as ProjectRecord;
+  let ready = false;
+  const raw: ListeningProcess = {
+    port: 5173,
+    pid: 42,
+    cwd: '/work/a',
+    command: 'unknown',
+    bind: 'any',
+  };
+  const scan = vi.fn(async () => [{ ...raw, ...(ready ? { webProtocol: 'http' as const } : {}) }]);
+  const store = {
+    getProject: async () => project,
+    getSession: async () => ({ projectId: 'p' }),
+    listSessions: async () => [{ sessionId: 'a', projectId: 'p', worktree: '/data/org-repo/a' }],
+    listProjects: async () => [project],
+    getLatestDevServersEvent: async () => undefined,
+    appendEvent: vi.fn(async () => ({ seq: 1, ts: Date.now() })),
+  } as unknown as EventStore;
+  const discovery = new ListenerDiscovery({
+    eventStore: store,
+    bus: new InMemoryEventBus(),
+    hostCloneRoot: '/data',
+    scan,
+  });
+  let now = 0;
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+  try {
+    expect(await discovery.listSessionDevServers('a')).toEqual([]);
+    ready = true;
+    now = 30_001;
+    await discovery.reconcile();
+    expect(await discovery.listSessionDevServers('a')).toMatchObject([{ port: 5173 }]);
+    const child = vi.mocked(spawn).mock.results.at(-1)!.value;
+    (child as EventEmitter).emit('exit', 1);
+    scan.mockRejectedValue(new Error('container restarting'));
+    expect(await discovery.listSessionDevServers('a')).toEqual([]);
+  } finally {
+    clock.mockRestore();
     discovery.close();
   }
 });

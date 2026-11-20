@@ -41,8 +41,13 @@ describe('DockerProjectRuntime', () => {
     const runner = vi.fn<RuntimeRunner>();
     const runtime = new DockerProjectRuntime({ runner, listListeningProcesses });
     expect(await runtime.listListeningProcesses(project)).toEqual(processes);
+    const webListeners = vi
+      .spyOn(runtime, 'listWebListeningProcesses')
+      .mockResolvedValue(
+        processes.map((listener) => ({ ...listener, webProtocol: 'http' as const })),
+      );
     expect(await runtime.ensurePreviewTarget(project, 5173)).toBe(5173);
-    expect(listListeningProcesses).toHaveBeenLastCalledWith(project, { fresh: true });
+    expect(webListeners).toHaveBeenLastCalledWith(project, { fresh: true }, 5173);
     expect(runner).not.toHaveBeenCalled();
   });
 
@@ -51,8 +56,8 @@ describe('DockerProjectRuntime', () => {
       .fn<RuntimeRunner>()
       .mockResolvedValue({ stdout: '42000\n', stderr: '', exitCode: 0 });
     const runtime = new DockerProjectRuntime({ runner });
-    vi.spyOn(runtime, 'listListeningProcesses').mockResolvedValue([
-      { port: 5173, pid: 10, cwd: '/work', command: 'vite', bind: 'loopback' },
+    vi.spyOn(runtime, 'listWebListeningProcesses').mockResolvedValue([
+      { port: 5173, pid: 10, cwd: '/work', command: 'vite', bind: 'loopback', webProtocol: 'http' },
     ]);
     expect(await runtime.ensurePreviewTarget(project, 5173)).toBe(42000);
     expect(runner.mock.calls[0]?.[1]).toEqual([
@@ -641,9 +646,10 @@ describe('DockerProjectRuntime', () => {
 it('uses the resolved agent identity and original loopback address', async () => {
   const runner = vi.fn<RuntimeRunner>().mockResolvedValue({ stdout: '42000', stderr: '' });
   const runtime = new DockerProjectRuntime({ runner, resolveUser: async () => '2000:2000' });
-  vi.spyOn(runtime, 'listListeningProcesses').mockResolvedValue([
+  vi.spyOn(runtime, 'listWebListeningProcesses').mockResolvedValue([
     {
       port: 5173,
+      webProtocol: 'http',
       pid: 10,
       cwd: '/work',
       command: 'vite',
@@ -654,4 +660,72 @@ it('uses the resolved agent identity and original loopback address', async () =>
   expect(await runtime.ensurePreviewTarget(project, 5173)).toBe(42000);
   expect(runner.mock.calls[0]?.[1]).toEqual(expect.arrayContaining(['--user', '2000:2000']));
   expect(runner.mock.calls[0]?.[1].at(-1)).toBe('::1');
+});
+
+it('normalizes HTTPS through the sandbox relay using its fresh certificate pin and address', async () => {
+  const runner = vi.fn<RuntimeRunner>().mockResolvedValue({ stdout: '42000', stderr: '' });
+  const runtime = new DockerProjectRuntime({ runner });
+  const webListeners = vi.spyOn(runtime, 'listWebListeningProcesses').mockResolvedValue([
+    {
+      port: 5173,
+      pid: 10,
+      cwd: '/work',
+      command: 'node app.js',
+      bind: 'any',
+      webProtocol: 'https',
+      webCertificateFingerprint: 'ab'.repeat(32),
+      listenerAddress: '::1',
+    },
+  ]);
+  expect(await runtime.ensurePreviewTarget(project, 5173)).toBe(42000);
+  expect(webListeners).toHaveBeenCalledWith(project, { fresh: true }, 5173);
+  expect(runner.mock.calls[0]?.[1]).toEqual([
+    'exec',
+    project.containerName,
+    'node',
+    '-e',
+    PREVIEW_FORWARDER_SCRIPT,
+    '5173',
+    '::1',
+    'https',
+    'ab'.repeat(32),
+  ]);
+});
+
+it('refuses a preview target without confirmed HTTP or HTTPS protocol', async () => {
+  const runner = vi.fn<RuntimeRunner>();
+  const runtime = new DockerProjectRuntime({ runner });
+  vi.spyOn(runtime, 'listWebListeningProcesses').mockResolvedValue([
+    {
+      port: 5173,
+      pid: 10,
+      cwd: '/work',
+      command: 'infrastructure',
+      bind: 'any',
+    },
+  ]);
+  await expect(runtime.ensurePreviewTarget(project, 5173)).rejects.toThrow('stopped serving HTTP');
+  expect(runner).not.toHaveBeenCalled();
+});
+
+it('classifies the requested target even when it falls beyond a full probe batch', async () => {
+  const processes = Array.from({ length: 20 }, (_, index) => ({
+    port: 3000 + index,
+    pid: 10 + index,
+    cwd: '/work',
+    command: 'node app.js',
+    bind: 'any' as const,
+  }));
+  const runner = vi.fn<RuntimeRunner>().mockResolvedValue({
+    stdout: JSON.stringify([{ protocol: 'http' }]),
+    stderr: '',
+  });
+  const runtime = new DockerProjectRuntime({
+    runner,
+    listListeningProcesses: async () => processes,
+  });
+  expect(await runtime.ensurePreviewTarget(project, 3019)).toBe(3019);
+  expect(JSON.parse(runner.mock.calls[0]?.[1].at(-1) ?? '[]')).toEqual([
+    { host: '127.0.0.1', port: 3019 },
+  ]);
 });

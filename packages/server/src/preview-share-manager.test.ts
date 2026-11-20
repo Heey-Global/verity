@@ -2148,13 +2148,13 @@ describe('session port previews', () => {
     lastSeenEventCount: null,
   };
   const listener = (port: number, bind: 'any' | 'loopback', cwd = '/work/sessions/s1/web') => ({
+    webProtocol: 'http' as const,
     port,
     bind,
     pid: port,
     cwd,
     command: 'node /work/sessions/s1/node_modules/.bin/vite',
   });
-
   function portFixture(listeners: ReturnType<typeof listener>[]) {
     const setup = fixture();
     setup.store.getProject.mockResolvedValue({ ...project, cloneDir: 'repo' } as typeof project);

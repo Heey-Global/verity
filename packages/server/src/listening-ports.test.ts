@@ -17,6 +17,7 @@ import {
   LISTENING_PORTS_SCRIPT,
   parseListeningProcesses,
   sessionDevServers,
+  webSessionDevServers,
 } from './listening-ports.js';
 
 const execFileAsync = promisify(execFile);
@@ -127,7 +128,13 @@ describe('listening port discovery', () => {
     const { stdout } = await execFileAsync('sh', ['-c', script]);
 
     expect(parseListeningProcesses(stdout.replaceAll(root, '/proc'))).toEqual([
-      { port: 0x1435, bind: 'any', pid: 8, cwd: '/proc', command: 'node vite' },
+      expect.objectContaining({
+        port: 0x1435,
+        bind: 'any',
+        pid: 8,
+        cwd: '/proc',
+        command: 'node vite',
+      }),
     ]);
   });
 
@@ -152,6 +159,8 @@ describe('listening port discovery', () => {
         port: 0x1435,
         bind: 'any',
         ipv6Wildcard: true,
+        listenerAddress: '::1',
+        socketInode: '12',
         pid: 40,
         cwd: '/work/.verity-sessions/agent-1/web',
         command: 'node /work/.verity-sessions/agent-1/node_modules/.bin/vite',
@@ -221,6 +230,27 @@ describe('listening port discovery', () => {
     expect(devServerName('node /w/node_modules/.bin/storybook dev -p 6006')).toBe('Storybook');
     expect(devServerName('python3 -m http.server 8000')).toBe('Python HTTP');
     expect(devServerName('/usr/local/bin/caddy run')).toBe('caddy');
+  });
+
+  it('offers only confirmed web protocols without a process-name blacklist', () => {
+    const listener = {
+      pid: 42,
+      cwd: '/work/session-a',
+      bind: 'any' as const,
+      command: 'tailscaled',
+    };
+    const processes = [
+      { ...listener, port: 40001 },
+      { ...listener, port: 40002 },
+      { ...listener, pid: 43, port: 5173, command: 'node vite', webProtocol: 'http' as const },
+      { ...listener, pid: 44, port: 8080, webProtocol: 'https' as const },
+    ];
+    expect(webSessionDevServers(processes, '/work/session-a')).toMatchObject([
+      { port: 5173, name: 'Vite' },
+      { port: 8080, name: 'tailscaled' },
+    ]);
+    // Raw TCP attribution remains available to non-preview consumers.
+    expect(sessionDevServers(processes, '/work/session-a')).toHaveLength(4);
   });
 });
 
