@@ -6,6 +6,7 @@ import {
   containerGenerationOf,
 } from './project-relay-migration.js';
 import type { ProjectRelayControl, ProvisionerOptions } from './provisioner.js';
+import { PROJECT_TEARDOWN_REASON } from './project-state.js';
 import { RetainedResumeError } from './sandbox-retained-resume.js';
 
 /**
@@ -335,7 +336,12 @@ export async function reconcileRetainedSandboxes(
   const containers = (await host.docker.listContainers?.()) ?? [];
   const failures: unknown[] = [];
   for (const project of projects) {
-    if (hooks.isProvisioning(project.id)) continue;
+    if (
+      project.state === 'absent' ||
+      project.provisionError === PROJECT_TEARDOWN_REASON ||
+      hooks.isProvisioning(project.id)
+    )
+      continue;
     const retained = retainedSandboxesOf(containers, project);
     if (retained.length === 0) continue;
     let current: ContainerInspect | undefined;

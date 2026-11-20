@@ -3,6 +3,7 @@ import type { ProjectRecord } from '@verity/store';
 import { DockerError, type ContainerInspect, type DockerClient } from './docker.js';
 import { planRelaySweep } from './docker-gc.js';
 import { CONTAINER_GENERATION_LABEL, PROJECT_ID_LABEL } from './project-relay-migration.js';
+import { PROJECT_TEARDOWN_REASON } from './project-state.js';
 import { defaultProjectRelay } from './provisioner.test-helper.js';
 import { RetainedResumeError } from './sandbox-retained-resume.js';
 import {
@@ -218,6 +219,17 @@ describe('reconcileRetainedSandboxes', () => {
     isProvisioning: () => false,
     serialize: async (_project: ProjectRecord, restore: () => Promise<void>) => restore(),
   };
+
+  it.each([
+    { ...failed, state: 'absent' as const },
+    { ...failed, provisionError: PROJECT_TEARDOWN_REASON },
+  ])('does not revive a deliberately absent or deleting project: %j', async (project) => {
+    const h = inventoryHost(new Error('unused'));
+    await reconcileRetainedSandboxes(h.value, [project], hooks);
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(h.renameContainer).not.toHaveBeenCalled();
+    expect(h.removeContainer).not.toHaveBeenCalled();
+  });
 
   it('keeps the parked Sandbox when its restore fails for a reason that may pass', async () => {
     const h = inventoryHost(new RetainedResumeError(new Error('runner not ready'), false, []));
