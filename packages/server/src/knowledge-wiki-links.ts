@@ -132,7 +132,9 @@ function rewrittenHref(
   return formatHref(parsed, path);
 }
 
-const INLINE_LINK = /!?\[[^\]]*\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)/dg;
+// A bare destination may hold balanced parentheses, as `notes(1).md`; cut at
+// the first `)` instead, a moved page's own link would be rewritten half-read.
+const INLINE_LINK = /!?\[[^\]]*\]\(\s*(<[^>]*>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+"[^"]*")?\s*\)/dg;
 const REFERENCE_DEFINITION = /^ {0,3}\[[^\]]+\]:[ \t]*(<[^>]*>|\S+)/d;
 const FENCE = /^\s*(```|~~~)/;
 

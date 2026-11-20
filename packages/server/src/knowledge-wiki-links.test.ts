@@ -77,6 +77,14 @@ describe('rewritePageLinks', () => {
     );
   });
 
+  it('reads a destination with parentheses whole, so it is rewritten whole', () => {
+    const page = 'insights/index.md';
+    const named = { from: 'insights/notes(1).md', to: 'insights/archive/notes(1).md' };
+    const { content, links } = rewritePageLinks('[Notes](notes(1).md)', page, page, named);
+    expect(links).toBe(1);
+    expect(targets(content, page)).toEqual([named.to]);
+  });
+
   it("keeps a moved page's own links reaching what they reached", () => {
     const before = '[Sibling](other.md) [Up](../index.md#top) [Source](../../sources/a.pdf)';
     const { content, links } = rewritePageLinks(before, move.from, move.to, move);

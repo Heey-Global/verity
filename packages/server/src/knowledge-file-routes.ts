@@ -124,7 +124,8 @@ function knowledgeHandlers(deps: KnowledgeFileRouteDeps, resolveScope: ScopeReso
           }),
         );
       } catch {
-        outcome.warning = 'Moved. Links to it in other Wiki pages could not be updated.';
+        outcome.warning =
+          'Done. Links to it in other Wiki pages could not be updated; check them by hand.';
       }
     };
     return { outcome, hook };

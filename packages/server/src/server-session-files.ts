@@ -290,7 +290,7 @@ export function registerServerSessionFiles(
       return undefined;
     } catch (err) {
       app.log.warn({ err, path: move.to }, 'wiki link update after a move failed');
-      return 'Moved. Links in other Wiki pages could not all be updated; check them by hand.';
+      return 'Done. Links in other Wiki pages could not all be updated; check them by hand.';
     }
   };
 
