@@ -143,3 +143,28 @@ it('keeps the reviewed target selected when another stale request becomes oldest
     }),
   );
 });
+
+it('requires explicit reopening of an expired request from an older server', async () => {
+  const client = clientMock();
+  client.getProjectEgress.mockResolvedValue({
+    ...policy,
+    requests: { target: { ...request, expiresAt: Date.now() - 1 } },
+  });
+  render(<NetworkApprovalPrompt client={client as unknown as VerityClient} projectId="p1" />);
+  await screen.findByText(/This request expired/);
+  expect(screen.queryByText('Allow for one hour')).toBeNull();
+  expect(screen.queryByText('Deny')).toBeNull();
+  client.getProjectEgress.mockResolvedValue({
+    ...policy,
+    requests: { target: { ...request, id: 'reopened', expiresAt: Date.now() + 60000 } },
+  });
+  fireEvent.press(screen.getByText('Review current request'));
+  await waitFor(() =>
+    expect(client.reopenProjectEgress).toHaveBeenCalledWith('p1', {
+      target: request.target,
+      revision: policy.revision,
+    }),
+  );
+  await screen.findByText('Allow for one hour');
+  expect(client.decideProjectEgress).not.toHaveBeenCalled();
+});

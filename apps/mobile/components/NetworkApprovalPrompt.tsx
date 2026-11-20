@@ -122,7 +122,8 @@ export function NetworkApprovalPrompt({
   };
 
   if (!request && !error) return null;
-  const stale = request !== undefined && request.revision !== policy?.revision;
+  const expired = request?.expiresAt != null && request.expiresAt <= Date.now();
+  const stale = request !== undefined && (request.revision !== policy?.revision || expired);
   return (
     <Card attention stacked>
       <CardHead title="Network access needs your approval" />
@@ -140,7 +141,9 @@ export function NetworkApprovalPrompt({
           {stale ? (
             <>
               <Text tone="attention">
-                Network rules changed. Review this request again before approving it.
+                {expired
+                  ? 'This request expired. Review it again before approving it.'
+                  : 'Network rules changed. Review this request again before approving it.'}
               </Text>
               <Button
                 label="Review current request"
