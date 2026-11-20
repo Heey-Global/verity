@@ -357,6 +357,29 @@ describe('a Sandbox parked by a recreate the Server did not finish', () => {
 
   // A container under the Sandbox name, even a stopped one, is newer than the
   // parked Sandbox. Restoring would delete it and silently undo the update.
+  it('preserves a provision registered while reconciliation inspects the live name', async () => {
+    const id = await seedActiveProject();
+    const docker = statefulDocker(id);
+    parkedSandbox(docker);
+    const relay = sleepingRelay();
+    const provisioner = provisionerFor({ docker, relay: relay.control });
+    const tracking = (
+      provisioner as unknown as {
+        inFlightProvisions: Map<string, Promise<unknown>>;
+      }
+    ).inFlightProvisions;
+    const inFlight = new Promise(() => undefined);
+    const inspectContainer = vi.mocked(docker.client.inspectContainer).getMockImplementation()!;
+    vi.spyOn(docker.client, 'inspectContainer').mockImplementation(async (name) => {
+      if (name === CONTAINER_NAME) tracking.set(id, inFlight);
+      return inspectContainer(name);
+    });
+    await provisioner.reconcileRelays([(await ctx.store.getProject(id))!], {});
+    expect(tracking.get(id)).toBe(inFlight);
+    expect(relay.reactivate).not.toHaveBeenCalled();
+    tracking.delete(id);
+  });
+
   it('never replaces a stopped newer Sandbox with the parked one', async () => {
     const id = await seedActiveProject();
     const docker = statefulDocker(id);

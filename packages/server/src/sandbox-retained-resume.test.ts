@@ -56,6 +56,36 @@ describe('resumeRetainedSandbox', () => {
     expect(h.sandboxStarted).toHaveBeenCalledWith(project);
   });
 
+  it('rewrites the shared DNS projection for the retained relay before starting', async () => {
+    const h = host(async () => ({
+      identity: { projectId: 'p', userId: 'u', projectDefault: true, containerGeneration: 'g1' },
+      signingCapability: 's',
+      githubCapability: 'g',
+    }));
+    h.value.opts.gitSecretRoot = '/secrets';
+    h.value.opts.projectRelay.claudeGatewayUrl = () => 'https://old-relay:8443';
+    let contents = 'nameserver 10.0.0.99\n';
+    h.value.rewriteMountedSecretFile = (path, value) => {
+      if (path === '/secrets/dns/resolv.p.conf') contents = value;
+    };
+    h.startContainer.mockImplementation(async () => {
+      expect(contents).toContain('nameserver 10.0.0.7');
+      expect(contents).not.toContain('10.0.0.99');
+    });
+    await resumeRetainedSandbox(h.value, {
+      project,
+      inspect: {
+        ...inspect,
+        mounts: [{ destination: '/etc/resolv.conf', source: '/secrets/dns/resolv.p.conf' }],
+        extraHosts: ['old-relay:10.0.0.7'],
+      },
+      generation: 'g1',
+      egress: undefined,
+      commit: async () => undefined,
+    });
+    expect(h.startContainer).toHaveBeenCalledOnce();
+  });
+
   // A relay removed while its generation slept can never be reactivated; the caller
   // must learn that, not just "failed", to replace the Sandbox instead of retrying.
   it('reports a missing relay generation and stops the container again', async () => {

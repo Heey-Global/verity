@@ -3,6 +3,7 @@ import type { ProjectRecord } from '@verity/store';
 import { recordAgentGatewayProjection } from './agent-gateway-projection.js';
 import type { ContainerCommandRunner } from './devcontainer-lifecycle.js';
 import { DockerError, type ContainerInspect } from './docker.js';
+import { relayResolverAddress, sandboxResolvConf } from './gvisor-project-network.js';
 import { SIGNING_BROKER_TOKEN_HASH_LABEL } from './git-signer.js';
 import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectRelayContainerName } from './project-relay-identity.js';
@@ -23,6 +24,7 @@ const RUNNER_RUNTIME_TARGET = STANDARD_MOUNTS.runner.target;
 export interface RetainedResumeHost {
   opts: Pick<
     ProvisionerOptions,
+    | 'sandboxDnsServers'
     | 'docker'
     | 'projectRelay'
     | 'store'
@@ -115,6 +117,18 @@ export async function resumeRetainedSandbox<T>(
       const mountedDestinations = new Set(
         (inspect.mounts ?? []).map((mount) => mount.destination).filter(Boolean),
       );
+      if (mountedDestinations.has(STANDARD_MOUNTS.dns.target)) {
+        // A failed replacement overwrote this shared file with its own relay IP.
+        const servers =
+          egress === undefined && host.opts.sandboxDnsServers?.length
+            ? host.opts.sandboxDnsServers
+            : [relayResolverAddress(relay.claudeGatewayUrl(activation), inspect.extraHosts ?? [])];
+        host.rewriteMountedSecretFile(
+          join(host.opts.gitSecretRoot, 'dns', `resolv.${project.id}.conf`),
+          sandboxResolvConf(servers),
+          0o644,
+        );
+      }
       const oldSigningDigest = inspect.labels?.[SIGNING_BROKER_TOKEN_HASH_LABEL];
       if (oldSigningDigest !== undefined) {
         host.rewriteMountedSecretFile(

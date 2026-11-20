@@ -2821,11 +2821,11 @@ export class ProvisionerImpl implements Provisioner {
     };
   }
 
-  /** Restore or remove Sandboxes a recreate parked and never finished with. */
   private async reconcileRetainedSandboxes(projects: readonly ProjectRecord[]): Promise<void> {
     await reconcileRetainedSandboxes(this.replacementRollbackHost(), projects, {
       isProvisioning: (id) => this.inFlightProvisions.has(id) || this.retiringSandboxes.has(id),
       serialize: async (project, restore) => {
+        if (this.inFlightProvisions.has(project.id)) return;
         await this.trackProvision(
           project.id,
           restore().then(async () => (await this.opts.store.getProject(project.id)) ?? project),
