@@ -124,3 +124,55 @@ describe('assistant requests', () => {
     ).toMatchObject({ claimed: false });
   });
 });
+
+describe('assistant handoffs', () => {
+  const at = (minutes: number) => new Date(Date.UTC(2026, 10, 21, 12, minutes));
+  beforeEach(async () => {
+    for (const sessionId of ['t1', 't2', 't3'])
+      await ctx.store.createSession({ sessionId, worktree: `/${sessionId}`, model: 'm' });
+  });
+
+  it('lists only the turn user’s handoffs, newest first, and replaces a repeated target', async () => {
+    const base = { assistantSessionId: 'assistant', projectId: 'a', title: 'Backup' };
+    await ctx.store.assistant.recordHandoff({
+      ...base,
+      targetSessionId: 't1',
+      userId: 'u1',
+      handedOffAt: at(1),
+    });
+    await ctx.store.assistant.recordHandoff({
+      ...base,
+      targetSessionId: 't2',
+      userId: 'u2',
+      handedOffAt: at(2),
+    });
+    await ctx.store.assistant.recordHandoff({
+      ...base,
+      targetSessionId: 't3',
+      userId: 'u1',
+      handedOffAt: at(3),
+    });
+    // A second briefing to the same session starts its result window anew.
+    await ctx.store.assistant.recordHandoff({
+      ...base,
+      targetSessionId: 't1',
+      userId: 'u1',
+      title: 'Again',
+      handedOffAt: at(4),
+    });
+    const listed = await ctx.store.assistant.handoffs({ userId: 'u1', since: at(0), limit: 10 });
+    expect(listed.map((row) => [row.target_session_id, row.title])).toEqual([
+      ['t1', 'Again'],
+      ['t3', 'Backup'],
+    ]);
+    expect(
+      (await ctx.store.assistant.handoffs({ userId: 'u1', since: at(3), limit: 1 })).map(
+        (row) => row.target_session_id,
+      ),
+    ).toEqual(['t1']);
+    // Auth off records no user; those rows are not another user's.
+    expect(
+      await ctx.store.assistant.handoffs({ userId: undefined, since: at(0), limit: 10 }),
+    ).toEqual([]);
+  });
+});

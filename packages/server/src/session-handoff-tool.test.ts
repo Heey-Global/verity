@@ -87,6 +87,7 @@ function harness(
     authorizeKnowledgeCaller?: ControlPlaneSessionToolDeps['authorizeKnowledgeCaller'];
     canAccessKnowledgeTarget?: ControlPlaneSessionToolDeps['canAccessKnowledgeTarget'];
     authorizeHandoffTarget?: ControlPlaneSessionToolDeps['authorizeHandoffTarget'];
+    recordHandoff?: ControlPlaneSessionToolDeps['recordHandoff'];
   } = {},
 ) {
   const dispatchTurn = vi.fn(overrides.dispatchTurn ?? (async () => ({ queued: false })));
@@ -105,6 +106,7 @@ function harness(
     authorizeKnowledgeCaller: overrides.authorizeKnowledgeCaller,
     canAccessKnowledgeTarget: overrides.canAccessKnowledgeTarget,
     authorizeHandoffTarget: overrides.authorizeHandoffTarget,
+    recordHandoff: overrides.recordHandoff,
     getSession: async (sessionId) => {
       if (sessionId === 'control-session') return { projectId: CONTROL_PROJECT_ID };
       // A Control session from before sessions carried a project id.
@@ -448,6 +450,59 @@ describe('verity_list_sessions', () => {
 });
 
 describe('verity_session_handoff', () => {
+  it('asks the target for a short published outcome, in Verity’s own words', async () => {
+    const { tools, dispatchTurn, call } = harness();
+    await tools.handoff(
+      call({ target: { sessionId: 'sess-web' }, title: 'Backup check', briefing: 'Look.' }),
+    );
+    const { prompt, displayPrompt } = dispatchTurn.mock.calls[0]![0];
+    // The request sits in the server-written lead, before anything the caller wrote; without
+    // it a sender that cannot read the transcript never hears back.
+    for (const text of [prompt, displayPrompt])
+      expect(text.slice(0, text.indexOf('Title: '))).toContain('verity_publish_session_progress');
+  });
+
+  it('records a delivered handoff with a time taken before delivery, and no refused one', async () => {
+    const recordHandoff = vi.fn(async () => {});
+    let deliveredAt = 0;
+    const { tools, call } = harness({
+      recordHandoff,
+      dispatchTurn: async () => {
+        deliveredAt = Date.now();
+        return { queued: false };
+      },
+    });
+    await tools.handoff(
+      call({ target: { sessionId: 'sess-web' }, title: 'Backup check', briefing: 'Look.' }),
+    );
+    expect(recordHandoff).toHaveBeenCalledOnce();
+    const recorded = (recordHandoff.mock.calls[0] as unknown[])[0] as {
+      handedOffAt: Date;
+    };
+    expect(recorded).toMatchObject({
+      callerSessionId: 'control-session',
+      turnId: 'turn-1',
+      targetSessionId: 'sess-web',
+      projectId: 'website',
+      title: 'Backup check',
+    });
+    // A summary the target publishes in answer must never predate the recorded handoff.
+    expect(recorded.handedOffAt.getTime()).toBeLessThanOrEqual(deliveredAt);
+
+    const failing = harness({
+      recordHandoff,
+      dispatchTurn: async () => {
+        throw new Error('delivery failed');
+      },
+    });
+    await expect(
+      failing.tools.handoff(
+        failing.call({ target: { sessionId: 'sess-web' }, title: 'Again', briefing: 'Look.' }),
+      ),
+    ).rejects.toThrow('delivery failed');
+    expect(recordHandoff).toHaveBeenCalledOnce();
+  });
+
   it('delivers the briefing wrapped as agent material and reports it ran immediately', async () => {
     const { tools, dispatchTurn, call } = harness();
     await expect(

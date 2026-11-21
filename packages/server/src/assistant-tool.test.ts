@@ -4,6 +4,7 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { gatewayToolNameSchema } from '@verity/secret-contracts';
 import {
   ASSISTANT_TOOLS,
+  assistantHandoffHooks,
   assistantToolRefusal,
   executeAssistantTool,
   requireAssistantGrant,
@@ -377,5 +378,112 @@ describe('assistant live meetings', () => {
       /administrators only/,
     );
     expect(start).not.toHaveBeenCalled();
+  });
+});
+
+describe('delegated results', () => {
+  const rights = { a: ['read', 'execute'], b: ['read', 'execute'] } as Record<
+    string,
+    ('read' | 'execute')[]
+  >;
+  const handoff = (targetSessionId: string, projectId: string, handedOffAt = new Date()) =>
+    assistantHandoffHooks(deps(rights)).recordHandoff!({
+      callerSessionId: 'assistant',
+      turnId: 'turn-1',
+      targetSessionId,
+      projectId,
+      title: `Check ${targetSessionId}`,
+      handedOffAt,
+    });
+  const results = async (
+    request: Record<string, unknown> = {},
+    userId: string | undefined = ADMIN,
+  ) =>
+    (
+      await executeAssistantTool(deps(rights, userId), {
+        ...call,
+        request: { action: 'delegated_results', ...request },
+      })
+    ).results as Record<string, unknown>[];
+
+  beforeEach(async () => {
+    await ctx.store.assistant.setGrant('a', ADMIN, 'delegate');
+    await ctx.store.assistant.setGrant('b', ADMIN, 'delegate');
+    for (const sessionId of ['t1', 't2', 'other'])
+      await ctx.store.createSession({ sessionId, worktree: `/${sessionId}`, model: 'm' });
+  });
+
+  it('records only the assistant’s own handoffs', async () => {
+    await assistantHandoffHooks(deps(rights)).recordHandoff!({
+      callerSessionId: 'control',
+      turnId: 'turn-1',
+      targetSessionId: 'other',
+      projectId: 'a',
+      title: 'Not the assistant',
+      handedOffAt: new Date(),
+    });
+    expect(
+      await ctx.store.assistant.handoffs({ userId: ADMIN, since: new Date(0), limit: 10 }),
+    ).toEqual([]);
+  });
+
+  it('reports the published outcome after the handoff and nothing from before it', async () => {
+    // Published before the briefing: an answer to something else, never this handoff's result.
+    await ctx.store.appendEvent('t2', {
+      t: 'session_progress',
+      summary: 'Old news',
+      outcomeDelivered: true,
+    });
+    await handoff('t1', 'a', new Date(Date.now() - 60_000));
+    await handoff('t2', 'b', new Date(Date.now() + 60_000));
+    await ctx.store.appendEvent('t1', {
+      t: 'session_progress',
+      summary:
+        'Documents are excluded from the backup. Token ghp_abcdefghijklmnopqrstuvwxyz0123456789 rotated.',
+      outcomeDelivered: true,
+      requiredDecision: 'Keep the old archive?',
+    });
+    const listed = await results();
+    expect(listed).toEqual([
+      expect.objectContaining({ sessionId: 't2', project: 'team/b', state: 'pending' }),
+      expect.objectContaining({
+        sessionId: 't1',
+        project: 'team/a',
+        title: 'Check t1',
+        state: 'reported',
+        outcomeDelivered: true,
+        requiredDecision: 'Keep the old archive?',
+      }),
+    ]);
+    // Published text is another agent's and is redacted like every observation read.
+    expect(listed[1]!.summary).toMatch(/^Documents are excluded from the backup\./u);
+    expect(listed[1]!.summary).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789');
+    // Only the bounded published fields leave the session.
+    expect(Object.keys(listed[1]!).sort()).toEqual(
+      [
+        'handedOffAt',
+        'outcomeDelivered',
+        'project',
+        'publishedAt',
+        'requiredDecision',
+        'sessionId',
+        'state',
+        'summary',
+        'title',
+      ].sort(),
+    );
+    expect(await results({ sessionId: 't2' })).toEqual([
+      expect.objectContaining({ sessionId: 't2', state: 'pending' }),
+    ]);
+  });
+
+  it('hides handoffs of other users, revoked grants and sessions it never briefed', async () => {
+    await handoff('t1', 'a');
+    await handoff('t2', 'b');
+    expect(await results({}, 'someone-else')).toEqual([]);
+    await ctx.store.assistant.setGrant('b', ADMIN, 'off');
+    expect((await results()).map((entry) => entry.sessionId)).toEqual(['t1']);
+    await expect(results({ sessionId: 't2' })).rejects.toThrow(/No recent handoff/);
+    await expect(results({ sessionId: 'other' })).rejects.toThrow(/No recent handoff/);
   });
 });
