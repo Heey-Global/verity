@@ -76,7 +76,9 @@ Supported starting workflows:
   Merging is never admitted: GitHub `mergePullRequest`, REST
   `PUT /pulls/:n/merge` and Forgejo `POST /pulls/:n/merge` are refused for every
   agent, and the sandbox `gh pr merge` explains why. Only a person merges, through
-  the app's server-side merge routes, which do not use this broker. Narrow schema
+  the app's server-side merge routes, which do not use this broker. The broker
+  does not inspect Git push ref updates, so a direct push to the default branch
+  is only stopped by branch protection on the code host; keep it enabled. Narrow schema
   field-name probes for PullRequest, StatusCheckRollupContextConnection, and
   WorkflowRun support gh compatibility; other introspection is rejected.
 - `gh api` for the admitted repository metadata, branches/commits/compare,
