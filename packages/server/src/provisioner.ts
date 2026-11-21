@@ -66,6 +66,11 @@ import { mkdir as mkdirDocumentRoot } from 'node:fs/promises';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
 import {
+  captureDevcontainerBuildEvidence,
+  buildSourceCheck,
+  checkoutBuildCommit,
+} from './devcontainer-build-evidence.js';
+import {
   createDevcontainerBuildSnapshot,
   type DevcontainerBuildSnapshot,
   DEVCONTAINER_BASE_IMAGE_ARG,
@@ -805,6 +810,7 @@ export interface ProvisioningDirectory {
 }
 
 interface ProjectImage {
+  assertSourceUnchanged?: () => Promise<void>;
   imageRef: string;
   usesDevcontainerImage: boolean;
   usesConfiguredOverride: boolean;
@@ -5265,6 +5271,7 @@ export class ProvisionerImpl implements Provisioner {
     let preflightComplete = false,
       recoveryStarted = false;
     const beforeRetire = async () => {
+      await replacementImage.assertSourceUnchanged?.();
       checkRecovery = await this.opts.sandboxUpdateRecovery?.capture(project.id);
       this.resolveRelayClaudeGateway(project);
       const egress = await this.egressFor();
@@ -7412,6 +7419,8 @@ export class ProvisionerImpl implements Provisioner {
           }
         }
         if (devcontainerRuntime.postCreateCommand === undefined) {
+          lifecycleFailureLabel = 'build input consistency';
+          await image.assertSourceUnchanged?.();
           return await sandbox.activate(image.imageRef, recordedToolkitIdentity, provisionWarning);
         }
         let installLockWaitSeconds = NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS;
@@ -7434,6 +7443,8 @@ export class ProvisionerImpl implements Provisioner {
             }
           });
         }
+        lifecycleFailureLabel = 'build input consistency';
+        await image.assertSourceUnchanged?.();
         lifecycleFailureLabel = 'postCreateCommand';
         await this.containerCommand({
           containerName: dirs.containerName,
@@ -7719,13 +7730,10 @@ export class ProvisionerImpl implements Provisioner {
           registryToken = undefined;
         }
       }
-      // Build the derived image onto the target daemon. A non-zero exit rejects
-      // with the build stderr, which the caller truncates into provision_error.
-      // After the cache check, into the private copy only: the hash above was
-      // computed over the project's own configuration.
+      // Capture source evidence before injecting the server's pinned base.
+      const evidence = await captureDevcontainerBuildEvidence(snapshot);
       if (pinsBase) pinDevcontainerBaseImage(snapshot, baseImageRef);
-      // Only claim a base we can identify: Dockerfile/Compose bases and variable
-      // substitutions require resolution by the builder and remain unknown here.
+      // Bases requiring builder resolution remain unknown here.
       const rawConfig = readDevcontainerJson(snapshotDevcontainerDir);
       const configuredImage =
         rawConfig === undefined ? undefined : topLevelJsonValue(rawConfig, 'image');
@@ -7740,15 +7748,15 @@ export class ProvisionerImpl implements Provisioner {
             )
           ? directImage
           : null;
-      // No build without a recorded intent: this throws before anything runs when
-      // audit storage is unavailable (ADR 0028).
+      // No build without a recorded intent (ADR 0028).
       const audit = await this.opts.audit?.beginBuild({
         projectId: project.id,
         projectLabel: `${project.owner}/${project.repo}`,
         initiator,
         imageTag: derivedTag,
         forceRebuild,
-        commit: await this.checkoutCommit(dirs.clonePath),
+        commit: await checkoutBuildCommit((args) => this.git(args), dirs.clonePath),
+        snapshotFingerprint: evidence.fingerprint,
         baseImageRef: auditBaseImageRef,
         configFingerprint: hash,
         features: [DEVCONTAINER_NODE_FEATURE_REF, feature.ref],
@@ -7805,6 +7813,10 @@ export class ProvisionerImpl implements Provisioner {
         imageRef: derivedTag,
         usesDevcontainerImage: true,
         usesConfiguredOverride: !usesDefaultImage,
+        assertSourceUnchanged: buildSourceCheck(evidence, dirs.clonePath, this.opts.buildStorage, {
+          label: `${project.owner}/${project.repo}`,
+          projectId: project.id,
+        }),
       };
     } finally {
       try {
@@ -7860,18 +7872,6 @@ export class ProvisionerImpl implements Provisioner {
         : undefined;
     } catch {
       return undefined;
-    }
-  }
-
-  /** The checked-out commit a build reads from; null when the clone has none. */
-  private async checkoutCommit(clonePath: string): Promise<string | null> {
-    try {
-      const head = (
-        await this.git(['-C', clonePath, 'rev-parse', '--verify', 'HEAD'])
-      ).stdout.trim();
-      return /^[0-9a-f]{7,64}$/.test(head) ? head : null;
-    } catch {
-      return null;
     }
   }
 
