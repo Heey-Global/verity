@@ -542,14 +542,13 @@ export function ProjectWork({
   };
   const tileOf = (session: SessionSummary) =>
     sessionTile({ ...session, pr: session.pr ?? session.pullRequest });
-  const agentOf = (session: SessionSummary) => {
+  // Active work owns the status mark until the agent finishes.
+  const activityOf = (session: SessionSummary) => {
     const working = isActive(session);
-    return sessionAgentMark({
-      status: session.status,
-      working,
-      unread: !working && unreadIds.has(session.sessionId),
-    });
+    return { working, unread: !working && unreadIds.has(session.sessionId) };
   };
+  const agentOf = (session: SessionSummary) =>
+    sessionAgentMark({ status: session.status, ...activityOf(session) });
 
   const sessionRow = (
     session: SessionSummary,
@@ -565,9 +564,7 @@ export function ProjectWork({
   ) => {
     const needs = waiting?.needs === true;
     const label = sessionLabel(session);
-    const working = isActive(session);
-    // Active work owns the status mark until the agent finishes.
-    const unread = !working && unreadIds.has(session.sessionId);
+    const { working, unread } = activityOf(session);
     const context = overview ? projects.find((p) => p.id === session.projectId) : undefined;
     const subtitle = waiting?.subtitle ?? workSubtitle(session, unread);
     const displaySubtitle = context
@@ -575,7 +572,7 @@ export function ProjectWork({
       : subtitle;
     const item = waiting?.item;
     const tile = tileOf(session);
-    const agent = agentOf(session);
+    const agent = sessionAgentMark({ status: session.status, working, unread });
     const statusTag =
       waiting !== undefined
         ? { label: waiting.tag, intent: waiting.intent }
