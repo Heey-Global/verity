@@ -483,7 +483,7 @@ export async function buildEmbeddedServer(
   } = createEmbeddedGitHub(config, eventStore);
   const forgeRepositoryAccess = createEmbeddedRepositoryAccess(eventStore);
   const forgeForWorktree = createEmbeddedWorktreeForge(config, eventStore, githubForge);
-  const { readProjectStatus, invalidateProjectStatus, projectPullRequests } =
+  const { readProjectStatus, forgeStatusDeps, projectPullRequests } =
     createEmbeddedRepositoryPullRequests(eventStore, githubForge);
   const readWorktreeStatus = createEmbeddedWorktreeStatus(
     eventStore,
@@ -1914,7 +1914,7 @@ export async function buildEmbeddedServer(
     branchPr: async (b: string, wt: string) =>
       (await forgeForWorktree(wt))?.prServiceFor(wt).prForBranch(b) ?? null,
     branchPrStatus: readWorktreeStatus,
-    invalidateProjectPrStatus: invalidateProjectStatus,
+    ...forgeStatusDeps,
     branchPrStatusForBranches: async (bs: readonly string[], wt: string) => {
       const values = [];
       for (const branch of bs) values.push(await readWorktreeStatus(branch, wt));

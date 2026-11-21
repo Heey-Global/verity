@@ -1,6 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { assistantRequestSchema, type AssistantRequest } from '@verity/events';
-import type { AssistantMode, AssistantSettings, EventStore } from '@verity/store';
+import {
+  ASSISTANT_GRANT_INSTRUCTIONS,
+  ASSISTANT_GRANT_LABELS,
+  ASSISTANT_GRANT_PATH,
+  assistantRequestSchema,
+  DELEGATED_RESULTS_MAX_AGE_DAYS,
+  DELEGATED_RESULTS_MAX_ENTRIES,
+  type AssistantRequest,
+} from '@verity/events';
+import type {
+  AssistantHandoff,
+  AssistantMode,
+  AssistantSettings,
+  EventStore,
+  SequencedEvent,
+} from '@verity/store';
 import { OnlineMeetingStartError } from './attendee-meetings.js';
 import {
   CalendarEventAlreadyJoinedError,
@@ -17,7 +31,10 @@ import {
 import {
   ControlPlaneSessionAuthorityError,
   ControlPlaneSessionToolError,
+  SESSION_HANDOFF_TRANSCRIPT_LABEL,
+  type ControlPlaneSessionToolDeps,
 } from './session-handoff-tool.js';
+import { redactSessionObservationText } from './session-observation.js';
 
 export interface AssistantToolDeps {
   eventStore: EventStore;
@@ -110,10 +127,150 @@ export async function requireAssistantGrant(
   )
     throw new ControlPlaneSessionAuthorityError(
       needed === 'delegate'
-        ? `The assistant may not hand work to project ${input.projectId}. Grant "Tasks and sessions" in its Agents settings.`
-        : `The assistant has no access to project ${input.projectId}. Grant access in its Agents settings.`,
+        ? `The assistant may not hand work to project ${input.projectId}. The user can choose "${ASSISTANT_GRANT_LABELS.delegate}" in that project's ${ASSISTANT_GRANT_PATH}.`
+        : `The assistant has no access to project ${input.projectId}. The user can choose "${ASSISTANT_GRANT_LABELS.tasks}" or "${ASSISTANT_GRANT_LABELS.delegate}" in that project's ${ASSISTANT_GRANT_PATH}.`,
     );
   return { userId: initiator?.userId, projectName: `${project.owner}/${project.repo}` };
+}
+
+/**
+ * The assistant's side of `verity_session_handoff`. Plain Control sessions keep their reach;
+ * the assistant needs a "delegate" grant, and each briefing it delivers is recorded so
+ * "delegated_results" can later read that session's published outcome — and nothing else.
+ */
+export function assistantHandoffHooks(
+  deps: AssistantToolDeps,
+): Pick<ControlPlaneSessionToolDeps, 'authorizeHandoffTarget' | 'recordHandoff'> {
+  const isAssistant = async (sessionId: string) =>
+    (await deps.eventStore.assistant.settings()).session_id === sessionId;
+  return {
+    authorizeHandoffTarget: async (input) => {
+      if (await isAssistant(input.sessionId)) await requireAssistantGrant(deps, input, 'delegate');
+    },
+    recordHandoff: async (input) => {
+      if (!(await isAssistant(input.callerSessionId))) return;
+      const initiator = await deps.initiator(input.callerSessionId, input.turnId);
+      await deps.eventStore.assistant.recordHandoff({
+        targetSessionId: input.targetSessionId,
+        assistantSessionId: input.callerSessionId,
+        projectId: input.projectId,
+        userId: initiator?.userId,
+        title: input.title,
+        handedOffAt: input.handedOffAt,
+      });
+    },
+  };
+}
+
+/** How many of a target's newest events are searched for its published outcome. A summary
+ *  buried deeper than that reads as "pending" rather than costing an unbounded log read. */
+const DELEGATED_RESULT_EVENT_WINDOW = 500;
+/** Event times come from the database, the handoff time from this process. */
+const CLOCK_SKEW_MS = 5_000;
+
+/** A `session_progress` event as the store returns it. */
+type PublishedOutcome = SequencedEvent & {
+  event: Extract<SequencedEvent['event'], { t: 'session_progress' }>;
+};
+
+/**
+ * The outcome a briefed session published for this handoff, or undefined while it has none.
+ * Shared by "delegated_results" and the announcement of results to the user, so both credit
+ * exactly the same publication.
+ */
+export async function readDelegatedOutcome(
+  deps: Pick<AssistantToolDeps, 'eventStore'>,
+  handoff: AssistantHandoff,
+): Promise<PublishedOutcome | undefined> {
+  const since = handoff.handed_off_at.getTime();
+  const { events } = await deps.eventStore.getEventsBeforeSeq(
+    handoff.target_session_id,
+    DELEGATED_RESULT_EVENT_WINDOW,
+  );
+  // Anchored on the briefing's own prompt, not on the time alone: a busy target queues the
+  // briefing, and what its running turn publishes meanwhile answers something else. The
+  // window ends at the next handoff into that session, whose result is another sender's.
+  // Operator turns in between stay inside it: they often finish the briefed work.
+  const isHandoff = (event: (typeof events)[number]['event']) =>
+    event.t === 'prompt' && event.text.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL);
+  const briefing = events.findIndex(
+    ({ ts, event }) =>
+      ts >= since - CLOCK_SKEW_MS &&
+      isHandoff(event) &&
+      event.t === 'prompt' &&
+      event.text.includes(`\n\nTitle: ${handoff.title}\n\n`),
+  );
+  const next =
+    briefing < 0 ? -1 : events.findIndex((item, i) => i > briefing && isHandoff(item.event));
+  const found =
+    briefing < 0
+      ? undefined
+      : events
+          .slice(briefing + 1, next < 0 ? undefined : next)
+          .findLast((item): item is PublishedOutcome => item.event.t === 'session_progress');
+  return found;
+}
+
+/**
+ * What the sessions the assistant briefed have reported back since. Only the bounded,
+ * credential-redacted fields a session publishes through `verity_publish_session_progress`
+ * leave it — never transcript text — and only for handoffs made for this turn's user into
+ * projects still granted to the assistant and readable by that user.
+ */
+async function delegatedResults(
+  deps: AssistantToolDeps,
+  input: { sessionId: string; turnId: string },
+  sessionId: string | undefined,
+) {
+  const initiator = await deps.initiator(input.sessionId, input.turnId);
+  const projects = new Map(
+    (await assistantProjectsFor(deps, initiator?.userId)).map((project) => [
+      project.projectId,
+      project.name,
+    ]),
+  );
+  const handoffs = (
+    await deps.eventStore.assistant.handoffs({
+      userId: initiator?.userId,
+      since: new Date(Date.now() - DELEGATED_RESULTS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000),
+      // Over-fetched: grants are filtered below, and a revoked project must not take a slot.
+      limit: 1_000,
+    })
+  ).filter(
+    (handoff) =>
+      projects.has(handoff.project_id) &&
+      (sessionId === undefined || handoff.target_session_id === sessionId),
+  );
+  if (sessionId !== undefined && handoffs.length === 0)
+    throw new ControlPlaneSessionToolError(
+      `No recent handoff of yours went to session ${sessionId}.`,
+    );
+  const results = [];
+  for (const handoff of handoffs.slice(0, DELEGATED_RESULTS_MAX_ENTRIES)) {
+    const found = await readDelegatedOutcome(deps, handoff);
+    const published = found?.event;
+    results.push({
+      sessionId: handoff.target_session_id,
+      project: projects.get(handoff.project_id)!,
+      title: handoff.title,
+      handedOffAt: handoff.handed_off_at.toISOString(),
+      ...(published?.t === 'session_progress'
+        ? {
+            state: 'reported',
+            publishedAt: new Date(found!.ts).toISOString(),
+            outcomeDelivered: published.outcomeDelivered,
+            summary: redactSessionObservationText(published.summary),
+            ...(published.blocker === undefined
+              ? {}
+              : { blocker: redactSessionObservationText(published.blocker) }),
+            ...(published.requiredDecision === undefined
+              ? {}
+              : { requiredDecision: redactSessionObservationText(published.requiredDecision) }),
+          }
+        : { state: 'pending' }),
+    });
+  }
+  return results;
 }
 
 /** The projects granted to the assistant that the turn's user may still read. */
@@ -280,8 +437,16 @@ export async function executeAssistantTool(
 ): Promise<Record<string, unknown>> {
   await requireAssistantSession(deps.eventStore, input.sessionId);
   const request = assistantRequestSchema.parse(input.request);
-  if (request.action === 'projects') return { projects: await grantedProjects(deps, input) };
+  // grantHelp is fixed text: projects without a grant stay unnamed, so the assistant learns
+  // how a project is granted without learning which other projects exist.
+  if (request.action === 'projects')
+    return {
+      projects: await grantedProjects(deps, input),
+      grantHelp: `Projects not listed here are not granted to you, or do not exist. ${ASSISTANT_GRANT_INSTRUCTIONS}`,
+    };
   if (request.action === 'scheduling') return { requests: await schedulingOverview(deps, input) };
+  if (request.action === 'delegated_results')
+    return { results: await delegatedResults(deps, input, request.sessionId) };
   if (
     request.action === 'meetings' ||
     request.action === 'prepare_meeting' ||

@@ -49,7 +49,7 @@ it.each(['', fixture + ',' + fixture, fixture.replace('trust_level', 'renamed_tr
   },
 );
 
-it.each(['2.5.0', '2.6.1', '99.0.0'])(
+it.each(['2.5.0', '2.6.0', '2.6.1', '2.7.1', '99.0.0'])(
   'requires the pinned adapter to match the audited security version (rejects %s)',
   (version) => {
     const manifest = JSON.parse(
@@ -80,6 +80,18 @@ it.each(['2.5.0', '2.6.1', '99.0.0'])(
 it('hardens the installed pinned adapter rather than only a source fixture', () => {
   const require = createRequire(import.meta.url);
   const entry = require.resolve('@agentclientprotocol/codex-acp');
+  const installed = JSON.parse(
+    readFileSync(require.resolve('@agentclientprotocol/codex-acp/package.json'), 'utf8'),
+  ) as { version: string };
+  const manifest = JSON.parse(
+    readFileSync(
+      new URL('../features/verity-sandbox-toolkit/npm/codex-acp/package.json', import.meta.url),
+      'utf8',
+    ),
+  ) as { dependencies: Record<string, string> };
+  // A stale local adapter would otherwise validate the previous release's patch.
+  expect(installed.version).toBe(manifest.dependencies['@agentclientprotocol/codex-acp']);
+
   const result = spawnSync(
     process.execPath,
     [

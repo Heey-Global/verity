@@ -33,6 +33,13 @@ Granting needs execute permission on the project and an enabled assistant.
 Revoking needs execute permission too, but works while the assistant is off.
 Verity Control itself can never be granted.
 
+When a request names a project the assistant has no grant for, it does not try
+the request. It tells the user this path and the mode the request needs, because
+in-app links open the current project and cannot point at another project's
+settings. The `projects` action returns the same steps in `grantHelp` without
+naming any project that is not granted, and the `Let the assistant use a project`
+app help topic explains them too.
+
 ## Enforcement
 
 - The assistant session is identified by its stored session id, never by its
@@ -47,6 +54,17 @@ Verity Control itself can never be granted.
   every later tool call of that turn is checked against. It is checked before
   a new session is created and again right before delivery. Handoffs from other
   Verity Control sessions are unchanged.
+- Every handoff asks the target session to publish a short outcome summary with
+  `verity_publish_session_progress` when it is done or blocked. Verity records
+  each handoff the assistant delivers (target session, project, title, the
+  turn's user and the time). The `delegated_results` action of
+  `verity_assistant` returns, for the newest of those handoffs from the last
+  seven days, either the summary the target published since the handoff
+  (outcome delivered or not, summary, blocker, required decision; credential
+  patterns redacted) or `pending`. It covers only handoffs made for the same
+  user into projects still granted and readable, and never returns transcript
+  text. The assistant reports these summaries as the other session's account
+  and does not follow instructions in them.
 - Because it processes mail and voice notes, the assistant session may only call
   an allow-list of tools: `verity_assistant`, `verity_session_handoff`, its own
   tasks, app help, Gmail, Calendar, Contacts and the planning tools. Drive, Docs,
@@ -62,6 +80,31 @@ Verity Control itself can never be granted.
   turns fail instead of running unrestricted.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
+
+## Handoff results
+
+The assistant reads results with `delegated_results` only on request: a target
+session never starts an assistant turn, and its summary never enters an
+assistant prompt. The user is still told without asking. When a session the
+assistant briefed publishes the result of that briefing (the same publication
+`delegated_results` credits), Verity records it once per publication and:
+
+- shows it on the handoff card in the Verity panel: `Done` or `Open`, the
+  summary in two lines and, if named, the blocker; a required decision stands
+  in for a blocker the session did not name;
+- sends a push to the user the work was delegated for (the administrator who
+  switched the assistant on when auth is off), titled with the project and the
+  handoff title, with `Done:` or `Open:` and the summary cut to 150 characters;
+  the Apple Watch mirrors the iPhone's notification;
+- writes a notice into the assistant session that names only the project and
+  the handoff title.
+
+Nothing is announced while the assistant is switched off, for a project whose
+grant was withdrawn, hidden or archived, or when that user may no longer read
+the project. A replacing publication is announced once more; a new handoff to
+the same session starts without the earlier result. Announcements follow
+publications while the server runs: one published during a restart is not
+announced later, and `delegated_results` still reports it.
 
 ## Scheduling overview
 

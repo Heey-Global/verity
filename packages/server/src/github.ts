@@ -104,6 +104,26 @@ export interface GitHubPrServiceOptions {
   timeoutMs?: number;
   /** Clock seam (tests). */
   now?: () => number;
+  /** Conditional-request validators shared beyond this service's lifetime. A new
+   * observation scope creates a new service; with a private cache every scope
+   * change turned free 304 revalidations into full-cost requests. */
+  responseCache?: GitHubResponseCache;
+}
+
+/** ETag validators keyed by credential hash and URL; never holds a raw token. */
+export type GitHubResponseCache = Map<string, { etag: string; body: unknown }>;
+
+export function createGitHubResponseCache(limit = 2048): GitHubResponseCache {
+  return new GitHubPollCache<string, { etag: string; body: unknown }>(limit);
+}
+
+/** Drop one repository's validators after a mutation such as a merge. */
+function forgetRepositoryResponses(cache: GitHubResponseCache, owner: string, repo: string): void {
+  const prefix = `https://api.github.com/repos/${owner}/${repo}/`.toLowerCase();
+  for (const key of [...cache.keys()]) {
+    const url = key.slice(key.indexOf('\0') + 1);
+    if (url.toLowerCase().startsWith(prefix)) cache.delete(key);
+  }
 }
 
 /**
@@ -284,7 +304,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
   // GitHub answers 304. PR polling repeatedly reads the same small set of URLs, so
   // retaining each response's ETag avoids spending several requests per session on
   // unchanged data while preserving the existing refresh cadence.
-  const responseCache = new GitHubPollCache<string, { etag: string; body: unknown }>();
+  const responseCache = opts.responseCache ?? createGitHubResponseCache(512);
   const credentialId = (token: string): string =>
     createHash('sha256').update(token).digest('base64url');
   const emptyChecks = { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 };
@@ -848,7 +868,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
           const mergedAt = (body as Record<string, unknown>).merged_at;
           if (typeof mergedAt !== 'string' || mergedAt.length === 0) return false;
           cache.clear();
-          responseCache.clear();
+          forgetRepositoryResponses(responseCache, id.owner, id.repo);
           return true;
         } catch {
           return false;
@@ -872,7 +892,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
           return false;
         }
         cache.clear();
-        responseCache.clear();
+        forgetRepositoryResponses(responseCache, id.owner, id.repo);
         return true;
       } catch (error) {
         if (error instanceof ForgeMergePermissionError) throw error;

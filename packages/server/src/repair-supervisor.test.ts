@@ -76,6 +76,22 @@ function harness() {
   return { deps, observation, supervisor: createRepairSupervisor(deps) };
 }
 describe('repair supervision', () => {
+  it('skips repository discovery while the forge quota is reserved for interactive reads', async () => {
+    await ctx.store.repairs.configure('a', 'user', 'monitor');
+    const h = harness();
+    // Background monitoring spending the last quota left agents without CI status.
+    const deferred = vi.fn(async () => true);
+    await createRepairSupervisor({ ...h.deps, deferred }).sweep();
+    expect(deferred).toHaveBeenCalledWith('a');
+    expect(h.deps.discover).not.toHaveBeenCalled();
+    deferred.mockResolvedValue(false);
+    await createRepairSupervisor({ ...h.deps, deferred }).sweep();
+    expect(h.deps.discover).toHaveBeenCalledTimes(1);
+    // A failing quota check forgoes the deferral instead of aborting the sweep.
+    deferred.mockRejectedValue(new Error('provider unavailable'));
+    await createRepairSupervisor({ ...h.deps, deferred }).sweep();
+    expect(h.deps.discover).toHaveBeenCalledTimes(2);
+  });
   it('discovers a sessionless Renovate failure without running agents in monitor mode', async () => {
     await ctx.store.repairs.configure('a', 'user', 'monitor');
     const h = harness();

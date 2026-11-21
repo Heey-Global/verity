@@ -257,6 +257,9 @@ export type {
 export {
   AssistantStore,
   type AssistantGrant,
+  type AssistantHandoff,
+  type AssistantHandoffResult,
+  ASSISTANT_HANDOFF_SUMMARY_MAX,
   type AssistantMode,
   type AssistantRequest,
   type AssistantRequestClaim,
