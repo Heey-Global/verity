@@ -487,6 +487,20 @@ describe('delegated results', () => {
         'title',
       ].sort(),
     );
+    // A later handoff from another sender opens a window whose result is not this one's.
+    await ctx.store.appendEvent('t1', {
+      t: 'prompt',
+      text: [SESSION_HANDOFF_TRANSCRIPT_LABEL, 'Title: Other work', 'Something else.'].join('\n\n'),
+    });
+    await ctx.store.appendEvent('t1', {
+      t: 'session_progress',
+      summary: 'Other work done.',
+      outcomeDelivered: true,
+    });
+    expect((await results({ sessionId: 't1' }))[0]).toMatchObject({
+      state: 'reported',
+      requiredDecision: 'Keep the old archive?',
+    });
     expect(await results({ sessionId: 't2' })).toEqual([
       expect.objectContaining({ sessionId: 't2', state: 'pending' }),
     ]);

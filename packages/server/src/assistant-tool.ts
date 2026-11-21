@@ -156,6 +156,8 @@ export function assistantHandoffHooks(
 /** How many of a target's newest events are searched for its published outcome. A summary
  *  buried deeper than that reads as "pending" rather than costing an unbounded log read. */
 const DELEGATED_RESULT_EVENT_WINDOW = 500;
+/** Event times come from the database, the handoff time from this process. */
+const CLOCK_SKEW_MS = 5_000;
 
 /**
  * What the sessions the assistant briefed have reported back since. Only the bounded,
@@ -179,7 +181,8 @@ async function delegatedResults(
     await deps.eventStore.assistant.handoffs({
       userId: initiator?.userId,
       since: new Date(Date.now() - DELEGATED_RESULTS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000),
-      limit: sessionId === undefined ? DELEGATED_RESULTS_MAX_ENTRIES : 1_000,
+      // Over-fetched: grants are filtered below, and a revoked project must not take a slot.
+      limit: 1_000,
     })
   ).filter(
     (handoff) =>
@@ -198,18 +201,26 @@ async function delegatedResults(
       DELEGATED_RESULT_EVENT_WINDOW,
     );
     // Anchored on the briefing's own prompt, not on the time alone: a busy target queues the
-    // briefing, and what its running turn publishes meanwhile answers something else.
-    const briefing = events.find(
+    // briefing, and what its running turn publishes meanwhile answers something else. The
+    // window ends at the next handoff into that session, whose result is another sender's.
+    // Operator turns in between stay inside it: they often finish the briefed work.
+    const isHandoff = (event: (typeof events)[number]['event']) =>
+      event.t === 'prompt' && event.text.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL);
+    const briefing = events.findIndex(
       ({ ts, event }) =>
-        ts >= since &&
+        ts >= since - CLOCK_SKEW_MS &&
+        isHandoff(event) &&
         event.t === 'prompt' &&
-        event.text.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL) &&
         event.text.includes(`\n\nTitle: ${handoff.title}\n\n`),
     );
+    const next =
+      briefing < 0 ? -1 : events.findIndex((item, i) => i > briefing && isHandoff(item.event));
     const found =
-      briefing === undefined
+      briefing < 0
         ? undefined
-        : events.findLast((item) => item.seq > briefing.seq && item.event.t === 'session_progress');
+        : events
+            .slice(briefing + 1, next < 0 ? undefined : next)
+            .findLast((item) => item.event.t === 'session_progress');
     const published = found?.event;
     results.push({
       sessionId: handoff.target_session_id,
