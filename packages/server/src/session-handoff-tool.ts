@@ -152,22 +152,14 @@ interface ControlPlaneSessionCall {
   request: unknown;
 }
 
-/**
- * Everything this module may know about a session. The route supplies it; the type is the
- * enforcement. Widening it is the one change that could turn the listing into a transcript
- * reader, so it should not be widened.
- *
- * Deliberately absent: `name`. A session name looks like metadata, and often is — the
- * operator typed it, or it reads `Nightly audit`. But an unnamed session is auto-titled
- * by its own model from the first prompt and reply (`Conductor.maybeAutoTitle`), and that is
- * on by default. So the field is, in the common case, a three-word summary of another
- * project's opening conversation — and listing the fleet would hand every one of them over at
- * once. That is exactly the boundary this tool is not allowed to cross, so the name is not
- * carried. Restoring it means recording where a name came from and carrying only the
- * operator-authored ones, not relaxing this.
+/** Metadata available only after the existing caller and target access checks.
+ * Names include model-generated titles and can reveal conversation context; they are
+ * untrusted display data, disclosed by the approval-gated listing, never instructions.
+ * Transcript content and other summary fields remain outside this projection.
  */
 export interface ControlPlaneSessionFacts {
   sessionId: string;
+  name: string | null;
   projectId: string | null;
   model: string;
   status: SessionStatus;
@@ -187,7 +179,7 @@ export interface ControlPlaneSessionFacts {
  */
 export interface ControlPlaneSessionEntry extends Pick<
   ControlPlaneSessionFacts,
-  'sessionId' | 'model' | 'status' | 'resumable' | 'eventCount' | 'lastActivityAt'
+  'sessionId' | 'name' | 'model' | 'status' | 'resumable' | 'eventCount' | 'lastActivityAt'
 > {
   /** The project this session belongs to. Narrower than the facts' nullable `projectId`:
    *  a session without one is never addressable and never reaches this type. */
@@ -332,9 +324,13 @@ export interface ControlPlaneSessionTools {
    * the one an operator message already lives with — a handoff is delivered exactly the way
    * they would deliver it by hand, which is why it is not allowed to demand a standalone turn.
    */
-  handoff(
-    input: ControlPlaneSessionCall,
-  ): Promise<{ sessionId: string; project: string; queued: boolean; briefingSha256: string }>;
+  handoff(input: ControlPlaneSessionCall): Promise<{
+    sessionId: string;
+    name: string | null;
+    project: string;
+    queued: boolean;
+    briefingSha256: string;
+  }>;
   progress(input: ControlPlaneSessionCall): Promise<Record<string, unknown>>;
   recentMessages(input: ControlPlaneSessionCall): Promise<Record<string, unknown>>;
   /**
@@ -690,6 +686,7 @@ export function createControlPlaneSessionTools(
     const blocker = handoffBlocker(facts, project);
     return {
       sessionId: facts.sessionId,
+      name: facts.name,
       // From the resolved project, not from the facts: the two agree by construction —
       // `addressableSessions` paired them by that id — and this is the one that cannot be
       // null, so the entry does not carry a nullable field that is never null.
@@ -782,7 +779,7 @@ export function createControlPlaneSessionTools(
 
       let target: { facts: ControlPlaneSessionFacts; project: ProjectRecord };
       if ('sessionId' in request.target) {
-        const { sessionId } = request.target;
+        const { sessionId, sessionName, sessionProject, sessionLastActivityAt } = request.target;
         const addressable = await addressableSessions(
           projects,
           (candidate) => candidate.sessionId === sessionId,
@@ -800,6 +797,32 @@ export function createControlPlaneSessionTools(
         await requireHandoffTarget(input, found.project.id);
         const blocker = handoffBlocker(found.facts, found.project);
         if (blocker !== undefined) throw new ControlPlaneSessionToolError(blocker);
+        if (sessionName !== undefined) {
+          if (
+            sessionName !== found.facts.name?.trim() ||
+            sessionProject !== `${found.project.owner}/${found.project.repo}` ||
+            sessionLastActivityAt !== found.facts.lastActivityAt
+          ) {
+            throw new ControlPlaneSessionToolError(
+              'target session name or activity changed — list sessions and confirm the target again',
+            );
+          }
+          // A matching name and timestamp must identify one accessible session in the project.
+          // Refuse collisions rather than showing indistinguishable approval cards for different IDs.
+          const peers = await addressableSessions(
+            projects,
+            (candidate) => candidate.projectId === found.project.id,
+          );
+          const matches = peers.sessions.filter(
+            ({ facts }) =>
+              facts.name?.trim() === sessionName && facts.lastActivityAt === sessionLastActivityAt,
+          );
+          if (matches.length !== 1 || matches[0]?.facts.sessionId !== sessionId) {
+            throw new ControlPlaneSessionToolError(
+              'target session display context is ambiguous or changed — rename the session or choose a new session',
+            );
+          }
+        }
         target = found;
       } else if ('newSession' in request.target) {
         const project = resolveProject(projects, request.target.newSession.project);
@@ -823,6 +846,7 @@ export function createControlPlaneSessionTools(
           project,
           facts: {
             sessionId: created.sessionId,
+            name: request.title,
             projectId: project.id,
             model: '',
             status: 'idle',
@@ -941,6 +965,7 @@ export function createControlPlaneSessionTools(
       }
       return {
         sessionId: target.facts.sessionId,
+        name: target.facts.name,
         project: `${target.project.owner}/${target.project.repo}`,
         queued,
         // Over the briefing as delivered — the schema-trimmed string that went into the

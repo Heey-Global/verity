@@ -21,7 +21,7 @@
   "packages/server/src/embedded.test.ts": 3496,
   "packages/server/src/embedded.ts": 2780,
   "packages/server/src/github.test.ts": 1659,
-  "packages/server/src/mcp-gateway-route.test.ts": 3174,
+  "packages/server/src/mcp-gateway-route.test.ts": 3172,
   "packages/server/src/preview-share-manager.test.ts": 3285,
   "packages/server/src/preview-share-manager.ts": 2155,
   "packages/server/src/provisioner.test.ts": 13770,
