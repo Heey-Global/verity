@@ -60,6 +60,7 @@ export function installRepairSupervision(
       changed: (projectId) => {
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/repairs`);
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/qa`);
+        resources.invalidate('/projects');
         void deps.eventStore.repairs
           .incidents(projectId)
           .then((incidents) => {
@@ -74,6 +75,8 @@ export function installRepairSupervision(
           .catch(() => undefined);
       },
       stopped: (projectId, issues) => {
+        // Home's QA items come from the project list: refresh it before the push lands.
+        resources.invalidate('/projects');
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/qa`);
         void pushQAStopped(deps.eventStore, ctx.pushSender, projectId, issues).catch(
           (error: unknown) => app.log.warn({ error }, 'QA push failed'),

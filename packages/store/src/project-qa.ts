@@ -207,26 +207,44 @@ export class ProjectQAStore {
 
   /** Groups incidents QA found to share one cause under the first one's issue. */
   async group(projectId: string, incidentIds: readonly string[]): Promise<boolean> {
-    if (incidentIds.length < 2) return false;
-    return this.db.transaction().execute(async (trx) => {
-      const target = (
-        await sql<{
-          issue_id: string | null;
-        }>`select issue_id from repair_incidents where id = ${incidentIds[0]!} and project_id = ${projectId}`.execute(
-          trx,
+    const ids = [...new Set(incidentIds)];
+    if (ids.length < 2) return false;
+    const refused = new Error('group refused');
+    try {
+      return await this.db.transaction().execute(async (trx) => {
+        const rows = (
+          await sql<{
+            id: string;
+            issue_id: string | null;
+            owner_session_id: string | null;
+            state: QAIssueState | null;
+          }>`select i.id, i.issue_id, i.owner_session_id, q.state from repair_incidents i left join qa_issues q on q.id = i.issue_id where i.project_id = ${projectId} and i.id in (${sql.join(ids)}) for update of i`.execute(
+            trx,
+          )
+        ).rows;
+        const target = rows.find((row) => row.id === ids[0])?.issue_id;
+        // A user's decision on an issue (stopped, deferred, taken over) is never
+        // overridden by grouping, and a group never ends up with two repairs.
+        if (
+          !target ||
+          rows.length !== ids.length ||
+          rows.some((row) => row.state !== 'open') ||
+          rows.filter((row) => row.owner_session_id !== null).length > 1
         )
-      ).rows[0]?.issue_id;
-      if (!target) return false;
-      const moved =
-        await sql`update repair_incidents set issue_id = ${target} where project_id = ${projectId} and id in (${sql.join(incidentIds)}) returning id`.execute(
+          throw refused;
+        await sql`update repair_incidents set issue_id = ${target} where project_id = ${projectId} and id in (${sql.join(ids)})`.execute(
           trx,
         );
-      // An issue left without incidents has nothing to track.
-      await sql`delete from qa_issues q where q.project_id = ${projectId} and q.id <> ${target} and not exists (select 1 from repair_incidents i where i.issue_id = q.id)`.execute(
-        trx,
-      );
-      return moved.rows.length === incidentIds.length;
-    });
+        // An issue left without incidents has nothing to track.
+        await sql`delete from qa_issues q where q.project_id = ${projectId} and q.id <> ${target} and not exists (select 1 from repair_incidents i where i.issue_id = q.id)`.execute(
+          trx,
+        );
+        return true;
+      });
+    } catch (error) {
+      if (error === refused) return false;
+      throw error;
+    }
   }
 
   /** QA stops and asks; returns false when the issue was not open. */
@@ -282,7 +300,7 @@ export class ProjectQAStore {
    * its incidents is open, and stops for the user once one ran out of rounds.
    */
   async reconcile(projectId: string): Promise<void> {
-    await sql`update qa_issues q set state = 'resolved', reason = null, updated_at = now() where q.project_id = ${projectId} and q.state in ('open', 'needs_you') and exists (select 1 from repair_incidents i where i.issue_id = q.id) and not exists (select 1 from repair_incidents i where i.issue_id = q.id and i.state not in ('resolved', 'superseded'))`.execute(
+    await sql`update qa_issues q set state = 'resolved', reason = null, updated_at = now() where q.project_id = ${projectId} and q.state in ('open', 'needs_you', 'deferred', 'taken_over') and exists (select 1 from repair_incidents i where i.issue_id = q.id) and not exists (select 1 from repair_incidents i where i.issue_id = q.id and i.state not in ('resolved', 'superseded'))`.execute(
       this.db,
     );
     await sql`update qa_issues q set state = 'needs_you', reason = 'rounds-exhausted', updated_at = now() where q.project_id = ${projectId} and q.state = 'open' and exists (select 1 from repair_incidents i where i.issue_id = q.id and i.state = 'blocked' and i.owner_session_id is null and coalesce((select used from repair_resource_budgets b where b.project_id = i.project_id and b.resource = i.resource), 0) >= ${QA_REPAIR_ROUNDS} + q.extra_rounds)`.execute(

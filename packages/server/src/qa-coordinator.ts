@@ -277,6 +277,13 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
         await settle(qa, projectId, role.session_id);
       return;
     }
+    if (role.session_id && deps.busy(role.session_id)) return;
+    const snapshot = await snapshotOf(qa, mandate);
+    await store.qaObserve(projectId, snapshot.fingerprint);
+    const pending = await store.qaPending([projectId]);
+    if (!pending.some((p) => p.fingerprint === snapshot.fingerprint)) return;
+    if (!(await active(qa.revision, projectId))) return;
+    // The session is created only once there is something to review.
     let sessionId = role.session_id;
     if (!sessionId) {
       const candidate = randomUUID();
@@ -285,11 +292,6 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
       if (!sessionId) return;
     }
     if (deps.busy(sessionId)) return;
-    const snapshot = await snapshotOf(qa, mandate);
-    await store.qaObserve(projectId, snapshot.fingerprint);
-    const pending = await store.qaPending([projectId]);
-    if (!pending.some((p) => p.fingerprint === snapshot.fingerprint)) return;
-    if (!(await active(qa.revision, projectId))) return;
     const seq = (await deps.store.listRecentSessionProjectionEvents(sessionId, 1)).at(-1)?.seq ?? 0;
     const claim = await projectQA.claimReview(
       projectId,
@@ -297,7 +299,10 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
       JSON.stringify(snapshot),
       seq,
     );
-    if (!claim) return;
+    if (!claim) {
+      await projectQA.health(projectId, 'review-not-admitted');
+      return;
+    }
     const prompt = `${REVIEW_PROMPT}\n\nObservation data:\n${JSON.stringify(snapshot).slice(0, 100000)}`;
     preparing.add(claim);
     let dispatchAttempted = false;

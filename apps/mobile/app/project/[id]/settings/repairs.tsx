@@ -82,7 +82,8 @@ export default function ProjectRepairSettingsScreen() {
             label="QA for this project"
             subtitle="On by default from the system settings"
             value={on}
-            disabled={saving || !state?.enabled || !state.coding}
+            // Opting out works ahead of time; opting in needs QA on in system settings.
+            disabled={saving || !state?.coding || (!state.enabled && !on)}
             onValueChange={(value) => void choose(value ? 'automatic' : 'off')}
           />
           {on

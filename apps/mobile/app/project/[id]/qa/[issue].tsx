@@ -5,7 +5,7 @@ import { ActivityIndicator, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { QAIssueDetail } from '../../../../components/project/ProjectQAPage';
-import { Text } from '../../../../components/ui';
+import { Button, Text } from '../../../../components/ui';
 import { SettingsMessage } from '../../../../components/settings/SettingsChrome';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
@@ -38,7 +38,16 @@ function ProjectQAIssueView({
       <Stack.Screen options={{ title: issue ? 'QA issue' : 'QA' }} />
       {qa.state === undefined ? (
         <View style={styles.centered}>
-          <ActivityIndicator color={theme.colors.text} />
+          {qa.error ? (
+            <>
+              <Text variant="body" tone="muted">
+                {qa.error}
+              </Text>
+              <Button label="Retry" variant="secondary" size="compact" onPress={qa.reload} />
+            </>
+          ) : (
+            <ActivityIndicator color={theme.colors.text} />
+          )}
         </View>
       ) : !issue ? (
         <View style={styles.centered}>
@@ -78,5 +87,5 @@ function Unavailable() {
 const styles = StyleSheet.create((theme) => ({
   root: { flex: 1, backgroundColor: theme.colors.background },
   content: { padding: theme.spacing.lg, gap: theme.spacing.sm },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: theme.spacing.md },
 }));

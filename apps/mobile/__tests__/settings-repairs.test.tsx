@@ -67,18 +67,16 @@ it('switches QA on for every coding project and lists each project with its stat
 
 it('lists projects once QA is on and opens a project QA', async () => {
   mockCreateVerityClient.mockReturnValue({
-    listProjects: jest
-      .fn()
-      .mockResolvedValue([
-        {
-          id: 'p',
-          name: 'Team App',
-          owner: 'team',
-          repo: 'app',
-          kind: 'github',
-          qaSummary: summary(),
-        },
-      ]),
+    listProjects: jest.fn().mockResolvedValue([
+      {
+        id: 'p',
+        name: 'Team App',
+        owner: 'team',
+        repo: 'app',
+        kind: 'github',
+        qaSummary: summary(),
+      },
+    ]),
     projectQA: {
       settings: jest.fn().mockResolvedValue({ enabled: true, health: 'healthy', brakeAt: null }),
     },
@@ -139,4 +137,39 @@ it('changes a project’s mode and switches its QA off', async () => {
     fireEvent(screen.getByRole('switch', { name: 'QA for this project' }), 'valueChange', false);
   });
   expect(setMode).toHaveBeenCalledWith('p', 'off');
+});
+
+it('lets a project opt out while QA is off in system settings', async () => {
+  setSearchParams({ id: 'p' });
+  const setMode = jest.fn().mockResolvedValue(undefined);
+  mockCreateVerityClient.mockReturnValue({
+    projectQA: { state: jest.fn().mockResolvedValue(state({ enabled: false })), setMode },
+  } as unknown as VerityClient);
+  render(<ProjectRepairsScreen />);
+  const toggle = await screen.findByRole('switch', { name: 'QA for this project' });
+  expect(toggle).not.toBeDisabled();
+  await act(async () => {
+    fireEvent(toggle, 'valueChange', false);
+  });
+  expect(setMode).toHaveBeenCalledWith('p', 'off');
+});
+
+it('shows projects to people who may not change the system switch', async () => {
+  mockCreateVerityClient.mockReturnValue({
+    listProjects: jest.fn().mockResolvedValue([
+      {
+        id: 'p',
+        name: 'Team App',
+        owner: 'team',
+        repo: 'app',
+        kind: 'github',
+        qaSummary: summary(),
+      },
+    ]),
+    projectQA: { settings: jest.fn().mockRejectedValue(new Error('403')) },
+  } as unknown as VerityClient);
+  render(<RepairsScreen />);
+  expect(await screen.findByText('Team App')).toBeTruthy();
+  expect(screen.getByText('Only administrators can switch QA on or off.')).toBeTruthy();
+  expect(screen.getByRole('switch', { name: 'QA in coding projects' })).toBeDisabled();
 });

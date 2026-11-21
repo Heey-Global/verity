@@ -40,9 +40,11 @@ export const projectQAMigration: Migration = {
       references qa_issues(id) on delete set null`.execute(db);
     await sql`create index repair_incidents_issue on repair_incidents(issue_id)`.execute(db);
     // Existing incidents become one issue per resource (a PR or a workflow).
-    await sql`insert into qa_issues (id, project_id, key, state)
+    // Marked as told: history from before the upgrade must not send a burst of pushes.
+    await sql`insert into qa_issues (id, project_id, key, state, notified_at)
       select md5(project_id || ':' || resource), project_id, resource,
-        case when bool_and(state in ('resolved', 'superseded')) then 'resolved' else 'open' end
+        case when bool_and(state in ('resolved', 'superseded')) then 'resolved' else 'open' end,
+        now()
       from repair_incidents group by project_id, resource`.execute(db);
     await sql`update repair_incidents set issue_id = md5(project_id || ':' || resource)`.execute(
       db,

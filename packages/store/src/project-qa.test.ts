@@ -97,6 +97,23 @@ describe('QA issues', () => {
     expect(await repairs().claim(two.id, 's2', 1)).toBeUndefined();
   });
 
+  it('never groups over a user decision or into two running repairs', async () => {
+    await repairs().configure('a', 'admin', 'automatic');
+    const one = await repairs().observe('a', 'pr:1', 'sha1', '{}');
+    const two = await repairs().observe('a', 'pr:2', 'sha2', '{}');
+    const three = await repairs().observe('a', 'pr:3', 'sha3', '{}');
+    const taken = (await qa().issues('a')).find((i) => i.key === 'pr:2')!;
+    await qa().stop('a', taken.id, 'beyond-mandate', 'mine');
+    await qa().decide('a', taken.id, 'take_over');
+    expect(await qa().group('a', [one.id, two.id])).toBe(false);
+    expect((await qa().issue('a', taken.id))?.state).toBe('taken_over');
+    expect(await repairs().claim(one.id, 's1', 1)).toBeDefined();
+    expect(await repairs().claim(three.id, 's3', 1)).toBeDefined();
+    expect(await qa().group('a', [one.id, three.id])).toBe(false);
+    // Nothing moved: every incident keeps its own issue.
+    expect(new Set((await repairs().incidents('a')).map((i) => i.issue_id)).size).toBe(3);
+  });
+
   it('refuses to group incidents of another project', async () => {
     const one = await repairs().observe('a', 'pr:1', 'sha', '{}');
     const foreign = await repairs().observe('b', 'pr:1', 'sha', '{}');

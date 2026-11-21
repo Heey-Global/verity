@@ -266,6 +266,10 @@ export function ProjectWork({
     [serverSessions, removedIds],
   );
   const [filter, setFilter] = useState<WorkFilter>(initialFilter);
+  // The From QA chip disappears once QA has no sessions here; its filter goes with it.
+  useEffect(() => {
+    if (filter === 'qa' && !qaSessions?.size) setFilter('all');
+  }, [filter, qaSessions]);
   // The key, not the item: the sheet follows the live feed, so a question
   // answered elsewhere while it is open closes it instead of offering stale
   // answers to a session that no longer waits.
@@ -584,10 +588,13 @@ export function ProjectWork({
     const { working, unread } = activityOf(session);
     const context = overview ? projects.find((p) => p.id === session.projectId) : undefined;
     const subtitle = waiting?.subtitle ?? workSubtitle(session, unread);
-    const fromQA = qaSessions?.has(session.sessionId) === true ? 'From QA · ' : '';
-    const displaySubtitle = context
-      ? `${projectDisplayName(context)} · ${fromQA}${subtitle ?? ''}`
-      : `${fromQA}${subtitle ?? ''}` || subtitle;
+    const marked =
+      qaSessions?.has(session.sessionId) === true
+        ? subtitle
+          ? `From QA · ${subtitle}`
+          : 'From QA'
+        : subtitle;
+    const displaySubtitle = context ? `${projectDisplayName(context)} · ${marked ?? ''}` : marked;
     const item = waiting?.item;
     const tile = tileOf(session);
     const agent = sessionAgentMark({ status: session.status, working, unread });

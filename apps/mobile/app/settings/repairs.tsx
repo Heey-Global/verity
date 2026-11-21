@@ -39,8 +39,9 @@ export default function RepairSettingsScreen() {
   const resource = useScanResource(
     useCallback(async () => {
       if (!client) throw new Error('Connect to a server first.');
+      // Only administrators read the system switch; everyone else still sees projects.
       const [qa, projects] = await Promise.all([
-        client.projectQA.settings(),
+        client.projectQA.settings().catch(() => null),
         client.listProjects(),
       ]);
       return { qa, projects: projects.filter((project) => project.qaSummary !== undefined) };
@@ -67,6 +68,9 @@ export default function RepairSettingsScreen() {
       onRetry={resource.reload}
     >
       <SettingsGroup title="QA">
+        {resource.data && !qa ? (
+          <Text variant="footnote">Only administrators can switch QA on or off.</Text>
+        ) : null}
         <SettingsListPanel>
           <SettingsToggleRow
             label="QA in coding projects"
@@ -103,7 +107,7 @@ export default function RepairSettingsScreen() {
           />
         </SettingsListPanel>
       </SettingsGroup>
-      {qa?.enabled && resource.data?.projects.length ? (
+      {(qa?.enabled ?? true) && resource.data?.projects.length ? (
         <SettingsGroup title="Projects">
           <SettingsListPanel>
             {resource.data.projects.map((project) => {
