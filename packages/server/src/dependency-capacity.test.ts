@@ -493,7 +493,7 @@ it('retries an unavailable never-started broker after restart and never reopens 
   await f.manager.initialize();
   await f.manager.reconcile();
   expect(f.store.rows.get(lease.id)?.state).toBe('reserved');
-  f.broker.override = undefined;
+  delete f.broker.override;
   const restarted = f.reopen();
   await restarted.reconcile();
   expect(restarted.pressure()).toEqual({ bytes: 0, inodes: 0 });
