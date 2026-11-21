@@ -19,6 +19,7 @@ import { planCardSpec } from './plan-card';
 import { projectInquiryApprovalSpec } from './project-inquiry-approval';
 import { projectNamesSpec } from './project-names';
 import { projectQASpec } from './project-qa';
+import { projectStatusSpec } from './project-status';
 import { repositoriesSpec } from './repositories';
 import { sourceActionsSpec } from './source-actions';
 import { teamInvitationsSpec } from './team-invitations';
@@ -49,6 +50,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   projectInquiryApprovalSpec,
   projectNamesSpec,
   projectQASpec,
+  projectStatusSpec,
   repositoriesSpec,
   sourceActionsSpec,
   teamInvitationsSpec,
