@@ -630,6 +630,8 @@ migrations['0231_project_inquiry_human_approval'] = {
       add column human_approved boolean not null default false`.execute(db);
     await sql`update project_inquiries set human_approved = true
       where kind = 'change' and status in ('approved','queued','answered')`.execute(db);
+    await sql`update project_inquiries set status = 'pending'
+      where kind = 'change' and status = 'provisioning'`.execute(db);
   },
   async down(db: Kysely<unknown>): Promise<void> {
     await sql`alter table project_inquiries drop column human_approved`.execute(db);
