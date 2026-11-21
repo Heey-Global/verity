@@ -13,7 +13,7 @@ import {
 } from '../../components/ui';
 import { VerityMark } from '../../components/VerityMark';
 
-export const ignore = () => undefined;
+const ignore = () => undefined;
 
 export const SAMPLE = {
   project: 'heey-global/deep-ocr',
