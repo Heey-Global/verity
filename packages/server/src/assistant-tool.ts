@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   ASSISTANT_HANDOFF_CLOSING_REQUEST,
   ASSISTANT_HANDOFF_RESULTS_MAX,
@@ -285,6 +285,25 @@ async function meetingAction(
   }
 }
 
+/** How many older pages are searched for a briefing prompt a long turn pushed out of the tail. */
+const HANDOFF_BRIEFING_EXTRA_PAGES = 4;
+
+/** Whether `text` is the transcript line of the assistant briefing hashed as `sha256`: the
+ *  handoff label, a title line, the briefing, then the server's closing request. */
+function isAssistantBriefing(text: string, sha256: string): boolean {
+  const head = `${SESSION_HANDOFF_TRANSCRIPT_LABEL}\n\n`;
+  const tail = `\n\n${ASSISTANT_HANDOFF_CLOSING_REQUEST}`;
+  if (!text.startsWith(head) || !text.endsWith(tail)) return false;
+  const body = text.slice(head.length, text.length - tail.length);
+  const titleEnd = body.indexOf('\n\n');
+  if (titleEnd < 0) return false;
+  return (
+    createHash('sha256')
+      .update(body.slice(titleEnd + 2))
+      .digest('hex') === sha256
+  );
+}
+
 /** How far back a handoff's result is looked for: one turn's tail, as the progress read uses. */
 const HANDOFF_RESULT_EVENT_TAIL = 2_000;
 
@@ -295,7 +314,7 @@ const HANDOFF_RESULT_EVENT_TAIL = 2_000;
  */
 export async function assistantHandoff<
   Input extends { sessionId: string; closingRequest?: string },
-  Result extends { sessionId: string },
+  Result extends { sessionId: string; briefingSha256: string },
 >(
   deps: Pick<AssistantToolDeps, 'eventStore'>,
   input: Input,
@@ -313,22 +332,23 @@ export async function assistantHandoff<
     ...input,
     closingRequest: ASSISTANT_HANDOFF_CLOSING_REQUEST,
   });
-  const target = await deps.eventStore.getSession(result.sessionId);
   const title = (input as { request?: { title?: unknown } }).request?.title;
   // The briefing is delivered: failing the call now would invite a retry that briefs twice.
   // A missing record only costs the assistant this one read-back.
-  if (target?.projectId)
-    await deps.eventStore.assistant
-      .recordHandoff({
+  try {
+    const target = await deps.eventStore.getSession(result.sessionId);
+    if (target?.projectId)
+      await deps.eventStore.assistant.recordHandoff({
         assistantSessionId: input.sessionId,
         targetSessionId: result.sessionId,
         projectId: target.projectId,
         title: typeof title === 'string' ? title.trim() : '',
+        briefingSha256: result.briefingSha256,
         at,
-      })
-      .catch((error: unknown) => {
-        console.warn('verity: assistant handoff not recorded', error);
       });
+  } catch (error) {
+    console.warn('verity: assistant handoff not recorded', error);
+  }
   return result;
 }
 
@@ -367,7 +387,7 @@ async function handoffResults(
     }
     const session = await deps.eventStore.getSession(handoff.target_session_id);
     if (session?.projectId !== handoff.project_id) continue;
-    const { events } = await deps.eventStore.getEventsBeforeSeq(
+    const { events, hasMore } = await deps.eventStore.getEventsBeforeSeq(
       handoff.target_session_id,
       HANDOFF_RESULT_EVENT_TAIL,
     );
@@ -378,13 +398,30 @@ async function handoffResults(
     // Only what was published after this briefing's own prompt, in the turn still current. A
     // queued briefing writes its prompt only when it starts, so until then an in-flight turn's
     // summary (or that of a prompt queued ahead of it) would answer a different request.
-    const briefing = events.find(
-      ({ event, ts }) =>
-        event.t === 'prompt' &&
-        ts >= handoff.created_at.getTime() &&
-        event.text.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL) &&
-        event.text.endsWith(ASSISTANT_HANDOFF_CLOSING_REQUEST),
-    );
+    const handedOffAt = handoff.created_at.getTime();
+    const isBriefing = ({ event, ts }: (typeof events)[number]) =>
+      event.t === 'prompt' &&
+      ts >= handedOffAt &&
+      isAssistantBriefing(event.text, handoff.briefing_sha256);
+    let briefing = events.findLast(isBriefing);
+    // A long turn can push its own prompt out of the tail; look further back, but never past
+    // the handoff itself.
+    let older = { events, hasMore };
+    for (
+      let page = 0;
+      briefing === undefined &&
+      older.hasMore &&
+      (older.events[0]?.ts ?? 0) >= handedOffAt &&
+      page < HANDOFF_BRIEFING_EXTRA_PAGES;
+      page++
+    ) {
+      older = await deps.eventStore.getEventsBeforeSeq(
+        handoff.target_session_id,
+        HANDOFF_RESULT_EVENT_TAIL,
+        older.events[0]?.seq,
+      );
+      briefing = older.events.findLast(isBriefing);
+    }
     const latest = currentPublishedProgress(events);
     const published =
       briefing !== undefined && latest !== undefined && latest.seq > briefing.seq
@@ -401,7 +438,9 @@ async function handoffResults(
           ? 'working'
           : status === 'awaiting_input'
             ? 'needs_input'
-            : 'idle',
+            : status === 'crashed'
+              ? 'failed'
+              : 'idle',
       result:
         published === undefined || progress === undefined
           ? null

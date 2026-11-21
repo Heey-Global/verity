@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ASSISTANT_HANDOFF_CLOSING_REQUEST } from '@verity/events';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
@@ -8,16 +9,18 @@ import {
 } from './assistant-tool.js';
 import { SESSION_HANDOFF_TRANSCRIPT_LABEL } from './session-handoff-tool.js';
 
+const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
+
 /** The transcript line a delivered assistant briefing leaves in its target. */
-const briefingPrompt = {
+const briefingPrompt = (briefing = 'Check it.') => ({
   t: 'prompt' as const,
   text: [
     SESSION_HANDOFF_TRANSCRIPT_LABEL,
     'Title: Backup check',
-    'Check it.',
+    briefing,
     ASSISTANT_HANDOFF_CLOSING_REQUEST,
   ].join('\n\n'),
-};
+});
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -43,7 +46,12 @@ function deps(
 }
 
 /** Hands off to `target` the way the gateway route does, returning what the target was sent. */
-async function handOff(target: string, from = 'assistant', title = 'Backup check') {
+async function handOff(
+  target: string,
+  from = 'assistant',
+  title = 'Backup check',
+  briefing = 'Check it.',
+) {
   let sent: { closingRequest?: string } | undefined;
   await assistantHandoff(
     { eventStore: ctx.store },
@@ -51,7 +59,7 @@ async function handOff(target: string, from = 'assistant', title = 'Backup check
     {
       handoff: async (input) => {
         sent = input;
-        return { sessionId: target };
+        return { sessionId: target, briefingSha256: sha256(briefing) };
       },
     },
   );
@@ -99,7 +107,7 @@ describe('assistant handoff results', () => {
       {
         handoff: async (input) => {
           forwarded = input;
-          return { sessionId: 't2' };
+          return { sessionId: 't2', briefingSha256: sha256('x') };
         },
       },
     );
@@ -130,7 +138,7 @@ describe('assistant handoff results', () => {
       outcomeDelivered: true,
     });
     expect((await results()).handoffs[0]).toMatchObject({ result: null });
-    await ctx.store.appendEvent('t1', briefingPrompt);
+    await ctx.store.appendEvent('t1', briefingPrompt());
     expect((await results()).handoffs[0]).toMatchObject({ result: null });
     await ctx.store.appendEvent('t1', {
       t: 'session_progress',
@@ -183,4 +191,43 @@ describe('assistant handoff results', () => {
       }),
     ).rejects.toThrow(/belongs to the Verity assistant/);
   });
+
+  it('answers the newest handoff only once its own briefing has started', async () => {
+    await handOff('t1', 'assistant', 'Backup check', 'First question.');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await handOff('t1', 'assistant', 'Backup check', 'Second question.');
+    // The first briefing was queued and starts only now, after the second handoff.
+    await ctx.store.appendEvent('t1', briefingPrompt('First question.'));
+    await ctx.store.appendEvent('t1', {
+      t: 'session_progress',
+      summary: 'Answer to the first question',
+      outcomeDelivered: true,
+    });
+    expect((await results()).handoffs[0]).toMatchObject({ result: null });
+    await ctx.store.appendEvent('t1', briefingPrompt('Second question.'));
+    await ctx.store.appendEvent('t1', {
+      t: 'session_progress',
+      summary: 'Answer to the second question',
+      outcomeDelivered: true,
+    });
+    expect((await results()).handoffs[0]).toMatchObject({
+      result: { summary: 'Answer to the second question' },
+    });
+  });
+
+  it('finds a briefing that a long turn pushed out of the newest events', async () => {
+    await handOff('t1');
+    await ctx.store.appendEvent('t1', briefingPrompt());
+    // More than one page of activity after the briefing started.
+    for (let i = 0; i < 2_050; i++)
+      await ctx.store.appendEvent('t1', { t: 'text', delta: `step ${String(i)}` });
+    await ctx.store.appendEvent('t1', {
+      t: 'session_progress',
+      summary: 'Done after a long run',
+      outcomeDelivered: true,
+    });
+    expect((await results()).handoffs[0]).toMatchObject({
+      result: { summary: 'Done after a long run' },
+    });
+  }, 120_000);
 });

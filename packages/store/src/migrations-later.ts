@@ -629,6 +629,7 @@ migrations['0231_assistant_handoffs'] = {
       target_session_id text not null references sessions(session_id) on delete cascade,
       project_id text not null references projects(id) on delete cascade,
       title text not null check (char_length(title) <= 200),
+      briefing_sha256 text not null check (briefing_sha256 ~ '^[0-9a-f]{64}$'),
       created_at timestamptz not null default now(),
       primary key (assistant_session_id, target_session_id)
     )`.execute(db);

@@ -44,6 +44,8 @@ export interface AssistantHandoff {
   target_session_id: string;
   project_id: string;
   title: string;
+  /** SHA-256 of the briefing as delivered, to recognise its prompt in the target. */
+  briefing_sha256: string;
   created_at: Date;
 }
 
@@ -120,13 +122,17 @@ export class AssistantStore {
     targetSessionId: string;
     projectId: string;
     title: string;
+    briefingSha256: string;
     /** When the briefing was sent, on the clock that stamps session events. */
     at: Date;
   }): Promise<void> {
-    await sql`insert into assistant_handoffs (assistant_session_id, target_session_id, project_id, title, created_at)
-      values (${input.assistantSessionId}, ${input.targetSessionId}, ${input.projectId}, ${input.title.slice(0, 200)}, ${input.at})
+    await sql`insert into assistant_handoffs
+        (assistant_session_id, target_session_id, project_id, title, briefing_sha256, created_at)
+      values (${input.assistantSessionId}, ${input.targetSessionId}, ${input.projectId},
+        ${input.title.slice(0, 200)}, ${input.briefingSha256}, ${input.at})
       on conflict (assistant_session_id, target_session_id) do update
-        set project_id = excluded.project_id, title = excluded.title, created_at = excluded.created_at`.execute(
+        set project_id = excluded.project_id, title = excluded.title,
+          briefing_sha256 = excluded.briefing_sha256, created_at = excluded.created_at`.execute(
       this.db,
     );
   }
@@ -137,7 +143,7 @@ export class AssistantStore {
     targetSessionId: string,
   ): Promise<AssistantHandoff | undefined> {
     return (
-      await sql<AssistantHandoff>`select target_session_id, project_id, title, created_at
+      await sql<AssistantHandoff>`select target_session_id, project_id, title, briefing_sha256, created_at
         from assistant_handoffs where assistant_session_id = ${assistantSessionId}
           and target_session_id = ${targetSessionId}`.execute(this.db)
     ).rows[0];
@@ -146,7 +152,7 @@ export class AssistantStore {
   /** The newest handoffs `assistantSessionId` made, newest first. */
   async handoffs(assistantSessionId: string, limit: number): Promise<AssistantHandoff[]> {
     return (
-      await sql<AssistantHandoff>`select target_session_id, project_id, title, created_at
+      await sql<AssistantHandoff>`select target_session_id, project_id, title, briefing_sha256, created_at
         from assistant_handoffs where assistant_session_id = ${assistantSessionId}
         order by created_at desc limit ${limit}`.execute(this.db)
     ).rows;

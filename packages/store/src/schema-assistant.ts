@@ -30,6 +30,7 @@ interface AssistantHandoffsTable {
   target_session_id: string;
   project_id: string;
   title: string;
+  briefing_sha256: string;
   created_at: Generated<Date>;
 }
 

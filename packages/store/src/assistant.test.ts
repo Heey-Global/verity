@@ -92,6 +92,7 @@ describe('assistant handoffs', () => {
         targetSessionId,
         projectId: 'a',
         title,
+        briefingSha256: 'a'.repeat(64),
         at: new Date(at),
       });
     await record('assistant', 't1', 'first', 1_000);
