@@ -36,10 +36,10 @@ UNITS = {
 ACCEPTED_NATIVE_PROFILES = ()
 # Assessment candidates are not production acceptance. The descriptor binds the
 # exact observed version and rejects subsequent drift before controller startup.
-STAGING_DOCKER_VERSIONS = frozenset(('29.8.0', '29.9.2', '29.9.3'))
+STAGING_DOCKER_VERSIONS = frozenset(('29.8.0', '29.9.2', '29.9.3', '29.10.0'))
 # Docker releases the production preflight admits. A matching accepted native
 # profile is still required; this set alone accepts no host.
-PRODUCTION_DOCKER_VERSIONS = frozenset(('29.9.2', '29.9.3'))
+PRODUCTION_DOCKER_VERSIONS = frozenset(('29.9.2', '29.9.3', '29.10.0'))
 
 
 class PreflightError(ValueError):
