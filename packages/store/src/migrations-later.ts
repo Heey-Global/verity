@@ -1,4 +1,5 @@
 import { brokeredToolApprovalMigration } from './brokered-tool-approval-migration.js';
+import { projectQAMigration } from './project-qa-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -619,3 +620,5 @@ migrations['0229_session_coordination_requests'] = {
 };
 
 migrations['0230_brokered_tool_approvals'] = brokeredToolApprovalMigration;
+
+migrations['0231_project_qa'] = projectQAMigration;

@@ -3,7 +3,7 @@ import { secretAuditEventInputSchema } from '@verity/secret-contracts';
 import type { Backend, Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
-import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import { assignProjectQA, createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import { createHash } from 'node:crypto';
@@ -2787,7 +2787,7 @@ it('lets QA read authorized CI evidence through the gateway but refuses all othe
     model: 'claude-opus-5',
   });
   await h.store.repairs.configureQA(true, 'admin');
-  await h.store.repairs.qaSession('qa');
+  await assignProjectQA(h.store, 'p1', 'qa');
   await h.store.repairs.configure('p1', 'admin', 'monitor');
   await sql`insert into users (id, role, status) values ('qa-reader', 'member', 'active')`.execute(
     ctx.db,
@@ -2884,7 +2884,7 @@ it.each([false, true])(
       model: 'claude',
     });
     await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
-    await h.store.repairs.qaSession('qa');
+    await assignProjectQA(h.store, 'p1', 'qa');
     await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
     const id = crypto.randomUUID();
     await h.store.repairs.proposeManualRepair({
@@ -2970,7 +2970,7 @@ it('shows the stored general QA assignment on a one-time approval card', async (
     model: 'claude',
   });
   await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
-  await h.store.repairs.qaSession('qa');
+  await assignProjectQA(h.store, 'p1', 'qa');
   await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
   const id = 'a'.repeat(64);
   await h.store.qaAssignments.propose({

@@ -6,7 +6,9 @@ import {
   type AgentLogin,
   type AgentLoginProvider,
 } from './people-api.js';
+import { projectQAClient, projectQASummarySchema } from './project-qa-api.js';
 export * from './people-api.js';
+export * from './project-qa-api.js';
 export * from './session-workspace-api.js';
 import { sessionWorkspaceClient } from './session-workspace-api.js';
 export * from './knowledge-files-api.js';
@@ -679,6 +681,7 @@ export const projectRecordSchema = z.object({
   // no releases / the lookup hasn't resolved yet, and `optional` tolerates a
   // producer that predates these fields. Today only `latestReleaseTag` is
   // rendered; the rest are carried for a follow-up detail view / link-out.
+  qaSummary: projectQASummarySchema.optional(),
   vulnerabilitySummary: z
     .object({
       maintenance: z.number().optional(),
@@ -2729,6 +2732,7 @@ export class VerityClient {
   readonly secretApprovals = createSecretApprovalsClient((path, init) => this.request(path, init));
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
+  readonly projectQA = projectQAClient((path, init) => this.request(path, init));
   readonly getProjectTeam = this.people.getProjectTeam;
   readonly createProjectInvitation = this.people.createProjectInvitation;
   readonly getProjectInvitation = this.people.getProjectInvitation;
@@ -6939,61 +6943,6 @@ export class VerityClient {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ proposalId, allow }),
     });
-  }
-  async qaSettings(enabled?: boolean) {
-    const res = await this.request(
-      '/settings/qa',
-      enabled === undefined
-        ? { method: 'GET' }
-        : {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ enabled }),
-          },
-    );
-    return z
-      .object({ enabled: z.boolean(), health: z.string(), session_id: z.string().nullable() })
-      .parse(await res.json());
-  }
-
-  async projectRepairs(id: string, mode?: 'off' | 'monitor' | 'automatic') {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(id)}/repairs`,
-      mode
-        ? {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ mode }),
-          }
-        : { method: 'GET' },
-    );
-    return z
-      .object({
-        qaEnabled: z.boolean().optional(),
-        mandate: z
-          .object({
-            mode: z.enum(['off', 'monitor', 'automatic']),
-            health: z.string(),
-            checked_at: z.string().nullable(),
-          })
-          .nullable(),
-        incidents: z
-          .array(
-            z.object({
-              id: z.string(),
-              resource: z.string(),
-              revision: z.string(),
-              state: z.string(),
-              originating_session_id: z.string().nullable().optional(),
-              owner_session_id: z.string().nullable(),
-              last_session_id: z.string().nullable(),
-              attempts: z.number(),
-              evidence: z.string(),
-            }),
-          )
-          .optional(),
-      })
-      .parse(await res.json());
   }
   /** The Verity assistant: one Verity Control session plus per-project grants. */
   async assistantSettings(enabled?: boolean) {

@@ -175,6 +175,25 @@ export function useInboxFeed({
         return;
       }
       if (action.kind === 'repair_project') return onRepairProject(action.projectId);
+      // QA stopped and asked: the answer goes to the project's QA, not to a session.
+      if (action.kind === 'qa_decision') {
+        if (running.current.has(item.key)) return;
+        running.current.add(item.key);
+        setPending((current) => new Map(current).set(item.key, answerId(action)));
+        try {
+          await client.projectQA.decide(action.projectId, action.issueId, action.decision);
+          setSettled((current) => new Set(current).add(item.key));
+          onSaved?.(item);
+        } catch (caught) {
+          Alert.alert(
+            'Not sent',
+            caught instanceof Error ? caught.message : 'Try again in a moment.',
+          );
+        } finally {
+          release(item.key);
+        }
+        return;
+      }
       const reply = replyFor(action);
       if (reply === null) return;
       if (running.current.has(item.key)) return;
@@ -197,7 +216,7 @@ export function useInboxFeed({
         release(item.key);
       }
     },
-    [onOpenSession, onOpenProject, onRepairProject, onSaved, perform, release],
+    [client, onOpenSession, onOpenProject, onRepairProject, onSaved, perform, release],
   );
   const dismiss = useCallback(
     (item: InboxItem) => {

@@ -377,8 +377,11 @@ export function installProjects(
         ),
       )) ?? new Map<string, SandboxUpdateStatus>();
     const verdicts = sandboxRepairVerdicts();
-    return resolved.map(({ project, release }) =>
-      presentProject(
+    const qa = await deps.eventStore.repairs.projectQA.summaries(
+      (await deps.eventStore.repairs.qa()).enabled ? projects.map((project) => project.id) : [],
+    );
+    return resolved.map(({ project, release }) => ({
+      ...presentProject(
         project,
         release,
         isControlPlaneProject(project)
@@ -390,7 +393,8 @@ export function installProjects(
             ),
         projectToolkitDrift(project, toolkit),
       ),
-    );
+      qaSummary: qa.get(project.id),
+    }));
   };
   const advancedModeEnabled = async (): Promise<boolean> =>
     (await veritySettingsStore(deps.eventStore).getVeritySettingsRaw())?.advancedModeEnabled ===
@@ -490,12 +494,17 @@ export function installProjects(
       );
       // The project page shows this person's dismissed health items too, so the
       // project carries their view state just as its sessions do.
-      const presented = presentProject(
-        resolved.project,
-        resolved.release,
-        sandboxUpdate,
-        projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
-      );
+      const presented = {
+        ...presentProject(
+          resolved.project,
+          resolved.release,
+          sandboxUpdate,
+          projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
+        ),
+        qaSummary: (await deps.eventStore.repairs.qa()).enabled
+          ? (await deps.eventStore.repairs.projectQA.summaries([id])).get(id)
+          : undefined,
+      };
       const [seen] = await projectsAsSeenBy(viewer, [presented]);
       return {
         project: seen ?? presented,

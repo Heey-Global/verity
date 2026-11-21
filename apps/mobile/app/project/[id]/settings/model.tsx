@@ -269,7 +269,7 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
               <SettingsNavRow
                 icon="check"
                 title="QA"
-                subtitle="Off, monitor only or automatic repairs"
+                subtitle="On or off, repair or observe, pause"
                 onPress={() => router.push(`/project/${projectId}/settings/repairs`)}
               />
             ) : null}

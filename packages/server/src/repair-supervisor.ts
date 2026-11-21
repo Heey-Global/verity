@@ -2,7 +2,13 @@ import { permitsBackgroundPr } from './pr-background-policy.js';
 import { observationFailure } from './forge-observation-error.js';
 import type { AgentEvent } from '@verity/events';
 import { randomUUID } from 'node:crypto';
-import type { EventStore, ProjectRecord, RepairIncident, RepairMandate } from '@verity/store';
+import type {
+  EventStore,
+  ProjectRecord,
+  QAIssue,
+  RepairIncident,
+  RepairMandate,
+} from '@verity/store';
 import type { ForgeDiscoveryPage, PullRequestStatus } from './forge-provider.js';
 
 export function repairTurnTerminated(events: readonly { event: AgentEvent }[]): boolean {
@@ -26,6 +32,10 @@ export interface RepairSupervisorDeps {
   preparingDispatches?: Set<string>;
   discover(this: void, project: ProjectRecord, page: number): Promise<RepairDiscovery>;
   changed?(projectId: string): void;
+  /** Issues that just stopped for the user (rounds exhausted); told once each. */
+  stopped?(this: void, projectId: string, issues: QAIssue[]): void;
+  /** The emergency brake tripped: QA starts no repairs anywhere until released. */
+  braked?(this: void): void;
   enabled?(): Promise<boolean>;
   coordinate?: boolean;
   authorized(this: void, userId: string, projectId: string): Promise<boolean>;
@@ -63,6 +73,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
   const store = deps.store.repairs;
   const preparing = deps.preparingDispatches ?? new Set<string>();
   const fingerprints = new Map<string, string>();
+  let wasBraked = false;
   async function delegate(mandate: RepairMandate, incident: RepairIncident): Promise<void> {
     if (
       stopped ||
@@ -76,8 +87,8 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
     if (!(await deps.authorized(mandate.sponsor_user_id, mandate.project_id))) return;
     const globalRevision = deps.enabled ? (await store.qa()).revision : undefined;
     const attempts = await store.budgetUsed(incident.project_id, incident.resource);
-    if (attempts >= 2) {
-      await store.blockUnowned(incident.id);
+    if (attempts >= (await store.projectQA.roundsAllowed(incident.id))) {
+      await store.blockExhausted(incident.id);
       return;
     }
     const evidence = JSON.parse(incident.evidence) as { fork?: boolean; branch?: string };
@@ -157,6 +168,9 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
         if (!preparing.has(dispatch.id) && !deps.busy(dispatch.session_id))
           await store.cancelReservedDispatch(dispatch.id);
       if (deps.enabled && !(await deps.enabled())) return;
+      const braked = await store.projectQA.checkBrake();
+      if (braked && !wasBraked) deps.braked?.();
+      wasBraked = braked;
       if (deps.coordinate) {
         const qa = await store.qa();
         if (qa.enabled && qa.sponsor) await store.seedQAMonitoring(qa.sponsor);
@@ -164,7 +178,9 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
       for (const mandate of await store.mandates()) {
         if (stopped || (deps.enabled && !(await deps.enabled()))) break;
         const authorized = await deps.authorized(mandate.sponsor_user_id, mandate.project_id);
-        if (mandate.mode === 'off' || !authorized) {
+        // A paused QA keeps its issues but neither watches nor repairs.
+        const idle = mandate.mode === 'off' || mandate.mode === 'paused';
+        if (idle || !authorized) {
           for (const incident of await store.incidents(mandate.project_id)) {
             if (
               incident.owner_session_id &&
@@ -180,7 +196,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
               );
           }
         }
-        if (mandate.mode === 'off') continue;
+        if (idle) continue;
         if (!authorized) {
           await store.health(mandate.project_id, 'access-revoked', mandate.cursor);
           continue;
@@ -332,7 +348,8 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
                     ['failure', 'timed_out', 'action_required'].includes(run.conclusion ?? ''),
                 ))
             )
-              await store.retry(incident.id, incident.state === 'awaiting_merge');
+              if (!(await store.retry(incident.id, incident.state === 'awaiting_merge')))
+                await store.blockExhausted(incident.id);
             if (
               incident.owner_session_id &&
               incident.dispatch_id &&
@@ -370,6 +387,9 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
           }
           await store.health(project.id, 'unavailable', mandate.cursor, observationFailure(error));
         }
+        await store.projectQA.reconcile(project.id);
+        const stoppedIssues = await store.projectQA.takeUnnotified(project.id);
+        if (stoppedIssues.length) deps.stopped?.(project.id, stoppedIssues);
         const current = await store.mandate(project.id);
         const fingerprint = JSON.stringify([
           current?.mode,

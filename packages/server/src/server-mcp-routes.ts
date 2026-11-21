@@ -882,7 +882,7 @@ export function registerServerMcpRoutes({
         const user = await runningTurnInitiator(input.sessionId, input.turnId);
         if (!(await canExecuteAs(user?.userId, input.projectId))) return false;
         if (
-          (await deps.eventStore.repairs.qa()).session_id === input.sessionId &&
+          (await deps.eventStore.repairs.projectQA.isQASession(input.sessionId)) &&
           input.toolName !== 'verity_qa_analysis'
         )
           return false;
@@ -933,7 +933,7 @@ export function registerServerMcpRoutes({
             'External tools are unavailable in planning mode; Wiki maintenance allows only Wiki operations.',
           );
         if (
-          (await deps.eventStore.repairs.qa()).session_id === sessionId &&
+          (await deps.eventStore.repairs.projectQA.isQASession(sessionId)) &&
           toolName !== 'verity_qa_analysis'
         )
           throw new ControlPlaneSessionAuthorityError(

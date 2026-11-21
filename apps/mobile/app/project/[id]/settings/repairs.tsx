@@ -1,11 +1,37 @@
+import type { QAMode } from '@verity/mobile';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { useLocalSearchParams } from 'expo-router';
-import { SettingsScaffold, SettingsGroup } from '../../../../components/settings/SettingsChrome';
-import { Button, Text, Group } from '../../../../components/ui';
+import {
+  SettingsChoiceRow,
+  SettingsGroup,
+  SettingsListPanel,
+  SettingsNavRow,
+  SettingsScaffold,
+  SettingsToggleRow,
+} from '../../../../components/settings/SettingsChrome';
+import { Text } from '../../../../components/ui';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam } from '../../../../lib/useProjectDetail';
 import { useScanResource } from '../../../../lib/useScanResource';
 
+const MODES: readonly { mode: QAMode; title: string; subtitle: string }[] = [
+  {
+    mode: 'automatic',
+    title: 'Repair within mandate',
+    subtitle: 'Default · the origin session first, otherwise a new one',
+  },
+  {
+    mode: 'monitor',
+    title: 'Observe and propose',
+    subtitle: 'Report and suggest repairs, start nothing',
+  },
+  { mode: 'paused', title: 'Pause', subtitle: 'Keep issues, stop watching until resumed' },
+];
+
+/**
+ * A project's QA (docs/ci-supervision.md): on by default once QA is switched on
+ * in system settings; switching it off or changing its mode is project management.
+ */
 export default function ProjectRepairSettingsScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
   const projectId = projectIdParam(id);
@@ -14,68 +40,79 @@ export default function ProjectRepairSettingsScreen() {
   const resource = useScanResource(
     useCallback(async () => {
       if (!client || !projectId) throw new Error('Project unavailable.');
-      return client.projectRepairs(projectId);
+      return client.projectQA.state(projectId);
     }, [client, projectId]),
   );
-  const choose = async (mode: 'off' | 'monitor' | 'automatic') => {
+  const state = resource.data;
+  const choose = async (mode: QAMode) => {
     setSaving(true);
     try {
-      await client!.projectRepairs(projectId, mode);
+      await client!.projectQA.setMode(projectId, mode);
       resource.reload();
     } catch (error) {
-      resource.setError(error instanceof Error ? error.message : 'Could not update QA access.');
+      resource.setError(error instanceof Error ? error.message : 'Could not change QA.');
     } finally {
       setSaving(false);
     }
   };
+  const on = state?.mode !== undefined && state.mode !== null && state.mode !== 'off';
+  const open = state?.issues.filter((i) => i.state === 'open' || i.state === 'needs_you').length;
   return (
     <SettingsScaffold
-      title="QA · CI supervision"
+      title="QA"
       detail
       state={{ error: resource.error, saving }}
       onRetry={resource.reload}
     >
-      <SettingsGroup title="Project access">
-        <Text>{resource.data?.mandate?.mode ?? 'off'}</Text>
-        {!resource.data?.qaEnabled ? (
+      <SettingsGroup
+        title="QA"
+        description="Watches pull requests and CI of this project and assigns repairs. It never merges, releases or deploys."
+      >
+        {state && !state.enabled ? (
           <Text variant="footnote">
-            QA is disabled in system settings. Enable QA there before allowing monitoring or QA
-            repairs here. Session PR repairs continue independently.
+            QA is switched off in system settings. An administrator turns it on there; it then runs
+            in every coding project.
           </Text>
         ) : null}
-        <Text variant="footnote">
-          Off is the default: QA receives no new observations and cannot assign work in this
-          project. Monitor allows observation only. Automatic repairs also allows QA to assign
-          repairs for resources without an originating session, without asking each time. Session
-          PRs repair automatically in their originating session in every QA mode. QA analyzes
-          recurring failures across PRs to propose preventive improvements.
-        </Text>
-        <Group>
-          <Button
-            label="Off · no access"
-            variant="secondary"
-            disabled={saving || !resource.data}
-            onPress={() => void choose('off')}
+        {state && !state.coding ? (
+          <Text variant="footnote">QA only watches projects with a code repository.</Text>
+        ) : null}
+        <SettingsListPanel>
+          <SettingsToggleRow
+            label="QA for this project"
+            subtitle="On by default from the system settings"
+            value={on}
+            disabled={saving || !state?.enabled || !state.coding}
+            onValueChange={(value) => void choose(value ? 'automatic' : 'off')}
           />
-          <Button
-            label="Monitor only"
-            variant="secondary"
-            disabled={saving || !resource.data?.qaEnabled}
-            onPress={() => void choose('monitor')}
-          />
-          <Button
-            label="Allow automatic repairs"
-            variant="secondary"
-            disabled={saving || !resource.data?.qaEnabled}
-            onPress={() => void choose('automatic')}
-          />
-        </Group>
-        <Text variant="footnote">
-          Turning access off stops new monitoring and assignments. Existing repair sessions keep
-          their project permissions; open a running session to stop it. Merge, release and
-          deployment are outside this standing instruction.
-        </Text>
+          {on
+            ? MODES.map((option) => (
+                <SettingsChoiceRow
+                  key={option.mode}
+                  title={option.title}
+                  subtitle={option.subtitle}
+                  selected={state?.mode === option.mode}
+                  disabled={saving}
+                  onPress={() => void choose(option.mode)}
+                />
+              ))
+            : null}
+        </SettingsListPanel>
       </SettingsGroup>
+      {on ? (
+        <SettingsGroup title="Activity">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="shield"
+              title="Open QA"
+              subtitle={`${String(open ?? 0)} open ${open === 1 ? 'issue' : 'issues'}`}
+              onPress={() =>
+                router.push({ pathname: '/project/[id]/qa', params: { id: projectId } })
+              }
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      ) : null}
     </SettingsScaffold>
   );
 }

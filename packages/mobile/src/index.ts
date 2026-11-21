@@ -637,6 +637,7 @@ export {
   parsePushPayload,
   parseServerUpdatePush,
   parseVulnerabilityPush,
+  parseQAPush,
   pushPayloadSchema,
   serverUpdatePushSchema,
   type PushKind,
@@ -777,6 +778,23 @@ export type {
 } from './audit.js';
 
 export { qaAssignmentView } from './ui/qaAssignment.js';
+export type {
+  ProjectQASummary,
+  ProjectQAState,
+  QAIssue,
+  QAIssueDecision,
+  QAIssueReason,
+  QAMode,
+  QASettings,
+} from './project-qa-api.js';
+export {
+  QA_FRESH_MS,
+  qaIssueLabel,
+  qaRowView,
+  qaStopReason,
+  type QARowState,
+  type QARowView,
+} from './ui/qaRole.js';
 export {
   mockupBarView,
   mockupProgress,

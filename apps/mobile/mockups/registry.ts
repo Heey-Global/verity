@@ -16,6 +16,7 @@ import { mockupReviewSpec } from './mockup-review';
 import { meetingRecoverySpec } from './meeting-recovery';
 import { planCardSpec } from './plan-card';
 import { projectNamesSpec } from './project-names';
+import { projectQASpec } from './project-qa';
 import { repositoriesSpec } from './repositories';
 import { sourceActionsSpec } from './source-actions';
 import { teamInvitationsSpec } from './team-invitations';
@@ -43,6 +44,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   mcpOAuthDetectionSpec,
   planCardSpec,
   projectNamesSpec,
+  projectQASpec,
   repositoriesSpec,
   sourceActionsSpec,
   teamInvitationsSpec,
