@@ -632,9 +632,8 @@ migrations['0231_assistant_handoffs'] = {
       title text not null,
       handed_off_at timestamptz not null
     )`.execute(db);
-    await sql`create index assistant_handoffs_recent on assistant_handoffs(handed_off_at desc)`.execute(
-      db,
-    );
+    await sql`create index assistant_handoffs_recent
+      on assistant_handoffs(user_id, handed_off_at desc)`.execute(db);
   },
   async down(db: Kysely<unknown>): Promise<void> {
     await sql`drop table assistant_handoffs`.execute(db);
