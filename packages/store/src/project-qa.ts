@@ -232,6 +232,16 @@ export class ProjectQAStore {
           rows.filter((row) => row.owner_session_id !== null).length > 1
         )
           throw refused;
+        // Count running repairs across every issue involved, not only the named incidents.
+        const issues = [...new Set(rows.map((row) => row.issue_id!))];
+        const owned = (
+          await sql<{
+            n: number;
+          }>`select count(*)::int as n from repair_incidents where project_id = ${projectId} and owner_session_id is not null and (issue_id in (${sql.join(issues)}) or id in (${sql.join(ids)}))`.execute(
+            trx,
+          )
+        ).rows[0]!.n;
+        if (owned > 1) throw refused;
         await sql`update repair_incidents set issue_id = ${target} where project_id = ${projectId} and id in (${sql.join(ids)})`.execute(
           trx,
         );
@@ -256,7 +266,7 @@ export class ProjectQAStore {
   ): Promise<boolean> {
     return (
       (
-        await sql`update qa_issues set state = 'needs_you', reason = ${reason}, detail = ${detail.slice(0, 2000)}, updated_at = now() where project_id = ${projectId} and id = ${issueId} and state = 'open' returning id`.execute(
+        await sql`update qa_issues set state = 'needs_you', reason = ${reason}, detail = ${detail.slice(0, 2000)}, notified_at = null, updated_at = now() where project_id = ${projectId} and id = ${issueId} and state = 'open' returning id`.execute(
           this.db,
         )
       ).rows.length > 0
@@ -303,7 +313,7 @@ export class ProjectQAStore {
     await sql`update qa_issues q set state = 'resolved', reason = null, updated_at = now() where q.project_id = ${projectId} and q.state in ('open', 'needs_you', 'deferred', 'taken_over') and exists (select 1 from repair_incidents i where i.issue_id = q.id) and not exists (select 1 from repair_incidents i where i.issue_id = q.id and i.state not in ('resolved', 'superseded'))`.execute(
       this.db,
     );
-    await sql`update qa_issues q set state = 'needs_you', reason = 'rounds-exhausted', updated_at = now() where q.project_id = ${projectId} and q.state = 'open' and exists (select 1 from repair_incidents i where i.issue_id = q.id and i.state = 'blocked' and i.owner_session_id is null and coalesce((select used from repair_resource_budgets b where b.project_id = i.project_id and b.resource = i.resource), 0) >= ${QA_REPAIR_ROUNDS} + q.extra_rounds)`.execute(
+    await sql`update qa_issues q set state = 'needs_you', reason = 'rounds-exhausted', notified_at = null, updated_at = now() where q.project_id = ${projectId} and q.state = 'open' and exists (select 1 from repair_incidents i where i.issue_id = q.id and i.state = 'blocked' and i.owner_session_id is null and coalesce((select used from repair_resource_budgets b where b.project_id = i.project_id and b.resource = i.resource), 0) >= ${QA_REPAIR_ROUNDS} + q.extra_rounds)`.execute(
       this.db,
     );
   }
@@ -331,7 +341,7 @@ export class ProjectQAStore {
     );
   }
 
-  /** QA summaries of the given projects; projects QA does not watch are absent. */
+  /** QA summaries of the given projects with a QA choice, including switched-off ones. */
   async summaries(projectIds: readonly string[]): Promise<Map<string, ProjectQASummary>> {
     const result = new Map<string, ProjectQASummary>();
     if (!projectIds.length) return result;

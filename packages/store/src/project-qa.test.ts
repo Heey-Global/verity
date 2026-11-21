@@ -110,6 +110,10 @@ describe('QA issues', () => {
     expect(await repairs().claim(one.id, 's1', 1)).toBeDefined();
     expect(await repairs().claim(three.id, 's3', 1)).toBeDefined();
     expect(await qa().group('a', [one.id, three.id])).toBe(false);
+    // A repair already running elsewhere on the target issue counts too.
+    const four = await repairs().observe('a', 'pr:4', 'sha4', '{}');
+    expect(await qa().group('a', [one.id, four.id])).toBe(true);
+    expect(await qa().group('a', [one.id, three.id, four.id])).toBe(false);
     // Nothing moved: every incident keeps its own issue.
     expect(new Set((await repairs().incidents('a')).map((i) => i.issue_id)).size).toBe(3);
   });
@@ -131,8 +135,12 @@ describe('QA issues', () => {
     expect(stopped?.reason).toBe('rounds-exhausted');
     expect((await qa().takeUnnotified('a')).map((i) => i.id)).toEqual([stopped!.id]);
     expect(await qa().takeUnnotified('a')).toEqual([]);
+    // A second stop of the same issue is told again.
+    await qa().decide('a', stopped!.id, 'another_round');
+    await qa().stop('a', stopped!.id, 'beyond-mandate', 'migration');
+    expect((await qa().takeUnnotified('a')).map((i) => i.id)).toEqual([stopped!.id]);
     expect(await qa().decide('a', stopped!.id, 'another_round')).toBe(true);
-    expect(await qa().roundsAllowed(incident.id)).toBe(3);
+    expect(await qa().roundsAllowed(incident.id)).toBe(4);
     expect(await repairs().claim(incident.id, 's-third', 1)).toBeDefined();
   });
 
