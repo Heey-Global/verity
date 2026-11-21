@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ASSISTANT_GRANT_INSTRUCTIONS } from './assistant-tool.js';
 
 /**
  * The curated help catalog about using the Verity app itself: what a feature
@@ -39,6 +40,13 @@ export interface AppHelpTopic {
   /** Short contextual copy shared by the app and chat help. */
   hint?: { text: string; question: string };
   emptyState?: string;
+}
+
+/** Built in a function marked pure: a template literal over an imported constant counts as
+ *  a possible side effect to esbuild, which then keeps the whole catalog in bundles that
+ *  never read it, such as the runner worker. */
+function assistantProjectAccessDetails(): string {
+  return `The assistant can only act in projects granted to it; every project starts with no access. ${ASSISTANT_GRANT_INSTRUCTIONS}`;
 }
 
 export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
@@ -324,6 +332,25 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
       'Tap the floating microphone to speak a thought; it is saved as a task for the current project. Agents also record agreed follow-up steps as tasks. From the list you can check items off or hand a task to an agent.',
     appLink: 'verity://settings/tasks',
     keywords: ['task', 'todo', 'voice', 'microphone', 'dictate', 'capture', 'reminder'],
+  },
+  {
+    id: 'assistant-project-access',
+    title: 'Let the assistant use a project',
+    summary: 'Grant the Verity assistant access to a project, per project.',
+    // No appLink: project links open the current project, which for the assistant
+    // is Verity Control, so a link would point at the wrong project's settings.
+    details: /* @__PURE__ */ assistantProjectAccessDetails(),
+    docsPath: 'docs/assistant.md',
+    keywords: [
+      'assistant',
+      'grant',
+      'project access',
+      'enable project',
+      'tasks only',
+      'tasks and sessions',
+      'delegate',
+      'not granted',
+    ],
   },
   {
     id: 'devices',

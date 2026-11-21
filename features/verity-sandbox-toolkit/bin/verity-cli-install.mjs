@@ -106,12 +106,12 @@ export function installCli(
   if (dependencies.length !== 1) throw new Error('CLI bundle must contain exactly one dependency');
   const [name, pinned] = dependencies[0];
   const version = override ?? pinned;
-  // Audited for 2.6.0: the project-trust expression is unchanged, and the new
-  // permission-profile modes cannot select the starting mode while the spawn
-  // broker sets INITIAL_AGENT_MODE, which getInitialAgentMode still honours
-  // first. The built-in modes Verity selects are unchanged from 2.5.0.
-  if (id === 'codex-acp' && version !== '2.6.0')
-    throw new Error('Codex ACP security hardening requires audited adapter version 2.6.0');
+  // Audited for 2.7.0: project trust, hook configuration, built-in modes and
+  // createSessionConfig are unchanged from 2.6.0. INITIAL_AGENT_MODE still
+  // takes precedence over permission profiles. New/load discard initial
+  // configOptions before entering the existing session configuration flow.
+  if (id === 'codex-acp' && version !== '2.7.0')
+    throw new Error('Codex ACP security hardening requires audited adapter version 2.7.0');
   if (!/^\d+\.\d+\.\d+(?:-[\da-zA-Z.-]+)?(?:\+[\da-zA-Z.-]+)?$/.test(version)) {
     throw new Error('CLI version must be exact');
   }

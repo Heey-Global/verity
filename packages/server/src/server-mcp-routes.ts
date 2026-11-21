@@ -599,9 +599,8 @@ export function registerServerMcpRoutes({
     // of the executor is composed.
     //
     // `listSessionFacts` is where the listing's "metadata only" promise is kept. The summary
-    // is narrowed to six fields HERE, at the boundary, so no transcript, PR, usage or
-    // attention data is even in reach of the tool that answers the caller — `name` included,
-    // for the reason `ControlPlaneSessionFacts` gives.
+    // explicitly includes visible names (also auto-titles), but no transcript, PR, usage
+    // or attention data. Caller/target authorization and per-call approval still apply.
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
       allowKnowledgeControlOperations: true,
@@ -643,6 +642,7 @@ export function registerServerMcpRoutes({
         return {
           sessions: summaries.map((session) => ({
             sessionId: session.sessionId,
+            name: session.name ?? null,
             projectId: session.projectId,
             model: session.model,
             status: session.status,
@@ -2038,7 +2038,7 @@ export function registerServerMcpRoutes({
         }
         if (input.toolName === 'verity_publish_session_progress') {
           const progress = publishSessionProgressRequestSchema.parse(input.request);
-          await deps.eventStore.appendEvent(input.sessionId, {
+          await publishSessionEvent(input.sessionId, {
             t: 'session_progress',
             ...progress,
           });

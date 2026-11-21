@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { calendarEventKey } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { gatewayToolNameSchema } from '@verity/secret-contracts';
+import { ASSISTANT_GRANT_LABELS, ASSISTANT_GRANT_PATH } from '@verity/events';
 import {
   ASSISTANT_TOOLS,
   assistantHandoffHooks,
@@ -76,7 +77,34 @@ describe('verity_assistant', () => {
       request: { action: 'projects' },
     });
     // b is granted but this user lost access; c is readable but not granted.
-    expect(result).toEqual({ projects: [{ projectId: 'a', name: 'team/a', mode: 'tasks' }] });
+    expect(result).toEqual({
+      projects: [{ projectId: 'a', name: 'team/a', mode: 'tasks' }],
+      grantHelp: expect.stringContaining(ASSISTANT_GRANT_PATH),
+    });
+    // The help is fixed text: naming b or c would tell the assistant which projects exist
+    // beyond its grants.
+    const { grantHelp } = result as { grantHelp: string };
+    expect(grantHelp).not.toMatch(/team\/[bc]|\b[bc]\b/);
+  });
+
+  // A refusal is what the assistant relays to the user; without the setting's path it could
+  // only say "check the project settings", which left users searching.
+  it('tells the user where to grant a project it refuses', async () => {
+    const add = executeAssistantTool(deps({ a: ['read', 'execute'] }), {
+      ...call,
+      request: { action: 'add_task', projectId: 'a', title: 'Contact form', detail: 'From a note' },
+    });
+    await expect(add).rejects.toThrow(ASSISTANT_GRANT_PATH);
+    await ctx.store.assistant.setGrant('a', ADMIN, 'tasks');
+    await expect(
+      requireAssistantGrant(
+        deps({ a: ['read', 'execute'] }),
+        { ...call, projectId: 'a' },
+        'delegate',
+      ),
+    ).rejects.toThrow(
+      `"${ASSISTANT_GRANT_LABELS.delegate}" in that project's ${ASSISTANT_GRANT_PATH}`,
+    );
   });
 
   it('files a task into a granted project for the turn user, never elsewhere', async () => {

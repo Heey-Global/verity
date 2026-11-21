@@ -1,3 +1,4 @@
+import { installAssistantHandoffNotices } from './assistant-handoff-notify.js';
 import {
   startServerMessageProjection,
   createServerConductor,
@@ -175,6 +176,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerServerShutdownDrain(ctx);
 
   const { canExecuteAs, runningTurnInitiator, assistantToolDeps } = createServerAuthority(ctx);
+  const stopHandoffNotices = installAssistantHandoffNotices({
+    eventStore: deps.eventStore,
+    bus: deps.bus,
+    pushRouter,
+    permitted: (...args) => assistantToolDeps.permitted(...args),
+    log: app.log,
+  });
+  lifecycle.onClose(() => {
+    stopHandoffNotices();
+  });
   const automations = createServerAutomations(app, ctx, { canExecuteAs, models: () => models });
 
   const {

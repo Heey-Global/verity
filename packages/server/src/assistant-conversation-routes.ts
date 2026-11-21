@@ -11,6 +11,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import {
+  attachHandoffResults,
+  handoffTargets,
   projectAssistantConversation,
   type AssistantSessionFacts,
 } from './assistant-conversation.js';
@@ -76,8 +78,19 @@ export function registerAssistantConversationRoutes(
     return { sessionId: settings.session_id };
   };
 
-  const conversation = async (sessionId: string) =>
-    projectAssistantConversation(await deps.recentEvents(sessionId), await deps.facts(sessionId));
+  /** The projection, with each handoff card carrying the result recorded for it. */
+  const conversation = async (sessionId: string) => {
+    const projected = projectAssistantConversation(
+      await deps.recentEvents(sessionId),
+      await deps.facts(sessionId),
+    );
+    const targets = handoffTargets(projected.items);
+    attachHandoffResults(
+      projected.items,
+      await store.assistant.recordedResults(sessionId, targets),
+    );
+    return projected;
+  };
 
   /** Refuses non-administrators and an assistant that cannot take a turn. */
   const gate = async (request: FastifyRequest, reply: FastifyReply) => {
