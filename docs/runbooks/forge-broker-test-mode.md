@@ -72,14 +72,18 @@ Supported starting workflows:
 - Basic gh issue/PR view and list using repository-scoped GraphQL queries.
 - Basic issue/PR creation, editing, closing, reopening, and comments through the
   admitted mutations or repository REST routes.
-- Direct PR merge; the merge-text node read is repository-verified. Narrow schema
+- Reading a PR's merge state; the merge-text node read is repository-verified.
+  Merging is never admitted: GitHub `mergePullRequest`, REST
+  `PUT /pulls/:n/merge` and Forgejo `POST /pulls/:n/merge` are refused for every
+  agent, and the sandbox `gh pr merge` explains why. Only a person merges, through
+  the app's server-side merge routes, which do not use this broker. Narrow schema
   field-name probes for PullRequest, StatusCheckRollupContextConnection, and
   WorkflowRun support gh compatibility; other introspection is rejected.
 - `gh api` for the admitted repository metadata, branches/commits/compare,
   issue/comment, and pull-request routes and admitted GraphQL envelopes.
 
 Cross-repository forks, arbitrary GraphQL search, actor/label/project assignment
-mutations, releases, Actions APIs, merge queues/auto-merge, and unrecognized
+mutations, releases, Actions APIs, merges, merge queues/auto-merge, and unrecognized
 operations are not admitted. Adding them requires explicit provider rules and
 compatibility tests. The helper produces an error when its proxy/CA/capability
 configuration is missing; Git's interactive credential fallback is disabled.

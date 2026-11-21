@@ -76,10 +76,13 @@ export function githubRestAction(method: string, suffix: string): ForgeAction | 
       : ['POST', 'PATCH', 'DELETE'].includes(method)
         ? 'issues-write'
         : undefined;
+  // Only a person merges: the app's merge routes call the forge from the server, never
+  // through this broker, so no sandbox credential may complete a merge.
+  if (/^\/pulls\/\d+\/merge$/.test(suffix)) return read ? 'pulls-read' : undefined;
   if (/^\/pulls\/\d+\/update-branch$/.test(suffix))
     return method === 'PUT' ? 'pulls-write' : undefined;
   if (
-    /^\/pulls(?:\/\d+)?(?:\/(?:commits|files|merge|reviews|comments))?$/.test(suffix) ||
+    /^\/pulls(?:\/\d+)?(?:\/(?:commits|files|reviews|comments))?$/.test(suffix) ||
     /^\/pulls\/\d+\/reviews\/\d+(?:\/dismissals)?$/.test(suffix)
   )
     return read
