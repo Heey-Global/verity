@@ -18,7 +18,7 @@ export function AiAccountNextStep() {
         <Row
           leading={{ icon: 'user-check' }}
           title="Use the subscription you already have"
-          subtitle="Sign in with Claude (Pro or Max) or ChatGPT (Plus or Pro). No API key needed."
+          subtitle="Claude and Codex sign in with your Claude or ChatGPT plan, no API key needed. OpenCode uses your own provider and API key."
           wrap
         />
         <Row
