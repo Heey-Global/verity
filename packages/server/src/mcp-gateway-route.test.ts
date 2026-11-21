@@ -2095,18 +2095,16 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       containerName: 'verity-__local__--website',
       state: 'active',
     });
-    // New projects receive managed knowledge spaces and are intentionally excluded
-    // from cross-project tools. Keep this delivery-seam test on the legacy,
-    // knowledge-free shape; the information-flow tests cover the exclusion itself.
+    // Keep the legacy knowledge-free fixture; separate tests cover information-flow filtering.
     await ctx.db
       .deleteFrom('project_knowledge_spaces')
       .where('project_id', 'in', [VERITY_CONTROL_PROJECT_ID, 'website'])
       .execute();
     await harness.store.createSession({
       sessionId: 'sess-web',
+      name: 'Website API',
       projectId: 'website',
-      // A real path, so the summary reports the session as resumable — an unresumable target
-      // is refused, and would make this test pass for the wrong reason.
+      // A real worktree makes the target resumable.
       worktree: process.cwd(),
       model: 'claude-opus-5',
     });
@@ -2126,10 +2124,11 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         (JSON.parse(listed.body) as { result: { content: Array<{ text: string }> } }).result
           .content[0]!.text,
       ) as { sessions: Array<Record<string, unknown>> };
-      // The control session itself is never listed, and the listing carries no `name`.
+      // The control session stays hidden; the visible name reaches the approved listing.
       expect(entries.sessions).toEqual([
         {
           sessionId: 'sess-web',
+          name: 'Website API',
           projectId: 'website',
           project: '__local__/website',
           model: 'claude-opus-5',
@@ -2194,7 +2193,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         params: {
           name: 'verity_session_handoff',
           arguments: {
-            target: { sessionId: 'sess-web' },
+            target: { sessionId: 'sess-web', sessionName: 'Website API' },
             title: 'Overlay for the new site',
             briefing: 'Digest sha256:abc, port 8080.',
           },
@@ -2206,8 +2205,8 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       expect(result.result.isError).toBeUndefined();
       expect(JSON.parse(result.result.content[0]!.text)).toEqual({
         sessionId: 'sess-web',
+        name: 'Website API',
         project: '__local__/website',
-        // Whatever the conductor reported, relayed rather than assumed.
         queued: true,
         briefingSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
       });
@@ -2240,7 +2239,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
           params: {
             name: 'verity_session_handoff',
             arguments: {
-              target: { sessionId: 'sess-web' },
+              target: { sessionId: 'sess-web', sessionName: 'Website API' },
               title: 'Overlay for the new site',
               briefing,
             },

@@ -93,3 +93,22 @@ describe('sessionHandoffRequestSchema', () => {
     ).toThrow();
   });
 });
+
+describe('handoff display contract', () => {
+  it('accepts a name only alongside the exact routing ID and rejects deceptive names', () => {
+    const request = { title: 'Investigate', briefing: 'Check polling.' };
+    expect(
+      sessionHandoffRequestSchema.parse({
+        ...request,
+        target: { sessionId: 'id', sessionName: 'API requests' },
+      }).target,
+    ).toEqual({ sessionId: 'id', sessionName: 'API requests' });
+    for (const target of [
+      { sessionName: 'API requests' },
+      { project: 'acme/site', sessionName: 'API requests' },
+      { sessionId: 'id', sessionName: 'a\u202eb' },
+      { sessionId: 'id', sessionName: 'a\nb' },
+    ])
+      expect(sessionHandoffRequestSchema.safeParse({ ...request, target }).success).toBe(false);
+  });
+});

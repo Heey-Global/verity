@@ -42,6 +42,7 @@ function facts(
 ): ControlPlaneSessionFacts {
   return {
     projectId: 'k8s',
+    name: null,
     model: 'claude-opus-5',
     status: 'idle',
     resumable: true,
@@ -361,8 +362,7 @@ describe('verity_list_sessions', () => {
     // field, so anything not named in `ControlPlaneSessionEntry` is dropped at the boundary.
     const leaky = {
       ...facts({ sessionId: 'sess-k8s' }),
-      // `name` is on the summary the route reads from, and is left off deliberately: an
-      // unnamed session is auto-titled by its own model from the first prompt.
+      // Auto-titles are visible metadata; unrelated conversation fields stay private.
       name: 'fix the checkout crash for ACME',
       lastMessage: 'the operator said something private',
       worktree: '/work/.verity-sessions/agent-1',
@@ -387,6 +387,7 @@ describe('verity_list_sessions', () => {
     // in `LIST_SESSIONS_FIELDS` for the assertion to hold.
     const declared: Record<keyof ControlPlaneSessionEntry, true> = {
       sessionId: true,
+      name: true,
       projectId: true,
       project: true,
       model: true,
@@ -403,7 +404,7 @@ describe('verity_list_sessions', () => {
     expect(Object.keys(declared).sort()).toEqual(promised);
     expect([...new Set(sessions.flatMap((entry) => Object.keys(entry)))].sort()).toEqual(promised);
     expect(JSON.stringify(sessions)).not.toContain('private');
-    expect(JSON.stringify(sessions)).not.toContain('ACME');
+    expect(sessions[0]?.name).toBe(leaky.name);
     expect(JSON.stringify(sessions)).not.toContain('.verity-sessions');
   });
 
@@ -460,6 +461,7 @@ describe('verity_session_handoff', () => {
       ),
     ).resolves.toEqual({
       sessionId: 'sess-web',
+      name: null,
       project: 'acme/website',
       queued: false,
       briefingSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
@@ -913,4 +915,70 @@ describe('handoffs to retained sleeping sandboxes', () => {
       ]);
     },
   );
+});
+
+describe('named handoff targets', () => {
+  it('retains duplicate names as separate targets and routes the selected ID', async () => {
+    const sessions = [
+      facts({ sessionId: 'first', name: 'API requests', lastActivityAt: 100 }),
+      facts({ sessionId: 'second', name: 'API requests', lastActivityAt: 200 }),
+      facts({ sessionId: 'unnamed', name: null }),
+    ];
+    const { tools, call, dispatchTurn } = harness({ sessions });
+    const listing = await tools.listSessions(call({}));
+    expect(
+      listing.sessions.map(({ sessionId, name, lastActivityAt }) => ({
+        sessionId,
+        name,
+        lastActivityAt,
+      })),
+    ).toEqual(
+      sessions.map(({ sessionId, name, lastActivityAt }) => ({ sessionId, name, lastActivityAt })),
+    );
+    const result = await tools.handoff(
+      call({
+        target: { sessionId: 'second', sessionName: 'API requests' },
+        title: 'Investigate API',
+        briefing: 'Check polling.',
+      }),
+    );
+    expect(dispatchTurn.mock.calls[0]?.[0].sessionId).toBe('second');
+    expect(result).toMatchObject({ sessionId: 'second', name: 'API requests' });
+    await tools.handoff(call({ target: { sessionId: 'unnamed' }, title: 't', briefing: 'b' }));
+    expect(dispatchTurn.mock.calls[1]?.[0].sessionId).toBe('unnamed');
+  });
+
+  it('rejects a stale or invented approval-card name before dispatch', async () => {
+    const { tools, call, dispatchTurn } = harness({
+      sessions: [facts({ sessionId: 'target', name: 'Renamed' })],
+    });
+    await expect(
+      tools.handoff(
+        call({
+          target: { sessionId: 'target', sessionName: 'Old name' },
+          title: 't',
+          briefing: 'b',
+        }),
+      ),
+    ).rejects.toThrow('name changed');
+    expect(dispatchTurn).not.toHaveBeenCalled();
+  });
+
+  it('keeps names behind the target access filter', async () => {
+    const { tools, call, dispatchTurn } = harness({
+      sessions: [facts({ sessionId: 'target', name: 'Private title' })],
+      canAccessKnowledgeTarget: async () => false,
+    });
+    expect((await tools.listSessions(call({}))).sessions).toEqual([]);
+    await expect(
+      tools.handoff(
+        call({
+          target: { sessionId: 'target', sessionName: 'Private title' },
+          title: 't',
+          briefing: 'b',
+        }),
+      ),
+    ).rejects.toThrow();
+    expect(dispatchTurn).not.toHaveBeenCalled();
+  });
 });

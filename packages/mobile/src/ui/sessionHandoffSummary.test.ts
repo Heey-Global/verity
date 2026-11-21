@@ -124,7 +124,7 @@ describe('sessionHandoffSummary', () => {
   it('still states the metadata-only boundary when a listing input did not parse', () => {
     const sentence = listSessionsSentence(null);
     expect(sentence).toContain('metadata only');
-    expect(sentence).toContain('No transcript, no messages, no session names.');
+    expect(sentence).toContain('No transcript, no messages, no files.');
     for (const field of LIST_SESSIONS_FIELDS) expect(sentence).toContain(field.label);
     // Which slice of the fleet is being read is the one thing an unreadable input costs.
     expect(sentence).not.toContain('Sessions that could receive a handoff');
@@ -423,7 +423,7 @@ describe('listSessionsSummary', () => {
     // way to read another session's content, and the card is where that is stated.
     const sentence = listSessionsSentence(listSessionsSummary({}));
     expect(sentence).toContain('metadata only');
-    expect(sentence).toContain('No transcript, no messages, no session names.');
+    expect(sentence).toContain('No transcript, no messages, no files.');
     // Every field the listing returns is named, because the sentence is read as an exhaustive
     // one: a field present in the result but missing here would make the card understate it.
     // The server test holds the other end, asserting its entry keys against the same array.
@@ -452,4 +452,22 @@ describe('listSessionsSummary', () => {
         expect(listSessionsRequestSchema.safeParse(input).success).toBe(false);
     }
   });
+});
+
+it('names the exact-session approval target without exposing its routing ID', () => {
+  const input = {
+    target: { sessionId: 'internal-id', sessionName: 'API requests' },
+    title: 'Investigate',
+    briefing: 'Check polling.',
+  };
+  expect(sessionHandoffRequestSchema.safeParse(input).success).toBe(true);
+  expect(sessionHandoffTitle(sessionHandoffSummary(input)!)).toBe(
+    'Send briefing to session “API requests”?',
+  );
+  for (const target of [
+    { sessionId: 'id', sessionName: 'a\u202eb' },
+    { sessionId: 'id', sessionName: '' },
+    { project: 'acme/site', sessionName: 'API requests' },
+  ])
+    expect(sessionHandoffSummary({ ...input, target })).toBeNull();
 });
