@@ -24811,7 +24811,12 @@ var listSessionsRequestSchema = import_zod2.z.object({
 }).strict();
 var sessionHandoffRequestSchema = import_zod2.z.object({
   target: import_zod2.z.union([
-    import_zod2.z.object({ sessionId: cardLine(128), sessionName: cardLine(200).optional() }).strict(),
+    import_zod2.z.object({
+      sessionId: cardLine(128),
+      sessionName: cardLine(200).optional(),
+      sessionProject: projectReferenceSchema.optional(),
+      sessionLastActivityAt: import_zod2.z.number().int().min(0).max(864e13).nullable().optional()
+    }).strict().refine((target2) => target2.sessionName === void 0 ? target2.sessionProject === void 0 && target2.sessionLastActivityAt === void 0 : target2.sessionProject !== void 0 && target2.sessionLastActivityAt !== void 0, { message: "a named target requires its listed project and last activity time" }),
     import_zod2.z.object({ project: projectReferenceSchema }).strict(),
     import_zod2.z.object({ newSession: import_zod2.z.object({ project: projectReferenceSchema }).strict() }).strict()
   ]),

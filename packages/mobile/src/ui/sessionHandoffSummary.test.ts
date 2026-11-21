@@ -456,13 +456,18 @@ describe('listSessionsSummary', () => {
 
 it('names the exact-session approval target without exposing its routing ID', () => {
   const input = {
-    target: { sessionId: 'internal-id', sessionName: 'API requests' },
+    target: {
+      sessionId: 'internal-id',
+      sessionName: 'API requests',
+      sessionProject: 'acme/site',
+      sessionLastActivityAt: 200,
+    },
     title: 'Investigate',
     briefing: 'Check polling.',
   };
   expect(sessionHandoffRequestSchema.safeParse(input).success).toBe(true);
   expect(sessionHandoffTitle(sessionHandoffSummary(input)!)).toBe(
-    'Send briefing to session “API requests”?',
+    'Send briefing to session “API requests” in project acme/site (last active 1970-01-01T00:00:00.200Z)?',
   );
   for (const target of [
     { sessionId: 'id', sessionName: 'a\u202eb' },
@@ -470,4 +475,30 @@ it('names the exact-session approval target without exposing its routing ID', ()
     { project: 'acme/site', sessionName: 'API requests' },
   ])
     expect(sessionHandoffSummary({ ...input, target })).toBeNull();
+});
+
+it('distinguishes same-name approval targets by project and activity', () => {
+  const input = (project: string, time: number | null) => ({
+    target: {
+      sessionId: 'internal',
+      sessionName: 'API requests',
+      sessionProject: project,
+      sessionLastActivityAt: time,
+    },
+    title: 't',
+    briefing: 'b',
+  });
+  const labels = [
+    input('acme/site', 100),
+    input('acme/site', 200),
+    input('acme/other', 100),
+    input('acme/site', null),
+  ].map((value) => sessionHandoffTitle(sessionHandoffSummary(value)!));
+  expect(new Set(labels).size).toBe(labels.length);
+  expect(
+    sessionHandoffSummary({
+      ...input('acme/site', 100),
+      target: { sessionId: 'internal', sessionName: 'API requests' },
+    }),
+  ).toBeNull();
 });

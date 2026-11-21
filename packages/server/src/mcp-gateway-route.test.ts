@@ -2186,6 +2186,13 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         }),
       );
 
+      const handoffTarget = {
+        sessionId: 'sess-web',
+        sessionName: 'Website API',
+        sessionProject: '__local__/website',
+        sessionLastActivityAt:
+          (await harness.store.getSessionEventStats('sess-web'))?.lastActivityAt ?? null,
+      };
       const handed = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
         jsonrpc: '2.0',
         id: 7,
@@ -2193,7 +2200,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         params: {
           name: 'verity_session_handoff',
           arguments: {
-            target: { sessionId: 'sess-web', sessionName: 'Website API' },
+            target: handoffTarget,
             title: 'Overlay for the new site',
             briefing: 'Digest sha256:abc, port 8080.',
           },
@@ -2225,12 +2232,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         dispatched.dispatchOpts.displayPrompt!.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL),
       ).toBe(true);
 
-      // A handoff is not idempotent and this tool is served beside the gateway's executor
-      // rather than inside it, so the at-most-once fence is the conductor's `clientReplyId`
-      // memo (ADR 0008, exercised in conductor.test.ts). What has to hold HERE is that the
-      // key identifies the call: a retry of the same JSON-RPC call keys the same, and a
-      // second, deliberate handoff does not. The stub conductor does not memoize, which is
-      // why both dispatches are visible to be compared.
+      // The conductor owns deduplication; its key must distinguish retries from deliberate sends.
       const repost = (id: number, briefing = 'Digest sha256:abc, port 8080.') =>
         postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
           jsonrpc: '2.0',
@@ -2239,7 +2241,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
           params: {
             name: 'verity_session_handoff',
             arguments: {
-              target: { sessionId: 'sess-web', sessionName: 'Website API' },
+              target: handoffTarget,
               title: 'Overlay for the new site',
               briefing,
             },
@@ -2247,10 +2249,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         });
       await repost(7);
       await repost(8);
-      // Same id as the retry, different briefing. This is the half the JSON-RPC id cannot
-      // carry: a client that reuses ids across a turn — or a caller that just sent the same
-      // number twice — must not have its second, genuinely different handoff swallowed as a
-      // duplicate of the first. The key varies because the request MAC is part of it.
+      // Reusing the JSON-RPC id with different text must not swallow the new briefing.
       await repost(8, 'Digest sha256:def, port 9090.');
       const keys = harness.dispatches.map((entry) => entry.dispatchOpts.clientReplyId);
       expect(keys[0]).toBe(keys[1]);

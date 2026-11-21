@@ -100,9 +100,19 @@ describe('handoff display contract', () => {
     expect(
       sessionHandoffRequestSchema.parse({
         ...request,
-        target: { sessionId: 'id', sessionName: 'API requests' },
+        target: {
+          sessionId: 'id',
+          sessionName: 'API requests',
+          sessionProject: 'acme/site',
+          sessionLastActivityAt: 200,
+        },
       }).target,
-    ).toEqual({ sessionId: 'id', sessionName: 'API requests' });
+    ).toEqual({
+      sessionId: 'id',
+      sessionName: 'API requests',
+      sessionProject: 'acme/site',
+      sessionLastActivityAt: 200,
+    });
     for (const target of [
       { sessionName: 'API requests' },
       { project: 'acme/site', sessionName: 'API requests' },

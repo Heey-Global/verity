@@ -937,7 +937,12 @@ describe('named handoff targets', () => {
     );
     const result = await tools.handoff(
       call({
-        target: { sessionId: 'second', sessionName: 'API requests' },
+        target: {
+          sessionId: 'second',
+          sessionName: 'API requests',
+          sessionProject: 'acme/k8s',
+          sessionLastActivityAt: 200,
+        },
         title: 'Investigate API',
         briefing: 'Check polling.',
       }),
@@ -955,12 +960,17 @@ describe('named handoff targets', () => {
     await expect(
       tools.handoff(
         call({
-          target: { sessionId: 'target', sessionName: 'Old name' },
+          target: {
+            sessionId: 'target',
+            sessionName: 'Old name',
+            sessionProject: 'acme/k8s',
+            sessionLastActivityAt: 1_700_000_000_000,
+          },
           title: 't',
           briefing: 'b',
         }),
       ),
-    ).rejects.toThrow('name changed');
+    ).rejects.toThrow('name or activity changed');
     expect(dispatchTurn).not.toHaveBeenCalled();
   });
 
@@ -973,7 +983,12 @@ describe('named handoff targets', () => {
     await expect(
       tools.handoff(
         call({
-          target: { sessionId: 'target', sessionName: 'Private title' },
+          target: {
+            sessionId: 'target',
+            sessionName: 'Private title',
+            sessionProject: 'acme/k8s',
+            sessionLastActivityAt: 1_700_000_000_000,
+          },
           title: 't',
           briefing: 'b',
         }),
@@ -981,4 +996,29 @@ describe('named handoff targets', () => {
     ).rejects.toThrow();
     expect(dispatchTurn).not.toHaveBeenCalled();
   });
+});
+
+it('rejects stale, mismatched and colliding named-target context before dispatch', async () => {
+  const { tools, call, dispatchTurn } = harness({
+    sessions: [
+      facts({ sessionId: 'first', name: 'API requests', lastActivityAt: 200 }),
+      facts({ sessionId: 'second', name: 'API requests', lastActivityAt: 200 }),
+    ],
+  });
+  for (const context of [
+    { sessionProject: 'acme/k8s', sessionLastActivityAt: 100 },
+    { sessionProject: 'acme/website', sessionLastActivityAt: 200 },
+    { sessionProject: 'acme/k8s', sessionLastActivityAt: 200 },
+  ]) {
+    await expect(
+      tools.handoff(
+        call({
+          target: { sessionId: 'second', sessionName: 'API requests', ...context },
+          title: 't',
+          briefing: 'b',
+        }),
+      ),
+    ).rejects.toThrow();
+  }
+  expect(dispatchTurn).not.toHaveBeenCalled();
 });

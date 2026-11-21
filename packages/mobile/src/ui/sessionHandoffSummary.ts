@@ -103,18 +103,47 @@ function onlyKnownKeys(value: Record<string, unknown>, known: readonly string[])
 function targetLabel(raw: unknown): Pick<SessionHandoffSummary, 'target' | 'targetKind'> | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
   const target = raw as Record<string, unknown>;
-  if (!onlyKnownKeys(target, ['sessionId', 'sessionName', 'project', 'newSession'])) return null;
+  if (
+    !onlyKnownKeys(target, [
+      'sessionId',
+      'sessionName',
+      'sessionProject',
+      'sessionLastActivityAt',
+      'project',
+      'newSession',
+    ])
+  )
+    return null;
   // Presence, not definedness: `{ sessionId: undefined, project: 'x' }` is a request naming
   // two keys, and Zod's `.strict()` refuses it as one. Reading it as a project target would
   // describe a request the server will not accept.
   const named = ['sessionId', 'project', 'newSession'].filter((key) => key in target);
-  if (named.length !== 1 || ('sessionName' in target && named[0] !== 'sessionId')) return null;
+  const hasContext = ['sessionName', 'sessionProject', 'sessionLastActivityAt'].some(
+    (key) => key in target,
+  );
+  if (named.length !== 1 || (hasContext && named[0] !== 'sessionId')) return null;
   if (named[0] === 'sessionId') {
     const sessionId = headlineText(target['sessionId']);
     if (sessionId === null) return null;
-    if ('sessionName' in target) {
+    if (hasContext) {
       const name = headlineText(target['sessionName']);
-      return name === null ? null : { target: `session “${name}”`, targetKind: 'session' };
+      const project = headlineText(target['sessionProject']);
+      const activity = target['sessionLastActivityAt'];
+      if (name === null || project === null || activity === undefined) return null;
+      if (
+        activity !== null &&
+        (typeof activity !== 'number' ||
+          !Number.isSafeInteger(activity) ||
+          activity < 0 ||
+          activity > 8_640_000_000_000_000)
+      )
+        return null;
+      const lastActive =
+        activity === null ? 'no activity yet' : `last active ${new Date(activity).toISOString()}`;
+      return {
+        target: `session “${name}” in project ${project} (${lastActive})`,
+        targetKind: 'session',
+      };
     }
     return { target: `session ${sessionId}`, targetKind: 'session' };
   }

@@ -753,7 +753,7 @@ export function createControlPlaneSessionTools(
 
       let target: { facts: ControlPlaneSessionFacts; project: ProjectRecord };
       if ('sessionId' in request.target) {
-        const { sessionId } = request.target;
+        const { sessionId, sessionName, sessionProject, sessionLastActivityAt } = request.target;
         const addressable = await addressableSessions(
           projects,
           (candidate) => candidate.sessionId === sessionId,
@@ -771,13 +771,31 @@ export function createControlPlaneSessionTools(
         await requireHandoffTarget(input, found.project.id);
         const blocker = handoffBlocker(found.facts, found.project);
         if (blocker !== undefined) throw new ControlPlaneSessionToolError(blocker);
-        if (
-          request.target.sessionName !== undefined &&
-          request.target.sessionName !== found.facts.name?.trim()
-        ) {
-          throw new ControlPlaneSessionToolError(
-            'target session name changed — list sessions and confirm the target again',
+        if (sessionName !== undefined) {
+          if (
+            sessionName !== found.facts.name?.trim() ||
+            sessionProject !== `${found.project.owner}/${found.project.repo}` ||
+            sessionLastActivityAt !== found.facts.lastActivityAt
+          ) {
+            throw new ControlPlaneSessionToolError(
+              'target session name or activity changed — list sessions and confirm the target again',
+            );
+          }
+          // A matching name and timestamp must identify one accessible session in the project.
+          // Refuse collisions rather than showing indistinguishable approval cards for different IDs.
+          const peers = await addressableSessions(
+            projects,
+            (candidate) => candidate.projectId === found.project.id,
           );
+          const matches = peers.sessions.filter(
+            ({ facts }) =>
+              facts.name?.trim() === sessionName && facts.lastActivityAt === sessionLastActivityAt,
+          );
+          if (matches.length !== 1 || matches[0]?.facts.sessionId !== sessionId) {
+            throw new ControlPlaneSessionToolError(
+              'target session display context is ambiguous or changed — rename the session or choose a new session',
+            );
+          }
         }
         target = found;
       } else if ('newSession' in request.target) {
