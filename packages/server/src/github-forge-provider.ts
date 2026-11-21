@@ -63,8 +63,10 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
   const discoveryFetch = fetchFor('discovery').fetch ?? baseFetch;
   const prServices = new GitHubPollCache<string, ForgePrService>(200);
   // One validator store for every PR reader, so scoped services that are rebuilt
-  // after an invalidation still revalidate with If-None-Match.
-  const responseCache = createGitHubResponseCache();
+  // after an invalidation still revalidate with If-None-Match. A status read spans
+  // about four URLs, so 4096 entries keep validators for roughly 1000 active
+  // branches; beyond that the oldest validators fall back to full requests.
+  const responseCache = createGitHubResponseCache(4096);
   // Share cooldowns between session worktrees of the SAME repository without
   // pausing unrelated projects that may use a different GitHub installation.
   const prFailureCooldowns = new GitHubPollCache<string, GitHubPollingCooldown>(
@@ -303,7 +305,9 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
       }
       return svc;
     },
-    openPullRequest: (target, token, pr) => openPullRequest(target, token, pr, fetchOpt),
+    // One-shot tokens are not the shared reader quota; keep them out of the budget.
+    openPullRequest: (target, token, pr) =>
+      openPullRequest(target, token, pr, opts.fetch !== undefined ? { fetch: opts.fetch } : {}),
     listIssues: (project: ProjectRecord) =>
       listProjectGitHubIssues(project, opts.issuesTokenMint, fetchOpt.fetch),
     repositoryOperations: (project) =>

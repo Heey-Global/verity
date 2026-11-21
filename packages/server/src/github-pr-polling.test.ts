@@ -382,3 +382,31 @@ it('forgets the merged repository validators so the next status read is uncondit
   // A stale validator could answer 304 with the pre-merge pull request.
   expect(fetch.mock.calls.at(-1)?.[1]?.headers?.['If-None-Match']).toBeUndefined();
 });
+
+it('keeps one-shot pull request creation outside the shared read budget', async () => {
+  const fetch = vi.fn<HttpFetch>().mockResolvedValue(
+    response({ number: 5, html_url: 'https://github.com/owner/repo/pull/5' }, 201, {
+      'x-ratelimit-limit': '5000',
+      'x-ratelimit-remaining': '0',
+      'x-ratelimit-reset': String(Math.ceil(Date.now() / 1000) + 600),
+    }),
+  );
+  const mint = () => Promise.resolve('fixture');
+  const rateBudget = createGitHubRateBudget();
+  const provider = createGitHubForgeProvider({
+    projectTokenMint: mint,
+    issuesTokenMint: mint,
+    installationToken: mint,
+    fetch,
+    rateBudget,
+  });
+  await provider.openPullRequest({ owner: 'owner', repo: 'repo' }, 'one-shot', {
+    head: 'feature',
+    base: 'main',
+    title: 'Feature',
+    body: '',
+  });
+  // A one-shot credential's limit must neither lock nor be counted as App reads.
+  expect(rateBudget.snapshot().categories.other.requests).toBe(0);
+  expect(provider.deferBackgroundReads!({ owner: 'owner', repo: 'repo' })).toBe(false);
+});
