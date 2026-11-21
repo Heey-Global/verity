@@ -2,11 +2,7 @@ import { BuildStorageCapacityError, afterReclamation } from './build-storage-cap
 export { isBuildStorageCapacityRefusal } from './build-storage-capacity-error.js';
 import { readHostStorageEvidence } from './host-storage-evidence.js';
 export { readHostStorageEvidence, type HostStorageEvidence } from './host-storage-evidence.js';
-import {
-  buildStoragePolicy,
-  estimateBuildStorageBytes,
-  type BuildStoragePolicy,
-} from './build-storage-policy.js';
+import { buildStoragePolicy, estimateBuildStorageBytes } from './build-storage-policy.js';
 export {
   buildStoragePolicy,
   estimateBuildStorageBytes,

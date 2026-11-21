@@ -15,7 +15,7 @@
   "packages/preview-tunnel/src/index.ts": 2873,
   "packages/server/src/branches.test.ts": 1944,
   "packages/server/src/build-storage.test.ts": 1904,
-  "packages/server/src/build-storage.ts": 1550,
+  "packages/server/src/build-storage.ts": 1546,
   "packages/server/src/docker.test.ts": 3287,
   "packages/server/src/docker.ts": 2674,
   "packages/server/src/embedded.test.ts": 3496,
