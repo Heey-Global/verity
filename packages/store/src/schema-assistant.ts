@@ -32,7 +32,8 @@ interface AssistantHandoffsTable {
   title: string;
   briefing_sha256: string;
   created_at: Generated<Date>;
-  result_seq: number | null;
+  /** A pg `bigint`, read back as a string. */
+  result_seq: string | null;
   result_delivered: boolean | null;
   result_summary: string | null;
   result_blocker: string | null;

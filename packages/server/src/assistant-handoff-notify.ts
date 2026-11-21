@@ -77,6 +77,7 @@ export async function announceAssistantHandoffResult(
   const claimed = await deps.eventStore.assistant.claimResult({
     assistantSessionId,
     targetSessionId,
+    handedOffAt: handoff.created_at,
     seq: published.seq,
     delivered,
     summary,

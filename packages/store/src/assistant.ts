@@ -169,6 +169,8 @@ export class AssistantStore {
   async claimResult(input: {
     assistantSessionId: string;
     targetSessionId: string;
+    /** The handoff the result was matched against; a newer handoff refuses the claim. */
+    handedOffAt: Date;
     seq: number;
     delivered: boolean;
     summary: string;
@@ -182,6 +184,7 @@ export class AssistantStore {
         result_at = ${input.at}
       where assistant_session_id = ${input.assistantSessionId}
         and target_session_id = ${input.targetSessionId}
+        and created_at = ${input.handedOffAt}
         and (result_seq is null or result_seq < ${input.seq})
       returning target_session_id`.execute(this.db);
     return updated.rows.length > 0;

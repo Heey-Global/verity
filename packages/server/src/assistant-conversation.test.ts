@@ -613,6 +613,7 @@ describe('assistant handoff cards', () => {
     await ctx.store.assistant.claimResult({
       assistantSessionId: 'assistant',
       targetSessionId: 't1',
+      handedOffAt: new Date(1_000),
       seq: 9,
       delivered: false,
       summary: 'Waiting for the deployment.',

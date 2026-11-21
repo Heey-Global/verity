@@ -130,6 +130,7 @@ describe('assistant handoff results', () => {
       ctx.store.assistant.claimResult({
         assistantSessionId: 'assistant',
         targetSessionId: 't1',
+        handedOffAt: new Date(1_000),
         seq,
         delivered: true,
         summary,
@@ -148,6 +149,16 @@ describe('assistant handoff results', () => {
     await handOff();
     expect(await ctx.store.assistant.recordedResults('assistant', ['t1'])).toEqual([]);
     expect(await claim(5)).toBe(true);
+    // A result matched against an earlier briefing cannot land on a newer handoff.
+    await ctx.store.assistant.recordHandoff({
+      assistantSessionId: 'assistant',
+      targetSessionId: 't1',
+      projectId: 'a',
+      title: 'Second question',
+      briefingSha256: 'b'.repeat(64),
+      at: new Date(3_000),
+    });
+    expect(await claim(9)).toBe(false);
   });
 });
 
