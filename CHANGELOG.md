@@ -6,6 +6,35 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [5.0.0](https://github.com/Heey-Global/verity/compare/v4.98.0...v5.0.0) (2026-11-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **projects:** require consent before delivering project inquiries ([#2760](https://github.com/Heey-Global/verity/issues/2760))
+
+### Features
+
+* **assistant:** explain how to grant the assistant a project ([#2756](https://github.com/Heey-Global/verity/issues/2756)) ([767ba5a](https://github.com/Heey-Global/verity/commit/767ba5ab0e229c9ca23f6826c716ca26d461017a))
+* **assistant:** read back the outcome of the assistant's own handoffs ([#2759](https://github.com/Heey-Global/verity/issues/2759)) ([4c6f844](https://github.com/Heey-Global/verity/commit/4c6f844fb9367cfe85817b8e9fe574b5a360be7e))
+* **assistant:** report delegated session results back to the assistant ([#2758](https://github.com/Heey-Global/verity/issues/2758)) ([33ac61b](https://github.com/Heey-Global/verity/commit/33ac61b08d7527e9b33bd9ec4b92092b1592f753))
+* **knowledge:** manage Shared and project knowledge in one file explorer ([#2740](https://github.com/Heey-Global/verity/issues/2740)) ([f68bbb6](https://github.com/Heey-Global/verity/commit/f68bbb6c4f6de5166bff135134e93e537fe40736))
+* **projects:** require consent before delivering project inquiries ([#2760](https://github.com/Heey-Global/verity/issues/2760)) ([d3621b6](https://github.com/Heey-Global/verity/commit/d3621b676dad56264b00f95a5da88979f37d724a))
+* **sessions:** coordinate linked sessions from chat ([#2739](https://github.com/Heey-Global/verity/issues/2739)) ([cc20fec](https://github.com/Heey-Global/verity/commit/cc20feceaa021250765d4fb3adc227cfc5817df7))
+
+
+### Bug Fixes
+
+* **approvals:** persist pending firewall and secret requests ([#2738](https://github.com/Heey-Global/verity/issues/2738)) ([5668d42](https://github.com/Heey-Global/verity/commit/5668d42743f277465dff58dcd451cd9a4dd0e463))
+* **deps:** restore compatible patched plist parser ([#2761](https://github.com/Heey-Global/verity/issues/2761)) ([bcdeb7c](https://github.com/Heey-Global/verity/commit/bcdeb7cf5118f8775830f96ebe8eed1afd205c0c))
+* **deps:** update agent clis ([#2752](https://github.com/Heey-Global/verity/issues/2752)) ([a503c63](https://github.com/Heey-Global/verity/commit/a503c633b1e806ecccf2e5ed96b658dbe10cba73))
+* **deps:** update dependency minimatch to v11.0.9 ([#2749](https://github.com/Heey-Global/verity/issues/2749)) ([388f724](https://github.com/Heey-Global/verity/commit/388f724aa48d73ce63d4fb6a85819769ca28b441))
+* **mcp-apps:** serve isolated documents outside the parent CSP ([#2744](https://github.com/Heey-Global/verity/issues/2744)) ([a46a824](https://github.com/Heey-Global/verity/commit/a46a8245bd094999408edd50269c3d6fbf7cbbe5))
+* **server:** admit protected build packet authority and roll back failed preparation ([#2741](https://github.com/Heey-Global/verity/issues/2741)) ([d96b12b](https://github.com/Heey-Global/verity/commit/d96b12b055950d5691975aa16c6b19b97c7bdee8))
+* **server:** keep GitHub polling within the shared App rate limit ([#2757](https://github.com/Heey-Global/verity/issues/2757)) ([83b7e74](https://github.com/Heey-Global/verity/commit/83b7e74df3609f4a1fab0024351939f661a501ac))
+* **server:** recover failed sandbox replacements and normalize build modes ([#2745](https://github.com/Heey-Global/verity/issues/2745)) ([6bee42d](https://github.com/Heey-Global/verity/commit/6bee42d37b51005e6cea35731b5566f60bb8ecd2))
+* **sessions:** use visible names in handoff choices and approvals ([#2755](https://github.com/Heey-Global/verity/issues/2755)) ([e23eb56](https://github.com/Heey-Global/verity/commit/e23eb56f67a636624c2680d948e4c89bfab3f570))
+
 ## [4.98.0](https://github.com/Heey-Global/verity/compare/v4.97.2...v4.98.0) (2026-11-20)
 
 
