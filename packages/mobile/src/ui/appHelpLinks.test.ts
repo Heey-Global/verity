@@ -128,7 +128,7 @@ describe('assistant grant path', () => {
     );
     expect(screen('model.tsx')).toMatch(
       new RegExp(
-        `title="${escape(functions ?? '')}"[\\s\\S]*?title="${escape(assistant ?? '')}"[\\s\\S]{0,400}?settings/assistant`,
+        `title="${escape(functions ?? '')}"[\\s\\S]{0,600}?title="${escape(assistant ?? '')}"[\\s\\S]{0,400}?settings/assistant`,
       ),
     );
   });
