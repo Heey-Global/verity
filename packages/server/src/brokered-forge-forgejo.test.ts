@@ -106,3 +106,33 @@ it('rejects traversal, credentials in query strings and unknown API methods befo
     ).rejects.toThrow();
   expect(credentials).not.toHaveBeenCalled();
 });
+it('never lets a sandbox merge a pull request, even with full PR write authority', async () => {
+  const { adapter, credentials } = fixture();
+  for (const method of ['POST', 'PATCH', 'PUT', 'DELETE'])
+    await expect(
+      adapter.authorize(
+        {
+          hostname: 'forge.test:8443',
+          method,
+          path: '/prefix/api/v1/repos/owner/repo/pulls/1/merge',
+          body: Buffer.from('{"Do":"merge"}'),
+        },
+        binding,
+        actions,
+        signal,
+      ),
+    ).rejects.toThrow();
+  expect(credentials).not.toHaveBeenCalled();
+  await expect(
+    adapter.authorize(
+      {
+        hostname: 'forge.test:8443',
+        method: 'GET',
+        path: '/prefix/api/v1/repos/owner/repo/pulls/1/merge',
+      },
+      binding,
+      actions,
+      signal,
+    ),
+  ).resolves.toMatchObject({ action: 'pulls-read' });
+});

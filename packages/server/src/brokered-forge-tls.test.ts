@@ -1123,8 +1123,6 @@ describe('brokered forge TLS boundary', () => {
         );
       else if (query.includes('closePullRequest'))
         res.end(JSON.stringify({ data: { closePullRequest: { pullRequest: { id: 'PR_2' } } } }));
-      else if (query.includes('mergePullRequest'))
-        res.end(JSON.stringify({ data: { mergePullRequest: { clientMutationId: 'test-merge' } } }));
       else if (query.includes('createIssue'))
         res.end(
           JSON.stringify({
@@ -1285,7 +1283,31 @@ describe('brokered forge TLS boundary', () => {
     );
     expect(pr.stdout).toContain('/pull/3');
     await exec(join(seed, 'gh'), ['pr', 'close', '2', '--repo', 'acme/app'], { env });
-    await exec(join(seed, 'gh'), ['pr', 'merge', '2', '--repo', 'acme/app', '--merge'], { env });
+    // Only a person merges. The wrapper explains the refusal; the broker enforces it for
+    // direct API calls that bypass the wrapper's command parsing.
+    await expect(
+      exec(join(seed, 'gh'), ['pr', 'merge', '2', '--repo', 'acme/app', '--merge'], { env }),
+    ).rejects.toThrow(/only a person merges/);
+    await expect(
+      exec(join(seed, 'gh'), ['api', '-X', 'PUT', 'repos/acme/app/pulls/2/merge'], { env }),
+    ).rejects.toThrow(/403/);
+    await expect(
+      exec(
+        join(seed, 'gh'),
+        [
+          'api',
+          'graphql',
+          '-f',
+          'query=mutation{mergePullRequest(input:{pullRequestId:"PR_2"}){clientMutationId}}',
+        ],
+        { env },
+      ),
+    ).rejects.toThrow(/403/);
+    expect(
+      h.received.some(
+        (entry) => entry.path.includes('/merge') || entry.body.includes('mergePullRequest'),
+      ),
+    ).toBe(false);
     expect(h.received.every((entry) => entry.auth === `Bearer ${token}`)).toBe(true);
   });
   it.each(['github', 'forgejo'])(

@@ -9,7 +9,7 @@ capabilities. The legacy token endpoint no longer issues credentials.
 | Consumer | Broker operations | Local verification |
 | --- | --- | --- |
 | Git HTTPS | clone, fetch, push, binary packfiles | Real Git Smart HTTP integration |
-| gh issue / gh pr | default and JSON view, list, create, comment, PR close/merge | Real CLI TLS integration |
+| gh issue / gh pr | default and JSON view, list, create, comment, PR close; merge is refused (only a person merges) | Real CLI TLS integration |
 | CI checks | commit checks, suites, statuses, annotations | Repository policy tests |
 | Actions | runs, jobs, workflows, logs, artifacts, dispatch, rerun, cancel | Policy tests and real CLI list/dispatch |
 | Releases | metadata, create/edit/delete, asset download/upload | Policy tests, real CLI view, binary transfer integration |

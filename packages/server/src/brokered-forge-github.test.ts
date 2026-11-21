@@ -224,6 +224,37 @@ describe('GitHub forge policy', () => {
       await h.adapter.authorize(request, binding, actions, new AbortController().signal),
     ).toMatchObject({ action: 'issues-write', authorization: 'Bearer server-token' });
   });
+  it('never lets a sandbox merge a pull request, even with full PR write authority', async () => {
+    const h = harness('acme/app', 'PullRequest');
+    const all = new Set<ForgeAction>([...actions, 'releases-write', 'actions-write']);
+    for (const request of [
+      graph(
+        'mutation($input:MergePullRequestInput!){mergePullRequest(input:$input){clientMutationId}}',
+        {
+          input: { pullRequestId: 'bound-pr' },
+        },
+      ),
+      graph('mutation{mergePullRequest(input:{pullRequestId:"PR_1"}){clientMutationId}}'),
+      graph('mutation{enablePullRequestAutoMerge(input:{pullRequestId:"PR_1"}){clientMutationId}}'),
+      graph('mutation{enqueuePullRequest(input:{pullRequestId:"PR_1"}){clientMutationId}}'),
+      { hostname: 'api.github.com', method: 'PUT', path: '/repos/acme/app/pulls/1/merge' },
+      { hostname: 'api.github.com', method: 'POST', path: '/repos/acme/app/pulls/1/merge' },
+      { hostname: 'api.github.com', method: 'POST', path: '/repos/acme/app/merges' },
+    ])
+      await expect(
+        h.adapter.authorize(request, binding, all, new AbortController().signal),
+      ).rejects.toThrow();
+    expect(h.mint).not.toHaveBeenCalled();
+    // Asking whether a PR was merged stays readable.
+    await expect(
+      h.adapter.authorize(
+        { hostname: 'api.github.com', method: 'GET', path: '/repos/acme/app/pulls/1/merge' },
+        binding,
+        all,
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ action: 'pulls-read' });
+  });
   it('enforces read/write actions for Git and GraphQL and accounts for PRs on the Issues REST API', async () => {
     const h = harness();
     const readOnly = new Set<ForgeAction>(['git-read', 'issues-read']);
