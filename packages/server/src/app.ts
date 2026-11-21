@@ -56,6 +56,7 @@ import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
+  dependencyCapacity?: ServerDeps['dependencyCapacity'];
   sessionStorage?: ServerDeps['sessionStorage'];
   backup?: ServerDeps['backup'];
   eventStore: EventStore;
@@ -393,6 +394,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
   // Filled by the session routes; every turn start converts a legacy Documents session.
   const codeWorkspaceTurns: NonNullable<ServerDeps['codeWorkspaceTurns']> = {};
   return buildServer({
+    ...(deps.dependencyCapacity ? { dependencyCapacity: deps.dependencyCapacity } : {}),
     eventStore: deps.eventStore,
     codeWorkspaceTurns,
     ...(deps.backup ? { backup: deps.backup } : {}),

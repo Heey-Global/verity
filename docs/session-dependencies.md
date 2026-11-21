@@ -145,9 +145,36 @@ supervisor cannot admit another dependency copy while npm continues writing.
 The activation record retains the full-copy estimate, actual copied file count
 and allocated bytes, sharing mode, reserve and observed free capacity.
 
-These checks serialize dependency commands within the project; they do not
-coordinate with another project's installations or the Server's in-memory build
-reservations. Central npm preparation checks the free reserve before starting,
-but lockfiles do not establish an upper bound on downloaded or unpacked bytes.
-The checks are conservative admission measurements, not filesystem quotas or a
-guarantee against unrelated writers consuming the reserve afterward.
+Managed sessions additionally require a current Server grant from
+`/internal/dependency-storage`, authenticated with the existing project broker
+capability. Measured activation and private copies reserve their complete copy
+bound; central npm preparation reserves the Server's conservative preparation
+estimate because a lockfile does not bound downloaded or unpacked bytes. These
+grants share capacity accounting with other projects and build reservations.
+Each request has a 30-second deadline; missing or stale protocol support blocks
+additional dependency work. Standalone tools without a managed session retain
+the local filesystem checks.
+
+The helper reserves one operation identity, opens its root-owned lock read-only,
+acquires a shared kernel lock and obtains a start acknowledgement before writing
+additional dependency data. Lost replies are checked against the same identity.
+Descriptor 4 carries the holder through the package wrapper and native npm; a
+trusted preload forwards it through Node's asynchronous and synchronous child
+process APIs, including children with explicit environments. A conflicting use
+of descriptor 4 is refused rather than dropping the holder. This supports
+legitimate npm descendants; it is not a sandbox for hostile package processes.
+The holder survives a killed helper while an inherited writer remains alive.
+Settlement is only a hint: the Server releases the reservation after exclusive
+lock acquisition proves all holders closed. A missing acknowledgement or a
+surviving child leaves the reservation uncertain and charged for reconciliation.
+A stopped, replaced or removed sandbox whose broker evidence is unavailable
+remains uncertain. Neither a reused container name nor an empty inventory on a
+possibly changed Docker daemon proves termination of the original writer.
+Automatic release across those transitions requires a durable original-daemon
+identity and independently verified termination; this protocol retains the
+allowance until it can prove retirement through the original generation.
+
+Admission estimates and live free-space checks are conservative safeguards,
+not filesystem quotas or a guarantee against unrelated writers consuming the
+reserve afterward. Existing installations and recovery files are never removed
+to manufacture capacity for an admission.

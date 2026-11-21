@@ -1,3 +1,17 @@
+import { BuildStorageCapacityError, afterReclamation } from './build-storage-capacity-error.js';
+export { isBuildStorageCapacityRefusal } from './build-storage-capacity-error.js';
+import { readHostStorageEvidence } from './host-storage-evidence.js';
+export { readHostStorageEvidence, type HostStorageEvidence } from './host-storage-evidence.js';
+import {
+  buildStoragePolicy,
+  estimateBuildStorageBytes,
+  type BuildStoragePolicy,
+} from './build-storage-policy.js';
+export {
+  buildStoragePolicy,
+  estimateBuildStorageBytes,
+  type BuildStoragePolicy,
+} from './build-storage-policy.js';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import {
   closeSync,
@@ -29,25 +43,6 @@ const GiB = 1024 ** 3;
 /** Marks a rejection whose command exited on its own with a status. */
 const EXITED = Symbol('exited');
 const execFileAsync = promisify(execFile);
-const reportSchema = z.object({
-  schemaVersion: z.literal(1),
-  observedAt: z.iso.datetime(),
-  hostBootId: z.uuid().optional(),
-  hostIdentity: z
-    .string()
-    .regex(/^[a-f0-9]{64}$/)
-    .optional(),
-  roots: z.array(
-    z.object({
-      kind: z.enum(['buildkit', 'docker', 'containerd', 'export', 'project']),
-      observedAt: z.iso.datetime().optional(),
-      state: z.enum(['available', 'unavailable']),
-      availableBytes: z.number().nonnegative().finite().optional(),
-      freeInodes: z.number().nonnegative().finite().optional(),
-      filesystemId: z.string().min(1).optional(),
-    }),
-  ),
-});
 const identitySchema = z.object({
   hostBootId: z.uuid(),
   hostIdentity: z.string().regex(/^[a-f0-9]{64}$/),
@@ -192,43 +187,6 @@ function unavailable(detail: string): never {
   );
 }
 
-export interface BuildStoragePolicy {
-  /** Includes all remaining snapshot, archive, import and context growth. */
-  estimateBytes: number;
-  reserveBytes: number;
-  reserveInodes: number;
-}
-
-export function buildStoragePolicy(
-  environment: NodeJS.ProcessEnv = process.env,
-): BuildStoragePolicy {
-  const positive = (name: string, fallback: number, maxDigits = 6): number => {
-    const value = environment[name];
-    if (value === undefined) return fallback;
-    if (!/^[1-9]\d*$/.test(value) || value.length > maxDigits) throw new Error(`Invalid ${name}`);
-    return Number(value);
-  };
-  return {
-    // Used only when no valid project image measurement is available.
-    estimateBytes: positive('VERITY_BUILD_ESTIMATE_GIB', 24) * GiB,
-    reserveBytes: positive('VERITY_BUILD_FREE_GIB', 10) * GiB,
-    reserveInodes: positive('VERITY_BUILD_FREE_INODES', 1_000_000, 12),
-  };
-}
-
-/**
- * Overlayfs admission heuristic: 2 GiB context allowance plus twice the previous
- * uncompressed image size. One image covers an export archive without assuming
- * compression; the other allows changed snapshots and import growth (unchanged
- * layers are shared). Bound the heuristic to 12–96 GiB. This is not a peak-space
- * guarantee: arbitrary build steps can outgrow it, so live reserve checks remain.
- */
-export function estimateBuildStorageBytes(policy: BuildStoragePolicy, imageBytes?: number): number {
-  if (imageBytes === undefined || !Number.isSafeInteger(imageBytes) || imageBytes <= 0)
-    return policy.estimateBytes;
-  return Math.ceil(Math.min(96 * GiB, Math.max(12 * GiB, 2 * GiB + 2 * imageBytes)));
-}
-
 export interface BuildStorageLease {
   directory: string;
   /** Remote work may still use the context or archive; preserve both and admission. */
@@ -251,66 +209,6 @@ export interface BuildStorageLease {
   dispose(): void;
 }
 
-export interface HostStorageEvidence {
-  /** Lowest measured free bytes across the host roots, when any was measured. */
-  availableBytes?: number;
-  freeInodes?: number;
-  /** Why a root was not measured; empty when every root was. */
-  problems: string[];
-}
-
-const HOST_STORAGE_ROOTS = ['buildkit', 'docker', 'containerd', 'export', 'project'] as const;
-
-/**
- * Reads the host storage report as measurements. A missing, stale or partial
- * report is not evidence of low space: admission then checks what was measured
- * and names the gaps, instead of refusing every build because a reporter or its
- * configuration is missing while the disks have room.
- */
-export function readHostStorageEvidence(
-  reportFile: string,
-  now: number = Date.now(),
-): HostStorageEvidence {
-  let report: z.infer<typeof reportSchema>;
-  try {
-    const input = readFileSync(reportFile, 'utf8');
-    if (input.length > 262144) return { problems: ['host storage report exceeds its size limit'] };
-    report = reportSchema.parse(JSON.parse(input));
-  } catch {
-    return { problems: ['host storage report is missing or invalid'] };
-  }
-  const fresh = (observedAt: string | undefined) => {
-    if (observedAt === undefined) return false;
-    const age = now - Date.parse(observedAt);
-    return age >= -5000 && age <= 120_000;
-  };
-  if (!fresh(report.observedAt)) return { problems: ['host storage report is stale'] };
-  const evidence: HostStorageEvidence = { problems: [] };
-  for (const kind of HOST_STORAGE_ROOTS) {
-    const roots = report.roots.filter((root) => root.kind === kind);
-    const root = roots[0];
-    if (
-      roots.length !== 1 ||
-      root?.state !== 'available' ||
-      root.availableBytes === undefined ||
-      root.freeInodes === undefined ||
-      root.filesystemId === undefined
-    ) {
-      evidence.problems.push(`${kind} filesystem is not established`);
-      continue;
-    }
-    if (!fresh(root.observedAt)) {
-      evidence.problems.push(`${kind} filesystem sample is stale or missing`);
-      continue;
-    }
-    // Treat all roots as aliases for admission. Summing independent free
-    // budgets would over-admit on the common single-host-filesystem layout.
-    evidence.availableBytes = Math.min(evidence.availableBytes ?? Infinity, root.availableBytes);
-    evidence.freeInodes = Math.min(evidence.freeInodes ?? Infinity, root.freeInodes);
-  }
-  return evidence;
-}
-
 /** Attempt directories a lease in this process holds right now, across instances. */
 const activeDirectories = new Set<string>();
 
@@ -321,25 +219,6 @@ const activeDirectories = new Set<string>();
  * longer blocks other builds; {@link BuildStorage.reconcile} releases it once the
  * worker, the boot or the elapsed time proves it ended.
  */
-class BuildStorageCapacityError extends Error {}
-
-/** A capacity refusal that reclamation could not lift says what reclamation did,
- *  so the operator sees why a retry alone will not help. Other errors pass through. */
-function afterReclamation(refusal: unknown, outcome: string | void): unknown {
-  if (!(refusal instanceof BuildStorageCapacityError) || !outcome) return refusal;
-  return new BuildStorageCapacityError(`${refusal.message} ${outcome}`, { cause: refusal });
-}
-
-/** Whether a failure, or anything in its cause chain, is a build-storage
- *  capacity refusal: the one failure that released storage can resolve. */
-export function isBuildStorageCapacityRefusal(error: unknown): boolean {
-  for (let current = error, depth = 0; current !== undefined && depth < 8; depth++) {
-    if (current instanceof BuildStorageCapacityError) return true;
-    current = current instanceof Error ? current.cause : undefined;
-  }
-  return false;
-}
-
 export class BuildStorage {
   private reclaimer?: () => Promise<string | void>;
   private releaseListener?: () => void;
@@ -361,6 +240,22 @@ export class BuildStorage {
   private capacityDescriber: ((shortfallBytes: number) => string) | undefined;
 
   private held = false;
+  private activeEstimate = 0;
+  private unmanagedCount = 0;
+  private dependencyReservations?: () => { bytes: number; inodes: number };
+
+  /** A synchronous snapshot includes provisional reservations before durable writes await. */
+  setDependencyReservations(read: () => { bytes: number; inodes: number }): void {
+    this.dependencyReservations = read;
+  }
+
+  checkDependencyCapacity(bytes: number, inodes: number): void {
+    if (this.unmanagedCount > 0)
+      throw new Error('Dependency capacity unavailable: an unmanaged build still owns storage.');
+    mkdirSync(this.root, { recursive: true, mode: 0o700 });
+    this.unresolved = this.survey(readlinkSync('/proc/self/ns/pid'));
+    this.check(bytes + this.activeEstimate, true, inodes);
+  }
   /** Builds waiting for this Server's one lease, first come first served. */
   private readonly waiting: Array<() => void> = [];
   /** A waiter was woken and has not yet taken its turn; newcomers queue behind it. */
@@ -472,9 +367,13 @@ export class BuildStorage {
     }
   }
 
-  private check(bytes: number, host: boolean): void {
+  private check(bytes: number, host: boolean, requestedInodes = 0): void {
     const unresolvedBytes = this.unresolved.reduce((sum, entry) => sum + entry.reservedBytes, 0);
-    bytes += unresolvedBytes;
+    const dependencies = this.dependencyReservations?.() ?? { bytes: 0, inodes: 0 };
+    bytes += unresolvedBytes + dependencies.bytes;
+    const requiredInodes = this.policy.reserveInodes + requestedInodes + dependencies.inodes;
+    if (![bytes, requiredInodes].every((value) => Number.isSafeInteger(value) && value >= 0))
+      throw new Error('Storage reservation inventory is incomplete or exceeds safe limits.');
     const local = this.localDisk();
     let available = local.availableBytes;
     let inodes = local.freeInodes;
@@ -485,9 +384,14 @@ export class BuildStorage {
       if (evidence.freeInodes !== undefined) inodes = Math.min(inodes, evidence.freeInodes);
       this.reportEvidence(evidence.problems);
     }
-    if (available < bytes + this.policy.reserveBytes || inodes < this.policy.reserveInodes) {
+    if (![available, inodes].every((value) => Number.isSafeInteger(value) && value >= 0))
+      throw new Error('Storage capacity measurement is unavailable or invalid.');
+    if (available < bytes + this.policy.reserveBytes || inodes < requiredInodes) {
       throw new BuildStorageCapacityError(
-        `Build storage admission rejected: available ${Math.floor(available / GiB)} GiB and ${inodes} free inodes; requires ${Math.ceil(bytes / GiB)} GiB estimated growth plus ${Math.ceil(this.policy.reserveBytes / GiB)} GiB reserve and ${this.policy.reserveInodes} free inodes.` +
+        `Build storage admission rejected: available ${Math.floor(available / GiB)} GiB and ${inodes} free inodes; requires ${Math.ceil(bytes / GiB)} GiB estimated growth plus ${Math.ceil(this.policy.reserveBytes / GiB)} GiB reserve and ${requiredInodes} free inodes.` +
+          (dependencies.bytes || dependencies.inodes
+            ? ` Dependency operations hold ${dependencies.bytes} bytes and ${dependencies.inodes} inodes.`
+            : '') +
           (unresolvedBytes > 0
             ? ` ${Math.ceil(unresolvedBytes / GiB)} GiB of that is held by ${this.unresolved.length} earlier build attempt(s) whose end is not yet confirmed (${this.unresolved.map((entry) => entry.attempt).join(', ')}); they are released automatically once the builder confirms they ended.`
             : '') +
@@ -685,6 +589,12 @@ export class BuildStorage {
    * instead of restarting the worker underneath it.
    */
   private unmanagedLease(admissionDirectory: string): BuildStorageLease {
+    const dependencies = this.dependencyReservations?.();
+    if (dependencies && (dependencies.bytes > 0 || dependencies.inodes > 0))
+      throw new Error(
+        'Build storage admission rejected: dependency operations still hold capacity.',
+      );
+    this.unmanagedCount++;
     let admissionFd: number | undefined;
     let admissionMarker: string | undefined;
     let running = false;
@@ -806,6 +716,7 @@ export class BuildStorage {
         if (disposed) return;
         if (running) throw new Error('Cannot release storage while a build command is running');
         disposed = true;
+        this.unmanagedCount--;
         if (
           admissionMarker !== undefined &&
           !existsSync(join(admissionMarker, 'remote-operation.json')) &&
@@ -1380,6 +1291,7 @@ export class BuildStorage {
       throw cause;
     }
     this.held = true;
+    this.activeEstimate = 2 * GiB;
     this.currentDirectory = directory;
     activeDirectories.add(directory);
     let commandIndex = 0;
@@ -1403,6 +1315,7 @@ export class BuildStorage {
       if (disposed) throw new Error('Build storage lease was released');
       estimateBytes = estimateBuildStorageBytes(this.policy, imageBytes);
       this.check(estimateBytes, true);
+      this.activeEstimate = estimateBytes;
       reserved = true;
     };
     return {
@@ -1626,6 +1539,7 @@ export class BuildStorage {
         else releaseAdmission();
         disposed = true;
         this.held = false;
+        this.activeEstimate = 0;
         this.holder = undefined;
         this.currentDirectory = undefined;
         activeDirectories.delete(directory);

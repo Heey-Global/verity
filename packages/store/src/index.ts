@@ -1,3 +1,15 @@
+export type { CapacityLeaseDatabase, CapacityLeasesTable } from './schema-capacity-leases.js';
+export {
+  CapacityLeaseStore,
+  CapacityLeaseBindingConflictError,
+  CapacityLeaseInputError,
+  CAPACITY_LEASE_INVENTORY_LIMIT,
+  type CapacityLease,
+  type CapacityLeaseInput,
+  type CapacityLeaseInventory,
+  type CapacityLeaseKind,
+  type CapacityLeaseState,
+} from './capacity-leases.js';
 export { SandboxUpdateStateStore, type SandboxUpdateState } from './sandbox-update-state.js';
 export {
   ProjectEgressStore,

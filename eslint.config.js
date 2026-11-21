@@ -103,10 +103,16 @@ export default tseslint.config(
   {
     // The sandbox toolkit ships this Node entrypoint directly rather than through
     // a package build. It is covered by a typed integration test in packages/server.
-    files: ['features/**/*.{mjs,mts}', 'agent-seed/bin/verity-dependency-storage.mjs'],
+    files: [
+      'features/**/*.{mjs,mts}',
+      'agent-seed/bin/verity-dependency-storage.mjs',
+      'agent-seed/bin/verity-dependency-storage-preload.mjs',
+    ],
     extends: [tseslint.configs.disableTypeChecked],
     languageOptions: {
       globals: {
+        URL: 'readonly',
+        console: 'readonly',
         process: 'readonly',
         Buffer: 'readonly',
         setTimeout: 'readonly',
