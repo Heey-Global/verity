@@ -39,7 +39,6 @@ export interface AssistantGrant {
   revision: number;
 }
 
-/** A session the assistant handed work to, recorded so it can read back the outcome. */
 /** The longest result summary kept for a handoff card. */
 export const ASSISTANT_HANDOFF_SUMMARY_MAX = 300;
 
@@ -52,6 +51,7 @@ export interface AssistantHandoffResult {
   at: Date;
 }
 
+/** A session the assistant handed work to, recorded so it can read back the outcome. */
 export interface AssistantHandoff {
   target_session_id: string;
   assistant_session_id: string;
