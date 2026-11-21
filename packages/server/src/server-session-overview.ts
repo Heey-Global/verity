@@ -546,6 +546,11 @@ export function createServerSessionOverview({
   let prRepairStopped = false;
   let prRepairSweep: Promise<void> | undefined;
   let prRepairTimer: ReturnType<typeof setInterval> | undefined;
+  // A failing quota check must not abort the sweep; it only forgoes the deferral.
+  const deferForgeReads = (projectId: string): Promise<boolean> =>
+    Promise.resolve()
+      .then(() => deps.deferBackgroundForgeReads?.(projectId) ?? false)
+      .catch(() => false);
   const sweepPrRepairs = (): Promise<void> | undefined => {
     if (prRepairStopped || prRepairSweep !== undefined) return prRepairSweep;
     prRepairSweep = (async () => {
@@ -594,11 +599,6 @@ export function createServerSessionOverview({
     clearInterval(prRepairTimer);
     await prRepairSweep;
   });
-  // A failing quota check must not abort the sweep; it only forgoes the deferral.
-  const deferForgeReads = (projectId: string): Promise<boolean> =>
-    Promise.resolve()
-      .then(() => deps.deferBackgroundForgeReads?.(projectId) ?? false)
-      .catch(() => false);
   const prActivityRefresh = createPrActivityRefresh({
     refresh: async (sessionId) => {
       const session = await deps.eventStore.getSession(sessionId);

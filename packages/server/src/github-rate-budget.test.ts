@@ -127,6 +127,16 @@ describe('GitHub rate budget', () => {
     expect(budget.snapshot().quotas.length).toBeLessThanOrEqual(256);
   });
 
+  it('counts but never locks endpoints that belong to no repository', () => {
+    const budget = createGitHubRateBudget({ now: () => 0 });
+    const listing = 'https://api.github.com/installation/repositories?per_page=100';
+    budget.observe({ url: listing, category: 'other', status: 429 });
+    // A shared pseudo-account would lock every installation's listing at once.
+    expect(budget.lockedUntil(listing)).toBe(0);
+    expect(budget.lockedUntil(repoUrl('team', 'a'))).toBe(0);
+    expect(budget.snapshot().categories.other.requests).toBe(1);
+  });
+
   it('treats a permission denial as an ordinary failure', () => {
     const budget = createGitHubRateBudget();
     budget.observe({

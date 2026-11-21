@@ -178,7 +178,11 @@ export function createGitHubRateBudget(
   const quotaFor = (account: string, resource: string): QuotaState => {
     const key = quotaKey(account, resource);
     let state = quotas.get(key);
-    if (!state) {
+    // Re-insert on every observation so eviction drops the least recently seen account.
+    if (state) {
+      quotas.delete(key);
+      quotas.set(key, state);
+    } else {
       state = { observedAt: now(), lockedUntil: 0, secondaryStreak: 0 };
       quotas.set(key, state);
       // An active lock is the only thing stopping an exhausted account; never evict it.
@@ -224,7 +228,8 @@ export function createGitHubRateBudget(
     /** Epoch ms until which requests for this URL must not be sent; 0 when open. */
     lockedUntil(url: string | URL): number {
       const target = githubRequestTarget(url);
-      if (!target) return 0;
+      // Non-repository endpoints cannot be tied to one installation's quota.
+      if (target?.repo === undefined) return 0;
       const state = quotas.get(quotaKey(target.account, target.resource));
       return state && state.lockedUntil > now() ? state.lockedUntil : 0;
     },
@@ -255,6 +260,7 @@ export function createGitHubRateBudget(
       const at = now();
       const { status, headers, category } = observation;
       count(category, status === 304 ? 'notModified' : 'requests');
+      if (target.repo === undefined) return;
       const resource = header(headers, 'x-ratelimit-resource') ?? target.resource;
       const state = quotaFor(target.account, resource);
       const limit = numeric(header(headers, 'x-ratelimit-limit'));
@@ -338,7 +344,7 @@ export function createGitHubRateBudget(
         observedAt: new Date(at).toISOString(),
         windowMinutes: WINDOW_MINUTES,
         categories,
-        quotas: [...quotas].map(([key, state]) => {
+        quotas: [...quotas].slice(-MAX_ACCOUNTS).map(([key, state]) => {
           const [account, resource] = key.split('\0') as [string, string];
           return {
             account,
