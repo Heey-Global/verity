@@ -174,6 +174,12 @@ Automatic release across those transitions requires a durable original-daemon
 identity and independently verified termination; this protocol retains the
 allowance until it can prove retirement through the original generation.
 
+Legacy builds without host admission retain their own durable operation journal.
+Disposing a local call cannot release dependency admission while its remote
+outcome or any recorded child process group is still unconfirmed. These journals
+survive Server restarts and use the existing build reconciliation evidence;
+unaccounted host admission markers also keep new dependency work paused.
+
 Admission estimates and live free-space checks are conservative safeguards,
 not filesystem quotas or a guarantee against unrelated writers consuming the
 reserve afterward. Existing installations and recovery files are never removed

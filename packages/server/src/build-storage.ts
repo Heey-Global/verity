@@ -1,3 +1,4 @@
+import { createUnmanagedBuildLease } from './unmanaged-build-storage.js';
 import { BuildStorageCapacityError, afterReclamation } from './build-storage-capacity-error.js';
 export { isBuildStorageCapacityRefusal } from './build-storage-capacity-error.js';
 import { readHostStorageEvidence } from './host-storage-evidence.js';
@@ -8,7 +9,7 @@ export {
   estimateBuildStorageBytes,
   type BuildStoragePolicy,
 } from './build-storage-policy.js';
-import { execFile, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   closeSync,
   existsSync,
@@ -26,10 +27,8 @@ import {
   statfsSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, join } from 'node:path';
-import { promisify } from 'node:util';
 import { z } from 'zod';
 import { ProtectedBuildFailure } from './project-egress-build-error.js';
 import { protectedBuildReply, protectedBuildRequest } from './project-egress-build.js';
@@ -38,7 +37,6 @@ import { builderAdmissionMessage, readBuilderAdmissionState } from './builder-ad
 const GiB = 1024 ** 3;
 /** Marks a rejection whose command exited on its own with a status. */
 const EXITED = Symbol('exited');
-const execFileAsync = promisify(execFile);
 const identitySchema = z.object({
   hostBootId: z.uuid(),
   hostIdentity: z.string().regex(/^[a-f0-9]{64}$/),
@@ -250,6 +248,30 @@ export class BuildStorage {
       throw new Error('Dependency capacity unavailable: an unmanaged build still owns storage.');
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
     this.unresolved = this.survey(readlinkSync('/proc/self/ns/pid'));
+    if (this.unresolved.some((attempt) => attempt.attempt.startsWith('attempt-unmanaged-')))
+      throw new Error('Dependency capacity unavailable: an unmanaged build still owns storage.');
+    if (this.admissionDirectory !== undefined) {
+      const markers = join(this.admissionDirectory, 'leases');
+      if (existsSync(markers)) {
+        const accounted = new Set<string>();
+        for (const entry of readdirSync(this.root, { withFileTypes: true })) {
+          if (!entry.name.startsWith('attempt-') || !entry.isDirectory() || entry.isSymbolicLink())
+            continue;
+          try {
+            const owner = ownerSchema.parse(
+              JSON.parse(readFileSync(join(this.root, entry.name, 'owner.json'), 'utf8')),
+            );
+            if (owner.admissionMarker !== undefined) accounted.add(owner.admissionMarker);
+          } catch {
+            /* Unreadable ownership never establishes accounting. */
+          }
+        }
+        if (readdirSync(markers).some((name) => !accounted.has(join(markers, name))))
+          throw new Error(
+            'Dependency capacity unavailable: earlier build admission remains unconfirmed.',
+          );
+      }
+    }
     this.check(bytes + this.activeEstimate, true, inodes);
   }
   /** Builds waiting for this Server's one lease, first come first served. */
@@ -590,139 +612,31 @@ export class BuildStorage {
       throw new Error(
         'Build storage admission rejected: dependency operations still hold capacity.',
       );
-    this.unmanagedCount++;
-    let admissionFd: number | undefined;
-    let admissionMarker: string | undefined;
-    let running = false;
-    let disposed = false;
-    const enterProvisionedHost = () => {
-      const admission = this.admissionState(admissionDirectory);
-      if (admission.state === 'not-provisioned') return;
-      if (admission.state !== 'provisioned')
-        throw new Error(`Builder admission unavailable: ${builderAdmissionMessage(admission)}`);
-      const fd = openSync(join(admissionDirectory, 'build-admission.lock'), 'r');
-      try {
-        const locked = spawnSync('flock', ['--shared', '--nonblock', '3'], {
-          stdio: ['ignore', 'ignore', 'pipe', fd],
-          timeout: 5000,
-        });
-        if (locked.status !== 0)
-          throw new Error(
-            'Builder admission unavailable: the host was provisioned during this build and its maintenance is in progress; retry the build',
-          );
-        if (existsSync(join(admissionDirectory, 'migration-pending')))
-          throw new Error(
-            'Builder admission unavailable: builder migration recovery is pending; retry the build',
-          );
-        admissionMarker = this.createAdmissionMarker(admissionDirectory);
-      } catch (cause) {
-        closeSync(fd);
-        throw cause;
-      }
-      admissionFd = fd;
-    };
-    return {
-      directory: tmpdir(),
-      get retainArtifacts() {
-        return (
-          admissionMarker !== undefined &&
-          existsSync(join(admissionMarker, 'remote-operation.json'))
-        );
+    return createUnmanagedBuildLease({
+      root: this.root,
+      admissionDirectory,
+      hostIdentity: () => this.hostIdentity(),
+      owner: () => ({
+        version: 1,
+        pid: process.pid,
+        namespace: readlinkSync('/proc/self/ns/pid'),
+        start: processStart(process.pid),
+        hostBootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      }),
+      acquired: (directory) => {
+        this.unmanagedCount++;
+        activeDirectories.add(directory);
       },
-      reserveBuild: () => {},
-      run: async (command, args, options) => {
-        if (disposed || running) throw new Error('Build storage command lease is not available');
-        if (options.remoteOperation !== undefined && admissionFd === undefined)
-          enterProvisionedHost();
-        const remote =
-          admissionMarker === undefined
-            ? undefined
-            : join(admissionMarker, 'remote-operation.json');
-        if (remote !== undefined && existsSync(remote))
-          throw new Error(
-            'Remote operation termination is unconfirmed; retry after reconciliation',
-          );
-        if (remote !== undefined && options.remoteOperation !== undefined) {
-          const identity = this.hostIdentity();
-          writeFileSync(
-            remote,
-            JSON.stringify(
-              identity === undefined
-                ? {}
-                : {
-                    version: 1,
-                    ...identity,
-                    operation: options.remoteOperation,
-                    ...(options.protectedBuild === undefined
-                      ? {}
-                      : { protectedBuild: protectedBuildReference.parse(options.protectedBuild) }),
-                    startedAt: new Date().toISOString(),
-                  },
-            ),
-            { mode: 0o600, flag: 'wx', flush: true },
-          );
-        }
-        running = true;
-        try {
-          const result = await execFileAsync(
-            'setsid',
-            [
-              'bash',
-              '-c',
-              'set -e; if [ -n "$1" ]; then printf "%s\\n" "$$" > "$1"; fi; shift; exec "$@"',
-              'verity-build-command',
-              admissionMarker === undefined ? '' : join(admissionMarker, 'child-0'),
-              command,
-              ...args,
-            ],
-            {
-              env: options.env,
-              ...(options.signal === undefined ? {} : { signal: options.signal }),
-              timeout: options.timeout,
-              maxBuffer: options.maxBuffer,
-              encoding: 'utf8',
-            },
-          );
-          if (remote !== undefined) rmSync(remote, { force: true });
-          return result;
-        } catch (error) {
-          const failure = error as {
-            code?: unknown;
-            killed?: boolean;
-            stdout?: string;
-            stderr?: string;
-          };
-          if (
-            remote !== undefined &&
-            options.remoteOperation !== undefined &&
-            typeof failure.code === 'number' &&
-            !failure.killed &&
-            remoteOperationEnded(
-              options.remoteOperation,
-              `${failure.stdout ?? ''}\n${failure.stderr ?? ''}`,
-            )
-          )
-            rmSync(remote, { force: true });
-          throw error;
-        } finally {
-          running = false;
-        }
-      },
-      dispose: () => {
-        if (disposed) return;
-        if (running) throw new Error('Cannot release storage while a build command is running');
-        disposed = true;
+      disposed: (directory) => {
+        activeDirectories.delete(directory);
         this.unmanagedCount--;
-        if (
-          admissionMarker !== undefined &&
-          !existsSync(join(admissionMarker, 'remote-operation.json')) &&
-          !this.liveChild(admissionMarker)
-        )
-          rmSync(admissionMarker, { recursive: true });
-        if (admissionFd !== undefined) closeSync(admissionFd);
-        admissionFd = undefined;
       },
-    };
+      liveChild: (directory) => this.liveChild(directory),
+      admissionState: () => this.admissionState(admissionDirectory),
+      createAdmissionMarker: () => this.createAdmissionMarker(admissionDirectory),
+      remoteOperationEnded,
+      validateProtectedBuild: (value) => protectedBuildReference.parse(value),
+    });
   }
 
   private admissionState(directory: string): ReturnType<typeof readBuilderAdmissionState> {
