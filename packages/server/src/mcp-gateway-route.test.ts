@@ -498,7 +498,6 @@ async function implementByChatInstruction(plan: string) {
   });
   return { harness, implemented };
 }
-
 it('implements a submitted plan on the user instruction without another approval', async () => {
   const { harness, implemented } = await implementByChatInstruction('1. Do it');
   expect(implemented?.isError, JSON.stringify(implemented)).toBeUndefined();
@@ -3093,6 +3092,7 @@ it('lets an approved inquiry change start, present and discard its own plan', as
     userId: null,
   });
   expect(await harness.store.projectInquiries.decide('change', 's1', true, null)).toBe(true);
+  await harness.store.projectInquiries.completeProvisioning('change');
   await harness.store.projectInquiries.activate('change');
   await harness.store.setSessionPlanning('s1', 'implemented');
   const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
