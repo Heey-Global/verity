@@ -54,6 +54,8 @@ it('allows the concrete request once at its target project', async () => {
   } as unknown as VerityClient;
   const view = render(<ProjectInquiryCards client={client} />);
   await waitFor(() => expect(view.getByText('Allow once')).toBeTruthy());
+  expect(view.getByText(inquiry.title)).toBeTruthy();
+  expect(view.getByText(inquiry.body)).toBeTruthy();
   // A change is never allowed for good: each one needs its own decision.
   expect(view.queryByText('Always allow')).toBeNull();
   fireEvent.press(view.getByText('Allow once'));

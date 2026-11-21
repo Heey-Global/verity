@@ -81,6 +81,7 @@ export function ProjectInquiryCards({
               }
             />
             <View style={styles.quote}>
+              <Text variant="subtitle">{item.title}</Text>
               <Text variant="bodySmall">{item.body}</Text>
             </View>
             {item.answer ? <Text>{item.answer}</Text> : null}
