@@ -131,6 +131,18 @@ export class AssistantStore {
     );
   }
 
+  /** The handoff `assistantSessionId` made to `targetSessionId`, if it made one. */
+  async handoff(
+    assistantSessionId: string,
+    targetSessionId: string,
+  ): Promise<AssistantHandoff | undefined> {
+    return (
+      await sql<AssistantHandoff>`select target_session_id, project_id, title, created_at
+        from assistant_handoffs where assistant_session_id = ${assistantSessionId}
+          and target_session_id = ${targetSessionId}`.execute(this.db)
+    ).rows[0];
+  }
+
   /** The newest handoffs `assistantSessionId` made, newest first. */
   async handoffs(assistantSessionId: string, limit: number): Promise<AssistantHandoff[]> {
     return (

@@ -104,6 +104,8 @@ describe('assistant handoffs', () => {
       ['t2', 'second', 2_000],
     ]);
     expect(await ctx.store.assistant.handoffs('assistant', 1)).toHaveLength(1);
+    expect(await ctx.store.assistant.handoff('assistant', 't2')).toMatchObject({ title: 'second' });
+    expect(await ctx.store.assistant.handoff('other', 't2')).toBeUndefined();
     // A deleted target leaves nothing behind to be read.
     await ctx.store.deleteProject('a');
     expect(await ctx.store.assistant.handoffs('assistant', 10)).toEqual([]);

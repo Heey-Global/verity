@@ -24,6 +24,7 @@ import { currentPublishedProgress, redactSessionObservationText } from './sessio
 import {
   ControlPlaneSessionAuthorityError,
   ControlPlaneSessionToolError,
+  SESSION_HANDOFF_TRANSCRIPT_LABEL,
 } from './session-handoff-tool.js';
 import type { SessionStatus } from './status.js';
 
@@ -285,7 +286,7 @@ async function meetingAction(
 }
 
 /** How far back a handoff's result is looked for: one turn's tail, as the progress read uses. */
-const HANDOFF_RESULT_EVENT_TAIL = 1_000;
+const HANDOFF_RESULT_EVENT_TAIL = 2_000;
 
 /**
  * Hands off through `tools.handoff` and, when the caller is the assistant, asks the target for a
@@ -301,7 +302,12 @@ export async function assistantHandoff<
   tools: { handoff(input: Input): Promise<Result> },
 ): Promise<Result> {
   const settings = await deps.eventStore.assistant.settings();
-  if (settings.session_id !== input.sessionId) return tools.handoff(input);
+  if (settings.session_id !== input.sessionId) {
+    // Only the route sets a closing request; never let one ride along on another caller's input.
+    const plain = { ...input };
+    delete plain.closingRequest;
+    return tools.handoff(plain);
+  }
   const at = new Date();
   const result = await tools.handoff({
     ...input,
@@ -309,14 +315,20 @@ export async function assistantHandoff<
   });
   const target = await deps.eventStore.getSession(result.sessionId);
   const title = (input as { request?: { title?: unknown } }).request?.title;
+  // The briefing is delivered: failing the call now would invite a retry that briefs twice.
+  // A missing record only costs the assistant this one read-back.
   if (target?.projectId)
-    await deps.eventStore.assistant.recordHandoff({
-      assistantSessionId: input.sessionId,
-      targetSessionId: result.sessionId,
-      projectId: target.projectId,
-      title: typeof title === 'string' ? title.trim() : '',
-      at,
-    });
+    await deps.eventStore.assistant
+      .recordHandoff({
+        assistantSessionId: input.sessionId,
+        targetSessionId: result.sessionId,
+        projectId: target.projectId,
+        title: typeof title === 'string' ? title.trim() : '',
+        at,
+      })
+      .catch((error: unknown) => {
+        console.warn('verity: assistant handoff not recorded', error);
+      });
   return result;
 }
 
@@ -330,12 +342,12 @@ async function handoffResults(
   input: { sessionId: string; turnId: string },
   sessionId: string | undefined,
 ): Promise<Record<string, unknown>> {
-  const handoffs = (
-    await deps.eventStore.assistant.handoffs(
-      input.sessionId,
-      sessionId === undefined ? ASSISTANT_HANDOFF_RESULTS_MAX : 200,
-    )
-  ).filter((handoff) => sessionId === undefined || handoff.target_session_id === sessionId);
+  const handoffs =
+    sessionId === undefined
+      ? await deps.eventStore.assistant.handoffs(input.sessionId, ASSISTANT_HANDOFF_RESULTS_MAX)
+      : [await deps.eventStore.assistant.handoff(input.sessionId, sessionId)].filter(
+          (handoff) => handoff !== undefined,
+        );
   if (sessionId !== undefined && handoffs.length === 0)
     throw new ControlPlaneSessionToolError(
       'That session is not one of your handoffs. Call "handoff_results" without sessionId.',
@@ -363,11 +375,21 @@ async function handoffResults(
       handoff.target_session_id,
       events.map(({ event }) => event),
     );
-    // Only what was published after this briefing, in the turn still current: an earlier
-    // turn's summary would answer a different request.
+    // Only what was published after this briefing's own prompt, in the turn still current. A
+    // queued briefing writes its prompt only when it starts, so until then an in-flight turn's
+    // summary (or that of a prompt queued ahead of it) would answer a different request.
+    const briefing = events.find(
+      ({ event, ts }) =>
+        event.t === 'prompt' &&
+        ts >= handoff.created_at.getTime() &&
+        event.text.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL) &&
+        event.text.endsWith(ASSISTANT_HANDOFF_CLOSING_REQUEST),
+    );
     const latest = currentPublishedProgress(events);
     const published =
-      latest !== undefined && latest.ts >= handoff.created_at.getTime() ? latest : undefined;
+      briefing !== undefined && latest !== undefined && latest.seq > briefing.seq
+        ? latest
+        : undefined;
     const progress = published?.event;
     results.push({
       sessionId: handoff.target_session_id,

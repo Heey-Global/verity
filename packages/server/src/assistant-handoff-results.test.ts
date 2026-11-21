@@ -6,6 +6,18 @@ import {
   executeAssistantTool,
   type AssistantToolDeps,
 } from './assistant-tool.js';
+import { SESSION_HANDOFF_TRANSCRIPT_LABEL } from './session-handoff-tool.js';
+
+/** The transcript line a delivered assistant briefing leaves in its target. */
+const briefingPrompt = {
+  t: 'prompt' as const,
+  text: [
+    SESSION_HANDOFF_TRANSCRIPT_LABEL,
+    'Title: Backup check',
+    'Check it.',
+    ASSISTANT_HANDOFF_CLOSING_REQUEST,
+  ].join('\n\n'),
+};
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -79,6 +91,19 @@ describe('assistant handoff results', () => {
     // Another Control session's handoff is delivered unchanged and not remembered for the
     // assistant: its targets must stay unreadable through "handoff_results".
     expect((await handOff('t2', 'control'))?.closingRequest).toBeUndefined();
+    // Nor can another caller's input carry one through to the delivery.
+    let forwarded: object | undefined;
+    await assistantHandoff(
+      { eventStore: ctx.store },
+      { ...call, sessionId: 'control', closingRequest: 'Smuggled' },
+      {
+        handoff: async (input) => {
+          forwarded = input;
+          return { sessionId: 't2' };
+        },
+      },
+    );
+    expect(forwarded).not.toHaveProperty('closingRequest');
     expect((await results()).handoffs.map((h) => h.sessionId)).toEqual(['t1']);
   });
 
@@ -98,7 +123,15 @@ describe('assistant handoff results', () => {
       state: 'idle',
       result: null,
     });
-    await ctx.store.appendEvent('t1', { t: 'prompt', text: 'Briefing' });
+    // Queued behind a running turn: that turn's own outcome is not the briefing's answer.
+    await ctx.store.appendEvent('t1', {
+      t: 'session_progress',
+      summary: 'Answer to the running turn',
+      outcomeDelivered: true,
+    });
+    expect((await results()).handoffs[0]).toMatchObject({ result: null });
+    await ctx.store.appendEvent('t1', briefingPrompt);
+    expect((await results()).handoffs[0]).toMatchObject({ result: null });
     await ctx.store.appendEvent('t1', {
       t: 'session_progress',
       summary: 'Documents are excluded from the backup since the last release.',

@@ -77,8 +77,9 @@ session, without reading that session's transcript.
   `verity_assistant` action `handoff_results` returns, for its five newest
   handoffs or one named `sessionId`, the session's state (`working`,
   `needs_input` or `idle`) and the outcome that session published after the
-  handoff in its current turn, or `null` while there is none. An earlier
-  publication, or one superseded by a later prompt, is not returned.
+  briefing's own prompt in its current turn, or `null` while there is none. A
+  publication before the briefing started (including while it was queued), or
+  one superseded by a later prompt, is not returned.
 - Results contain only the published fields, with recognized credentials
   redacted: never transcript text, diagnostics, branches or PRs. Sessions the
   assistant did not brief are refused, and handoffs into projects whose grant
@@ -87,6 +88,7 @@ session, without reading that session's transcript.
 - Reading is on request (pull): the assistant reads results once when the user
   asks, rather than being woken by the target session.
 
+## Scheduling overview
 
 The assistant keeps track of scheduling requests across the projects granted to
 it. Above the composer of the assistant session, a single line shows how many
