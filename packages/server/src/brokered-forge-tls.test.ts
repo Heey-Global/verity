@@ -22,6 +22,7 @@ import {
   type Server as NetServer,
   type Socket,
 } from 'node:net';
+import { createBrokerRelayServer } from '../../project-relay/src/relay.js';
 import Fastify from 'fastify';
 import { startProjectInternalUnixListener } from './internal-listener.js';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -105,7 +106,7 @@ const cleanups: Array<() => Promise<void>> = [];
 const sockets = new Set<Socket>();
 
 beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'verity-forge-test-'));
+  dir = await mkdtemp(join(tmpdir(), 'forge-'));
   ca = await createProjectEgressCa();
   certificate = await issueGatewayServerCertificate(ca, {
     serverName: 'github.com',
@@ -145,6 +146,7 @@ async function harness(
     enabled?: boolean;
     registry?: boolean;
     forgejo?: boolean;
+    productionRelay?: boolean;
     capabilities?: GhTokenCapabilityRegistry;
     mint?: () => Promise<string>;
     resolveRepository?: Parameters<typeof createBrokeredForgeProxy>[0]['resolveRepository'];
@@ -237,7 +239,7 @@ async function harness(
   });
   const app = Fastify();
   await app.ready();
-  const socketRoot = await mkdtemp(join(dir, 'project-socket-'));
+  const socketRoot = await mkdtemp(join(dir, 's-'));
   const listener = await startProjectInternalUnixListener(app, {
     socketRoot,
     identity: {
@@ -261,17 +263,25 @@ async function harness(
     await retire();
     await app.close();
   });
-  const server = createNetServer((socket) => {
-    const upstream = createConnection({ path: listener.socketPath });
-    sockets.add(upstream);
-    upstream.once('close', () => sockets.delete(upstream));
-    upstream.on('error', () => socket.destroy());
-    socket.on('error', () => upstream.destroy());
-    socket.once('close', () => upstream.destroy());
-    upstream.once('close', () => socket.destroy());
-    socket.pipe(upstream);
-    upstream.pipe(socket);
-  });
+  // Isolate broker diagnostics from relay timers, but exercise real Git through
+  // the deployed CONNECT path rather than a stand-in byte pipe.
+  const server = options.productionRelay
+    ? createBrokerRelayServer({
+        socketPath: listener.socketPath,
+        forgeProxy: true,
+        brokerAuthorizesForgeAuthorities: true,
+      })
+    : createNetServer((socket) => {
+        const upstream = createConnection({ path: listener.socketPath });
+        sockets.add(upstream);
+        upstream.once('close', () => sockets.delete(upstream));
+        upstream.on('error', () => socket.destroy());
+        socket.on('error', () => upstream.destroy());
+        socket.once('close', () => upstream.destroy());
+        upstream.once('close', () => socket.destroy());
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+      });
   const port = await listen(server);
   return { port, received, mint, retire };
 }
@@ -364,6 +374,7 @@ function cliEnv(port: number): NodeJS.ProcessEnv {
     VERITY_FORGE_PROXY_URL: `http://127.0.0.1:${port}`,
     VERITY_FORGE_PROXY_CA_FILE: join(dir, 'ca.crt'),
     VERITY_GH_BROKER_CAPABILITY_FILE: join(dir, 'cap'),
+    VERITY_TURN_CAPABILITY: '',
     GH_PROMPT_DISABLED: '1',
     GH_CONFIG_DIR: join(dir, 'gh-config'),
     XDG_CACHE_HOME: join(dir, 'cache'),
@@ -1362,7 +1373,7 @@ describe('brokered forge TLS boundary', () => {
           backend.on('close', () => res.end());
           backend.on('error', () => res.destroy());
         },
-        { forgejo },
+        { forgejo, productionRelay: true },
       );
       const env = {
         ...cliEnv(h.port),
