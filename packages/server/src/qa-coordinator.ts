@@ -131,7 +131,6 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
     const fingerprint = JSON.stringify([
       qa.revision,
       mandate.revision,
-      mandate.health,
       incidents.map((i) => [
         i.id,
         i.revision,
@@ -290,6 +289,9 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
       return;
     }
     if (role.session_id && deps.busy(role.session_id)) return;
+    // Without current forge evidence there is nothing to review; an outage must not
+    // start a review per project on every sweep.
+    if (['unavailable', 'access-revoked', 'pending'].includes(mandate.health)) return;
     const snapshot = await snapshotOf(qa, mandate);
     await store.qaObserve(projectId, snapshot.fingerprint);
     const pending = await store.qaPending([projectId]);

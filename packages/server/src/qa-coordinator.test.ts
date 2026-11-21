@@ -225,6 +225,16 @@ it('reconsiders an assignment after temporary admission failure', async () => {
   await coordinator.tick();
   expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });
+it('starts no review while the forge cannot be read, and none for a health flap', async () => {
+  await enroll();
+  const { deps, coordinator } = harness();
+  await ctx.store.repairs.health('a', 'unavailable', null);
+  await coordinator.tick();
+  expect(deps.dispatch).not.toHaveBeenCalled();
+  await ctx.store.repairs.health('a', 'healthy', null);
+  await coordinator.tick();
+  expect(deps.dispatch).toHaveBeenCalledTimes(1);
+});
 it('reviews a refused assignment once more, then waits for a change', async () => {
   const incident = await enroll();
   const { deps, coordinator } = harness();
