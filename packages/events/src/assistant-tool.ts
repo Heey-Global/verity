@@ -53,7 +53,9 @@ export const assistantRequestSchema = z.discriminatedUnion('action', [
 /** How many of its newest handoffs the assistant reads back at once. */
 export const ASSISTANT_HANDOFF_RESULTS_MAX = 5;
 
-/** Server-written request appended to every assistant briefing, after the agent's text. */
+/** Server-written request appended to every assistant briefing, after the agent's text.
+ *  Results are matched to briefings by this exact ending, so rewording it stops results of
+ *  briefings delivered before the change from being read back. */
 export const ASSISTANT_HANDOFF_CLOSING_REQUEST =
   'Verity assistant: when you have an answer or the work is done, publish a short outcome with verity_publish_session_progress — whether the outcome is delivered and two or three plain sentences, plus a blocker or required decision if there is one. The assistant reads only that summary back to the user, not this transcript.';
 export type AssistantRequest = z.infer<typeof assistantRequestSchema>;

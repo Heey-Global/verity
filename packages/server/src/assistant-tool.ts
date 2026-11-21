@@ -290,7 +290,7 @@ const HANDOFF_BRIEFING_EXTRA_PAGES = 4;
 
 /** Whether `text` is the transcript line of the assistant briefing hashed as `sha256`: the
  *  handoff label, a title line, the briefing, then the server's closing request. */
-function isAssistantBriefing(text: string, sha256: string): boolean {
+export function isAssistantBriefing(text: string, sha256: string): boolean {
   const head = `${SESSION_HANDOFF_TRANSCRIPT_LABEL}\n\n`;
   const tail = `\n\n${ASSISTANT_HANDOFF_CLOSING_REQUEST}`;
   if (!text.startsWith(head) || !text.endsWith(tail)) return false;

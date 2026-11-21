@@ -1,4 +1,9 @@
-import { LIST_SESSIONS_FIELDS, LIST_SESSIONS_MAX_ENTRIES } from '@verity/events';
+import {
+  ASSISTANT_HANDOFF_CLOSING_REQUEST,
+  LIST_SESSIONS_FIELDS,
+  LIST_SESSIONS_MAX_ENTRIES,
+} from '@verity/events';
+import { isAssistantBriefing } from './assistant-tool.js';
 import type { ProjectRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -503,6 +508,22 @@ describe('verity_session_handoff', () => {
         dispatchTurn.mock.calls[1]![0][field].endsWith('Check it.\n\nPublish the outcome.'),
       ).toBe(true);
     }
+  });
+
+  it('delivers an assistant briefing that handoff_results can recognise by its hash', async () => {
+    const { tools, dispatchTurn, call } = harness();
+    const result = await tools.handoff({
+      ...call({
+        target: { sessionId: 'sess-web' },
+        title: '  Backup check ',
+        briefing: '\n  Are documents excluded from the backup?\n\nReply briefly.  ',
+      }),
+      closingRequest: ASSISTANT_HANDOFF_CLOSING_REQUEST,
+    });
+    // A mismatch here leaves every real result null while the stubbed suite stays green.
+    const displayPrompt = dispatchTurn.mock.calls[0]![0].displayPrompt;
+    expect(isAssistantBriefing(displayPrompt, result.briefingSha256)).toBe(true);
+    expect(isAssistantBriefing(displayPrompt, '0'.repeat(64))).toBe(false);
   });
 
   it('queues behind an in-flight turn instead of failing, and says so', async () => {
