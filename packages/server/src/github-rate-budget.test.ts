@@ -249,6 +249,25 @@ describe('tracked GitHub fetch', () => {
     expect(base).toHaveBeenCalledTimes(1);
   });
 
+  it('does not let a write credential exhaust the shared read budget', async () => {
+    const budget = createGitHubRateBudget({ now: () => 0 });
+    const tracked = trackGitHubFetch(
+      budget,
+      'other',
+      async (url: string, init?: { method?: string }) => ({
+        ok: init?.method === 'GET' && url.length > 0,
+        status: 403,
+        headers: quota(0, 5000, 600),
+      }),
+      () => 0,
+    );
+    // A person's token running out on a pull request creation is not the App's quota.
+    await tracked(repoUrl('team', 'a', 'pulls'), { method: 'POST' });
+    expect(budget.lockedUntil(repoUrl('team', 'a'))).toBe(0);
+    expect(budget.deferBackground('team')).toBe(false);
+    expect(budget.snapshot().categories.other.requests).toBe(1);
+  });
+
   it('reads a cloned 403 body to recognize a secondary limit', async () => {
     const budget = createGitHubRateBudget();
     const tracked = trackGitHubFetch(

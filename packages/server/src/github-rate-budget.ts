@@ -9,6 +9,12 @@
  * while the quota or a secondary limit is exhausted, and tells background readers
  * to step aside while the remaining quota is low. It also keeps bounded,
  * credential-free counters so a reported limit can be attributed afterwards.
+ *
+ * Only read responses update quota state: writes may use other credentials (for
+ * example a person's token creating a pull request) whose limits are separate.
+ * State is keyed by repository owner, which matches one App installation per
+ * account. A personal-access-token override spends one quota across owners, so
+ * in that mode the per-owner lock protects less than the whole quota.
  */
 
 export const GITHUB_CALLER_CATEGORIES = [
@@ -93,6 +99,8 @@ export interface GitHubObservation {
   headers?: HeaderSource | undefined;
   /** The response body, read only for a 403 without explicit limit headers. */
   bodyText?: string | undefined;
+  /** False for writes, whose credential may not share the installation quota. */
+  quota?: boolean | undefined;
 }
 
 interface Target {
@@ -260,7 +268,7 @@ export function createGitHubRateBudget(
       const at = now();
       const { status, headers, category } = observation;
       count(category, status === 304 ? 'notModified' : 'requests');
-      if (target.repo === undefined) return;
+      if (target.repo === undefined || observation.quota === false) return;
       // Keyed by the path-derived resource so the lock is enforced where it is read.
       const resource = target.resource;
       const state = quotaFor(target.account, resource);
@@ -388,7 +396,8 @@ export function trackGitHubFetch<
     const method = (init as { method?: string } | undefined)?.method?.toUpperCase() ?? 'GET';
     // Only reads yield to the lock. A user's merge or pull request must reach GitHub
     // and fail there, never be refused locally because background polling hit a limit.
-    const until = method === 'GET' || method === 'HEAD' ? budget.lockedUntil(url) : 0;
+    const reads = method === 'GET' || method === 'HEAD';
+    const until = reads ? budget.lockedUntil(url) : 0;
     if (until > 0) {
       budget.suppressed(category);
       return new Response(null, {
@@ -419,6 +428,7 @@ export function trackGitHubFetch<
       status: response.status,
       headers: response.headers,
       bodyText,
+      quota: reads,
     });
     return response;
   };
