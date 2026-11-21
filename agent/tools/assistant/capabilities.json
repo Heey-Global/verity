@@ -70,5 +70,17 @@
       "name": "verity_assistant",
       "action": "join_meeting"
     }
+  },
+  {
+    "name": "verity_assistant_delegated_results",
+    "title": "Verity · Assistant · Delegated Results",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_assistant",
+      "action": "delegated_results"
+    }
   }
 ]

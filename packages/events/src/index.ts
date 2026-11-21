@@ -151,6 +151,8 @@ export {
   ASSISTANT_SYSTEM_PROMPT,
   ASSISTANT_TOOL,
   ASSISTANT_TOOL_DESCRIPTION,
+  DELEGATED_RESULTS_MAX_AGE_DAYS,
+  DELEGATED_RESULTS_MAX_ENTRIES,
   assistantRequestSchema,
   type AssistantRequest,
 } from './assistant-tool.js';

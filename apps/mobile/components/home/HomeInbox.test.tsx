@@ -955,3 +955,30 @@ it('draws a decision card as an entry of the work group, filled when selected', 
   expect(permissionCard.backgroundColor).toBe(lightTheme.colors.surfaceAlt);
   expect(permissionCard.shadowColor).toBeUndefined();
 });
+
+// "Needs you" mixed a loose status dot on rows with cards that led with nothing,
+// so the entries started at three different insets. Every entry now leads with
+// its session's tile, and what it waits for sits on the tile's corner.
+it('leads every Needs you entry with the session tile and its corner mark', async () => {
+  const permission = session('permission', {
+    status: 'awaiting_input',
+    permissionAwaitingInput: true,
+    pendingPermissions: ['t1'],
+    pendingPermissionRequests: [
+      {
+        toolUseId: 't1',
+        tool: 'Write',
+        riskClass: 'ask',
+        input: { file_path: '/w/a.sh', content: 'ls' },
+      },
+    ],
+  });
+  await renderInbox([question, permission]);
+  const needs = within(await screen.findByTestId('work-needs-you'));
+  // An idle session with an open question: its corner takes the tag's tone.
+  expect(needs.getByTestId('work-waiting-form')).toBeOnTheScreen();
+  // The permission card leads with the same tile as the rows, the agent's "?" on it.
+  const card = within(needs.getByTestId('inbox-item-permission'));
+  expect(card.getByTestId('work-agent-permission')).toBeOnTheScreen();
+  expect(card.getByLabelText('Waiting for you')).toBeOnTheScreen();
+});
