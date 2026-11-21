@@ -22,6 +22,7 @@ import {
 import {
   ControlPlaneSessionAuthorityError,
   ControlPlaneSessionToolError,
+  SESSION_HANDOFF_TRANSCRIPT_LABEL,
   type ControlPlaneSessionToolDeps,
 } from './session-handoff-tool.js';
 import { redactSessionObservationText } from './session-observation.js';
@@ -196,9 +197,19 @@ async function delegatedResults(
       handoff.target_session_id,
       DELEGATED_RESULT_EVENT_WINDOW,
     );
-    const found = events.findLast(
-      (item) => item.ts >= since && item.event.t === 'session_progress',
+    // Anchored on the briefing's own prompt, not on the time alone: a busy target queues the
+    // briefing, and what its running turn publishes meanwhile answers something else.
+    const briefing = events.find(
+      ({ ts, event }) =>
+        ts >= since &&
+        event.t === 'prompt' &&
+        event.text.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL) &&
+        event.text.includes(`\n\nTitle: ${handoff.title}\n\n`),
     );
+    const found =
+      briefing === undefined
+        ? undefined
+        : events.findLast((item) => item.seq > briefing.seq && item.event.t === 'session_progress');
     const published = found?.event;
     results.push({
       sessionId: handoff.target_session_id,

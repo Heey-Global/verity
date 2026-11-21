@@ -458,8 +458,29 @@ describe('verity_session_handoff', () => {
     const { prompt, displayPrompt } = dispatchTurn.mock.calls[0]![0];
     // The request sits in the server-written lead, before anything the caller wrote; without
     // it a sender that cannot read the transcript never hears back.
-    for (const text of [prompt, displayPrompt])
+    for (const text of [prompt, displayPrompt]) {
       expect(text.slice(0, text.indexOf('Title: '))).toContain('verity_publish_session_progress');
+      // Sentences joined across string literals must not run together.
+      expect(text).not.toMatch(/\.[A-Z]/u);
+    }
+  });
+
+  it('still reports a delivered briefing when recording it fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { tools, call, dispatchTurn } = harness({
+      recordHandoff: async () => {
+        throw new Error('database unavailable');
+      },
+    });
+    // A refusal here would read as "not delivered" and invite a second, duplicate briefing.
+    await expect(
+      tools.handoff(
+        call({ target: { sessionId: 'sess-web' }, title: 'Backup', briefing: 'Look.' }),
+      ),
+    ).resolves.toMatchObject({ sessionId: 'sess-web' });
+    expect(dispatchTurn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not recorded'));
+    warn.mockRestore();
   });
 
   it('records a delivered handoff with a time taken before delivery, and no refused one', async () => {

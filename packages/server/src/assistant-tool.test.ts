@@ -11,6 +11,7 @@ import {
   type AssistantToolDeps,
 } from './assistant-tool.js';
 import type { CalendarMeetingDeps } from './calendar-meeting-watcher.js';
+import { SESSION_HANDOFF_TRANSCRIPT_LABEL } from './session-handoff-tool.js';
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -427,7 +428,7 @@ describe('delegated results', () => {
     ).toEqual([]);
   });
 
-  it('reports the published outcome after the handoff and nothing from before it', async () => {
+  it('reports what the briefed turn published, not what came before it', async () => {
     // Published before the briefing: an answer to something else, never this handoff's result.
     await ctx.store.appendEvent('t2', {
       t: 'session_progress',
@@ -435,7 +436,21 @@ describe('delegated results', () => {
       outcomeDelivered: true,
     });
     await handoff('t1', 'a', new Date(Date.now() - 60_000));
-    await handoff('t2', 'b', new Date(Date.now() + 60_000));
+    await handoff('t2', 'b', new Date(Date.now() - 30_000));
+    // t1 was busy, so the briefing queued: its running turn publishes about its own work
+    // after the handoff time and before the briefing's prompt is even written.
+    await ctx.store.appendEvent('t1', {
+      t: 'session_progress',
+      summary: 'Unrelated refactor finished.',
+      outcomeDelivered: true,
+    });
+    expect((await results({ sessionId: 't1' }))[0]).toMatchObject({ state: 'pending' });
+    await ctx.store.appendEvent('t1', {
+      t: 'prompt',
+      text: [SESSION_HANDOFF_TRANSCRIPT_LABEL, 'Title: Check t1', 'Is the backup clean?'].join(
+        '\n\n',
+      ),
+    });
     await ctx.store.appendEvent('t1', {
       t: 'session_progress',
       summary:

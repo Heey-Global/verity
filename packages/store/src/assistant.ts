@@ -186,8 +186,9 @@ export class AssistantStore {
     );
   }
 
-  /** Records a delivered handoff. A later handoff to the same session replaces the row, so
-   *  its result is read from the most recent briefing on. */
+  /** Records a delivered handoff. A later handoff to the same session — for any user —
+   *  replaces the row, so its result is read from the most recent briefing on and belongs to
+   *  whoever sent that one. */
   async recordHandoff(input: {
     targetSessionId: string;
     assistantSessionId: string;
