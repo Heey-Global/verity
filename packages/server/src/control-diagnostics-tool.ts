@@ -276,7 +276,7 @@ export function createControlDiagnosticsTool(deps: {
         'Matrix diagnostics contain at most 20 sources and the connector reports at most 20 active failed imports; additional failures may be omitted.',
         'Free-form errors, message contents, backend labels and environment values are omitted.',
         'Job inventory, queue depth and GitOps comparison are unavailable. Runtime timestamps support correlation but do not establish causality.',
-        'GitHub usage covers server-side REST reads since the last restart, at most the latest 60 minutes and 20 limit events; quota values are the last headers GitHub returned.',
+        'GitHub usage covers server-side REST requests since the last restart, at most the latest 60 minutes and 20 limit events; quota values are the last headers GitHub returned.',
         'No root cause is inferred from state or status codes; corroborate with other evidence.',
       ],
     };

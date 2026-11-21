@@ -319,8 +319,6 @@ export interface ServerDeps {
    * the client, independent of this.
    */
   branchPr?: (branch: string, worktree: string) => Promise<number | null>;
-  /** Live compact PR status for the current branch: title, URL, check counts and
-   * whether the Merge button should be enabled. Absent → older token-less behavior. */
   /** Forget observed PR status; `branches` limits it to those branches. */
   invalidateProjectPrStatus?: (projectId: string, branches?: readonly string[]) => void;
   /** True while background PR polling of a project should yield GitHub API quota. */

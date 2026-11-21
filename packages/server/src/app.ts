@@ -230,7 +230,6 @@ export interface ControlPlaneDeps {
    * Omit → no PR chip. (Previously declared only on {@link buildServer}'s deps and
    * dropped here — now forwarded so the embedded composition actually wires it.) */
   branchPr?: ((branch: string, worktree: string) => Promise<number | null>) | undefined;
-  /** Compact PR strip status for a branch: title, URL, check counts and mergeability. */
   /** Forget observed PR status; `branches` limits it to those branches. */
   invalidateProjectPrStatus?: (projectId: string, branches?: readonly string[]) => void;
   /** True while background PR polling of a project should yield GitHub API quota. */
