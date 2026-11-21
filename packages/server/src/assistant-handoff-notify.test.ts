@@ -113,7 +113,12 @@ describe('assistant handoff result notices', () => {
       expect.objectContaining({ delivered: true, summary: LONG_SUMMARY }),
     ]);
     // A replacing publication is one more announcement.
-    await publish('Exclusion reverted; waiting for your decision.', false, 'Needs your approval.');
+    await ctx.store.appendEvent('t1', {
+      t: 'session_progress',
+      summary: 'Exclusion reverted; waiting for your decision.',
+      outcomeDelivered: false,
+      requiredDecision: 'Needs your approval.',
+    });
     expect(await announceAssistantHandoffResult(d, 't1')).toBe(true);
     expect(await ctx.store.assistant.recordedResults('assistant', ['t1'])).toEqual([
       expect.objectContaining({ delivered: false, blocker: 'Needs your approval.' }),
@@ -177,6 +182,16 @@ describe('assistant handoff result notices', () => {
     } finally {
       stop();
     }
+  });
+
+  it('pushes to the user who switched the assistant on when no turn names one', async () => {
+    const { deps: d, notify } = deps();
+    await handOff();
+    await publish();
+    expect(
+      await announceAssistantHandoffResult({ ...d, initiatorOf: async () => undefined }, 't1'),
+    ).toBe(true);
+    expect(notify.mock.calls[0]![0].initiatorUserId).toBe(ADMIN);
   });
 
   it('cuts the push text to the limit and keeps a short one whole', () => {

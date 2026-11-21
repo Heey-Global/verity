@@ -176,7 +176,6 @@ const styles = StyleSheet.create((theme) => ({
   root: { flex: 1, backgroundColor: theme.colors.background },
   body: { gap: theme.spacing.md },
   flex: { flex: 1 },
-  day: { alignSelf: 'center' },
   reply: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
   replyText: { flex: 1, minWidth: 0 },
   mine: {

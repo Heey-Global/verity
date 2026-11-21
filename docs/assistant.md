@@ -102,7 +102,10 @@ session, without reading that session's transcript.
   Nothing is announced while the assistant is switched off, for a project whose
   grant was withdrawn, hidden or archived, or when the user may no longer read
   the project. A replacing publication is announced once more; a new handoff to
-  the same session starts without the earlier result.
+  the same session starts without the earlier result. When the session named a
+  required decision but no blocker, the decision is shown in its place.
+  Announcements follow publications while the server runs: one published during
+  a restart is not announced later, and the assistant still reads it on request.
 
 ## Scheduling overview
 

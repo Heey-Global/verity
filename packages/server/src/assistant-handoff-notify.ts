@@ -59,7 +59,9 @@ export async function announceAssistantHandoffResult(
     target?.projectId !== handoff.project_id
   )
     return false;
-  const userId = await deps.initiatorOf?.(assistantSessionId);
+  // The user behind the assistant's turns; between turns, the one who switched it on.
+  const userId =
+    (await deps.initiatorOf?.(assistantSessionId)) ?? settings.sponsor_user_id ?? undefined;
   if (!(await deps.permitted(userId, handoff.project_id, 'read'))) return false;
 
   const { published } = await readHandoffOutcome(deps, handoff);
@@ -69,10 +71,9 @@ export async function announceAssistantHandoffResult(
     ASSISTANT_HANDOFF_SUMMARY_MAX,
   );
   const delivered = published.event.outcomeDelivered;
-  const blocker =
-    published.event.blocker === undefined
-      ? undefined
-      : redactSessionObservationText(published.event.blocker);
+  // A decision the session needs is what holds the work when it named no blocker.
+  const reason = published.event.blocker ?? published.event.requiredDecision;
+  const blocker = reason === undefined ? undefined : redactSessionObservationText(reason);
   const claimed = await deps.eventStore.assistant.claimResult({
     assistantSessionId,
     targetSessionId,
