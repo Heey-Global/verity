@@ -83,6 +83,18 @@ export const assistantConversationItemSchema = z.discriminatedUnion('kind', [
     title: z.string(),
     project: z.string().nullable(),
     state: z.enum(['pending', 'sent', 'failed']),
+    /** The session the work went to, once the handoff answered. */
+    sessionId: z.string().optional(),
+    /** The result that session published for this handoff, written by that session. */
+    result: z
+      .object({
+        delivered: z.boolean(),
+        summary: z.string(),
+        /** What stops the work, when the session named something. */
+        blocker: z.string().optional(),
+        at,
+      })
+      .optional(),
   }),
   /** A live meeting Verity prepared on the start screen or joined. Both belong to the
    *  conversation's own session, where the meeting screen opens. */

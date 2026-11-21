@@ -382,3 +382,46 @@ it('marks a waiting question as a normal next step, not as a problem', () => {
   const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
   expect(screen.getByLabelText('Needs you, waiting for you')).toBeTruthy();
 });
+
+it('shows a handoff’s published result on its card: Done, or Open with the blocker', () => {
+  const card = (
+    id: string,
+    result: Extract<AssistantConversationItem, { kind: 'assignment' }>['result'],
+  ) =>
+    ({
+      kind: 'assignment',
+      id,
+      at: 1,
+      title: `Backup check ${id}`,
+      project: 'heey-global/deep-ocr',
+      state: 'sent',
+      sessionId: 't1',
+      result,
+    }) as const;
+  jest.mocked(useVerity).mockReturnValue({
+    ...ready,
+    conversation: {
+      ...ready.conversation!,
+      items: [
+        card('a', undefined),
+        card('b', { delivered: true, summary: 'Documents are excluded.', at: 2 }),
+        card('c', {
+          delivered: false,
+          summary: 'Prepared, not deployed.',
+          blocker: 'Needs your approval.',
+          at: 3,
+        }),
+      ],
+    },
+  });
+  const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  // Without a result the card keeps saying where the work went.
+  expect(screen.getByText('Handed over')).toBeTruthy();
+  expect(screen.getByText('Done')).toBeTruthy();
+  expect(screen.getByText('Open')).toBeTruthy();
+  expect(screen.getAllByTestId('handoff-result').map((node) => node.props.children)).toEqual([
+    'Documents are excluded.',
+    'Prepared, not deployed.',
+  ]);
+  expect(screen.getByText('Blocker: Needs your approval.')).toBeTruthy();
+});

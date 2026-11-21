@@ -6,7 +6,7 @@ import {
   type AgentEvent,
   type AssistantRequest,
 } from '@verity/events';
-import type { AssistantMode, AssistantSettings, EventStore } from '@verity/store';
+import type { AssistantHandoff, AssistantMode, AssistantSettings, EventStore } from '@verity/store';
 import { OnlineMeetingStartError } from './attendee-meetings.js';
 import {
   CalendarEventAlreadyJoinedError,
@@ -354,6 +354,64 @@ export async function assistantHandoff<
   return result;
 }
 
+/** What a handoff's target is doing, and the result it published for this very briefing: after
+ *  the briefing's own prompt, in the turn still current, with no later standalone prompt. */
+export async function readHandoffOutcome(
+  deps: Pick<AssistantToolDeps, 'eventStore' | 'sessionStatus'>,
+  handoff: AssistantHandoff,
+) {
+  const { events, hasMore } = await deps.eventStore.getEventsBeforeSeq(
+    handoff.target_session_id,
+    HANDOFF_RESULT_EVENT_TAIL,
+  );
+  const status = deps.sessionStatus?.(
+    handoff.target_session_id,
+    events.map(({ event }) => event),
+  );
+  // Only what was published after this briefing's own prompt, in the turn still current. A
+  // queued briefing writes its prompt only when it starts, so until then an in-flight turn's
+  // summary (or that of a prompt queued ahead of it) would answer a different request.
+  const handedOffAt = handoff.created_at.getTime();
+  const isBriefing = ({ event, ts }: (typeof events)[number]) =>
+    event.t === 'prompt' &&
+    ts >= handedOffAt &&
+    isAssistantBriefing(event.text, handoff.briefing_sha256);
+  let briefing = events.findLast(isBriefing);
+  // A long turn can push its own prompt out of the tail; look further back, but never past
+  // the handoff itself.
+  let older = { events, hasMore };
+  const fetched = [...events];
+  for (
+    let page = 0;
+    briefing === undefined &&
+    older.hasMore &&
+    (older.events[0]?.ts ?? 0) >= handedOffAt &&
+    page < HANDOFF_BRIEFING_EXTRA_PAGES;
+    page++
+  ) {
+    older = await deps.eventStore.getEventsBeforeSeq(
+      handoff.target_session_id,
+      HANDOFF_RESULT_EVENT_TAIL,
+      older.events[0]?.seq,
+    );
+    briefing = older.events.findLast(isBriefing);
+    fetched.unshift(...older.events);
+  }
+  // A later standalone prompt starts another request, even one older than the tail.
+  const latest = currentPublishedProgress(events);
+  const published =
+    briefing !== undefined &&
+    latest !== undefined &&
+    latest.seq > briefing.seq &&
+    !fetched.some(
+      ({ event, seq }) =>
+        event.t === 'prompt' && event.steered !== true && seq > briefing.seq && seq < latest.seq,
+    )
+      ? latest
+      : undefined;
+  return { status, published };
+}
+
 /**
  * What the assistant's own handoffs have reported: lifecycle and the bounded outcome each
  * target published after the handoff, in the turn still current. Never transcript text, never a
@@ -389,55 +447,7 @@ async function handoffResults(
     }
     const session = await deps.eventStore.getSession(handoff.target_session_id);
     if (session?.projectId !== handoff.project_id) continue;
-    const { events, hasMore } = await deps.eventStore.getEventsBeforeSeq(
-      handoff.target_session_id,
-      HANDOFF_RESULT_EVENT_TAIL,
-    );
-    const status = deps.sessionStatus?.(
-      handoff.target_session_id,
-      events.map(({ event }) => event),
-    );
-    // Only what was published after this briefing's own prompt, in the turn still current. A
-    // queued briefing writes its prompt only when it starts, so until then an in-flight turn's
-    // summary (or that of a prompt queued ahead of it) would answer a different request.
-    const handedOffAt = handoff.created_at.getTime();
-    const isBriefing = ({ event, ts }: (typeof events)[number]) =>
-      event.t === 'prompt' &&
-      ts >= handedOffAt &&
-      isAssistantBriefing(event.text, handoff.briefing_sha256);
-    let briefing = events.findLast(isBriefing);
-    // A long turn can push its own prompt out of the tail; look further back, but never past
-    // the handoff itself.
-    let older = { events, hasMore };
-    const fetched = [...events];
-    for (
-      let page = 0;
-      briefing === undefined &&
-      older.hasMore &&
-      (older.events[0]?.ts ?? 0) >= handedOffAt &&
-      page < HANDOFF_BRIEFING_EXTRA_PAGES;
-      page++
-    ) {
-      older = await deps.eventStore.getEventsBeforeSeq(
-        handoff.target_session_id,
-        HANDOFF_RESULT_EVENT_TAIL,
-        older.events[0]?.seq,
-      );
-      briefing = older.events.findLast(isBriefing);
-      fetched.unshift(...older.events);
-    }
-    // A later standalone prompt starts another request, even one older than the tail.
-    const latest = currentPublishedProgress(events);
-    const published =
-      briefing !== undefined &&
-      latest !== undefined &&
-      latest.seq > briefing.seq &&
-      !fetched.some(
-        ({ event, seq }) =>
-          event.t === 'prompt' && event.steered !== true && seq > briefing.seq && seq < latest.seq,
-      )
-        ? latest
-        : undefined;
+    const { status, published } = await readHandoffOutcome(deps, handoff);
     const progress = published?.event;
     results.push({
       sessionId: handoff.target_session_id,

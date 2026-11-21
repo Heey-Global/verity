@@ -11,6 +11,7 @@ import type { SequencedEvent } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 
 import {
+  attachHandoffResults,
   projectAssistantConversation,
   type AssistantSessionFacts,
 } from './assistant-conversation.js';
@@ -525,6 +526,121 @@ describe('assistant conversation routes', () => {
       expect(Date.now() - started).toBeLessThan(5_000);
       const unchanged = await app.inject({ url: '/assistant/conversation?after=1&waitMs=50' });
       expect(unchanged.json<AssistantConversation>().revision).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('assistant handoff cards', () => {
+  const handoff = (id: string, title: string): AgentEvent => ({
+    t: 'tool_call',
+    id,
+    name: 'mcp__verity__verity_session_handoff',
+    input: { target: { sessionId: 't1' }, title, briefing: 'b' },
+  });
+
+  it('learns the target from either result shape and answers only the newest card', () => {
+    const { items } = projectAssistantConversation(
+      sequenced([
+        handoff('h1', 'First'),
+        {
+          t: 'tool_result',
+          id: 'h1',
+          output: JSON.stringify({ sessionId: 't1', project: 'team/site', queued: false }),
+          isError: false,
+        },
+        handoff('h2', 'Second'),
+        {
+          t: 'tool_result',
+          id: 'h2',
+          output: [{ type: 'text', text: JSON.stringify({ sessionId: 't1', queued: true }) }],
+          isError: false,
+        },
+      ]),
+      idle,
+    );
+    attachHandoffResults(items, [
+      {
+        target_session_id: 't1',
+        delivered: true,
+        summary: 'Excluded.',
+        blocker: null,
+        at: new Date(5_000),
+      },
+      {
+        target_session_id: 'not-shown',
+        delivered: true,
+        summary: 'x',
+        blocker: null,
+        at: new Date(5_000),
+      },
+    ]);
+    expect(items).toEqual([
+      expect.objectContaining({ title: 'First', state: 'sent', sessionId: 't1' }),
+      expect.objectContaining({
+        title: 'Second',
+        sessionId: 't1',
+        result: { delivered: true, summary: 'Excluded.', at: 5_000 },
+      }),
+    ]);
+    expect(items[0]).not.toHaveProperty('result');
+  });
+
+  it('serves the recorded result on the card, and nothing for a failed handoff', async () => {
+    await enable();
+    await ctx.store.upsertProject({
+      id: 'site',
+      owner: 'team',
+      repo: 'site',
+      containerName: 'site',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 't1',
+      worktree: '/t1',
+      model: 'm',
+      projectId: 'site',
+    });
+    await ctx.store.assistant.recordHandoff({
+      assistantSessionId: 'assistant',
+      targetSessionId: 't1',
+      projectId: 'site',
+      title: 'Backup check',
+      briefingSha256: 'a'.repeat(64),
+      at: new Date(1_000),
+    });
+    await ctx.store.assistant.claimResult({
+      assistantSessionId: 'assistant',
+      targetSessionId: 't1',
+      seq: 9,
+      delivered: false,
+      summary: 'Waiting for the deployment.',
+      blocker: 'Needs your approval.',
+      at: new Date(2_000),
+    });
+    const { app, emit } = server();
+    try {
+      emit(handoff('h1', 'Backup check'));
+      emit({ t: 'tool_result', id: 'h1', output: '{"sessionId":"t1"}', isError: false });
+      emit(handoff('h2', 'Refused'));
+      emit({ t: 'tool_result', id: 'h2', output: 'refused "sessionId":"t1"', isError: true });
+      const read = assistantConversationSchema.parse(
+        (await app.inject({ url: '/assistant/conversation' })).json(),
+      );
+      expect(read.items).toEqual([
+        expect.objectContaining({
+          title: 'Backup check',
+          result: {
+            delivered: false,
+            summary: 'Waiting for the deployment.',
+            blocker: 'Needs your approval.',
+            at: 2_000,
+          },
+        }),
+        expect.objectContaining({ title: 'Refused', state: 'failed' }),
+      ]);
+      expect(read.items[1]).not.toHaveProperty('result');
     } finally {
       await app.close();
     }

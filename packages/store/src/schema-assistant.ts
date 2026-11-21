@@ -32,6 +32,11 @@ interface AssistantHandoffsTable {
   title: string;
   briefing_sha256: string;
   created_at: Generated<Date>;
+  result_seq: number | null;
+  result_delivered: boolean | null;
+  result_summary: string | null;
+  result_blocker: string | null;
+  result_at: Date | null;
 }
 
 export interface AssistantDatabase {

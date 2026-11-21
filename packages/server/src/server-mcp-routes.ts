@@ -2047,7 +2047,7 @@ export function registerServerMcpRoutes({
         }
         if (input.toolName === 'verity_publish_session_progress') {
           const progress = publishSessionProgressRequestSchema.parse(input.request);
-          await deps.eventStore.appendEvent(input.sessionId, {
+          await publishSessionEvent(input.sessionId, {
             t: 'session_progress',
             ...progress,
           });

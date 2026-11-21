@@ -7,7 +7,7 @@ import {
   type AssistantConversationItem,
   type AssistantQuestion,
 } from '@verity/events';
-import type { SequencedEvent } from '@verity/store';
+import type { AssistantHandoffResult, SequencedEvent } from '@verity/store';
 
 import type { SessionStatus } from './status.js';
 
@@ -95,7 +95,11 @@ export function projectAssistantConversation(
         const index = tools.get(event.id);
         const item = index === undefined ? undefined : items[index];
         if (item?.kind === 'task') item.state = event.isError ? 'failed' : 'saved';
-        if (item?.kind === 'assignment') item.state = event.isError ? 'failed' : 'sent';
+        if (item?.kind === 'assignment') {
+          item.state = event.isError ? 'failed' : 'sent';
+          const target = event.isError ? undefined : handoffTarget(event.output);
+          if (target !== undefined) item.sessionId = target;
+        }
         if (item?.kind === 'meeting') item.state = event.isError ? 'failed' : 'ready';
         break;
       }
@@ -150,6 +154,41 @@ export function projectAssistantConversation(
     question,
     approvals,
   };
+}
+
+/** The sessions the conversation's handoff cards went to. */
+export function handoffTargets(items: readonly AssistantConversationItem[]): string[] {
+  return items.flatMap((item) =>
+    item.kind === 'assignment' && item.sessionId !== undefined ? [item.sessionId] : [],
+  );
+}
+
+/** Puts each recorded result on its handoff card. A repeated handoff to one session answers
+ *  only its newest card, since the record holds the result of the newest briefing. */
+export function attachHandoffResults(
+  items: AssistantConversationItem[],
+  recorded: readonly AssistantHandoffResult[],
+): void {
+  const results = new Map(recorded.map((result) => [result.target_session_id, result]));
+  for (const item of [...items].reverse()) {
+    if (item.kind !== 'assignment' || item.sessionId === undefined) continue;
+    const result = results.get(item.sessionId);
+    if (result === undefined) continue;
+    results.delete(item.sessionId);
+    item.result = {
+      delivered: result.delivered,
+      summary: result.summary,
+      ...(result.blocker === null ? {} : { blocker: result.blocker }),
+      at: result.at.getTime(),
+    };
+  }
+}
+
+/** The target session a handoff's result names. The output is the tool's JSON answer,
+ *  possibly wrapped as MCP text content, so the id is read from its serialized form. */
+function handoffTarget(output: unknown): string | undefined {
+  const serialized = JSON.stringify(output) ?? '';
+  return /\\?"sessionId\\?"\s*:\s*\\?"([A-Za-z0-9_-]{1,128})\\?"/u.exec(serialized)?.[1];
 }
 
 function toolItem(

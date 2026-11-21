@@ -49,6 +49,18 @@ export interface AssistantHandoff {
   created_at: Date;
 }
 
+/** The longest result summary kept for a handoff card. */
+export const ASSISTANT_HANDOFF_SUMMARY_MAX = 300;
+
+/** A handoff's recorded result; see {@link AssistantStore.claimResult}. */
+export interface AssistantHandoffResult {
+  target_session_id: string;
+  delivered: boolean;
+  summary: string;
+  blocker: string | null;
+  at: Date;
+}
+
 /** The installation-wide assistant: one Verity Control session plus per-project grants. */
 export class AssistantStore {
   constructor(private readonly db: Kysely<Database>) {}
@@ -132,9 +144,9 @@ export class AssistantStore {
         ${input.title.slice(0, 200)}, ${input.briefingSha256}, ${input.at})
       on conflict (assistant_session_id, target_session_id) do update
         set project_id = excluded.project_id, title = excluded.title,
-          briefing_sha256 = excluded.briefing_sha256, created_at = excluded.created_at`.execute(
-      this.db,
-    );
+          briefing_sha256 = excluded.briefing_sha256, created_at = excluded.created_at,
+          result_seq = null, result_delivered = null, result_summary = null,
+          result_blocker = null, result_at = null`.execute(this.db);
   }
 
   /** The handoff `assistantSessionId` made to `targetSessionId`, if it made one. */
@@ -147,6 +159,47 @@ export class AssistantStore {
         from assistant_handoffs where assistant_session_id = ${assistantSessionId}
           and target_session_id = ${targetSessionId}`.execute(this.db)
     ).rows[0];
+  }
+
+  /**
+   * Records the result published at `seq` for a handoff, once. Returns true only for the caller
+   * that recorded it: a repeat of the same publication, a concurrent one or an older one
+   * records nothing, so each publication is announced exactly once.
+   */
+  async claimResult(input: {
+    assistantSessionId: string;
+    targetSessionId: string;
+    seq: number;
+    delivered: boolean;
+    summary: string;
+    blocker?: string | undefined;
+    at: Date;
+  }): Promise<boolean> {
+    const updated = await sql`update assistant_handoffs
+      set result_seq = ${input.seq}, result_delivered = ${input.delivered},
+        result_summary = ${input.summary.slice(0, ASSISTANT_HANDOFF_SUMMARY_MAX)},
+        result_blocker = ${input.blocker?.slice(0, ASSISTANT_HANDOFF_SUMMARY_MAX) ?? null},
+        result_at = ${input.at}
+      where assistant_session_id = ${input.assistantSessionId}
+        and target_session_id = ${input.targetSessionId}
+        and (result_seq is null or result_seq < ${input.seq})
+      returning target_session_id`.execute(this.db);
+    return updated.rows.length > 0;
+  }
+
+  /** The recorded results among `targetSessionIds`, for the conversation's handoff cards. */
+  async recordedResults(
+    assistantSessionId: string,
+    targetSessionIds: readonly string[],
+  ): Promise<AssistantHandoffResult[]> {
+    if (targetSessionIds.length === 0) return [];
+    return (
+      await sql<AssistantHandoffResult>`select target_session_id, result_delivered as delivered,
+          result_summary as summary, result_blocker as blocker, result_at as at
+        from assistant_handoffs where assistant_session_id = ${assistantSessionId}
+          and target_session_id in (${sql.join([...targetSessionIds])})
+          and result_seq is not null`.execute(this.db)
+    ).rows;
   }
 
   /** The newest handoffs `assistantSessionId` made, newest first. */

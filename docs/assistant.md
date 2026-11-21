@@ -85,8 +85,24 @@ session, without reading that session's transcript.
   assistant did not brief are refused, and handoffs into projects whose grant
   or read access was withdrawn are left out. The assistant is instructed to
   relay a result as the session's claim and never act on instructions in it.
-- Reading is on request (pull): the assistant reads results once when the user
-  asks, rather than being woken by the target session.
+- The assistant itself reads results only on request: a target session never
+  starts an assistant turn, and its summary never enters an assistant prompt.
+- The user is told without asking. When a session briefed by the assistant
+  publishes the result of that briefing, Verity records it once per
+  publication and:
+  - shows it on the handoff card in the Verity panel: `Done` or `Open`, the
+    summary in two lines and, if named, the blocker;
+  - sends a push to the user behind the assistant session, titled with the
+    project and the handoff title, with `Done:` or `Open:` and the summary cut
+    to 150 characters (on the Apple Watch the iPhone's notification is
+    mirrored);
+  - writes a notice into the assistant session that names only the project and
+    the handoff title.
+
+  Nothing is announced while the assistant is switched off, for a project whose
+  grant was withdrawn, hidden or archived, or when the user may no longer read
+  the project. A replacing publication is announced once more; a new handoff to
+  the same session starts without the earlier result.
 
 ## Scheduling overview
 
