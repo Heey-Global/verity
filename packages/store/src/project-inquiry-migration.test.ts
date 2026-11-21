@@ -9,7 +9,7 @@ it('keeps undecided legacy changes available for approval after upgrading', asyn
   const raw = createRawDb();
   try {
     const migrator = new Migrator({ db: raw.db, provider: migrationProvider });
-    const before = await migrator.migrateTo('0230_brokered_tool_approvals');
+    const before = await migrator.migrateTo('0231_assistant_handoffs');
     if (before.error) throw new Error('Could not prepare legacy schema', { cause: before.error });
     const store = new EventStore(raw.db);
     for (const [projectId, sessionId] of [

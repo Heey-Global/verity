@@ -1,5 +1,6 @@
 import type { BrokeredApprovalDatabase, SecretKeyMetaTable } from './schema-brokered-approvals.js';
 export type { SecretKeyMetaTable } from './schema-brokered-approvals.js';
+import type { AssistantDatabase } from './schema-assistant.js';
 import type { PeopleDatabase } from './schema-people.js';
 import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
 import type { ProjectInquiryDatabase } from './schema-project-inquiries.js';
@@ -1751,6 +1752,7 @@ interface VulnerabilityFixesTable {
 
 export interface Database
   extends
+    AssistantDatabase,
     PeopleDatabase,
     SandboxDatabase,
     SessionCoordinationDatabase,
@@ -1778,9 +1780,6 @@ export interface Database
   qa_inbox: QAInboxTable;
   qa_proposals: QAProposalsTable;
   qa_decisions: QADecisionsTable;
-  assistant_settings: AssistantSettingsTable;
-  assistant_project_grants: AssistantProjectGrantsTable;
-  assistant_requests: AssistantRequestsTable;
   scheduling_requests: SchedulingRequestsTable;
   scheduling_holds: SchedulingHoldsTable;
   vuln_digests: VulnDigestsTable;
@@ -2034,30 +2033,6 @@ interface RepairSessionHistoryTable {
   project_id: string;
   resource: string;
   session_id: string;
-  created_at: Generated<Date>;
-}
-interface AssistantSettingsTable {
-  id: number;
-  enabled: Generated<boolean>;
-  revision: Generated<number>;
-  sponsor_user_id: string | null;
-  session_id: string | null;
-  updated_at: Generated<Date>;
-}
-interface AssistantProjectGrantsTable {
-  project_id: string;
-  mode: import('./assistant.js').AssistantMode;
-  sponsor_user_id: string;
-  revision: Generated<number>;
-  updated_at: Generated<Date>;
-}
-interface AssistantRequestsTable {
-  request_id: string;
-  session_id: string;
-  user_id: string;
-  kind: import('./assistant.js').AssistantRequestKind;
-  question_id: string | null;
-  state: Generated<'pending' | 'accepted'>;
   created_at: Generated<Date>;
 }
 interface SchedulingRequestsTable {

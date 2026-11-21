@@ -620,7 +620,27 @@ migrations['0229_session_coordination_requests'] = {
 
 migrations['0230_brokered_tool_approvals'] = brokeredToolApprovalMigration;
 
-migrations['0231_project_inquiry_human_approval'] = {
+migrations['0231_assistant_handoffs'] = {
+  // One row per session the assistant handed work to, so it can later read back that
+  // session's published outcome summary — and only for sessions it briefed itself.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table assistant_handoffs (
+      target_session_id text primary key references sessions(session_id) on delete cascade,
+      assistant_session_id text not null,
+      project_id text not null references projects(id) on delete cascade,
+      user_id text,
+      title text not null,
+      handed_off_at timestamptz not null
+    )`.execute(db);
+    await sql`create index assistant_handoffs_recent
+      on assistant_handoffs(user_id, handed_off_at desc)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_handoffs`.execute(db);
+  },
+};
+
+migrations['0232_project_inquiry_human_approval'] = {
   // Inquiries are approved per request now; a standing grant only admits
   // questions without a card. The flag records that a person allowed this one
   // request, independent of whether the deciding user id is known. Changes that

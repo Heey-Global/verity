@@ -1,7 +1,8 @@
 // The shared building blocks of docs/design-system.md § 5. Screens import from
 // here rather than styling their own buttons, rows, fields, statuses or sheets.
 export { Button, IconButton } from './Button';
-export { Card, CardHead, Group, Row, ToggleRow } from './Card';
+export { Card, CardHead, CardInset, Group, Row, ToggleRow } from './Card';
+export type { Leading } from './Card';
 export { FilterChips } from './FilterChips';
 export { OptionList } from './OptionList';
 export { SearchField } from './SearchField';

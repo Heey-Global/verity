@@ -181,7 +181,11 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     carries the subject's own state, the bottom corner a verdict; both corners use the same
     mark, so a tile with two reads as one pair. Session rows in a project's Work list put the
     agent's state on top (pulsing `signature` while working, `action` for a new answer,
-    `attention` with "?" while it waits) and an open pull request's checks below.
+    `attention` with "?" while it waits) and an open pull request's checks below. In
+    "Needs you" every entry keeps that tile — a row as well as a permission card, whose
+    `CardHead` takes the same leading and indents its content to the title — and the top
+    corner takes the tone of the entry's tag unless the agent asks ("?"). A loose status
+    dot is never used there.
   - **Center:** title in `Row`, at most one subtitle in `Subtitle`. Never more than two lines.
   - **Trailing:** exactly one of value (muted), status, toggle or compact button. A trailing
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the
