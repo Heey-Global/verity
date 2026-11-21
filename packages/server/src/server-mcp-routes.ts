@@ -56,7 +56,7 @@ import {
   brokeredDopplerBindingId,
   parseBrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
-import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
+import { createControlDiagnosticsTool, diagnosticSources } from './control-diagnostics-tool.js';
 import { documentViewForSession } from './document-workspace.js';
 import './fastify-augmentation.js';
 import { gmailHasStandingAuthorization } from './gmail-tool.js';
@@ -847,8 +847,7 @@ export function registerServerMcpRoutes({
       version: SERVER_VERSION,
       pushEnabled: deps.pushEnabled === true,
       publicPreviewsEnabled: () => deps.previewShareManager?.isAvailable() === true,
-      runtimeReadiness: deps.secretJobRuntimeReadiness,
-      uplinkDiagnostics: deps.uplinkDiagnostics,
+      ...diagnosticSources(deps),
     });
     const planningApprovalRevisions = new WeakMap<object, number>();
     const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();

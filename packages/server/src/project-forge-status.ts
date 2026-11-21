@@ -47,9 +47,12 @@ export function createProjectForgeStatusReader(
     readProjectStatus,
     statusIdentity,
     invalidateStatus: (identity: ForgeStatusIdentity) => shared.invalidate(identity),
-    invalidateProjectStatus: (projectId: string) => {
+    /** Without branches this forgets the whole repository, as a mutation requires. */
+    invalidateProjectStatus: (projectId: string, branches?: readonly string[]) => {
       const identity = scopes.get(projectId);
-      if (identity) shared.invalidate(identity);
+      if (!identity) return;
+      if (branches === undefined) shared.invalidate(identity);
+      else shared.invalidateBranches(identity, branches);
     },
   };
 }

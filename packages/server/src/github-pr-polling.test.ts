@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createGitHubPrService, type HttpFetch, type HttpResponse } from './github.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { GitHubPollCache, githubRetryDeadline } from './github-poll-cache.js';
+import { createGitHubRateBudget } from './github-rate-budget.js';
 
 const response = (
   body: unknown,
@@ -308,4 +309,104 @@ it('retains a renewed rate-limit deadline from optional recovery detail reads', 
   vi.setSystemTime(240_002);
   expect(await service.prStatusForBranch('another')).toBeNull();
   expect(fetch).toHaveBeenCalledTimes(6);
+});
+
+it('revalidates with the shared ETag after an invalidation creates a new observation scope', async () => {
+  const fetch = vi
+    .fn<HttpFetch>()
+    .mockResolvedValueOnce(response([], 200, { etag: '"no-pr"' }))
+    .mockResolvedValueOnce(response(null, 304));
+  const mint = () => Promise.resolve('fixture');
+  const provider = createGitHubForgeProvider({
+    projectTokenMint: mint,
+    issuesTokenMint: mint,
+    installationToken: mint,
+    fetch,
+  });
+  const ref = { owner: 'owner', repo: 'repo' };
+  expect(await provider.repositoryPrService!(ref, {}).prStatusForBranch('feature')).toBeNull();
+  // A fresh scope is what every invalidation produces. Without shared validators
+  // each one turned a free 304 into a request against the primary quota.
+  expect(await provider.repositoryPrService!(ref, {}).prStatusForBranch('feature')).toBeNull();
+  expect(fetch.mock.calls[1]?.[1]?.headers?.['If-None-Match']).toBe('"no-pr"');
+});
+
+it('pauses discovery of another repository after the installation quota is exhausted', async () => {
+  const fetch = vi.fn<HttpFetch>().mockResolvedValue(
+    response({}, 403, {
+      'x-ratelimit-limit': '5000',
+      'x-ratelimit-remaining': '0',
+      'x-ratelimit-reset': String(Math.ceil(Date.now() / 1000) + 600),
+    }),
+  );
+  const mint = () => Promise.resolve('fixture');
+  const rateBudget = createGitHubRateBudget();
+  const provider = createGitHubForgeProvider({
+    projectTokenMint: mint,
+    issuesTokenMint: mint,
+    installationToken: mint,
+    fetch,
+    rateBudget,
+  });
+  await expect(
+    provider.repositoryPrService!({ owner: 'owner', repo: 'one' }).prStatusForBranch('feature'),
+  ).rejects.toMatchObject({ category: 'unavailable' });
+  // Per-repository cooldowns alone kept spending the shared quota on other repositories.
+  const page = await provider.discover!({ owner: 'owner', repo: 'two' }, 1);
+  expect(page.errors?.[0]).toMatchObject({ category: 'rate-limit' });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(provider.deferBackgroundReads!({ owner: 'owner', repo: 'three' })).toBe(true);
+  expect(rateBudget.snapshot().categories).toMatchObject({
+    'repository-status': { requests: 1, limited: 1 },
+    discovery: { suppressed: 1 },
+  });
+});
+
+it('forgets the merged repository validators so the next status read is unconditional', async () => {
+  const fetch = vi
+    .fn<HttpFetch>()
+    .mockResolvedValueOnce(response([], 200, { etag: '"before-merge"' }))
+    .mockResolvedValueOnce(response({ merged: true }))
+    .mockResolvedValue(response([]));
+  const service = createGitHubPrService({
+    repoDir: '',
+    identity,
+    token: 'fixture',
+    fetch,
+    ttlMs: 0,
+    negativeTtlMs: 0,
+  });
+  await service.prStatusForBranch('feature');
+  expect(await service.mergePr(1)).toBe(true);
+  await service.prStatusForBranch('feature');
+  // A stale validator could answer 304 with the pre-merge pull request.
+  expect(fetch.mock.calls.at(-1)?.[1]?.headers?.['If-None-Match']).toBeUndefined();
+});
+
+it('keeps one-shot pull request creation outside the shared read budget', async () => {
+  const fetch = vi.fn<HttpFetch>().mockResolvedValue(
+    response({ number: 5, html_url: 'https://github.com/owner/repo/pull/5' }, 201, {
+      'x-ratelimit-limit': '5000',
+      'x-ratelimit-remaining': '0',
+      'x-ratelimit-reset': String(Math.ceil(Date.now() / 1000) + 600),
+    }),
+  );
+  const mint = () => Promise.resolve('fixture');
+  const rateBudget = createGitHubRateBudget();
+  const provider = createGitHubForgeProvider({
+    projectTokenMint: mint,
+    issuesTokenMint: mint,
+    installationToken: mint,
+    fetch,
+    rateBudget,
+  });
+  await provider.openPullRequest({ owner: 'owner', repo: 'repo' }, 'one-shot', {
+    head: 'feature',
+    base: 'main',
+    title: 'Feature',
+    body: '',
+  });
+  // A one-shot credential's limit must neither lock nor be counted as App reads.
+  expect(rateBudget.snapshot().categories.other.requests).toBe(0);
+  expect(provider.deferBackgroundReads!({ owner: 'owner', repo: 'repo' })).toBe(false);
 });

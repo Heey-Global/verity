@@ -5,6 +5,7 @@ import type { EmbeddedServerConfig } from './embedded-types.js';
 import { resolveInstallationListToken } from './embedded-support.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
+import { createGitHubRateBudget, trackGitHubFetch } from './github-rate-budget.js';
 import {
   createGitHubAppInstallationTokenMint,
   createGitHubAppProjectTokenMint,
@@ -32,6 +33,12 @@ export function createEmbeddedGitHub(
     return undefined;
   };
   const baseMintOpts = { resolveCreds: resolveGithubAppCreds };
+  // Every server-side reader spends the same App-installation quota; one budget
+  // sees all of them, locks them together and keeps credential-free evidence.
+  const rateBudget = createGitHubRateBudget({
+    onLimit: (event) =>
+      console.warn(`verity: GitHub ${event.kind} rate limit reached ${JSON.stringify(event)}`),
+  });
   const githubAppAuthorityKey = async (): Promise<string | undefined> => {
     const credentials = await resolveGithubAppCreds();
     if (credentials === undefined) return undefined;
@@ -118,24 +125,27 @@ export function createEmbeddedGitHub(
     }),
     { authorityKey: githubAppAuthorityKey },
   );
-  const githubQAAnalysis = createGitHubQAAnalysis((ref, action) => {
-    const mint =
-      config.githubProjectTokenMint ??
-      (action === 'checks'
-        ? analysisChecksMint
-        : action === 'statuses'
-          ? analysisStatusesMint
-          : action === 'pulls' || action === 'pull_status'
-            ? discoveryPrTokenMint
-            : action === 'releases'
-              ? analysisReleaseMint
-              : action === 'deployments' || action === 'deployment_statuses'
-                ? analysisDeploymentMint
-                : action === 'workflow'
-                  ? analysisContentsMint
-                  : discoveryTokenMint);
-    return mint(ref);
-  });
+  const githubQAAnalysis = createGitHubQAAnalysis(
+    (ref, action) => {
+      const mint =
+        config.githubProjectTokenMint ??
+        (action === 'checks'
+          ? analysisChecksMint
+          : action === 'statuses'
+            ? analysisStatusesMint
+            : action === 'pulls' || action === 'pull_status'
+              ? discoveryPrTokenMint
+              : action === 'releases'
+                ? analysisReleaseMint
+                : action === 'deployments' || action === 'deployment_statuses'
+                  ? analysisDeploymentMint
+                  : action === 'workflow'
+                    ? analysisContentsMint
+                    : discoveryTokenMint);
+      return mint(ref);
+    },
+    trackGitHubFetch(rateBudget, 'qa-analysis', fetch),
+  );
   const issuesTokenMint = createGitHubAppProjectTokenMint({
     ...baseMintOpts,
     permissions: { metadata: 'read', issues: 'read' },
@@ -178,6 +188,7 @@ export function createEmbeddedGitHub(
       }
     },
     prStatusTtlMs: 2_000,
+    rateBudget,
   });
   return {
     resolveGithubAppCreds,

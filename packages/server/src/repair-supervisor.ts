@@ -25,6 +25,8 @@ export interface RepairSupervisorDeps {
   /** Shared by QA and repair recovery while local admission is still being prepared. */
   preparingDispatches?: Set<string>;
   discover(this: void, project: ProjectRecord, page: number): Promise<RepairDiscovery>;
+  /** True while the project's forge quota is reserved for interactive readers. */
+  deferred?(this: void, projectId: string): Promise<boolean>;
   changed?(projectId: string): void;
   enabled?(): Promise<boolean>;
   coordinate?: boolean;
@@ -190,6 +192,13 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
           !permitsBackgroundPr(project) ||
           !project ||
           !['github', 'forgejo'].includes(project.kind ?? 'github')
+        )
+          continue;
+        // Repository monitoring is background work; it must not spend the last quota.
+        if (
+          await Promise.resolve()
+            .then(() => deps.deferred?.(project.id))
+            .catch(() => false)
         )
           continue;
         try {
