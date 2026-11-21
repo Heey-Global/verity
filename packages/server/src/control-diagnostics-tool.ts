@@ -86,7 +86,7 @@ const githubCountsSchema = z.object({
 });
 const githubLimitKind = z.enum(['primary', 'secondary']);
 /** Only counters, quota headers and coarse targets; never URLs, queries or tokens. */
-export const githubDiagnosticSchema = z.object({
+const githubDiagnosticSchema = z.object({
   observedAt: z.string(),
   windowMinutes: z.number().int().positive(),
   categories: z.object(

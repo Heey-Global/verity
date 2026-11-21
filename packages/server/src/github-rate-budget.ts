@@ -28,7 +28,7 @@ export const GITHUB_CALLER_CATEGORIES = [
 export type GitHubCallerCategory = (typeof GITHUB_CALLER_CATEGORIES)[number];
 
 /** Background readers pause below this share of the remaining primary quota. */
-export const BACKGROUND_QUOTA_FLOOR = 0.2;
+const BACKGROUND_QUOTA_FLOOR = 0.2;
 const SECONDARY_MIN_MS = 60_000;
 const SECONDARY_MAX_MS = 15 * 60_000;
 const PRIMARY_FALLBACK_MS = 60_000;
@@ -38,7 +38,7 @@ const MAX_EVENTS = 20;
 const MAX_ACCOUNTS = 256;
 const LOG_INTERVAL_MS = 60_000;
 
-export type GitHubLimitKind = 'primary' | 'secondary';
+type GitHubLimitKind = 'primary' | 'secondary';
 
 export interface GitHubLimitEvent {
   at: string;
