@@ -527,6 +527,15 @@ def maintenance(root=Path('/'), observe=None, installer_lock=None):
 
 def install_maintenance(root, run, destination, installer_lock):
     """Use immutable recovery code; the diagnostic collector stays read-only."""
+    # Control-path preparation also supports hosts without a systemd manager.
+    # Do not turn optional retention into a prerequisite for an unsupported
+    # native runtime; once the manager answers, actual installation errors fail.
+    try:
+        version = run('/usr/bin/systemctl', 'show', '--property=Version', '--value')
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if not isinstance(version, str) or not re.fullmatch(r'[0-9]+[^\n]*', version.strip()):
+        return False
     unit = f'''[Unit]
 Description=Collect terminal Verity project network payloads
 After=local-fs.target
@@ -565,6 +574,7 @@ WantedBy=timers.target
         base.atomic_file(path, data, 0o644)
     run('/usr/bin/systemctl', 'daemon-reload')
     run('/usr/bin/systemctl', 'enable', '--now', 'verity-egress-maintenance.timer')
+    return True
 
 
 def clear_transaction(root):

@@ -90,6 +90,10 @@ the deadline bounds incomplete runs and later invocations resume stage progress.
 Pinned bundles do not consume the removal batch. Interrupted bundle removals
 finish first and share its limit, so neither protected candidates nor withdrawn
 backlogs can starve eligible releases or grow a second unbounded queue.
+Hosts without a reachable systemd manager still prepare the server's control
+paths and retain the existing unsupported-runtime behavior; they do not register
+the timer. After a manager answers the capability probe, timer installation and
+enablement errors remain fatal rather than being silently ignored.
 
 Maintenance takes the deployment's existing installer lock, the staging fence
 shared with launchers, then the native installation lock, all without waiting.

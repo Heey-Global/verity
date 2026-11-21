@@ -56,6 +56,8 @@ class ManagedTests(unittest.TestCase):
 
     def execute(self, *args):
         self.calls.append(args)
+        if '--property=Version' in args:
+            return '259'
         if '--property=ActiveState' in args:
             return 'inactive'
         if 'show' in args:
@@ -78,6 +80,20 @@ class ManagedTests(unittest.TestCase):
         self.assertFalse((self.root / 'opt/verity-egress').exists())
         self.assertNotIn(('/usr/bin/systemctl', 'start', managed.SERVICE), self.calls)
         self.assertIn(('/usr/bin/systemctl', 'enable', '--now', 'verity-egress-maintenance.timer'), self.calls)
+
+    def test_prepare_only_without_systemd_still_prepares_server_control_paths(self):
+        installer = self.root / '.verity-install.lock'
+        installer.touch(mode=0o600)
+        def unavailable_manager(*args):
+            if args == ('/usr/bin/systemctl', 'show', '--property=Version', '--value'):
+                raise FileNotFoundError('No systemctl in the disposable Alpine host')
+            return self.execute(*args)
+        result = self.provision(prepare_only=True, installer_lock=installer, run=unavailable_manager)
+        self.assertFalse(result['available'])
+        self.assertTrue((self.root / 'etc/verity-egress-server/control.key').exists())
+        self.assertFalse((self.root / managed.MAINTENANCE_UNIT).exists())
+        self.assertFalse((self.root / managed.MAINTENANCE_TIMER).exists())
+        self.assertFalse(any(command[0] == '/usr/bin/systemctl' for command in self.calls))
 
     def test_protected_toolchain_is_immutable_and_helper_is_transactional(self):
         self.assertTrue(self.provision()['available'])

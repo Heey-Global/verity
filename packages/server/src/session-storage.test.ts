@@ -221,9 +221,11 @@ describe('safe session storage reclamation', () => {
             if (worktree >= 0 && ['add', 'remove', 'lock', 'unlock'].includes(args[worktree + 1]!))
               expect(args.slice(worktree + 2)).not.toContain(f.path);
             const output = await git(args);
-            return args.includes('list') && args.includes('worktree')
-              ? output.replaceAll(f.root, '/work')
-              : output;
+            // Both inventory commands execute inside the sandbox in production.
+            const absoluteInventory =
+              (args.includes('list') && args.includes('worktree')) ||
+              args.includes('--absolute-git-dir');
+            return absoluteInventory ? output.replaceAll(f.root, '/work') : output;
           }),
         ),
     });
@@ -232,8 +234,40 @@ describe('safe session storage reclamation', () => {
       () => false,
     );
     await service.runOnce();
-    expect(existsSync(f.path)).toBe(false);
+    expect(service.lastReport?.recoveryHolds?.count).toBe(0);
+    expect(existsSync(f.path), JSON.stringify(service.lastReport?.blockers)).toBe(false);
     await service.ensureWorkspace(f.session);
+    expect(existsSync(f.path)).toBe(true);
+  });
+  it('maps sandbox Git-directory inventory before evaluating dependency recovery holds', async () => {
+    const f = fixture();
+    f.idleDays(4);
+    const service = new SessionStorage({
+      ...f.deps,
+      gitRoot: '/work',
+      withGit: async <T>(p: ProjectRecord, operation: (g: GitOutput) => Promise<T>) =>
+        f.deps.withGit(p, (git) =>
+          operation(async (args) => {
+            const worktree = args.indexOf('worktree');
+            if (worktree >= 0 && ['add', 'remove', 'lock', 'unlock'].includes(args[worktree + 1]!))
+              expect(args.slice(worktree + 2)).not.toContain(f.path);
+            const output = await git(args);
+            // Both inventory commands execute inside the sandbox in production.
+            const absoluteInventory =
+              (args.includes('list') && args.includes('worktree')) ||
+              args.includes('--absolute-git-dir');
+            return absoluteInventory ? output.replaceAll(f.root, '/work') : output;
+          }),
+        ),
+    });
+    service.bind(
+      async (_, run) => ({ ran: true, value: await run() }),
+      () => false,
+    );
+    await service.runOnce();
+    expect(service.lastReport?.recoveryHolds?.count).toBe(0);
+    expect(service.lastReport?.dependenciesRemoved).toContain(join(f.path, 'node_modules'));
+    expect(service.lastReport?.blockers).toEqual([]);
     expect(existsSync(f.path)).toBe(true);
   });
   it('preserves locks set outside the managed worktree lifecycle', async () => {

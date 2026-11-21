@@ -3,6 +3,7 @@ import fcntl
 import importlib.util
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -174,14 +175,44 @@ class MaintenanceTests(unittest.TestCase):
         calls = []
         (self.root / 'opt/verity-egress-releases').mkdir(parents=True)
         destination = managed.publish_recovery_helpers(self.root)
-        managed.install_maintenance(self.root, lambda *args: calls.append(args), destination, self.installer)
+        def execute(*args):
+            calls.append(args)
+            return '259' if '--property=Version' in args else ''
+        managed.install_maintenance(self.root, execute, destination, self.installer)
         unit = (self.root / managed.MAINTENANCE_UNIT).read_text()
         self.assertIn(str(destination / 'project-egress-managed.py') + ' maintain', unit)
         self.assertIn('--installer-lock ' + str(self.installer), unit)
         self.assertIn('TimeoutStartSec=30', unit)
         self.assertIn('OnUnitActiveSec=15min', (self.root / managed.MAINTENANCE_TIMER).read_text())
-        self.assertEqual(calls, [('/usr/bin/systemctl', 'daemon-reload'),
+        self.assertEqual(calls, [('/usr/bin/systemctl', 'show', '--property=Version', '--value'),
+                                ('/usr/bin/systemctl', 'daemon-reload'),
                                 ('/usr/bin/systemctl', 'enable', '--now', 'verity-egress-maintenance.timer')])
+
+    def test_absent_or_unreachable_manager_skips_timer_without_writing_units(self):
+        destination = managed.publish_recovery_helpers(self.root)
+        for error in (FileNotFoundError('systemctl absent'),
+                      subprocess.CalledProcessError(1, 'systemctl', stderr='manager unavailable')):
+            calls = []
+            def unavailable(*args):
+                calls.append(args)
+                raise error
+            self.assertFalse(managed.install_maintenance(self.root, unavailable, destination, self.installer))
+            self.assertEqual(calls, [('/usr/bin/systemctl', 'show', '--property=Version', '--value')])
+            self.assertFalse((self.root / managed.MAINTENANCE_UNIT).exists())
+            self.assertFalse((self.root / managed.MAINTENANCE_TIMER).exists())
+
+    def test_available_manager_does_not_hide_timer_installation_errors(self):
+        destination = managed.publish_recovery_helpers(self.root)
+        for failed in ('daemon-reload', 'enable'):
+            with self.subTest(failed=failed):
+                def execute(*args):
+                    if '--property=Version' in args:
+                        return '259'
+                    if failed in args:
+                        raise subprocess.CalledProcessError(1, args)
+                    return ''
+                with self.assertRaises(subprocess.CalledProcessError):
+                    managed.install_maintenance(self.root, execute, destination, self.installer)
 
     def test_timer_exposes_only_exact_lock_inside_otherwise_hidden_home_paths(self):
         destination = managed.publish_recovery_helpers(self.root)
@@ -190,7 +221,7 @@ class MaintenanceTests(unittest.TestCase):
                 installer = self.root / relative / '.verity-install.lock'
                 installer.parent.mkdir(parents=True, mode=0o700)
                 installer.touch(mode=0o600)
-                managed.install_maintenance(self.root, lambda *_: None, destination, installer)
+                managed.install_maintenance(self.root, lambda *_: '259', destination, installer)
                 lines = (self.root / managed.MAINTENANCE_UNIT).read_text().splitlines()
                 # ProtectHome=yes makes nested binds inaccessible; tmpfs keeps
                 # unrelated home data hidden while admitting only this file.
