@@ -1,4 +1,5 @@
 import * as Updates from 'expo-updates';
+import { createAppUpdateState } from './appUpdateState';
 
 const STARTUP_CHECK_TIMEOUT_MS = 5_000;
 // Interactive checks must tolerate slow connections without delaying app launch.
@@ -58,7 +59,9 @@ function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
 export async function applyStartupUpdate(
   client: UpdatesClient = Updates,
 ): Promise<StartupUpdateResult> {
-  return applyUpdate(client, STARTUP_CHECK_TIMEOUT_MS);
+  const result = await applyUpdate(client, STARTUP_CHECK_TIMEOUT_MS);
+  appUpdateChecks.record(result);
+  return result;
 }
 
 async function applyUpdate(
@@ -100,13 +103,17 @@ export async function restartIntoUpdate(client: Pick<UpdatesClient, 'reloadAsync
 
 /** Download a foreground update without restarting an interactive app. Expo will
  * apply the downloaded bundle on the next cold start, preserving unsaved work. */
-async function downloadForegroundUpdate(client: UpdatesClient): Promise<SerialUpdateResult> {
+async function downloadForegroundUpdate(
+  client: UpdatesClient,
+  onPhase?: (phase: 'check' | 'download') => void,
+): Promise<SerialUpdateResult> {
   if (!client.isEnabled) return 'disabled';
   let phase: UpdatePhase = 'check';
   try {
     const check = await withTimeout(client.checkForUpdateAsync(), INTERACTIVE_CHECK_TIMEOUT_MS);
     if (!check.isAvailable && !check.isRollBackToEmbedded) return 'current';
     phase = 'download';
+    onPhase?.('download');
     const fetched = await withTimeout(client.fetchUpdateAsync(), FETCH_TIMEOUT_MS);
     return fetched.isNew || fetched.isRollBackToEmbedded ? 'downloaded' : 'current';
   } catch (error) {
@@ -138,4 +145,7 @@ export function createSerialUpdateChecker(
 }
 
 // Share one download checker between foreground events and update polling.
-export const downloadAppUpdate = createSerialUpdateChecker(Updates, false);
+export const appUpdateChecks = createAppUpdateState((onPhase) =>
+  downloadForegroundUpdate(Updates, onPhase),
+);
+export const downloadAppUpdate = appUpdateChecks.check;

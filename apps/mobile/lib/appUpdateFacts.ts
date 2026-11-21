@@ -18,10 +18,10 @@ import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import { getLocales } from 'expo-localization';
 import * as Updates from 'expo-updates';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 
-import { downloadAppUpdate } from './automaticUpdates';
+import { appUpdateChecks, downloadAppUpdate } from './automaticUpdates';
 import { runningReleaseVersion } from './buildInfo';
 
 const LOOKUP_TIMEOUT_MS = 10_000;
@@ -96,7 +96,10 @@ function useAppStoreRelease(enabled: boolean, revision = 0): AppStoreRelease | n
   return release;
 }
 
-function staticFacts(): Omit<AppUpdateFacts, 'downloaded' | 'checking' | 'checkFailed' | 'store'> {
+function staticFacts(): Omit<
+  AppUpdateFacts,
+  'downloaded' | 'checking' | 'checkFailed' | 'store' | 'downloading' | 'downloadFailed'
+> {
   return {
     variant: APP_VARIANT,
     platform: Platform.OS,
@@ -131,26 +134,26 @@ export function useAppUpdateFacts(): { facts: AppUpdateFacts; check: () => void 
   // Bumped by an explicit check, so it asks the App Store again as well.
   const [revision, setRevision] = useState(0);
   const store = useAppStoreRelease(true, revision);
-  const [checking, setChecking] = useState(false);
-  const [checkFailed, setCheckFailed] = useState(false);
+  const state = useSyncExternalStore(
+    appUpdateChecks.subscribe,
+    appUpdateChecks.getSnapshot,
+    appUpdateChecks.getSnapshot,
+  );
   const check = useCallback(() => {
-    setChecking(true);
-    setCheckFailed(false);
     lookup = undefined;
     setRevision((current) => current + 1);
     // Downloads only. A restart is the person's call, so nothing they are
     // doing is interrupted; the downloaded update shows up as ready.
-    void downloadAppUpdate()
-      .then((result) => setCheckFailed(typeof result === 'object' && result.status === 'failed'))
-      .catch(() => setCheckFailed(true))
-      .finally(() => setChecking(false));
+    void downloadAppUpdate();
   }, []);
   return {
     facts: {
       ...staticFacts(),
-      downloaded: updates.isUpdatePending,
-      checking: checking || updates.isChecking || updates.isDownloading,
-      checkFailed,
+      downloaded: updates.isUpdatePending || state.downloaded,
+      checking: state.phase !== 'idle' || updates.isChecking || updates.isDownloading,
+      downloading: state.phase === 'download' || updates.isDownloading,
+      checkFailed: state.failure !== null,
+      downloadFailed: state.failure?.phase === 'download',
       store,
     },
     check,

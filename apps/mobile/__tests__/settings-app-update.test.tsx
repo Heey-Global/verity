@@ -22,9 +22,16 @@ jest.mock('../lib/buildInfo', () => ({ runningReleaseVersion: () => '1.75.4' }))
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import * as Updates from 'expo-updates';
 
+import { appUpdateSummary } from '../lib/appUpdateSummary';
 import { AppUpdateSection } from '../components/settings/AppUpdateSection';
 import { Text } from 'react-native';
-import { resetAppStoreLookupForTests, useAppStoreUpdateVersion } from '../lib/appUpdateFacts';
+import { act } from '@testing-library/react-native';
+import { appUpdateChecks, downloadAppUpdate } from '../lib/automaticUpdates';
+import {
+  resetAppStoreLookupForTests,
+  useAppStoreUpdateVersion,
+  useAppUpdateFacts,
+} from '../lib/appUpdateFacts';
 
 /** What the Settings row reads, rendered as plain text. */
 function StoreVersion() {
@@ -58,11 +65,12 @@ const fetchMock = jest.fn();
 
 beforeEach(() => {
   resetAppStoreLookupForTests();
+  appUpdateChecks.resetForTests();
   fetchMock.mockReset().mockResolvedValue(lookup('1.75.0'));
   global.fetch = fetchMock as unknown as typeof fetch;
   useUpdates.mockReturnValue({ isUpdatePending: false, isChecking: false, isDownloading: false });
   (Updates.checkForUpdateAsync as jest.Mock).mockResolvedValue({ isAvailable: false });
-  (Updates.reloadAsync as jest.Mock).mockResolvedValue(undefined);
+  (Updates.reloadAsync as jest.Mock).mockClear().mockResolvedValue(undefined);
 });
 
 describe('app box on the update screen', () => {
@@ -136,4 +144,53 @@ describe('app box on the update screen', () => {
     render(<AppUpdateSection />);
     expect(await screen.findByText('Version 1.76.0 is available')).toBeOnTheScreen();
   });
+});
+
+describe('automatic checks reaching the existing app box', () => {
+  it('shows an automatic failure and clears it after recovery', async () => {
+    render(<AppUpdateSection />);
+    (Updates.checkForUpdateAsync as jest.Mock).mockRejectedValueOnce(new Error('offline'));
+    await act(async () => {
+      await downloadAppUpdate();
+    });
+    expect(screen.getByText("Couldn't check for updates")).toBeOnTheScreen();
+    await act(async () => {
+      await downloadAppUpdate();
+    });
+    expect(screen.queryByText("Couldn't check for updates")).toBeNull();
+  });
+
+  it('shows a completed automatic download without navigating or checking manually', async () => {
+    render(<AppUpdateSection />);
+    (Updates.checkForUpdateAsync as jest.Mock).mockResolvedValueOnce({ isAvailable: true });
+    (Updates.fetchUpdateAsync as jest.Mock).mockResolvedValueOnce({ isNew: true });
+    await act(async () => {
+      await downloadAppUpdate();
+    });
+    expect(screen.getByText('Update ready')).toBeOnTheScreen();
+    expect(Updates.reloadAsync).not.toHaveBeenCalled();
+  });
+});
+
+function UpdateRow() {
+  const { facts } = useAppUpdateFacts();
+  return <Text>{appUpdateSummary(facts, '4.99.1').subtitle}</Text>;
+}
+
+it('notifies both the mounted row and app box when an automatic download finishes', async () => {
+  render(
+    <>
+      <UpdateRow />
+      <AppUpdateSection />
+    </>,
+  );
+  (Updates.checkForUpdateAsync as jest.Mock).mockResolvedValueOnce({ isAvailable: true });
+  (Updates.fetchUpdateAsync as jest.Mock).mockResolvedValueOnce({ isNew: true });
+  await act(async () => {
+    await downloadAppUpdate();
+  });
+  expect(
+    screen.getByText('Server version 4.99.1 available · App update ready · Restart now'),
+  ).toBeOnTheScreen();
+  expect(screen.getByText('Update ready')).toBeOnTheScreen();
 });

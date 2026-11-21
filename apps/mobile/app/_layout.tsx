@@ -1,3 +1,4 @@
+import { ForegroundUpdateSync } from '../components/ForegroundUpdateSync';
 import { completeMcpOAuthPopup } from '../lib/mcpOAuth';
 import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from '../lib/runtimeDiagnostics';
 // Root layout mounts the provider stack (gesture handler + safe area) and the themed router
@@ -10,15 +11,7 @@ import { installBrowserAlerts } from '../lib/browserAlerts';
 
 import { Link, Redirect, router, Stack, useGlobalSearchParams, usePathname } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import {
-  ActivityIndicator,
-  AppState,
-  Appearance,
-  Platform,
-  Pressable,
-  Text,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Appearance, Platform, Pressable, Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -41,7 +34,7 @@ import {
 import { installHardwareKeyboardDetection } from '../hardwareKeyboard';
 import { useOnboardingGate } from '../hooks/useOnboardingGate';
 import { restoreUnprotectedAuthToken } from '../lib/authToken';
-import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
+import { applyStartupUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
 import { isDemoMode, useDemoRevision } from '../lib/demoMode';
 import { restoreOtherServerCredentials, useServerRevision } from '../lib/serverSwitch';
@@ -72,8 +65,6 @@ installBrowserAlerts();
 
 // Complete the popup before setup/auth redirects can discard the OAuth callback.
 completeMcpOAuthPopup();
-
-const FOREGROUND_UPDATE_POLL_MS = 30_000;
 
 export default function RootLayout() {
   useEffect(() => startRuntimeDiagnostics(), []);
@@ -362,27 +353,6 @@ function HydratedRoot() {
       </GestureHandlerRootView>
     </KeyCommands>
   );
-}
-
-function ForegroundUpdateSync() {
-  useEffect(() => {
-    let appState = AppState.currentState;
-    const checkIfActive = (): void => {
-      if (AppState.currentState === 'active') void downloadAppUpdate();
-    };
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      const becameActive = nextState === 'active' && appState !== 'active';
-      appState = nextState;
-      if (becameActive) void downloadAppUpdate();
-    });
-    const timer = setInterval(checkIfActive, FOREGROUND_UPDATE_POLL_MS);
-    return () => {
-      subscription.remove();
-      clearInterval(timer);
-    };
-  }, []);
-
-  return null;
 }
 
 function AppHeader({

@@ -162,3 +162,17 @@ describe('App Store lookup', () => {
     ).toBeNull();
   });
 });
+
+it('distinguishes an ongoing download and a failed download in the existing box', () => {
+  expect(describeAppUpdate(facts({ checking: true, downloading: true })).tag).toEqual({
+    label: 'Downloading',
+    intent: 'transient',
+  });
+  expect(describeAppUpdate(facts({ checkFailed: true, downloadFailed: true })).block).toMatchObject(
+    { title: "Couldn't download update", action: { kind: 'check', label: 'Try again' } },
+  );
+});
+
+it('keeps a failed check visible while the automatic retry is running', () => {
+  expect(describeAppUpdate(facts({ checking: true, checkFailed: true })).block?.key).toBe('error');
+});

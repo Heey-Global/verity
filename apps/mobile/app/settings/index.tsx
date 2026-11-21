@@ -31,7 +31,8 @@ import {
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { backupRowSummary } from '../../components/settings/backup/backupText';
-import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
+import { useAppUpdateFacts } from '../../lib/appUpdateFacts';
+import { appUpdateSummary } from '../../lib/appUpdateSummary';
 import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { getOtherServerProfiles } from '../../lib/serverProfile';
@@ -82,7 +83,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   const githubActionPending = githubConnected && githubActionNeeded(githubPermission);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
   const updateVersion = useServerUpdateBadge(true);
-  const appStoreVersion = useAppStoreUpdateVersion(true);
+  const { facts: appUpdate } = useAppUpdateFacts();
+  const updateSummary = appUpdateSummary(appUpdate, updateVersion);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
   const keyConfigured = settings?.uplinkSubscriptionKeyConfigured === true;
   const [uplinkState, setUplinkState] = useState<'active' | 'rejected' | 'pending'>('pending');
@@ -301,20 +303,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsNavRow
             icon="download"
             title="Updates"
-            subtitle={
-              updateVersion !== null
-                ? `Server version ${updateVersion} available`
-                : appStoreVersion !== null
-                  ? `App version ${appStoreVersion} available`
-                  : 'Server and app'
-            }
-            // Only what needs a tap: a downloaded smaller app update applies on
-            // its own the next time the app starts.
-            status={
-              updateVersion !== null || appStoreVersion !== null
-                ? { intent: 'needsSetup', label: 'Update' }
-                : undefined
-            }
+            subtitle={updateSummary.subtitle}
+            status={updateSummary.status}
             onPress={() => router.push('/settings/server-update')}
           />
           <SettingsNavRow
