@@ -305,6 +305,7 @@ it('binds the install lock from the admitted installer state path', async () => 
   });
   const install = vi.mocked(runHostRenewalJob).mock.calls[1]?.[1];
   expect(install?.binds).toContain('/etc/verity/.verity-install.lock:/run/verity-install.lock');
+  expect(install?.env).toContain('VERITY_INSTALL_LOCK_HOST_PATH=/etc/verity/.verity-install.lock');
 });
 
 async function stagingFixture(protectedMounts = false) {

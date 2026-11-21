@@ -182,7 +182,9 @@ syncBuiltinESMExports();
     writeFileSync(join(f.worktree, 'package-lock.json'), lock('1.0.0'));
     const result = f.run('install', { NODE_OPTIONS: `--import=${preload}` });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toMatch(/Copied [1-9][0-9]* dependency files that could not be shared/u);
+    expect(result.stdout).toMatch(
+      /Copied [1-9][0-9]* private dependency files \([0-9]+ allocated bytes\); full-copy admission bound [0-9]+ bytes/u,
+    );
     const file = join(f.worktree, 'node_modules', 'private', 'package.json');
     expect(statSync(file).nlink).toBe(1);
     expect(readFileSync(file, 'utf8')).toContain('1.0.0');

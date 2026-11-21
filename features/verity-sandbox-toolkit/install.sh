@@ -694,6 +694,7 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed
 # lets the agent run the command the hook prints.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-local-checks" /opt/agent-seed/bin/verity-local-checks
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dependencies" /opt/agent-seed/bin/verity-dependencies
+install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-dependency-storage.mjs" /opt/agent-seed/bin/verity-dependency-storage.mjs
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*

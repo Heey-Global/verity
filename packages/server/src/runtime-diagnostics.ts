@@ -178,6 +178,32 @@ const storageReclamationSchema = z.object({
       comparedDependencyBytes: number,
       // Optional: passes from servers before shared dependency files omit it.
       sharedDependencyBytes: number.optional(),
+      dependencyCopies: z
+        .array(
+          z.object({
+            path: z.string().max(500),
+            availableBytes: number,
+            freeInodes: number,
+            reserveBytes: number,
+            reserveInodes: number,
+            requiredBytes: number,
+            requiredInodes: number,
+            copiedFiles: number,
+            copiedBytes: number,
+            sharingEnabled: z.boolean(),
+            observedAt: timestamp,
+          }),
+        )
+        .max(20)
+        .optional(),
+      recoveryHolds: z
+        .object({
+          count: number,
+          sampledBytes: number,
+          oldestObservedAt: number.nullable(),
+          complete: z.boolean(),
+        })
+        .optional(),
       worktreeSampledBytes: number.nullable(),
       dependencySampledBytes: number.nullable(),
       usageComplete: z.boolean(),

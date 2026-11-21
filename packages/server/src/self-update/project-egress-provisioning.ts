@@ -306,6 +306,7 @@ async function runProjectEgressProvision(options: ProvisionOptions): Promise<boo
       `VERITY_PROJECT_RELAY_IMAGE=${relay}`,
       'SYSTEMD_IGNORE_CHROOT=1',
       'VERITY_INSTALL_LOCK=/run/verity-install.lock',
+      `VERITY_INSTALL_LOCK_HOST_PATH=${statePath}/.verity-install.lock`,
     ],
   });
   if (assessment !== undefined)

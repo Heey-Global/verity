@@ -337,7 +337,7 @@ def release_references(root):
     return references
 
 
-def prune_releases(root, keep):
+def prune_releases(root, keep, limit=None):
     """Remove published releases nothing can still need; callers hold install.lock.
 
     Every provisioning run published one more read-only bundle and nothing removed
@@ -373,21 +373,208 @@ def prune_releases(root, keep):
         return []
     references = release_references(root)
     removed = []
+    reclaimed = 0
+
+    def erase(path):
+        for directory in [path, *(item for item in path.rglob('*') if item.is_dir() and not item.is_symlink())]:
+            directory.chmod(0o700)
+        shutil.rmtree(path)
+
+    # Finish interrupted removals before withdrawing more bundles. Otherwise a
+    # bounded remover can keep creating a backlog as quickly as it drains one.
+    for path in retired:
+        if limit is not None and reclaimed >= limit:
+            break
+        erase(path)
+        reclaimed += 1
     for path in candidates:
+        if limit is not None and reclaimed >= limit:
+            break
         if any('/' + RELEASES + '/' + path.name in reference for reference in references):
             continue
         withdrawn = releases / ('.retired-' + secrets.token_hex(8))
         # Withdraw atomically first: no reader can resolve a half-removed release.
         os.rename(path, withdrawn)
         base.sync_directory(releases)
-        retired.append(withdrawn)
         removed.append(path.name)
-    for path in retired:
-        for directory in [path, *(item for item in path.rglob('*') if item.is_dir() and not item.is_symlink())]:
-            directory.chmod(0o700)
-        shutil.rmtree(path)
+        erase(withdrawn)
+        reclaimed += 1
     base.sync_directory(releases)
     return removed
+
+
+MAINTENANCE_UNIT = 'etc/systemd/system/verity-egress-maintenance.service'
+MAINTENANCE_TIMER = 'etc/systemd/system/verity-egress-maintenance.timer'
+MAINTENANCE_BATCH = 16
+
+
+def maintenance(root=Path('/'), observe=None, installer_lock=None):
+    """Compact terminal payloads without installing or recovering anything.
+
+    Lock order matches launchers: provision fence then native install lock.
+    A disconnected live host job retains its stage and all release bundles.
+    """
+    if installer_lock is None:
+        return {'state': 'installer-authority-unavailable', 'stages': 0, 'releases': 0}
+    installer_lock = Path(installer_lock)
+    base.trusted_parent(installer_lock, root)
+    state = root / 'var/lib/verity-egress'
+    if not state.exists():
+        return {'state': 'not-installed', 'stages': 0, 'releases': 0}
+    base.trusted_parent(state / 'entry', root)
+    if not state.is_dir() or state.is_symlink():
+        raise ValueError('Untrusted managed state directory')
+
+    def locked(name):
+        path = state / name
+        base.trusted_parent(path, root)
+        fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        handle = os.fdopen(fd, 'a')
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                raise ValueError('Untrusted maintenance lock')
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except BaseException:
+            handle.close()
+            raise
+
+    def stopped(name):
+        if observe is not None:
+            value = observe(name)
+        else:
+            result = subprocess.run(['/usr/bin/systemctl', 'show', '--property=LoadState',
+                                     '--property=ActiveState', name], capture_output=True,
+                                    text=True, timeout=5, check=False)
+            value = result.stdout
+            if result.returncode and 'LoadState=not-found' not in value.splitlines():
+                return False
+        properties = dict(line.split('=', 1) for line in value.splitlines() if '=' in line)
+        return (properties.get('LoadState') in ('loaded', 'not-found')
+                and properties.get('ActiveState') in ('inactive', 'failed'))
+
+    def maintain_locked():
+        with locked('provision.lock'), locked('install.lock'):
+            return collect()
+
+    def collect():
+        if (root / JOURNAL).exists() or (root / JOURNAL).is_symlink():
+            return {'state': 'recovery-held', 'stages': 0, 'releases': 0}
+        stages = state / 'provision'
+        compacted = 0
+        all_stopped = True
+        cursor_path = state / 'maintenance.cursor'
+        cursor = ''
+        if cursor_path.exists() or cursor_path.is_symlink():
+            cursor = private_file(cursor_path).decode().strip()
+            if not re.fullmatch('[a-f0-9]{24}', cursor):
+                cursor = ''
+        entries = []
+        if stages.exists() or stages.is_symlink():
+            base.trusted_parent(stages / 'entry', root)
+            if stages.is_symlink() or not stages.is_dir():
+                raise ValueError('Untrusted staging directory')
+            entries = sorted(path for path in stages.iterdir()
+                             if re.fullmatch('[a-f0-9]{24}', path.name)
+                             and path.is_dir() and not path.is_symlink())
+        ordered = [p for p in entries if p.name > cursor] + [p for p in entries if p.name <= cursor]
+        checked = 0
+        for stage in ordered[:MAINTENANCE_BATCH]:
+            checked += 1
+            info = stage.lstat()
+            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                all_stopped = False
+                base.atomic_file(cursor_path, (stage.name + '\n').encode(), 0o600)
+                continue
+            if not any(p.name not in ('attempt', 'result.json') for p in stage.iterdir()):
+                base.atomic_file(cursor_path, (stage.name + '\n').encode(), 0o600)
+                continue
+            try:
+                terminal = stopped('verity-egress-provision-' + stage.name + '.service')
+            except Exception:
+                terminal = False
+            if not terminal:
+                all_stopped = False
+            else:
+                # A crash after withdrawal must force complete restaging on retry.
+                (stage / 'ready').unlink(missing_ok=True)
+                base.sync_directory(stage)
+                for entry in stage.iterdir():
+                    if entry.name in ('attempt', 'result.json'):
+                        continue
+                    if entry.is_dir() and not entry.is_symlink():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+                base.sync_directory(stage)
+                compacted += 1
+            base.atomic_file(cursor_path, (stage.name + '\n').encode(), 0o600)
+        # install.lock excludes every provisioner's publication/use of a prepared
+        # bundle. Processes and the transaction journal independently pin recovery.
+        removed = prune_releases(root, set(), MAINTENANCE_BATCH)
+        return {'state': 'complete' if checked == len(entries) and all_stopped else 'partial',
+                'stages': compacted, 'releases': len(removed)}
+
+    installer_fd = os.open(installer_lock, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(installer_fd, 'r') as installer:
+        info = os.fstat(installer_fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError('Untrusted installer lock')
+        fcntl.flock(installer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return maintain_locked()
+
+
+def install_maintenance(root, run, destination, installer_lock):
+    """Use immutable recovery code; the diagnostic collector stays read-only."""
+    # Control-path preparation also supports hosts without a systemd manager.
+    # Do not turn optional retention into a prerequisite for an unsupported
+    # native runtime; once the manager answers, actual installation errors fail.
+    try:
+        version = run('/usr/bin/systemctl', 'show', '--property=Version', '--value')
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if not isinstance(version, str) or not re.fullmatch(r'[0-9]+[^\n]*', version.strip()):
+        return False
+    unit = f'''[Unit]
+Description=Collect terminal Verity project network payloads
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -B {destination}/project-egress-managed.py maintain --installer-lock {installer_lock}
+TimeoutStartSec=30
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+# Empty home mounts still permit exposing the one validated lock below them.
+ProtectHome=tmpfs
+BindReadOnlyPaths={installer_lock}
+ReadWritePaths=/var/lib/verity-egress /opt/verity-egress-releases
+RestrictAddressFamilies=AF_UNIX
+'''
+    timer = b'''[Unit]
+Description=Bound retained Verity project network payloads
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+'''
+    for relative, data in ((MAINTENANCE_UNIT, unit.encode()), (MAINTENANCE_TIMER, timer)):
+        path = root / relative
+        base.trusted_parent(path, root)
+        if path.exists() or path.is_symlink():
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                raise ValueError('Untrusted maintenance unit')
+        base.atomic_file(path, data, 0o644)
+    run('/usr/bin/systemctl', 'daemon-reload')
+    run('/usr/bin/systemctl', 'enable', '--now', 'verity-egress-maintenance.timer')
+    return True
 
 
 def clear_transaction(root):
@@ -464,8 +651,8 @@ RECOVERY_DROPIN = 'etc/systemd/system/verity-egress-bootstrap.service.d/recovery
 RECOVERY_DOCKER_DROPIN = 'etc/systemd/system/docker.service.d/egress-recovery.conf'
 
 
-def install_boot_recovery(root, run):
-    """Install immutable recovery code before any journaled activation mutation."""
+def publish_recovery_helpers(root):
+    """Publish immutable code shared by boot recovery and independent maintenance."""
     files = {'project-egress-managed.py': Path(__file__).read_bytes(),
              'project-egress-install.py': Path(base.__file__).read_bytes()}
     identity = base.digest(b''.join(name.encode() + files[name] for name in sorted(files)))
@@ -496,6 +683,12 @@ def install_boot_recovery(root, run):
             if temporary.exists():
                 temporary.chmod(0o700)
                 shutil.rmtree(temporary)
+    return destination
+
+
+def install_boot_recovery(root, run):
+    """Install immutable recovery code before any journaled activation mutation."""
+    destination = publish_recovery_helpers(root)
     # Systemd resolves every ReadWritePaths entry before executing recovery.
     # A fresh host must have the mutable helper destination before unit startup.
     directory(root / 'usr/local/libexec/verity', root, 0o755)
@@ -792,9 +985,18 @@ def activate(root, run, release, files, configs, gid):
 
 def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run=base.command,
               check=base.runtime_preflight, database=None, prepare_only=False,
-              group_setup=None, assessment_authorization=None):
+              group_setup=None, assessment_authorization=None, installer_lock=None):
     if (root == Path('/') and os.geteuid() != 0) or not 1 <= gid <= 2147483647:
         raise ValueError('Managed provisioning requires root and a positive control gid')
+    if installer_lock is not None:
+        installer_lock = Path(installer_lock)
+        if (not re.fullmatch(r'/[a-zA-Z0-9_./-]+', str(installer_lock))
+                or '..' in installer_lock.parts):
+            raise ValueError('Invalid installer lock authority')
+        base.trusted_parent(installer_lock, root)
+        info = installer_lock.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError('Untrusted installer lock authority')
     files = release_files(source)
     configs = {}
     if relay is not None and authority is not None:
@@ -826,6 +1028,8 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
             raise ValueError('Untrusted managed installation lock')
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if installer_lock is not None:
+            install_maintenance(root, run, publish_recovery_helpers(root), installer_lock)
         key_path = root / 'etc/verity-egress/control.key'
         if not key_path.exists() and not key_path.is_symlink():
             base.atomic_file(key_path, (secrets.token_hex(32) + '\n').encode(), 0o600)
@@ -947,11 +1151,17 @@ def main():
     managed.add_argument('--database-config', type=Path)
     managed.add_argument('--prepare-only', action='store_true')
     managed.add_argument('--assessment-authorization', type=Path)
+    managed.add_argument('--installer-lock', type=Path)
     actions.add_parser('refresh-authority')
     actions.add_parser('recover')
+    maintain = actions.add_parser('maintain')
+    maintain.add_argument('--installer-lock', type=Path, required=True)
     actions.add_parser('verify-runtime')
     args = parser.parse_args()
     try:
+        if args.action == 'maintain':
+            print(json.dumps(maintenance(installer_lock=args.installer_lock)))
+            return
         if args.action == 'verify-runtime':
             verify_runtime()
             return
@@ -964,7 +1174,7 @@ def main():
         result = provision(args.release.resolve(), args.relay_config, args.authority_config,
                            args.control_gid, database=args.database_config,
                            prepare_only=args.prepare_only,
-                           assessment_authorization=args.assessment_authorization)
+                           assessment_authorization=args.assessment_authorization, installer_lock=args.installer_lock)
     except Exception as error:
         # Command output is consumed by diagnostics; do not print config paths,
         # database URLs, raw subprocess errors or secret material.
