@@ -337,7 +337,9 @@ export async function assistantHandoff<
   // A missing record only costs the assistant this one read-back.
   try {
     const target = await deps.eventStore.getSession(result.sessionId);
-    if (target?.projectId)
+    if (!target?.projectId)
+      console.warn('verity: assistant handoff target has no project; not recorded');
+    else
       await deps.eventStore.assistant.recordHandoff({
         assistantSessionId: input.sessionId,
         targetSessionId: result.sessionId,
@@ -443,13 +445,15 @@ async function handoffResults(
       title: handoff.title,
       handedOffAt: handoff.created_at.toISOString(),
       state:
-        status === 'running' || status === 'awaiting_dependency'
-          ? 'working'
-          : status === 'awaiting_input'
-            ? 'needs_input'
-            : status === 'crashed'
-              ? 'failed'
-              : 'idle',
+        status === undefined
+          ? 'unknown'
+          : status === 'running' || status === 'awaiting_dependency'
+            ? 'working'
+            : status === 'awaiting_input'
+              ? 'needs_input'
+              : status === 'crashed'
+                ? 'failed'
+                : 'idle',
       result:
         published === undefined || progress === undefined
           ? null

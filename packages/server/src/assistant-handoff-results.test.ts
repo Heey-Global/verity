@@ -174,6 +174,14 @@ describe('assistant handoff results', () => {
       deps(['a'], () => 'awaiting_input'),
     );
     expect(waiting.handoffs[0]).toMatchObject({ state: 'needs_input' });
+    const crashed = await results(
+      {},
+      deps(['a'], () => 'crashed'),
+    );
+    expect(crashed.handoffs[0]).toMatchObject({ state: 'failed' });
+    // Without a live status nothing may claim the session has finished.
+    const unwired = await results({}, { ...deps(['a']), sessionStatus: undefined });
+    expect(unwired.handoffs[0]).toMatchObject({ state: 'unknown' });
   });
 
   it('refuses sessions it did not brief and drops projects whose access was withdrawn', async () => {

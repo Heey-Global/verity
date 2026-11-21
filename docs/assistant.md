@@ -76,7 +76,7 @@ session, without reading that session's transcript.
 - Verity records which sessions the assistant session handed work to. The
   `verity_assistant` action `handoff_results` returns, for its five newest
   handoffs or one named `sessionId`, the session's state (`working`,
-  `needs_input`, `failed` or `idle`) and the outcome that session published after the
+  `needs_input`, `failed`, `idle` or `unknown`) and the outcome that session published after the
   briefing's own prompt in its current turn, or `null` while there is none. A
   publication before the briefing started (including while it was queued), or
   one superseded by a later prompt, is not returned.
