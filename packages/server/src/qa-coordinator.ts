@@ -194,12 +194,19 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
     if (!answer || role.active_revision !== qa.revision || !(await active(qa.revision, projectId)))
       return;
     const known = (id: string) => snapshot.incidents.find((i) => i.id === id);
+    // Grouping and escalation apply to QA's own open incidents, never a session's PR.
+    const own = (id: string) => {
+      const incident = known(id);
+      return incident && incident.state === 'open' && !incident.sessionResponsibility
+        ? incident
+        : undefined;
+    };
     // A decision only ever touches the project it reviewed.
     for (const group of answer.groups)
-      if (group.incidentIds.every((id) => known(id)))
+      if (group.incidentIds.every((id) => own(id)))
         await projectQA.group(projectId, group.incidentIds);
     for (const escalation of answer.escalations) {
-      const incident = known(escalation.incidentId);
+      const incident = own(escalation.incidentId);
       const issueId = (await store.incidents(projectId)).find(
         (i) => i.id === incident?.id,
       )?.issue_id;

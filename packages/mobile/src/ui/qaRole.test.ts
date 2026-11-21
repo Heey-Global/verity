@@ -128,7 +128,7 @@ describe('QA on Home', () => {
     expect(inboxSummary(qa)).toBe('1 QA decision');
   });
 
-  it('raises nothing for archived projects or projects QA does not watch', () => {
+  it('raises nothing for archived, paused or unwatched projects', () => {
     const stopped = summary({
       stopped: [{ id: 'i', key: 'workflow:ci', reason: null, detail: null, updatedAt: '' }],
     });
@@ -136,7 +136,11 @@ describe('QA on Home', () => {
       inboxItems({
         sessions: [],
         now: NOW,
-        projects: [project({ archived: true, qaSummary: stopped }), project({ id: 'p2' })],
+        projects: [
+          project({ archived: true, qaSummary: stopped }),
+          project({ id: 'p2' }),
+          project({ id: 'p3', qaSummary: { ...stopped, mode: 'paused' } }),
+        ],
       }).filter((item) => item.kind === 'qa_stop'),
     ).toEqual([]);
   });

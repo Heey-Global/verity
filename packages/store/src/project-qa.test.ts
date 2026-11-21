@@ -195,6 +195,13 @@ describe('emergency brake', () => {
   it('trips after too many repair starts in an hour and stops only QA repairs', async () => {
     await repairs().configure('a', 'admin', 'automatic');
     expect(await qa().checkBrake()).toBe(false);
+    // Sessions repairing their own pull requests never count toward the brake.
+    const own = await repairs().observe('a', 'pr:98', 'sha', '{}');
+    for (let n = 0; n < QA_EMERGENCY_BRAKE_STARTS; n++)
+      await sql`insert into repair_attempts (dispatch_id, incident_id, session_id, automation_marker) values (${`o${n}`}, ${own.id}, 's', ${`m${n}`})`.execute(
+        ctx.db,
+      );
+    expect(await qa().checkBrake()).toBe(false);
     const seed = await repairs().observe('a', 'pr:99', 'sha', '{}');
     for (let n = 0; n < QA_EMERGENCY_BRAKE_STARTS; n++)
       await sql`insert into repair_attempts (dispatch_id, incident_id, session_id) values (${`d${n}`}, ${seed.id}, 's')`.execute(

@@ -559,9 +559,10 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
  * answered in place. Never dismissable: QA stays stopped until someone decides.
  */
 function qaStopItems(project: ProjectRecord): InboxItem[] {
-  if (project.archived === true || !project.qaSummary) return [];
+  const qa = project.qaSummary;
+  if (project.archived === true || !qa || qa.mode === 'off' || qa.mode === 'paused') return [];
   const name = projectDisplayName(project);
-  return project.qaSummary.stopped.map((issue) => {
+  return qa.stopped.map((issue) => {
     const answer = (label: string, decision: QAIssueDecision): InboxAction => ({
       kind: 'qa_decision',
       label,

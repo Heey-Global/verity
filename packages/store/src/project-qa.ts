@@ -427,12 +427,13 @@ export class ProjectQAStore {
     return row?.brake_at ? new Date(row.brake_at).toISOString() : null;
   }
 
-  /** Trips the brake when repairs start faster than any normal workload; true once tripped. */
+  /** Trips the brake when QA's repairs start faster than any normal workload (sessions
+   *  repairing their own pull requests do not count); true once tripped. */
   async checkBrake(): Promise<boolean> {
     const tripped = (
       await sql<{
         brake_at: unknown;
-      }>`update qa_coordinator set brake_at = coalesce(brake_at, now()) where id = 1 and (brake_at is not null or (select count(*) from repair_attempts where started_at > greatest(now() - interval '1 hour', coalesce(brake_released_at, '-infinity'::timestamptz))) >= ${QA_EMERGENCY_BRAKE_STARTS}) returning brake_at`.execute(
+      }>`update qa_coordinator set brake_at = coalesce(brake_at, now()) where id = 1 and (brake_at is not null or (select count(*) from repair_attempts where automation_marker is null and started_at > greatest(now() - interval '1 hour', coalesce(brake_released_at, '-infinity'::timestamptz))) >= ${QA_EMERGENCY_BRAKE_STARTS}) returning brake_at`.execute(
         this.db,
       )
     ).rows;
