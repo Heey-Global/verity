@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.json",
-  // Root the boot fixture at its typed entrypoint and server augmentation rather
+  // Root the typed fixtures in this directory and server augmentation rather
   // than unrelated maintenance scripts. Keep all inherited compiler checks.
-  "include": ["boot-server.ts", "../../../packages/server/src/fastify-augmentation.ts"]
+  "include": ["*.ts", "../../../packages/server/src/fastify-augmentation.ts"]
 }
