@@ -22,6 +22,7 @@ import {
   type ProjectRecord,
   type SessionStatus,
   type SessionSummary,
+  type SessionAgentMark,
   type SessionTile,
   type VerityClient,
   projectTitle,
@@ -52,7 +53,7 @@ import {
   TileMark,
   useConfirm,
 } from '../ui';
-import type { TileMarkGlyph, TileMarkTone } from '../ui';
+import type { Leading, TileMarkGlyph, TileMarkTone } from '../ui';
 import type { StatusIntent } from '../ui/Status';
 import { isLinkableSession } from '../../lib/sessionLinks';
 import { useSessionPreviews } from '../../lib/sessionPreviews';
@@ -85,6 +86,16 @@ const TONE_INTENT: Record<InboxItem['tone'], StatusIntent> = {
 };
 
 const FLAG_TAG = WORK_PROBLEM_LABELS;
+
+/** The tile corner of a "Needs you" entry, in the tone of the tag it carries. */
+const WAITING_TONE: Record<StatusIntent, TileMarkTone> = {
+  action: 'action',
+  ready: 'success',
+  needsSetup: 'attention',
+  transient: 'action',
+  optional: 'muted',
+  unknown: 'muted',
+};
 
 /** Answers a row can give in place. A permission is never a row: it is drawn as
  *  its card, which has room for the request to read before allowing it. */
@@ -190,8 +201,8 @@ function itemSubtitle(item: InboxItem, label: string): string | undefined {
  *
  * Each row leads with its {@link sessionTile}: the pull request's phase and
  * verdict, else automation, else a neutral tile, with the agent's state (working,
- * new answer, waiting) as the tile's top mark; a "Needs you" row keeps the status
- * dot of what it waits for. The trailing column keeps the star, automation and
+ * new answer, waiting) as the tile's top mark; in "Needs you" that corner takes
+ * the tone of what it waits for, and a permission card leads with the same tile. The trailing column keeps the star, automation and
  * link markers. A row opens its session; swipe actions
  * and the browser context menu offer favorite, session settings (rename, move,
  * linked sessions) and delete.
@@ -486,6 +497,59 @@ export function ProjectWork({
       ),
     );
 
+  /**
+   * A session's tile, the same in every section: the pull request's phase and
+   * verdict, with the agent's state on the top corner. In "Needs you" the top
+   * corner carries what the entry waits for, in the tone of its tag, so every
+   * entry there leads the same way (docs/design-system.md § 5.2).
+   */
+  const tileLeading = (
+    session: SessionSummary,
+    tile: SessionTile,
+    agent: SessionAgentMark | undefined,
+    waitingIntent?: StatusIntent,
+  ): Leading => {
+    const result = tile.result !== undefined ? RESULT_MARK[tile.result] : undefined;
+    const tileIntent = TILE_INTENT[tile.tone];
+    // An agent asking keeps its "?" everywhere; otherwise a waiting entry's
+    // corner takes its tag's tone, which outranks working or unread.
+    const shownAgent = waitingIntent === undefined || agent === 'question' ? agent : undefined;
+    const top =
+      shownAgent !== undefined ? (
+        <AgentTileMark mark={shownAgent} testID={`work-agent-${session.sessionId}`} />
+      ) : waitingIntent !== undefined ? (
+        <View testID={`work-waiting-${session.sessionId}`}>
+          <TileMark tone={WAITING_TONE[waitingIntent]} />
+        </View>
+      ) : undefined;
+    return {
+      icon: TILE_ICON[tile.glyph],
+      ...(tileIntent !== undefined ? { intent: tileIntent } : { quiet: true }),
+      marks: {
+        top,
+        bottom:
+          result !== undefined ? (
+            <View
+              testID={`work-result-${session.sessionId}`}
+              accessibilityRole="image"
+              accessibilityLabel={tile.label}
+            >
+              <TileMark tone={result.tone} glyph={result.glyph} />
+            </View>
+          ) : undefined,
+      },
+    };
+  };
+  const tileOf = (session: SessionSummary) =>
+    sessionTile({ ...session, pr: session.pr ?? session.pullRequest });
+  // Active work owns the status mark until the agent finishes.
+  const activityOf = (session: SessionSummary) => {
+    const working = isActive(session);
+    return { working, unread: !working && unreadIds.has(session.sessionId) };
+  };
+  const agentOf = (session: SessionSummary) =>
+    sessionAgentMark({ status: session.status, ...activityOf(session) });
+
   const sessionRow = (
     session: SessionSummary,
     waiting?: {
@@ -493,26 +557,22 @@ export function ProjectWork({
       intent: StatusIntent;
       subtitle?: string | undefined;
       item?: InboxItem;
-      /** Drawn in "Needs you": a status dot instead of the activity dot, the
+      /** Drawn in "Needs you": the tile's corner in the tag's tone, the
        *  item's question as subtitle, its answers, and the chevron. */
       needs?: boolean;
     },
   ) => {
     const needs = waiting?.needs === true;
     const label = sessionLabel(session);
-    const working = isActive(session);
-    // Active work owns the status mark until the agent finishes.
-    const unread = !working && unreadIds.has(session.sessionId);
+    const { working, unread } = activityOf(session);
     const context = overview ? projects.find((p) => p.id === session.projectId) : undefined;
     const subtitle = waiting?.subtitle ?? workSubtitle(session, unread);
     const displaySubtitle = context
       ? `${projectDisplayName(context)} · ${subtitle ?? ''}`
       : subtitle;
     const item = waiting?.item;
-    const tile = sessionTile({ ...session, pr: session.pr ?? session.pullRequest });
+    const tile = tileOf(session);
     const agent = sessionAgentMark({ status: session.status, working, unread });
-    const result = tile.result !== undefined ? RESULT_MARK[tile.result] : undefined;
-    const tileIntent = TILE_INTENT[tile.tone];
     const statusTag =
       waiting !== undefined
         ? { label: waiting.tag, intent: waiting.intent }
@@ -571,30 +631,7 @@ export function ProjectWork({
             session.favorite !== true
           }
           subtitle={displaySubtitle}
-          leading={
-            needs && waiting !== undefined
-              ? { dot: waiting.intent }
-              : {
-                  icon: TILE_ICON[tile.glyph],
-                  ...(tileIntent !== undefined ? { intent: tileIntent } : { quiet: true }),
-                  marks: {
-                    top:
-                      agent !== undefined ? (
-                        <AgentTileMark mark={agent} testID={`work-agent-${session.sessionId}`} />
-                      ) : undefined,
-                    bottom:
-                      result !== undefined ? (
-                        <View
-                          testID={`work-result-${session.sessionId}`}
-                          accessibilityRole="image"
-                          accessibilityLabel={tile.label}
-                        >
-                          <TileMark tone={result.tone} glyph={result.glyph} />
-                        </View>
-                      ) : undefined,
-                  },
-                }
-          }
+          leading={tileLeading(session, tile, agent, needs ? waiting?.intent : undefined)}
           // In "Needs you" the tag leads the subtitle, so the title keeps the
           // width the chevron leaves instead of wrapping beside the tag.
           tag={
@@ -741,6 +778,12 @@ export function ProjectWork({
             selected={session.sessionId === selectedSessionId}
             unread={unreadIds.has(session.sessionId)}
             also={also}
+            leading={tileLeading(
+              session,
+              tileOf(session),
+              agentOf(session),
+              TONE_INTENT[item.tone],
+            )}
           />
         );
       const subtitle = itemSubtitle(item, sessionLabel(session));
