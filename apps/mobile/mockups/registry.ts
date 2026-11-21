@@ -15,6 +15,7 @@ import { mcpOAuthDetectionSpec } from './mcp-oauth-detection';
 import { mockupReviewSpec } from './mockup-review';
 import { meetingRecoverySpec } from './meeting-recovery';
 import { planCardSpec } from './plan-card';
+import { projectInquiryApprovalSpec } from './project-inquiry-approval';
 import { projectNamesSpec } from './project-names';
 import { repositoriesSpec } from './repositories';
 import { sourceActionsSpec } from './source-actions';
@@ -42,6 +43,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   fileExplorerSpec,
   mcpOAuthDetectionSpec,
   planCardSpec,
+  projectInquiryApprovalSpec,
   projectNamesSpec,
   repositoriesSpec,
   sourceActionsSpec,
