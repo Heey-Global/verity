@@ -42,6 +42,13 @@ export interface AppHelpTopic {
   emptyState?: string;
 }
 
+/** Built in a function marked pure: a template literal over an imported constant counts as
+ *  a possible side effect to esbuild, which then keeps the whole catalog in bundles that
+ *  never read it, such as the runner worker. */
+function assistantProjectAccessDetails(): string {
+  return `The assistant can only act in projects granted to it; every project starts with no access. ${ASSISTANT_GRANT_INSTRUCTIONS}`;
+}
+
 export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
   {
     id: 'getting-started',
@@ -332,7 +339,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     summary: 'Grant the Verity assistant access to a project, per project.',
     // No appLink: project links open the current project, which for the assistant
     // is Verity Control, so a link would point at the wrong project's settings.
-    details: `The assistant can only act in projects granted to it; every project starts with no access. ${ASSISTANT_GRANT_INSTRUCTIONS}`,
+    details: /* @__PURE__ */ assistantProjectAccessDetails(),
     docsPath: 'docs/assistant.md',
     keywords: [
       'assistant',
