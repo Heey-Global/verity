@@ -65,7 +65,7 @@ interface QAIssuesTable {
   updated_at: Generated<Date>;
 }
 
-/** Repair supervision and per-project QA (migrations 0172 ff., 0233). */
+/** Repair supervision and per-project QA (migrations 0172 ff., 0234). */
 export interface ProjectQADatabase {
   project_roles: ProjectRolesTable;
   qa_issues: QAIssuesTable;

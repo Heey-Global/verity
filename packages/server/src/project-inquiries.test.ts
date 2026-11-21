@@ -3,14 +3,14 @@ import type { EventStore, ProjectInquiry } from '@verity/store';
 import Fastify from 'fastify';
 import { createProjectInquiries, registerProjectInquiryRoutes } from './project-inquiries.js';
 
-function harness() {
+function harness({ granted = true }: { granted?: boolean } = {}) {
   const busy = new Set<string>();
   const replies: ProjectInquiry[] = [];
   const reply = vi.fn<(row: ProjectInquiry) => Promise<boolean>>(async () => true);
   const markAnswerDelivered = vi.fn();
   const rows = new Map<string, ProjectInquiry>();
   const sessions = new Map<string, { projectId: string }>([['source', { projectId: 'app' }]]);
-  let grant = true;
+  let grant = granted;
   const planning = vi.fn();
   const dispatch = vi.fn(async (_inquiry: ProjectInquiry, validate: () => Promise<boolean>) =>
     validate(),
@@ -34,26 +34,37 @@ function harness() {
       bind: vi.fn(),
       activate: vi.fn(),
       get: vi.fn(async (id: string) => rows.get(id)),
+      // Mirrors the store: only a granted question is admitted without a card.
       create: vi.fn(async (input: ProjectInquiry) => {
         if (!rows.has(input.id)) {
-          rows.set(input.id, input);
+          const admitted = input.kind === 'question' && grant;
+          rows.set(input.id, {
+            ...input,
+            humanApproved: false,
+            status: input.status === 'provisioning' && !admitted ? 'pending' : input.status,
+          });
         }
         return rows.get(input.id)!;
       }),
       completeProvisioning: vi.fn(async (id: string) => {
         const row = rows.get(id)!;
-        row.status = row.kind === 'change' ? 'pending' : 'approved';
+        if (row.status === 'provisioning')
+          row.status = row.kind === 'change' && !row.humanApproved ? 'pending' : 'approved';
       }),
       markQueued: vi.fn(async (id: string) => {
         rows.get(id)!.status = 'queued';
       }),
-      decide: vi.fn(async (id: string, target: string, approve: boolean) => {
-        const row = rows.get(id);
-        if (!row || row.targetSessionId !== target || row.status !== 'pending' || !grant)
-          return false;
-        row.status = approve ? 'approved' : 'rejected';
-        return true;
-      }),
+      decide: vi.fn(
+        async (id: string, target: string, approve: boolean, _user: unknown, always = false) => {
+          const row = rows.get(id);
+          if (!row || row.targetSessionId !== target || row.status !== 'pending') return false;
+          if (always && row.kind !== 'question') return false;
+          row.status = approve ? 'provisioning' : 'rejected';
+          row.humanApproved = approve;
+          if (approve && always) grant = true;
+          return true;
+        },
+      ),
       block: vi.fn(async (id: string) => {
         rows.get(id)!.status = 'blocked';
       }),
@@ -99,6 +110,7 @@ function harness() {
     revoke: () => {
       grant = false;
     },
+    granted: () => grant,
   };
 }
 const request = {
@@ -119,32 +131,83 @@ describe('project inquiries', () => {
     expect(h.planning).toHaveBeenCalledWith(first.targetSessionId, 'active');
     expect(h.dispatch).toHaveBeenCalledTimes(2);
   });
-  it('does not dispatch changes before a target-side decision', async () => {
+  it('does not create or dispatch a change before a decision, even with a standing grant', async () => {
     const h = harness();
     const change = await h.service.request('source', null, { ...request, kind: 'change' });
     expect(change.status).toBe('pending');
+    expect(h.createSession).not.toHaveBeenCalled();
     expect(h.dispatch).not.toHaveBeenCalled();
-    await expect(h.service.decide('source', change.id, null, true)).rejects.toThrow('unavailable');
-    await h.service.decide(change.targetSessionId, change.id, null, true);
+    // The decision is addressed to the target project, not to the asking one.
+    await expect(h.service.decide('app', change.id, null, 'approve')).rejects.toThrow(
+      'unavailable',
+    );
+    await expect(h.service.decide('cluster', change.id, null, 'approve_always')).rejects.toThrow(
+      'questions',
+    );
+    await h.service.decide('cluster', change.id, null, 'approve');
+    expect(h.createSession).toHaveBeenCalledTimes(1);
     expect(h.planning).toHaveBeenCalledWith(change.targetSessionId, 'implemented');
     expect(h.dispatch).toHaveBeenCalledTimes(1);
   });
-  it('rechecks revoked access before delivery and rejects forwarding loops', async () => {
+  it('keeps an ungranted question pending until it is allowed once', async () => {
+    const h = harness({ granted: false });
+    const question = await h.service.request('source', null, request);
+    expect(question.status).toBe('pending');
+    await h.service.recover();
+    expect(h.createSession).not.toHaveBeenCalled();
+    expect(h.dispatch).not.toHaveBeenCalled();
+    await h.service.decide('cluster', question.id, null, 'approve');
+    expect(h.rows.get(question.id)?.status).toBe('queued');
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    // Allowing once stores nothing: the next question asks again.
+    expect(h.granted()).toBe(false);
+    const next = await h.service.request('source', null, { ...request, requestId: 'two' });
+    expect(next.status).toBe('pending');
+  });
+  it('lets later questions run without a card after "Always allow"', async () => {
+    const h = harness({ granted: false });
+    const question = await h.service.request('source', null, request);
+    await h.service.decide('cluster', question.id, null, 'approve_always');
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
+    const next = await h.service.request('source', null, { ...request, requestId: 'two' });
+    expect(next.status).toBe('queued');
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
+  });
+  it('leaves no target session behind a rejected request', async () => {
+    const h = harness({ granted: false });
+    const question = await h.service.request('source', null, request);
+    await h.service.decide('cluster', question.id, null, 'reject');
+    await h.service.recover();
+    expect(h.rows.get(question.id)?.status).toBe('rejected');
+    expect(h.createSession).not.toHaveBeenCalled();
+    expect(h.store.createSessionLink).not.toHaveBeenCalled();
+    await expect(h.service.decide('cluster', question.id, null, 'approve')).rejects.toThrow(
+      'already decided',
+    );
+  });
+  it('blocks a granted question after revocation and rejects forwarding loops', async () => {
     const h = harness();
-    const change = await h.service.request('source', null, { ...request, kind: 'change' });
+    h.busy.add(
+      (await h.service.request('source', null, { ...request, requestId: 'warm' })).targetSessionId,
+    );
+    const question = await h.service.request('source', null, request);
+    expect(h.rows.get(question.id)?.status).toBe('approved');
     h.revoke();
-    await expect(h.service.decide(change.targetSessionId, change.id, null, true)).rejects.toThrow();
-    await expect(h.service.request(change.targetSessionId, null, request)).rejects.toThrow(
+    h.busy.clear();
+    await h.service.recover();
+    expect(h.rows.get(question.id)?.status).toBe('blocked');
+    await expect(h.service.request(question.targetSessionId, null, request)).rejects.toThrow(
       'forward',
     );
-    expect(h.dispatch).not.toHaveBeenCalled();
+    expect(h.dispatch).toHaveBeenCalledTimes(1);
   });
 });
 
 it('recovers approved requests once and retries independent answer deliveries after a failure', async () => {
   const h = harness();
   const inquiry = await h.service.request('source', null, { ...request, kind: 'change' });
-  h.rows.get(inquiry.id)!.status = 'approved';
+  // Allowed, but the server stopped before its target session was provisioned.
+  Object.assign(h.rows.get(inquiry.id)!, { status: 'provisioning', humanApproved: true });
   await h.service.recover();
   await h.service.recover();
   expect(h.dispatch).toHaveBeenCalledTimes(1);
@@ -163,7 +226,7 @@ it('recovers approved requests once and retries independent answer deliveries af
 it('surfaces a deleted target as blocked rather than retrying it forever', async () => {
   const h = harness();
   const inquiry = await h.service.request('source', null, { ...request, kind: 'change' });
-  h.rows.get(inquiry.id)!.status = 'approved';
+  Object.assign(h.rows.get(inquiry.id)!, { status: 'approved', humanApproved: true });
   h.sessions.delete(inquiry.targetSessionId);
   await h.service.recover();
   expect(h.rows.get(inquiry.id)?.status).toBe('blocked');
@@ -254,7 +317,7 @@ it('does not replay an admitted request posture after queue bookkeeping failed',
   expect([...h.rows.values()][0]?.status).toBe('queued');
 });
 
-it('lets a source manager revoke a grant after losing target execution access', async () => {
+it('lets a source manager revoke a grant without target execution access', async () => {
   const setGrant = vi.fn();
   const grants = vi.fn(async () => []);
   const store = { projectInquiries: { setGrant, grants } } as unknown as EventStore;
@@ -274,7 +337,8 @@ it('lets a source manager revoke a grant after losing target execution access', 
         url: '/projects/source/inquiry-grants',
         payload: { targetProjectId: 'target', enabled },
       });
-    expect((await send(true)).statusCode).toBe(403);
+    // Only "Always allow" on a card creates a grant; this route can only revoke.
+    expect((await send(true)).statusCode).toBe(400);
     expect((await send(false)).statusCode).toBe(200);
     expect(setGrant).toHaveBeenCalledExactlyOnceWith('source', 'target', false);
   } finally {

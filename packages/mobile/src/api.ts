@@ -25,7 +25,9 @@ import {
 } from './backup-api.js';
 import {
   projectRepositorySchema,
+  projectInquiryGrantSchema,
   projectInquirySchema,
+  type InquiryDecision,
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
 import { repositoryPullRequestsSchema } from './projectPullRequests.js';
@@ -3572,25 +3574,15 @@ export class VerityClient {
     const res = await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
       method: 'GET',
     });
-    return z
-      .object({
-        grants: z.array(
-          z.object({
-            sourceProjectId: z.string(),
-            targetProjectId: z.string(),
-            enabled: z.boolean(),
-            createdAt: z.string(),
-          }),
-        ),
-      })
-      .parse(await res.json()).grants;
+    return z.object({ grants: z.array(projectInquiryGrantSchema) }).parse(await res.json()).grants;
   }
 
-  async setInquiryGrant(projectId: string, targetProjectId: string, enabled: boolean) {
+  /** Grants come only from "Always allow" on a request's card; this withdraws one. */
+  async revokeInquiryGrant(projectId: string, targetProjectId: string) {
     await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ targetProjectId, enabled }),
+      body: JSON.stringify({ targetProjectId, enabled: false }),
     });
   }
 
@@ -3603,9 +3595,9 @@ export class VerityClient {
     return z.object({ inquiries: z.array(projectInquirySchema) }).parse(await res.json()).inquiries;
   }
 
-  async decideProjectInquiry(sessionId: string, inquiryId: string, decision: 'approve' | 'reject') {
+  async decideProjectInquiry(projectId: string, inquiryId: string, decision: InquiryDecision) {
     await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/project-inquiries/${encodeURIComponent(inquiryId)}/decision`,
+      `/projects/${encodeURIComponent(projectId)}/project-inquiries/${encodeURIComponent(inquiryId)}/decision`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
