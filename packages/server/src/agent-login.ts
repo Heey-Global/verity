@@ -108,8 +108,10 @@ function stripAnsi(value: string): string {
     value
       // OSC sequences, ended by BEL or ESC \. Claude Code prints its sign-in URL
       // as an OSC 8 hyperlink whose target repeats the visible text; left in,
-      // target and text read as one URL with a corrupted state parameter.
-      .replace(new RegExp(`${esc}\\][^${bel}${esc}]*(?:${bel}|${esc}\\\\)`, 'g'), '')
+      // target and text read as one URL with a corrupted state parameter. One
+      // still unterminated at the end of the output is dropped too, so a read
+      // that stops inside the target cannot offer a cut-off URL.
+      .replace(new RegExp(`${esc}\\][^${bel}${esc}]*(?:${bel}|${esc}\\\\|$)`, 'g'), '')
       .replace(new RegExp(esc + '\\[[0-?]*[ -/]*[@-~]', 'g'), '')
       .replace(new RegExp(esc + '[=>]', 'g'), '')
   );

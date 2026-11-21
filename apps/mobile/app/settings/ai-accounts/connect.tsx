@@ -39,7 +39,7 @@ export default function ConnectProviderScreen() {
  */
 function signInHost(uri: string): string {
   try {
-    return new URL(uri).host;
+    return new URL(uri).host || 'the sign-in page';
   } catch {
     return 'the sign-in page';
   }

@@ -197,8 +197,12 @@ if (mode === 'wrapped-claude-url') {
   // text are both the URL, the text coloured, all on one physical line.
   const url = 'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=challenge&code_challenge_method=S256&state=state';
   process.stdout.write('Opening browser to sign in\\u2026\\r\\n');
-  process.stdout.write("If the browser didn't open, visit: \\u001b]8;;" + url + '\\u0007\\u001b[94m' + url + '\\u001b[39m\\u001b]8;;\\u0007\\r\\n');
-  process.stdout.write('Paste code here if prompted > ');
+  // The read stops inside the target, two characters short of the end.
+  process.stdout.write("If the browser didn't open, visit: \\u001b]8;;" + url.slice(0, -2));
+  setTimeout(() => {
+    process.stdout.write(url.slice(-2) + '\\u0007\\u001b[94m' + url + '\\u001b[39m\\u001b]8;;\\u0007\\r\\n');
+    process.stdout.write('Paste code here if prompted > ');
+  }, 150);
 } else if (mode === 'claude-terminal-wrapped-url') {
   process.stdout.write('Browser did not open? Use the url below to sign in\\r\\r\\n\\r\\r\\n');
   process.stdout.write('https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88\\r\\r\\n');
@@ -437,14 +441,23 @@ describe('createProcessAgentLoginService', () => {
 
   it('takes the Claude sign-in URL once from a terminal hyperlink', async () => {
     // The CLI wraps the URL in an OSC 8 hyperlink. Reading target and text
-    // as one URL hands the phone a link whose state no longer matches the
-    // login, and the sign-in page fails after the user has authorised.
+    // as one URL, or a target cut off mid-read, hands the phone a link whose
+    // state no longer matches the login, and the sign-in page fails after
+    // the user has authorised.
     process.env.VERITY_FAKE_AGENT_LOGIN_MODE = 'claude-hyperlinked-url';
 
     const started = await service.start('claude');
-    const ready = await waitForSession(started.sessionId, (session) => session.status === 'ready');
-    expect(ready.verificationUri).toBe(
-      'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=challenge&code_challenge_method=S256&state=state',
+    const offered: string[] = [];
+    await waitForSession(started.sessionId, (session) => {
+      if (session.verificationUri !== null) offered.push(session.verificationUri);
+      return (
+        session.status === 'ready' && session.verificationUri?.endsWith('state=state') === true
+      );
+    });
+    expect(new Set(offered)).toEqual(
+      new Set([
+        'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=challenge&code_challenge_method=S256&state=state',
+      ]),
     );
   });
 
