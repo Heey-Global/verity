@@ -81,6 +81,31 @@ app help topic explains them too.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
 
+## Handoff results
+
+The assistant reads results with `delegated_results` only on request: a target
+session never starts an assistant turn, and its summary never enters an
+assistant prompt. The user is still told without asking. When a session the
+assistant briefed publishes the result of that briefing (the same publication
+`delegated_results` credits), Verity records it once per publication and:
+
+- shows it on the handoff card in the Verity panel: `Done` or `Open`, the
+  summary in two lines and, if named, the blocker; a required decision stands
+  in for a blocker the session did not name;
+- sends a push to the user the work was delegated for (the administrator who
+  switched the assistant on when auth is off), titled with the project and the
+  handoff title, with `Done:` or `Open:` and the summary cut to 150 characters;
+  the Apple Watch mirrors the iPhone's notification;
+- writes a notice into the assistant session that names only the project and
+  the handoff title.
+
+Nothing is announced while the assistant is switched off, for a project whose
+grant was withdrawn, hidden or archived, or when that user may no longer read
+the project. A replacing publication is announced once more; a new handoff to
+the same session starts without the earlier result. Announcements follow
+publications while the server runs: one published during a restart is not
+announced later, and `delegated_results` still reports it.
+
 ## Scheduling overview
 
 The assistant keeps track of scheduling requests across the projects granted to

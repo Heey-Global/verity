@@ -639,3 +639,21 @@ migrations['0231_assistant_handoffs'] = {
     await sql`drop table assistant_handoffs`.execute(db);
   },
 };
+
+migrations['0232_assistant_handoff_results'] = {
+  // The result a handoff's target published, recorded once per publication so it is announced
+  // exactly once and the conversation can show it on the handoff card.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table assistant_handoffs
+      add column result_seq bigint,
+      add column result_delivered boolean,
+      add column result_summary text check (char_length(result_summary) <= 300),
+      add column result_blocker text check (char_length(result_blocker) <= 300),
+      add column result_at timestamptz`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table assistant_handoffs
+      drop column result_seq, drop column result_delivered,
+      drop column result_summary, drop column result_blocker, drop column result_at`.execute(db);
+  },
+};

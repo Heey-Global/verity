@@ -77,6 +77,48 @@ describe('assistant project grants', () => {
   });
 });
 
+describe('assistant handoff results', () => {
+  it('records each publication once and forgets it when the handoff is repeated', async () => {
+    for (const sessionId of ['assistant', 't1'])
+      await ctx.store.createSession({ sessionId, worktree: `/${sessionId}`, model: 'm' });
+    const handOff = (title: string, at: number) =>
+      ctx.store.assistant.recordHandoff({
+        targetSessionId: 't1',
+        assistantSessionId: 'assistant',
+        projectId: 'a',
+        userId: 'u1',
+        title,
+        handedOffAt: new Date(at),
+      });
+    const claim = (seq: number, summary = 'Done.', handedOffAt = 1_000) =>
+      ctx.store.assistant.claimResult({
+        assistantSessionId: 'assistant',
+        targetSessionId: 't1',
+        handedOffAt: new Date(handedOffAt),
+        seq,
+        delivered: true,
+        summary,
+        at: new Date(2_000),
+      });
+    await handOff('Backup check', 1_000);
+    expect(await ctx.store.assistant.handoff('t1')).toMatchObject({ title: 'Backup check' });
+    // Concurrent announcers of one publication: exactly one wins.
+    expect((await Promise.all([claim(5), claim(5)])).filter(Boolean)).toHaveLength(1);
+    expect(await claim(4)).toBe(false);
+    expect(await claim(7, 'x'.repeat(400))).toBe(true);
+    const [recorded] = await ctx.store.assistant.recordedResults('assistant', ['t1', 'nope']);
+    expect(recorded).toMatchObject({ target_session_id: 't1', delivered: true, blocker: null });
+    expect(recorded!.summary).toHaveLength(300);
+    expect(await ctx.store.assistant.recordedResults('other', ['t1'])).toEqual([]);
+    // A new briefing to the same session starts without the old answer, and a result matched
+    // against the earlier briefing cannot land on it.
+    await handOff('Second question', 3_000);
+    expect(await ctx.store.assistant.recordedResults('assistant', ['t1'])).toEqual([]);
+    expect(await claim(9)).toBe(false);
+    expect(await claim(9, 'Second answer.', 3_000)).toBe(true);
+  });
+});
+
 describe('assistant requests', () => {
   const base = { sessionId: 'assistant', userId: 'u1' } as const;
   beforeEach(async () => {

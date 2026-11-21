@@ -25512,7 +25512,17 @@ var assistantConversationItemSchema = import_zod13.z.discriminatedUnion("kind", 
     at,
     title: import_zod13.z.string(),
     project: import_zod13.z.string().nullable(),
-    state: import_zod13.z.enum(["pending", "sent", "failed"])
+    state: import_zod13.z.enum(["pending", "sent", "failed"]),
+    /** The session the work went to, once the handoff answered. */
+    sessionId: import_zod13.z.string().optional(),
+    /** The result that session published for this handoff, written by that session. */
+    result: import_zod13.z.object({
+      delivered: import_zod13.z.boolean(),
+      summary: import_zod13.z.string(),
+      /** What stops the work, when the session named something. */
+      blocker: import_zod13.z.string().optional(),
+      at
+    }).optional()
   }),
   /** A live meeting Verity prepared on the start screen or joined. Both belong to the
    *  conversation's own session, where the meeting screen opens. */

@@ -8,7 +8,13 @@ import {
   DELEGATED_RESULTS_MAX_ENTRIES,
   type AssistantRequest,
 } from '@verity/events';
-import type { AssistantMode, AssistantSettings, EventStore } from '@verity/store';
+import type {
+  AssistantHandoff,
+  AssistantMode,
+  AssistantSettings,
+  EventStore,
+  SequencedEvent,
+} from '@verity/store';
 import { OnlineMeetingStartError } from './attendee-meetings.js';
 import {
   CalendarEventAlreadyJoinedError,
@@ -162,6 +168,49 @@ const DELEGATED_RESULT_EVENT_WINDOW = 500;
 /** Event times come from the database, the handoff time from this process. */
 const CLOCK_SKEW_MS = 5_000;
 
+/** A `session_progress` event as the store returns it. */
+type PublishedOutcome = SequencedEvent & {
+  event: Extract<SequencedEvent['event'], { t: 'session_progress' }>;
+};
+
+/**
+ * The outcome a briefed session published for this handoff, or undefined while it has none.
+ * Shared by "delegated_results" and the announcement of results to the user, so both credit
+ * exactly the same publication.
+ */
+export async function readDelegatedOutcome(
+  deps: Pick<AssistantToolDeps, 'eventStore'>,
+  handoff: AssistantHandoff,
+): Promise<PublishedOutcome | undefined> {
+  const since = handoff.handed_off_at.getTime();
+  const { events } = await deps.eventStore.getEventsBeforeSeq(
+    handoff.target_session_id,
+    DELEGATED_RESULT_EVENT_WINDOW,
+  );
+  // Anchored on the briefing's own prompt, not on the time alone: a busy target queues the
+  // briefing, and what its running turn publishes meanwhile answers something else. The
+  // window ends at the next handoff into that session, whose result is another sender's.
+  // Operator turns in between stay inside it: they often finish the briefed work.
+  const isHandoff = (event: (typeof events)[number]['event']) =>
+    event.t === 'prompt' && event.text.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL);
+  const briefing = events.findIndex(
+    ({ ts, event }) =>
+      ts >= since - CLOCK_SKEW_MS &&
+      isHandoff(event) &&
+      event.t === 'prompt' &&
+      event.text.includes(`\n\nTitle: ${handoff.title}\n\n`),
+  );
+  const next =
+    briefing < 0 ? -1 : events.findIndex((item, i) => i > briefing && isHandoff(item.event));
+  const found =
+    briefing < 0
+      ? undefined
+      : events
+          .slice(briefing + 1, next < 0 ? undefined : next)
+          .findLast((item): item is PublishedOutcome => item.event.t === 'session_progress');
+  return found;
+}
+
 /**
  * What the sessions the assistant briefed have reported back since. Only the bounded,
  * credential-redacted fields a session publishes through `verity_publish_session_progress`
@@ -198,32 +247,7 @@ async function delegatedResults(
     );
   const results = [];
   for (const handoff of handoffs.slice(0, DELEGATED_RESULTS_MAX_ENTRIES)) {
-    const since = handoff.handed_off_at.getTime();
-    const { events } = await deps.eventStore.getEventsBeforeSeq(
-      handoff.target_session_id,
-      DELEGATED_RESULT_EVENT_WINDOW,
-    );
-    // Anchored on the briefing's own prompt, not on the time alone: a busy target queues the
-    // briefing, and what its running turn publishes meanwhile answers something else. The
-    // window ends at the next handoff into that session, whose result is another sender's.
-    // Operator turns in between stay inside it: they often finish the briefed work.
-    const isHandoff = (event: (typeof events)[number]['event']) =>
-      event.t === 'prompt' && event.text.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL);
-    const briefing = events.findIndex(
-      ({ ts, event }) =>
-        ts >= since - CLOCK_SKEW_MS &&
-        isHandoff(event) &&
-        event.t === 'prompt' &&
-        event.text.includes(`\n\nTitle: ${handoff.title}\n\n`),
-    );
-    const next =
-      briefing < 0 ? -1 : events.findIndex((item, i) => i > briefing && isHandoff(item.event));
-    const found =
-      briefing < 0
-        ? undefined
-        : events
-            .slice(briefing + 1, next < 0 ? undefined : next)
-            .findLast((item) => item.event.t === 'session_progress');
+    const found = await readDelegatedOutcome(deps, handoff);
     const published = found?.event;
     results.push({
       sessionId: handoff.target_session_id,
