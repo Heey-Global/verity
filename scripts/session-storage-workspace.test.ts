@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import type { ProjectRecord, SessionRecord } from '@verity/store';
+import type { ProjectRecord, SessionRecord } from '../packages/store/src/index.js';
 import { SessionStorage, compareDependencyTrees } from '../packages/server/src/session-storage.js';
 import { workspaceDependencyLinks } from '../packages/server/src/dependency-workspace-links.js';
 import { fixture as dependencyFixture, env as dependencyEnv } from './dependency-fixture.js';
