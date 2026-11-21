@@ -65,7 +65,7 @@ export const SESSION_HANDOFF_ENVELOPE =
  * Kept separate so the two constants stay stable prefixes: stored transcripts are recognised
  * as handoffs by the label they began with before this sentence existed.
  */
-export const SESSION_HANDOFF_RESULT_REQUEST =
+const SESSION_HANDOFF_RESULT_REQUEST =
   'When the work is done, or blocked on something only the operator can settle, publish a ' +
   'short outcome summary of two or three sentences with verity_publish_session_progress, so the ' +
   'sender can report the result without reading this transcript.';
@@ -275,14 +275,16 @@ export interface ControlPlaneSessionToolDeps {
   }): Promise<{ queued: boolean }>;
   /** Called once a briefing was delivered, with the time taken just before delivery, so a
    *  summary the target publishes in answer can never predate it. */
-  recordHandoff?(input: {
-    callerSessionId: string;
-    turnId: string;
-    targetSessionId: string;
-    projectId: string;
-    title: string;
-    handedOffAt: Date;
-  }): Promise<void>;
+  recordHandoff?:
+    | ((input: {
+        callerSessionId: string;
+        turnId: string;
+        targetSessionId: string;
+        projectId: string;
+        title: string;
+        handedOffAt: Date;
+      }) => Promise<void>)
+    | undefined;
   /** Create one session in the already-resolved active project. The returned id is the exact
    * target that receives the first turn; no second resolution by name is permitted. */
   createSession?(input: {
