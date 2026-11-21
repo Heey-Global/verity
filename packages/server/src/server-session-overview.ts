@@ -116,7 +116,11 @@ export interface ServerSessionOverview {
   ) => Promise<{ basePath: string; project: ProjectRecord } | undefined>;
   prCleanupPending: Set<string>;
   withPrVisibility: <T>(session: SessionRecord, action: () => Promise<T>) => Promise<T>;
-  invalidatePrSummaryAction: (session: SessionRecord, retainStatus?: boolean) => boolean;
+  invalidatePrSummaryAction: (
+    session: SessionRecord,
+    retainStatus?: boolean,
+    branches?: readonly string[],
+  ) => boolean;
   invalidateBranchCache: (worktree: string) => void;
 }
 
@@ -542,6 +546,11 @@ export function createServerSessionOverview({
   let prRepairStopped = false;
   let prRepairSweep: Promise<void> | undefined;
   let prRepairTimer: ReturnType<typeof setInterval> | undefined;
+  // A failing quota check must not abort the sweep; it only forgoes the deferral.
+  const deferForgeReads = (projectId: string): Promise<boolean> =>
+    Promise.resolve()
+      .then(() => deps.deferBackgroundForgeReads?.(projectId) ?? false)
+      .catch(() => false);
   const sweepPrRepairs = (): Promise<void> | undefined => {
     if (prRepairStopped || prRepairSweep !== undefined) return prRepairSweep;
     prRepairSweep = (async () => {
@@ -561,6 +570,8 @@ export function createServerSessionOverview({
         if (prRepairStopped) break;
         if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
           continue;
+        // Near quota exhaustion background discovery yields to agents and open apps.
+        if (session.projectId && (await deferForgeReads(session.projectId))) continue;
         try {
           if (!(await worktreeExists(session.worktree))) continue;
           await maybeDispatchPrRepairTurns(session, await backgroundPrStatus(session));
@@ -597,8 +608,24 @@ export function createServerSessionOverview({
         resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
         return;
       }
-      if (!invalidatePrSummaryAction(session, true)) return;
-      await backgroundPrStatus(session);
+      // Tool activity can only change this session's branches. Forgetting the whole
+      // repository here re-read every other session's pull request on each tool call.
+      // The checked-out branch always counts; an empty or failed lookup falls back
+      // to forgetting the whole repository rather than serving a stale status.
+      const branches = await branchesForSession(session)
+        .then(async (service) => {
+          if (!service) return undefined;
+          const listed = await service.sessionBranches(session.worktree);
+          const all = [...new Set([await service.current(session.worktree), ...listed])];
+          return all.filter((branch) => branch !== '');
+        })
+        .then((all) => (all && all.length > 0 ? all : undefined))
+        .catch(() => undefined);
+      if (!invalidatePrSummaryAction(session, true, branches)) return;
+      // Near quota exhaustion the stale status is still forgotten, so the next
+      // interactive read is fresh; only the speculative background read is skipped.
+      if (!session.projectId || !(await deferForgeReads(session.projectId)))
+        await backgroundPrStatus(session);
       resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
     },
     onError: (err, sessionId) => app.log.warn({ err, sessionId }, 'PR activity refresh failed'),
@@ -694,10 +721,14 @@ export function createServerSessionOverview({
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.set(worktree, { pr, at: Date.now() });
   };
-  const invalidatePrSummaryAction = (session: SessionRecord, retainStatus = false): boolean => {
+  const invalidatePrSummaryAction = (
+    session: SessionRecord,
+    retainStatus = false,
+    branches?: readonly string[],
+  ): boolean => {
     const { worktree } = session;
     if (!sessionPrCache.invalidate(worktree, retainStatus)) return false;
-    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
+    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId, branches);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     if (!retainStatus) prSummaryCache.delete(worktree);
     return true;
@@ -1036,6 +1067,7 @@ export function createServerSessionOverview({
     preparedEvents?: AgentEvent[],
     preparedResumable?: boolean,
   ): Promise<SessionSummary> => {
+    await conductor.refreshDetachedPermissions?.(session.sessionId);
     const events = preparedEvents ?? (await projectionEventsFor(session.sessionId, facts));
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
@@ -1047,22 +1079,22 @@ export function createServerSessionOverview({
     const rateLimit = rateLimits[0];
     const conductorPermissions = conductor.pendingPermissions(session.sessionId);
     const pendingPermissions = [...new Set([...conductorPermissions, ...pendingLinks])];
-    const pendingPermissionRequests = pendingPermissionRequestsFromProjection(
-      events,
-      conductorPermissions,
-    );
+    const pendingPermissionRequests = [
+      ...new Map(
+        [
+          ...pendingPermissionRequestsFromProjection(events, conductorPermissions),
+          ...(conductor.detachedPermissionRequests?.(session.sessionId) ?? []),
+        ].map((request) => [request.toolUseId, request]),
+      ).values(),
+    ];
     // Unread counts include only agent text; the seq still identifies a nonempty log.
     const projectedStatus = liveStatusFromProjection(
       session.sessionId,
       events,
       facts.lastEventSeq === 0 ? 0 : 1,
     );
-    // A permission event is durable so reconnect can rebuild its card, but its
-    // answer travels over the live runner channel. Once that channel no longer
-    // reports the prompt, do not let the historical event keep the overview in
-    // "Needs input" while the approved operation continues or settles.
     const status =
-      pendingLinks.length > 0
+      pendingPermissions.length > 0
         ? 'awaiting_input'
         : projectedStatus === 'awaiting_input' &&
             permissionEventAwaitsInput(events) &&

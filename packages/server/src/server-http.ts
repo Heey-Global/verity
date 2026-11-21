@@ -1,3 +1,4 @@
+import { serializeServerRequest } from './request-log.js';
 import compressPlugin from '@fastify/compress';
 import rateLimitPlugin from '@fastify/rate-limit';
 import { measureLatencyPhase, SealedError } from '@verity/store';
@@ -65,24 +66,7 @@ export function createServerApp(deps: ServerDeps): {
   const loggerOption: NonNullable<FastifyServerOptions['logger']> = deps.logger
     ? {
         serializers: {
-          req(request: {
-            method: string;
-            url: string;
-            hostname?: string | undefined;
-            ip?: string | undefined;
-            socket?: { remotePort?: number | undefined } | undefined;
-          }) {
-            return {
-              method: request.method,
-              url:
-                request.url.split('?', 1)[0] === '/app/mcp/oauth/callback'
-                  ? '/app/mcp/oauth/callback'
-                  : request.url,
-              hostname: request.hostname ?? '',
-              remoteAddress: request.ip ?? '',
-              remotePort: request.socket?.remotePort ?? 0,
-            };
-          },
+          req: serializeServerRequest,
         },
       }
     : false;

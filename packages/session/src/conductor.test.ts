@@ -1,3 +1,4 @@
+import { APPROVAL_WAITING_SYSTEM_PROMPT } from './turn-system-prompt.js';
 import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +36,7 @@ import {
   type RunningTurnRecord,
 } from '@verity/store';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import { reserveProjectQAReview } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryEventBus } from './bus.js';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
@@ -101,6 +103,7 @@ const ZERO_USAGE = {
  */
 const RESUME_SET = [
   TERMINOLOGY_SYSTEM_PROMPT,
+  APPROVAL_WAITING_SYSTEM_PROMPT,
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
   TASKS_RESUME_SYSTEM_PROMPT,
@@ -111,22 +114,8 @@ const RESUME_SET = [
   BREVITY_SYSTEM_PROMPT,
 ];
 
-/**
- * Ceiling for the assembled set, which includes the automation contract for existing sessions
- * alongside the compact autonomy convergence fragment. A tripwire on the whole re-sent payload rather
- * than a target: the cost here is per operator message, not per context, so growth that
- * is cheap in a fresh turn is not cheap in this one. Membership is checked
- * exactly by {@link expectResumeSet}; this is the only instrument that notices
- * the members themselves growing — including the two this feature does not own,
- * which is deliberate: what is charged per message is the assembled payload, not
- * whichever fragment last grew. Kept above the sandbox fragment's own ceiling
- * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
- * permits cannot fail here instead, where the message would name the wrong
- * thing. The repository-discovery directive adds 1466 characters so existing
- * sessions learn the managed module workflow too. The assembled payload is now
- * about 9300 characters; keep a small explicit allowance for separators and wording.
- */
-const RESUME_SET_BUDGET = 9500;
+/** Cap the compact directives re-sent on every message, including approval waiting. */
+const RESUME_SET_BUDGET = 10300;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present
@@ -405,19 +394,21 @@ describe('formatBrokeredSecretAliases', () => {
 });
 
 describe('Conductor.sendTurn', () => {
-  it('limits interactive QA to gateway tools even when a caller requests execution tools', async () => {
-    await ctx.store.repairs.configureQA(false, 'admin');
-    await ctx.store.repairs.qaSession('qa');
-    await ctx.store.repairs.configureQA(true, 'admin');
-    await ctx.store.repairs.qaClaim((await ctx.store.repairs.qa()).revision, '[]', 0);
-    await ctx.store.repairs.configureQA(false, 'admin');
+  it('confines QA turns: reviews without tools for a project QA, chat to gateway tools', async () => {
     await ctx.store.createSession({ sessionId: 'qa', worktree: '/wt/qa', model: 'm' });
+    await ctx.store.createSession({ sessionId: 'central', worktree: '/wt/central', model: 'm' });
+    await reserveProjectQAReview(ctx.store, 'qa');
+    await ctx.db.updateTable('qa_coordinator').set({ session_id: 'central' }).execute();
     const fake = scriptedBackend();
     const conductor = new Conductor({
       store: ctx.store,
       backend: fake.backend,
       worktreeExists: async () => true,
     });
+    await conductor.sendTurn('qa', '[[verity:qa-review]]\nReview', { allowedTools: ['Bash'] });
+    expect(fake.last().toolless).toBe(true);
+    expect(fake.last().prompt).toContain('QA role of project qa-project');
+    await ctx.store.repairs.configureQA(false, 'admin');
     await conductor.sendTurn('qa', 'Explain open incidents', {
       permissionMode: 'bypassPermissions',
       allowedTools: ['Bash'],
@@ -427,7 +418,11 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().resumeSessionId).toBeUndefined();
     expect(fake.last().appendSystemPrompt).toContain('verity_qa_analysis');
     expect(fake.last().prompt).toContain('resolve_repair and request_repair');
-    expect(fake.last().prompt).not.toContain('only scheduled decision reviews');
+    await conductor.sendTurn('central', 'What happened?', { allowedTools: ['Bash'] });
+    expect(fake.last().gatewayToolsOnly).toBe(true);
+    await expect(conductor.sendTurn('central', '[[verity:qa-review]]\nR')).rejects.toThrow(
+      'superseded',
+    );
   });
 
   it('gives the assistant session its standing prompt without taking its tools away', async () => {
@@ -2115,9 +2110,7 @@ describe('Conductor.dispatchTurn', () => {
 
   it('durably admits a QA dispatch once and rejects a cancelled reservation before backend execution', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    await ctx.store.repairs.configureQA(true, 'admin');
-    await ctx.store.repairs.qaSession('s1');
-    const id = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    const id = await reserveProjectQAReview(ctx.store, 's1');
     const fake = scriptedBackend();
     const conductor = new Conductor({
       store: ctx.store,
@@ -2133,8 +2126,8 @@ describe('Conductor.dispatchTurn', () => {
       await conductor.dispatchTurnWhenIdle('s1', 'duplicate', {}, { durableDispatchId: id }),
     ).toEqual({ accepted: true });
     expect(fake.calls).toHaveLength(1);
-    await ctx.store.repairs.qaFinish(id, 'done');
-    const cancelled = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    await ctx.store.repairs.projectQA.finishReview('qa-project', id, 'done');
+    const cancelled = await reserveProjectQAReview(ctx.store, 's1');
     expect(await ctx.store.repairs.cancelReservedDispatch(cancelled)).toBe(true);
     expect(
       await conductor.dispatchTurnWhenIdle('s1', 'late', {}, { durableDispatchId: cancelled }),
@@ -2145,9 +2138,7 @@ describe('Conductor.dispatchTurn', () => {
 
   it('settles acceptance interrupted before backend launch without replaying the prompt', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    await ctx.store.repairs.configureQA(true, 'admin');
-    await ctx.store.repairs.qaSession('s1');
-    const id = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    const id = await reserveProjectQAReview(ctx.store, 's1');
     await ctx.store.admitBackgroundDispatch(id, 's1', { t: 'prompt', text: 'review' });
     const fake = scriptedBackend();
     const conductor = new Conductor({
@@ -2186,9 +2177,7 @@ describe('Conductor.dispatchTurn', () => {
       await conductor.dispatchTurnWhenIdle('s1', 'previous');
       await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
       await vi.waitFor(() => expect(cleanup).toHaveBeenCalled());
-      await ctx.store.repairs.configureQA(true, 'admin');
-      await ctx.store.repairs.qaSession('s1');
-      const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+      const dispatch = await reserveProjectQAReview(ctx.store, 's1');
       try {
         expect(
           await conductor.dispatchTurnWhenIdle('s1', 'review', {}, { durableDispatchId: dispatch }),
@@ -2222,9 +2211,7 @@ describe('Conductor.dispatchTurn', () => {
       await conductor.dispatchTurnWhenIdle('s1', 'previous');
       await vi.waitFor(() => expect(proof).toHaveBeenCalled());
       await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false), { timeout: 10_000 });
-      await ctx.store.repairs.configureQA(true, 'admin');
-      await ctx.store.repairs.qaSession('s1');
-      const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+      const dispatch = await reserveProjectQAReview(ctx.store, 's1');
       expect(
         await conductor.dispatchTurnWhenIdle('s1', 'review', {}, { durableDispatchId: dispatch }),
       ).toEqual({ accepted: false });
@@ -5362,9 +5349,7 @@ describe('Conductor.startSession', () => {
     await vi.waitFor(() => expect(conductor.isBusy(sessionId)).toBe(false));
     expect(cleanup).toHaveBeenCalled();
     expect(await ctx.store.listRunningTurns()).toHaveLength(1);
-    await ctx.store.repairs.configureQA(true, 'admin');
-    await ctx.store.repairs.qaSession(sessionId);
-    const dispatch = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+    const dispatch = await reserveProjectQAReview(ctx.store, sessionId);
     expect(
       await conductor.dispatchTurnWhenIdle(
         sessionId,
@@ -11184,7 +11169,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     // An agent told only that "the request expired" read it as a broker failure and kept
     // retrying; it must learn that nothing ran and that the next card needs the user.
     expect(denied.decision.message).toMatch(/nothing ran/u);
-    expect(denied.decision.message).toMatch(/approval card needs an answer/u);
+    expect(denied.decision.message).toMatch(/Check whether an approval is still pending/u);
     expect(conductor.pendingPermissions('x2')).toEqual([]);
     await expect(
       conductor.decidePermission('x2', 'toolu_gone', { behavior: 'allow' }),

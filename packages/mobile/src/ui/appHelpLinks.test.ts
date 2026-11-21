@@ -1,5 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { APP_HELP_TOPICS, renderWelcomeOpener } from '@verity/events';
+import {
+  APP_HELP_TOPICS,
+  ASSISTANT_GRANT_LABELS,
+  ASSISTANT_GRANT_PATH,
+  ASSISTANT_SWITCH_PATH,
+  renderWelcomeOpener,
+} from '@verity/events';
 import { describe, expect, it } from 'vitest';
 import { parseAppLink } from './appLink.js';
 
@@ -102,4 +108,43 @@ it('handles every catalog link target in the session screen', () => {
     const target = parseAppLink(topic.appLink ?? '');
     if (target) expect(handled, topic.id).toContain(target.kind);
   }
+});
+
+// The assistant tells the user where to grant it a project by quoting these labels; it cannot
+// link there. A renamed row or mode would leave it sending users to a screen that does not
+// exist, with every other test still green.
+describe('assistant grant path', () => {
+  const app = (path: string) =>
+    readFileSync(new URL(`../../../../apps/mobile/app/${path}`, import.meta.url), 'utf8');
+  const screen = (path: string) => app(`project/[id]/settings/${path}`);
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  it('names the rows that lead to the Assistant screen', () => {
+    const [settings, agents, functions, assistant, ...rest] = ASSISTANT_GRANT_PATH.split(' → ');
+    expect(settings).toBe('Project settings');
+    expect(rest).toEqual([]);
+    expect(screen('index.tsx')).toMatch(
+      new RegExp(`title="${escape(agents ?? '')}"[\\s\\S]{0,400}?settings/model'`),
+    );
+    expect(screen('model.tsx')).toMatch(
+      new RegExp(
+        `title="${escape(functions ?? '')}"[\\s\\S]{0,600}?title="${escape(assistant ?? '')}"[\\s\\S]{0,400}?settings/assistant`,
+      ),
+    );
+  });
+
+  it('names the row that switches the assistant on', () => {
+    const [settings, assistant, ...rest] = ASSISTANT_SWITCH_PATH.split(' → ');
+    expect(settings).toBe('Settings');
+    expect(rest).toEqual([]);
+    expect(app('settings/index.tsx')).toMatch(
+      new RegExp(`title="${escape(assistant ?? '')}"[\\s\\S]{0,400}?'/settings/assistant'`),
+    );
+  });
+
+  it('quotes the modes as the Assistant screen labels them', () => {
+    const source = screen('assistant.tsx');
+    for (const [mode, label] of Object.entries(ASSISTANT_GRANT_LABELS))
+      expect(source).toMatch(new RegExp(`mode: '${mode}',\\s*title: '${escape(label)}'`));
+  });
 });

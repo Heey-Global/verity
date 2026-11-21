@@ -77,7 +77,7 @@ describe('settings index — destinations', () => {
       ['Shared knowledge'],
       [
         'Assistant',
-        'QA · CI supervision',
+        'QA',
         'Connectors',
         'Tasks',
         'Meeting transcription',

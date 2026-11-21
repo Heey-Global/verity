@@ -80,6 +80,21 @@ it('never reads after failed creation, including refocus', async () => {
   expect(read).not.toHaveBeenCalled();
 });
 
+it('refreshes a session every ten seconds, where the agent has just asked', async () => {
+  const read = jest.fn().mockResolvedValue([]);
+  render(
+    <ProjectInquiryCards
+      client={{ listProjectInquiries: read } as unknown as VerityClient}
+      sessionId="asking"
+    />,
+  );
+  await flush();
+  await act(async () => {
+    jest.advanceTimersByTime(10_000);
+  });
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
 it('refreshes once per minute and pauses on blur', async () => {
   const read = jest.fn().mockResolvedValue([]);
   const props = { client: { listProjectInquiries: read } as unknown as VerityClient };
@@ -260,7 +275,7 @@ it('refreshes an approved inquiry when an older pending poll fails', async () =>
   await act(async () => {
     jest.advanceTimersByTime(60_000);
   });
-  fireEvent.press(view.getByText('Approve change'));
+  fireEvent.press(view.getByText('Allow once'));
   await flush();
   expect(read).toHaveBeenCalledTimes(2);
   await act(async () => {

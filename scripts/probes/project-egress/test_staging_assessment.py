@@ -115,6 +115,17 @@ class StagingAssessmentTests(unittest.TestCase):
         self.assertTrue((self.root / 'sys/fs/bpf/verity_egress_deadline').is_dir())
         self.assertTrue((self.root / 'etc/tmpfiles.d/verity-egress-bpf.conf').is_file())
 
+    def test_docker_29_10_assessment_preserves_profile_and_version_fences(self):
+        self.docker_version = '29.10.0'
+        descriptor = self.prepare()
+        self.assertEqual(self.validate(descriptor), descriptor['profile'])
+        self.assertIs(descriptor['productionAccepted'], False)
+        with self.assertRaisesRegex(ValueError, 'accepted native'):
+            installer.accepted_native_profile(self.root, self.execute, str(self.release / 'node'))
+        self.docker_version = '29.10.1'
+        with self.assertRaises(installer.PreflightError):
+            self.validate(descriptor)
+
     def test_supported_assessment_versions_bind_exact_identity(self):
         for version in installer.STAGING_DOCKER_VERSIONS:
             self.docker_version = version
@@ -123,7 +134,7 @@ class StagingAssessmentTests(unittest.TestCase):
             self.docker_version = '30.0.0'
             with self.assertRaises(installer.PreflightError):
                 self.validate(descriptor)
-        for version in ('29.7.0', '29.8.1', '30.0.0', 'unverified'):
+        for version in ('29.7.0', '29.8.1', '29.10.1', '30.0.0', 'unverified'):
             self.docker_version = version
             with self.assertRaises(installer.PreflightError):
                 self.prepare()

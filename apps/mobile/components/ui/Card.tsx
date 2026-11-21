@@ -77,21 +77,27 @@ export function CardHead({
   title,
   subtitle,
   leading,
+  actionable = false,
   trailing,
   onDismiss,
 }: {
   title: string;
   subtitle?: string | undefined;
-  /** A mark that is not a Feather glyph (a code host's logo), drawn in the
-   *  same tile a `Row` uses, so the head lines up with the card's content. */
-  leading?: { element: ReactNode };
+  /** The same leading tile a `Row` draws — an icon with its corner marks, or
+   *  a mark that is not a Feather glyph (a code host's logo) — so a card in a
+   *  list of rows lines up with them. Content under the head is indented to
+   *  the title with {@link CardInset}. */
+  leading?: Leading | undefined;
+  /** The card offers its subject's actions, so its icon takes the action
+   *  color the way a tappable row's does. */
+  actionable?: boolean;
   trailing?: ReactNode;
   /** Draws an X after the trailing status that dismisses the card. */
   onDismiss?: (() => void) | undefined;
 }) {
   return (
     <View style={styles.head}>
-      {leading !== undefined ? <View style={styles.tile}>{leading.element}</View> : null}
+      {leading !== undefined ? <LeadingTile leading={leading} acts={actionable} /> : null}
       <View style={styles.body}>
         <Text style={styles.title} numberOfLines={2} accessibilityRole="header">
           {title}
@@ -112,6 +118,14 @@ export function CardHead({
       ) : null}
     </View>
   );
+}
+
+/**
+ * The content under a {@link CardHead} that has a leading tile: indented to the
+ * head's title, so the card reads like a row with its answers (§ 5.2).
+ */
+export function CardInset({ children }: { children: ReactNode }) {
+  return <View style={styles.inset}>{children}</View>;
 }
 
 /**
@@ -139,7 +153,7 @@ export function Group({ children }: { children: ReactNode }) {
  *  keeps the neutral tile in a row that can be tapped, for a tile that states a
  *  fact rather than an action. `marks` sit on the tile's right corners
  *  ({@link TileMark}): `top` for the subject's own state, `bottom` for a verdict. */
-type Leading =
+export type Leading =
   | {
       icon: IconName;
       signature?: boolean;
@@ -417,6 +431,59 @@ function spokenLabel(
     .join(', ');
 }
 
+/** A row's or card head's leading tile, dot or mark (§ 5.2). */
+function LeadingTile({ leading, acts }: { leading: Leading; acts: boolean }) {
+  const { theme } = useUnistyles();
+  return 'icon' in leading ? (
+    <View
+      style={[
+        styles.tile,
+        leading.intent === 'needsSetup'
+          ? styles.tileAttention
+          : leading.intent === 'ready'
+            ? styles.tileReady
+            : leading.intent === 'transient'
+              ? styles.tileAction
+              : leading.signature === true
+                ? styles.tileSignature
+                : acts && leading.quiet !== true
+                  ? styles.tileAction
+                  : null,
+      ]}
+    >
+      <Icon
+        name={leading.icon}
+        size={16}
+        color={
+          leading.intent === 'needsSetup'
+            ? theme.colors.attention
+            : leading.intent === 'ready'
+              ? theme.colors.success
+              : leading.intent === 'transient'
+                ? theme.colors.action
+                : leading.signature === true
+                  ? theme.colors.signature
+                  : acts && leading.quiet !== true
+                    ? theme.colors.action
+                    : theme.colors.textMuted
+        }
+      />
+      {leading.marks?.top !== undefined ? (
+        <View style={styles.tileMarkTop}>{leading.marks.top}</View>
+      ) : null}
+      {leading.marks?.bottom !== undefined ? (
+        <View style={styles.tileMarkBottom}>{leading.marks.bottom}</View>
+      ) : null}
+    </View>
+  ) : 'element' in leading ? (
+    <View style={styles.tile}>{leading.element}</View>
+  ) : (
+    <View style={styles.dotSlot}>
+      <Dot intent={leading.dot} />
+    </View>
+  );
+}
+
 function RowContent({
   title,
   subtitle,
@@ -440,56 +507,7 @@ function RowContent({
   const { theme } = useUnistyles();
   return (
     <>
-      {leading !== undefined ? (
-        'icon' in leading ? (
-          <View
-            style={[
-              styles.tile,
-              leading.intent === 'needsSetup'
-                ? styles.tileAttention
-                : leading.intent === 'ready'
-                  ? styles.tileReady
-                  : leading.intent === 'transient'
-                    ? styles.tileAction
-                    : leading.signature === true
-                      ? styles.tileSignature
-                      : acts && leading.quiet !== true
-                        ? styles.tileAction
-                        : null,
-            ]}
-          >
-            <Icon
-              name={leading.icon}
-              size={16}
-              color={
-                leading.intent === 'needsSetup'
-                  ? theme.colors.attention
-                  : leading.intent === 'ready'
-                    ? theme.colors.success
-                    : leading.intent === 'transient'
-                      ? theme.colors.action
-                      : leading.signature === true
-                        ? theme.colors.signature
-                        : acts && leading.quiet !== true
-                          ? theme.colors.action
-                          : theme.colors.textMuted
-              }
-            />
-            {leading.marks?.top !== undefined ? (
-              <View style={styles.tileMarkTop}>{leading.marks.top}</View>
-            ) : null}
-            {leading.marks?.bottom !== undefined ? (
-              <View style={styles.tileMarkBottom}>{leading.marks.bottom}</View>
-            ) : null}
-          </View>
-        ) : 'element' in leading ? (
-          <View style={styles.tile}>{leading.element}</View>
-        ) : (
-          <View style={styles.dotSlot}>
-            <Dot intent={leading.dot} />
-          </View>
-        )
-      ) : null}
+      {leading !== undefined ? <LeadingTile leading={leading} acts={acts} /> : null}
       <View style={styles.body}>
         <Text style={styles.title} numberOfLines={wrap ? undefined : 2}>
           {title}
@@ -619,6 +637,9 @@ const styles = StyleSheet.create((theme) => ({
   tileMarkTop: { position: 'absolute', top: -3, right: -3 },
   tileMarkBottom: { position: 'absolute', bottom: -3, right: -3 },
   dotSlot: { width: 32, alignItems: 'center' },
+  // The leading tile (32) and `head`'s gap after it; its own gap repeats
+  // `card`'s, so leading and unleaded cards keep one rhythm. Change them together.
+  inset: { paddingLeft: 32 + theme.spacing.md, gap: theme.spacing.md },
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },
   subtitle: { ...theme.typography.subtitle, color: theme.colors.textMuted },

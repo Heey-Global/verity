@@ -48,7 +48,8 @@ export interface EgressRequest {
   revision: number;
   requestedBy: string[];
   createdAt: number;
-  expiresAt: number;
+  /** Unanswered requests have no deadline; grant expiry starts at approval. */
+  expiresAt: number | null;
   status: 'pending' | 'allowed' | 'denied';
   decidedBy?: string;
   decidedAt?: number;
@@ -146,6 +147,10 @@ export class ProjectEgressStore {
       );
       const state = result.rows[0]!.state;
       const now = this.now();
+      // Retain unanswered cards created before approval deadlines were removed. Policy
+      // revisions and live management rights still have to match before a decision.
+      for (const request of Object.values(state.requests))
+        if (request.status === 'pending') request.expiresAt = null;
       // Only live grants consume capacity; the current request retains its decision.
       if (write)
         state.grants = state.grants.filter(
@@ -210,7 +215,7 @@ export class ProjectEgressStore {
     return this.access(projectId, userId, 'execute', (state, now) => {
       if (egressGrantCovers(state, target, now)) return { covered: true };
       const old = state.requests[key];
-      // A denied/expired request never turns into another automatic card.
+      // Existing decisions and policy-stale requests never become another automatic card.
       if (old) {
         if (!old.requestedBy.includes(requester) && old.requestedBy.length < 100)
           old.requestedBy.push(requester);
@@ -223,7 +228,7 @@ export class ProjectEgressStore {
         revision: state.revision,
         requestedBy: [requester],
         createdAt: now,
-        expiresAt: now + 300_000,
+        expiresAt: null,
         status: 'pending',
       };
       state.requests[key] = request;
@@ -243,8 +248,7 @@ export class ProjectEgressStore {
       if (
         state.revision !== revision ||
         request.revision !== revision ||
-        request.status !== 'pending' ||
-        request.expiresAt <= now
+        request.status !== 'pending'
       )
         throw new ProjectEgressError('stale');
       request.status = allow ? 'allowed' : 'denied';
@@ -281,7 +285,7 @@ export class ProjectEgressStore {
         revision: ++state.revision,
         requestedBy: [userId],
         createdAt: now,
-        expiresAt: now + 300_000,
+        expiresAt: null,
         status: 'pending',
       };
       state.requests[key] = request;

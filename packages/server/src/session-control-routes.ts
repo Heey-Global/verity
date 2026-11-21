@@ -89,7 +89,9 @@ export function registerSessionControlRoutes(
                 scopeSaved = saved;
               },
             })
-          : await deps.conductor.decidePermission(id, toolUseId, decision);
+          : await deps.conductor.decidePermission(id, toolUseId, decision, {
+              decidedByUser: viewerId(request),
+            });
     } catch (error) {
       if (error instanceof PermissionDecisionInProgressError) {
         reply.code(409);

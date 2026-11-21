@@ -104,3 +104,16 @@ export function parseVulnerabilityPush(data: unknown) {
     .safeParse(data);
   return result.success ? result.data : null;
 }
+
+/** QA stopped and needs the user; a tap opens the project's QA, never an action. */
+export function parseQAPush(data: unknown) {
+  const result = z
+    .object({
+      kind: z.literal('qa'),
+      projectId: z.string().min(1).nullable(),
+      issueId: z.string().min(1).optional(),
+      deviceId: z.string().min(1),
+    })
+    .safeParse(data);
+  return result.success ? result.data : null;
+}

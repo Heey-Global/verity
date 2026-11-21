@@ -202,6 +202,11 @@ both versions under Documents → Conflicts. Local projects need no Git or manua
 save step. The file explorer shows Sources, Documents, and Global; session
 working copies remain available even after their sessions are deleted.
 
+You can also [coordinate sessions from chat](session-coordination.md): ask an
+agent to find an existing session or start one in a named project, link it and
+hand over a task. Creation and linking follow managed approval and your existing
+project permissions.
+
 You are done with the setup. Everything below is optional.
 
 ## Optional: add your other devices

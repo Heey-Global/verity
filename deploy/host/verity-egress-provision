@@ -9,6 +9,18 @@ lock=${VERITY_INSTALL_LOCK:?}
 [[ $(( 8#$(stat -c %a "$lock") & 8#22 )) = 0 ]] || die 'installer lock is writable by other users'
 exec 8<>"$lock"
 flock -n 8 || die 'another installer is running'
+# The host timer and launchers share this fence; install.lock is held only by
+# the child provisioner, so it cannot protect a stage before submission.
+[[ ! -L /var/lib/verity-egress ]] || die 'unsafe state directory'
+install -d -m 0700 /var/lib/verity-egress
+[[ ! -L /var/lib/verity-egress/provision.lock ]] || die 'unsafe staging lock'
+exec 7>/var/lib/verity-egress/provision.lock
+flock -n 7 || die 'stage maintenance is running'
+installer_option=''
+if [[ -n ${VERITY_INSTALL_LOCK_HOST_PATH:-} ]]; then
+  [[ $VERITY_INSTALL_LOCK_HOST_PATH =~ ^/[a-zA-Z0-9_./-]+$ && $VERITY_INSTALL_LOCK_HOST_PATH != *'/../'* ]] || die 'unsafe host installer lock path'
+  installer_option="--installer-lock '$VERITY_INSTALL_LOCK_HOST_PATH'"
+fi
 identifier=${VERITY_EGRESS_PROVISION_ID:?}
 [[ $identifier =~ ^[a-f0-9]{24}$ ]] || die 'invalid provisioning identity'
 stage=/var/lib/verity-egress/provision/$identifier
@@ -232,7 +244,7 @@ fi
 /usr/bin/python3 '$stage/project-egress-managed.py' provision '$stage/release' \\
   --control-gid '${VERITY_EGRESS_CONTROL_GID:-65531}' \\
   --relay-config '$stage/config/relay.json' --authority-config '$stage/config/authority.json' \\
-  --database-config '$stage/config/database.json' $assessment_option 2>&1 | {
+  --database-config '$stage/config/database.json' $assessment_option $installer_option 2>&1 | {
   # Drain excess output so diagnostics cannot block provisioning or grow disk use.
   head -c 4097
   cat >/dev/null

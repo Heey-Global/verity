@@ -114,3 +114,40 @@ do not certify a deployed container or reproduce a particular historical session
 termination. Verify a recreated sandbox with two compatible session worktrees,
 one changed lockfile and an interrupted preparation before declaring live rollout
 complete.
+
+## Copy capacity and recovery admission
+
+Managed activation measures the complete root and workspace installation before
+creating another tree. It walks at most 250,000 entries for 20 seconds, never
+follows symlinks, and refuses an incomplete or unreadable inventory. The measured
+full-copy bound includes files that may subsequently be shared. Both root and
+hard-link fallback paths must retain the configured build reserve (by default
+10 GiB and 1,000,000 free inodes). `install --private` uses the same admission
+before changing package files. Refusal preserves the active installation and
+recovery data and reports the measured requirement and available capacity.
+
+An installation may retain one measured full installation's worth of recovery
+blocks. Before replacement, the helper accounts for existing preserved trees and
+all root/workspace trees that it cannot prove unchanged. If that would exceed the
+larger of the measured replacement footprint and the newly preserved data, it
+refuses the replacement before moving any active tree. The allowance uses the
+requested replacement, not the current installation: a previously unknown
+identity must first be prepared and measured, while an existing central inventory
+can be checked before preparation. This allowance is based on
+bytes, not directory counts: small workspace recovery trees do not each consume a
+full installation slot. Unknown recovery content remains protected. Resolve its
+unique edits before explicitly approving removal of redundant recovery data;
+waiting for an age threshold does not establish that it is disposable.
+
+All dependency preparation, activation and private-copy commands in a project
+hold a cross-process capacity lock. The npm child inherits that lock, so a killed
+supervisor cannot admit another dependency copy while npm continues writing.
+The activation record retains the full-copy estimate, actual copied file count
+and allocated bytes, sharing mode, reserve and observed free capacity.
+
+These checks serialize dependency commands within the project; they do not
+coordinate with another project's installations or the Server's in-memory build
+reservations. Central npm preparation checks the free reserve before starting,
+but lockfiles do not establish an upper bound on downloaded or unpacked bytes.
+The checks are conservative admission measurements, not filesystem quotas or a
+guarantee against unrelated writers consuming the reserve afterward.

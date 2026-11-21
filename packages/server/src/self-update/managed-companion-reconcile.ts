@@ -15,6 +15,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { basename, dirname, join } from 'node:path';
 import { DockerError, type ContainerSpec, type DockerClient } from '../docker.js';
 import { hasNoNewPrivileges } from '../docker-security-options.js';
@@ -51,6 +52,7 @@ const REQUIRED_AGENT_SEED_FILES = [
   'bin/verity-git-sign',
   'bin/verity-memory',
   'bin/verity-dependencies',
+  'bin/verity-dependency-storage.mjs',
   'bin/verity-secret-scan',
   'bin/gh',
   'bin/git',
@@ -58,7 +60,9 @@ const REQUIRED_AGENT_SEED_FILES = [
   'hooks/pre-push',
 ] as const;
 const EXECUTABLE_AGENT_SEED_FILES = REQUIRED_AGENT_SEED_FILES.filter(
-  (path) => path.startsWith('bin/') || path.startsWith('hooks/'),
+  (path) =>
+    path !== 'bin/verity-dependency-storage.mjs' &&
+    (path.startsWith('bin/') || path.startsWith('hooks/')),
 );
 
 export function agentSeedPublicationKey(image: string, version?: string): string {
@@ -752,11 +756,45 @@ export async function validatePublishedAgentSeed(
   version: string,
   profile: 'current' | 'legacy' = 'current',
 ): Promise<void> {
-  // Legacy flat seeds predate the dependency helper. New target trees must
-  // contain it; requiring it in the predecessor makes that first upgrade impossible.
-  const requiredFiles = REQUIRED_AGENT_SEED_FILES.filter(
-    (path) => profile !== 'legacy' || path !== 'bin/verity-dependencies',
-  );
+  const helper = join(directory, 'bin/verity-dependencies');
+  const helperEntry = await lstat(helper).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  let importsDependencyStorage = false;
+  if (helperEntry !== null) {
+    if (!helperEntry.isFile() || helperEntry.isSymbolicLink())
+      throw new Error('agent-seed validation failed: dependency helper is not a regular file');
+    const handle = await open(helper, 'r');
+    try {
+      // Only inspect the trusted artifact, without executing its imports. An old
+      // standalone helper remains valid during rollback and flat-seed migration.
+      const maximum = 256 * 1024;
+      const content = Buffer.alloc(maximum + 1);
+      let bytesRead = 0;
+      while (bytesRead < content.length) {
+        const read = await handle.read(content, bytesRead, content.length - bytesRead, bytesRead);
+        if (read.bytesRead === 0) break;
+        bytesRead += read.bytesRead;
+      }
+      if (bytesRead > maximum)
+        throw new Error('agent-seed validation failed: dependency helper exceeds its read bound');
+      importsDependencyStorage =
+        /(?:\bfrom\s*|\bimport\s*)['"]\.\/verity-dependency-storage\.mjs['"]/u.test(
+          content.toString('utf8', 0, bytesRead),
+        );
+    } finally {
+      await handle.close();
+    }
+  }
+  // Legacy flat seeds may lack a helper. A present helper must be complete,
+  // including its imported companion, even when validating a predecessor.
+  const needsHelper = profile !== 'legacy' || helperEntry !== null;
+  const requiredFiles = REQUIRED_AGENT_SEED_FILES.filter((path) => {
+    if (path === 'bin/verity-dependencies') return needsHelper;
+    if (path === 'bin/verity-dependency-storage.mjs') return importsDependencyStorage;
+    return true;
+  });
   for (const path of requiredFiles) {
     const entry = await lstat(join(directory, path)).catch(() => null);
     if (entry === null || !entry.isFile())
@@ -765,7 +803,7 @@ export async function validatePublishedAgentSeed(
       throw new Error(`agent-seed validation failed: required file is a symlink: ${path}`);
   }
   for (const path of EXECUTABLE_AGENT_SEED_FILES) {
-    if (profile === 'legacy' && path === 'bin/verity-dependencies') continue;
+    if (!needsHelper && path === 'bin/verity-dependencies') continue;
     const handle = await open(join(directory, path), 'r');
     try {
       const stat = await handle.stat();

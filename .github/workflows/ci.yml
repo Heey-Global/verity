@@ -559,7 +559,8 @@ jobs:
                   test=true
                   server_image=true
                   ;;
-                packages/mobile/*)
+                # Plus the screens whose labels packages/mobile suites check.
+                packages/mobile/*|apps/mobile/app/settings/index.tsx|apps/mobile/app/settings/services/index.tsx|apps/mobile/app/project/\[id\]/settings/*)
                   case $file in */src/api.ts) contract_test=true;; esac
                   lint=true
                   typecheck=true
@@ -673,7 +674,7 @@ jobs:
                   test=true
                   ;;
                 # Guides the app help catalog cites; a suite checks they exist.
-                docs/attendee-live-meetings.md|docs/connections.md|docs/file-connections.md|docs/getting-started.md|docs/google-calendar.md|docs/knowledge.md|docs/matrix-knowledge-connector.md)
+                docs/assistant.md|docs/attendee-live-meetings.md|docs/connections.md|docs/file-connections.md|docs/getting-started.md|docs/google-calendar.md|docs/knowledge.md|docs/matrix-knowledge-connector.md|docs/session-coordination.md)
                   test=true
                   ;;
                 # Mobile auth callback authorization is covered by a root test.

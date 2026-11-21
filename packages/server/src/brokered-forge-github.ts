@@ -84,6 +84,7 @@ const REPOSITORY_METADATA_FIELDS = new Set([
   '__typename',
 ]);
 
+// No merge mutation is admitted: only a person merges, through the app's server-side routes.
 const MUTATIONS: Readonly<Record<string, { action: ForgeAction; id: string; type: string }>> = {
   createIssue: { action: 'issues-write', id: 'repositoryId', type: 'Repository' },
   updateIssue: { action: 'issues-write', id: 'id', type: 'Issue' },
@@ -93,7 +94,6 @@ const MUTATIONS: Readonly<Record<string, { action: ForgeAction; id: string; type
   updatePullRequest: { action: 'pulls-write', id: 'pullRequestId', type: 'PullRequest' },
   closePullRequest: { action: 'pulls-write', id: 'pullRequestId', type: 'PullRequest' },
   reopenPullRequest: { action: 'pulls-write', id: 'pullRequestId', type: 'PullRequest' },
-  mergePullRequest: { action: 'pulls-write', id: 'pullRequestId', type: 'PullRequest' },
   addLabelsToLabelable: { action: 'issues-write', id: 'labelableId', type: 'IssueOrPullRequest' },
   removeLabelsFromLabelable: {
     action: 'issues-write',

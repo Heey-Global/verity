@@ -1,3 +1,5 @@
+import { brokeredToolApprovalMigration } from './brokered-tool-approval-migration.js';
+import { projectQAMigration } from './project-qa-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -599,3 +601,80 @@ migrations['0228_administrator_provider_accounts'] = {
     // Credentials stay with the original refresh pipeline on rollback.
   },
 };
+
+migrations['0229_session_coordination_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table session_coordination_requests (
+      source_session_id text not null references sessions(session_id) on delete cascade,
+      request_id text not null,
+      fingerprint text not null,
+      target_session_id text not null,
+      phase text not null default 'reserved' check (phase in ('reserved','created','linked','delivered')),
+      result jsonb,
+      primary key (source_session_id, request_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_coordination_requests`.execute(db);
+  },
+};
+
+migrations['0230_brokered_tool_approvals'] = brokeredToolApprovalMigration;
+
+migrations['0231_assistant_handoffs'] = {
+  // One row per session the assistant handed work to, so it can later read back that
+  // session's published outcome summary — and only for sessions it briefed itself.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table assistant_handoffs (
+      target_session_id text primary key references sessions(session_id) on delete cascade,
+      assistant_session_id text not null,
+      project_id text not null references projects(id) on delete cascade,
+      user_id text,
+      title text not null,
+      handed_off_at timestamptz not null
+    )`.execute(db);
+    await sql`create index assistant_handoffs_recent
+      on assistant_handoffs(user_id, handed_off_at desc)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_handoffs`.execute(db);
+  },
+};
+
+migrations['0232_assistant_handoff_results'] = {
+  // The result a handoff's target published, recorded once per publication so it is announced
+  // exactly once and the conversation can show it on the handoff card.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table assistant_handoffs
+      add column result_seq bigint,
+      add column result_delivered boolean,
+      add column result_summary text check (char_length(result_summary) <= 300),
+      add column result_blocker text check (char_length(result_blocker) <= 300),
+      add column result_at timestamptz`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table assistant_handoffs
+      drop column result_seq, drop column result_delivered,
+      drop column result_summary, drop column result_blocker, drop column result_at`.execute(db);
+  },
+};
+
+migrations['0233_project_inquiry_human_approval'] = {
+  // Inquiries are approved per request now; a standing grant only admits
+  // questions without a card. The flag records that a person allowed this one
+  // request, independent of whether the deciding user id is known. Changes that
+  // were already decided under the previous flow keep their approval.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_inquiries
+      add column human_approved boolean not null default false`.execute(db);
+    await sql`update project_inquiries set human_approved = true
+      where kind = 'change' and status in ('approved','queued','answered')`.execute(db);
+    await sql`update project_inquiries set status = 'pending'
+      where kind = 'change' and status = 'provisioning'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_inquiries drop column human_approved`.execute(db);
+  },
+};
+
+migrations['0234_project_qa'] = projectQAMigration;

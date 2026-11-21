@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.94.6](https://github.com/Heey-Global/verity/compare/mobile-v1.94.5...mobile-v1.94.6) (2026-11-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **projects:** require consent before delivering project inquiries ([#2760](https://github.com/Heey-Global/verity/issues/2760))
+
+### Features
+
+* **assistant:** explain how to grant the assistant a project ([#2756](https://github.com/Heey-Global/verity/issues/2756)) ([767ba5a](https://github.com/Heey-Global/verity/commit/767ba5ab0e229c9ca23f6826c716ca26d461017a))
+* **assistant:** read back the outcome of the assistant's own handoffs ([#2759](https://github.com/Heey-Global/verity/issues/2759)) ([4c6f844](https://github.com/Heey-Global/verity/commit/4c6f844fb9367cfe85817b8e9fe574b5a360be7e))
+* **assistant:** report delegated session results back to the assistant ([#2758](https://github.com/Heey-Global/verity/issues/2758)) ([33ac61b](https://github.com/Heey-Global/verity/commit/33ac61b08d7527e9b33bd9ec4b92092b1592f753))
+* **knowledge:** manage Shared and project knowledge in one file explorer ([#2740](https://github.com/Heey-Global/verity/issues/2740)) ([f68bbb6](https://github.com/Heey-Global/verity/commit/f68bbb6c4f6de5166bff135134e93e537fe40736))
+* **projects:** require consent before delivering project inquiries ([#2760](https://github.com/Heey-Global/verity/issues/2760)) ([d3621b6](https://github.com/Heey-Global/verity/commit/d3621b676dad56264b00f95a5da88979f37d724a))
+* **qa:** give every coding project its own QA role ([#2762](https://github.com/Heey-Global/verity/issues/2762)) ([442934b](https://github.com/Heey-Global/verity/commit/442934b47b7fc795627ec4932b4e81d5ebac76a7))
+* **sessions:** coordinate linked sessions from chat ([#2739](https://github.com/Heey-Global/verity/issues/2739)) ([cc20fec](https://github.com/Heey-Global/verity/commit/cc20feceaa021250765d4fb3adc227cfc5817df7))
+
+
+### Bug Fixes
+
+* **approvals:** persist pending firewall and secret requests ([#2738](https://github.com/Heey-Global/verity/issues/2738)) ([5668d42](https://github.com/Heey-Global/verity/commit/5668d42743f277465dff58dcd451cd9a4dd0e463))
+* **deps:** restore compatible patched plist parser ([#2761](https://github.com/Heey-Global/verity/issues/2761)) ([bcdeb7c](https://github.com/Heey-Global/verity/commit/bcdeb7cf5118f8775830f96ebe8eed1afd205c0c))
+* **deps:** update agent clis ([#2752](https://github.com/Heey-Global/verity/issues/2752)) ([a503c63](https://github.com/Heey-Global/verity/commit/a503c633b1e806ecccf2e5ed96b658dbe10cba73))
+* **deps:** update dependency minimatch to v11.0.9 ([#2749](https://github.com/Heey-Global/verity/issues/2749)) ([388f724](https://github.com/Heey-Global/verity/commit/388f724aa48d73ce63d4fb6a85819769ca28b441))
+* **mcp-apps:** serve isolated documents outside the parent CSP ([#2744](https://github.com/Heey-Global/verity/issues/2744)) ([a46a824](https://github.com/Heey-Global/verity/commit/a46a8245bd094999408edd50269c3d6fbf7cbbe5))
+* **mobile:** lead every Needs you entry with the session tile ([#2754](https://github.com/Heey-Global/verity/issues/2754)) ([399c635](https://github.com/Heey-Global/verity/commit/399c635b37eee775c9e0065dd4e5ba66d01791c1))
+* **sessions:** use visible names in handoff choices and approvals ([#2755](https://github.com/Heey-Global/verity/issues/2755)) ([e23eb56](https://github.com/Heey-Global/verity/commit/e23eb56f67a636624c2680d948e4c89bfab3f570))
+
+## [1.94.5](https://github.com/Heey-Global/verity/compare/mobile-v1.94.4...mobile-v1.94.5) (2026-11-20)
+
+
+### Features
+
+* **home:** keep recent sessions reachable below results ([#2721](https://github.com/Heey-Global/verity/issues/2721)) ([7592a38](https://github.com/Heey-Global/verity/commit/7592a381abb27a85702eb55a71608e1778937745))
+* **mobile:** make the floating V the only way to Verity and open Shared knowledge from Home ([#2725](https://github.com/Heey-Global/verity/issues/2725)) ([67808b3](https://github.com/Heey-Global/verity/commit/67808b3184ce31e03436c53b336d1b6c005f82c9))
+* **mobile:** open linked sessions from header chips ([#2722](https://github.com/Heey-Global/verity/issues/2722)) ([b23965c](https://github.com/Heey-Global/verity/commit/b23965ca0a0b9b890506104127930e67c4f707e9))
+
+
+### Bug Fixes
+
+* **mobile:** bound permission content in work list cards ([#2719](https://github.com/Heey-Global/verity/issues/2719)) ([47c59c6](https://github.com/Heey-Global/verity/commit/47c59c61f3c00cfb09c655ab3d1dbef1f3823f2c))
+* **mobile:** collapse the pinned plan after sending decision answers ([#2729](https://github.com/Heey-Global/verity/issues/2729)) ([7cf712c](https://github.com/Heey-Global/verity/commit/7cf712cc677d3fbeefca1df5c85c0da399a8015b))
+* **mobile:** keep every pending permission answerable in the session ([#2731](https://github.com/Heey-Global/verity/issues/2731)) ([8f0e8e1](https://github.com/Heey-Global/verity/commit/8f0e8e168c3358e9d96b4b3c9318255984572150))
+
 ## [1.94.4](https://github.com/Heey-Global/verity/compare/mobile-v1.94.3...mobile-v1.94.4) (2026-11-19)
 
 

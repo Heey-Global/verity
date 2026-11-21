@@ -247,6 +247,7 @@ export function installSessionReads(
     getSession: async (id, viewer): Promise<SessionDetail | undefined> => {
       const session = await deps.eventStore.getSession(id);
       if (!session) return undefined;
+      await conductor.refreshDetachedPermissions?.(id);
       // Opening a session hits this route first, and the transcript arrives over a
       // separate paged read — so hydrating the whole log here bought nothing but
       // latency in front of the first paint. The header's status, usage,
@@ -270,7 +271,7 @@ export function installSessionReads(
         facts.lastEventSeq === 0 ? 0 : 1,
       );
       const status =
-        pendingLinks.length > 0
+        pendingPermissions.length > 0
           ? 'awaiting_input'
           : projectedStatus === 'awaiting_input' &&
               permissionEventAwaitsInput(events) &&
@@ -291,6 +292,7 @@ export function installSessionReads(
         googleStatus: await sessionGoogleStatus(deps.eventStore, id, viewer ?? undefined),
         status,
         pendingPermissions,
+        pendingPermissionRequests: conductor.detachedPermissionRequests?.(id) ?? [],
         ...(status === 'awaiting_input' && pendingPermissions.length > 0
           ? { permissionAwaitingInput: true as const }
           : {}),
@@ -344,12 +346,14 @@ export function installSessionHistory(
   app.register((instance, _opts, done) => {
     registerSessionHistoryRoutes(instance, {
       activity: async (reply, id) => {
+        await conductor.refreshDetachedPermissions?.(id);
         const pendingLinks =
           (await deps.eventStore.pendingSessionLinkMessageIds([id])).get(id) ?? [];
         const base = {
           busy: conductor.isBusy(id) || hasMeetingJob(id),
           queued: conductor.queuedItems(id),
           pendingPermissions: [...new Set([...conductor.pendingPermissions(id), ...pendingLinks])],
+          pendingPermissionRequests: conductor.detachedPermissionRequests?.(id) ?? [],
           modelSwitchPending:
             conductor.hasDeferredAfterCurrentTurn(id) || conductor.isBackendHandoffPending(id),
           // Busy for a reason the operator cannot see otherwise: a stop that could not

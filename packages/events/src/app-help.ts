@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ASSISTANT_GRANT_INSTRUCTIONS } from './assistant-tool.js';
 
 /**
  * The curated help catalog about using the Verity app itself: what a feature
@@ -39,6 +40,13 @@ export interface AppHelpTopic {
   /** Short contextual copy shared by the app and chat help. */
   hint?: { text: string; question: string };
   emptyState?: string;
+}
+
+/** Built in a function marked pure: a template literal over an imported constant counts as
+ *  a possible side effect to esbuild, which then keeps the whole catalog in bundles that
+ *  never read it, such as the runner worker. */
+function assistantProjectAccessDetails(): string {
+  return `The assistant can only act in projects granted to it; every project starts with no access. ${ASSISTANT_GRANT_INSTRUCTIONS}`;
 }
 
 export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
@@ -90,6 +98,26 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
       'delete session',
       'move session',
       'linked sessions',
+    ],
+  },
+  {
+    id: 'session-coordination',
+    title: 'Coordinate sessions from chat',
+    summary: 'Ask an agent to find or start a session, link it and hand over a task.',
+    details:
+      'Ask in chat to start a session in a named project, link it and give it a task, or to find a matching existing session first; Control sessions are supported when your permissions allow. Discovery uses accessible names, status and published progress summaries, never transcripts; missing or stale summaries limit certainty, and ambiguous matches need your choice. Creation and linking use managed approval, preserve existing message allowances and grant no additional repository, tool, secret or transcript rights. Retried requests reuse their request ID to avoid duplicates; queued means accepted for delivery, not that work is running.',
+    appLink: 'verity://session/settings',
+    docsPath: 'docs/session-coordination.md',
+    keywords: [
+      'coordinate sessions',
+      'find session',
+      'existing session',
+      'link session',
+      'start control session',
+      'hand over task',
+      'session coordination',
+      'session verknüpfen',
+      'session suchen',
     ],
   },
   {
@@ -304,6 +332,25 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
       'Tap the floating microphone to speak a thought; it is saved as a task for the current project. Agents also record agreed follow-up steps as tasks. From the list you can check items off or hand a task to an agent.',
     appLink: 'verity://settings/tasks',
     keywords: ['task', 'todo', 'voice', 'microphone', 'dictate', 'capture', 'reminder'],
+  },
+  {
+    id: 'assistant-project-access',
+    title: 'Let the assistant use a project',
+    summary: 'Grant the Verity assistant access to a project, per project.',
+    // No appLink: project links open the current project, which for the assistant
+    // is Verity Control, so a link would point at the wrong project's settings.
+    details: /* @__PURE__ */ assistantProjectAccessDetails(),
+    docsPath: 'docs/assistant.md',
+    keywords: [
+      'assistant',
+      'grant',
+      'project access',
+      'enable project',
+      'tasks only',
+      'tasks and sessions',
+      'delegate',
+      'not granted',
+    ],
   },
   {
     id: 'devices',

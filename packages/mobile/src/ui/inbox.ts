@@ -3,6 +3,8 @@ import { sessionAttention } from './attention.js';
 import { mockupProgress } from './mockups.js';
 import { projectNeedsRepair } from './projectBadge.js';
 import { projectDisplayName } from './projectName.js';
+import { qaIssueLabel, qaStopReason } from './qaRole.js';
+import type { QAIssueDecision } from '../project-qa-api.js';
 import { pullRequestMergeButton } from './pullRequest.js';
 import {
   isSecuritySandboxUpdate,
@@ -41,7 +43,8 @@ export type InboxItemKind =
   | 'mockup_review'
   | 'crashed'
   | 'merge_ready'
-  | 'project_health';
+  | 'project_health'
+  | 'qa_stop';
 
 /** What a tap on an item's answer does. The app maps each to an existing route. */
 export type InboxAction =
@@ -53,6 +56,13 @@ export type InboxAction =
   | { kind: 'join_meeting'; label: string; eventKey: string }
   | { kind: 'skip_meeting'; label: string; eventKey: string }
   | { kind: 'repair_project'; label: string; projectId: string }
+  | {
+      kind: 'qa_decision';
+      label: string;
+      projectId: string;
+      issueId: string;
+      decision: QAIssueDecision;
+    }
   | { kind: 'open_session'; label: string; sessionId: string }
   | { kind: 'review_mockups'; label: string; sessionId: string }
   | { kind: 'open_project'; label: string; projectId: string };
@@ -118,6 +128,7 @@ const RANK: Record<InboxItemKind, number> = {
   meeting: 8,
   permission: 7,
   question: 6,
+  qa_stop: 6,
   plan_review: 5,
   mockup_review: 4,
   crashed: 3,
@@ -143,6 +154,7 @@ export function inboxItems(input: InboxInput): InboxItem[] {
     const item = projectHealthItem(project);
     const dismiss = project.inboxDismissed !== undefined ? ('project' as const) : undefined;
     if (item) items.push(withDismiss(item, dismiss));
+    for (const stop of qaStopItems(project)) items.push(stop);
   }
   return items.sort((a, b) => {
     const rank = RANK[b.kind] - RANK[a.kind];
@@ -191,6 +203,7 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   add('meeting', 'meeting soon', 'meetings soon');
   add('permission', 'permission', 'permissions');
   add('question', 'question', 'questions');
+  add('qa_stop', 'QA decision', 'QA decisions');
   add('plan_review', 'plan to review', 'plans to review');
   add('mockup_review', 'mockup review', 'mockup reviews');
   add('crashed', 'crashed session', 'crashed sessions');
@@ -539,6 +552,43 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
     };
   }
   return undefined;
+}
+
+/**
+ * Where a project's QA stopped and waits for the user, one item per issue,
+ * answered in place. Never dismissable: QA stays stopped until someone decides.
+ */
+function qaStopItems(project: ProjectRecord): InboxItem[] {
+  const qa = project.qaSummary;
+  if (project.archived === true || !qa || qa.mode === 'off' || qa.mode === 'paused') return [];
+  const name = projectDisplayName(project);
+  return qa.stopped.map((issue) => {
+    const answer = (label: string, decision: QAIssueDecision): InboxAction => ({
+      kind: 'qa_decision',
+      label,
+      projectId: project.id,
+      issueId: issue.id,
+      decision,
+    });
+    return {
+      key: `qa:${project.id}:${issue.id}:${issue.updatedAt}`,
+      kind: 'qa_stop' as const,
+      tag: 'Needs you',
+      tone: 'attention' as const,
+      title: `Repair stopped: ${qaIssueLabel(issue.key)}`,
+      context: `QA · ${name}`,
+      message: issue.detail
+        ? `${qaStopReason(issue.reason)} ${issue.detail}`
+        : qaStopReason(issue.reason),
+      projectId: project.id,
+      actions: [
+        answer('Another round', 'another_round'),
+        answer('Take over', 'take_over'),
+        answer('Defer', 'defer'),
+      ],
+      at: Date.parse(issue.updatedAt) || 0,
+    };
+  });
 }
 
 function clockTime(epochMs: number): string {

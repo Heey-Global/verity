@@ -6,6 +6,8 @@ import { pendingSession } from '../lib/pendingSessions';
 
 /** Inquiry reads wait for creation and run only in a visible, foreground screen. */
 export function useProjectInquiries(client: VerityClient, sessionId?: string, projectId?: string) {
+  // In a session the agent has just asked: its approval card should appear soon after.
+  const interval = sessionId === undefined ? 60_000 : 10_000;
   const source = useMemo(() => {
     const ready = sessionId === undefined ? undefined : pendingSession(sessionId);
     let flight: ReturnType<VerityClient['listProjectInquiries']> | undefined;
@@ -77,7 +79,7 @@ export function useProjectInquiries(client: VerityClient, sessionId?: string, pr
             } else
               timer = setTimeout(() => {
                 void read();
-              }, 60_000);
+              }, interval);
           }
         }
       };
@@ -125,7 +127,7 @@ export function useProjectInquiries(client: VerityClient, sessionId?: string, pr
         subscription.remove();
         if (controls.current === control) controls.current = undefined;
       };
-    }, [source]),
+    }, [source, interval]),
   );
   return {
     data: snapshot?.source === source ? snapshot.data : undefined,

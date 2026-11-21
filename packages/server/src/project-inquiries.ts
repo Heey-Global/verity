@@ -38,7 +38,8 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
       if (locks.get(key) === operation) locks.delete(key);
     }
   }
-  async function allowed(inquiry: ProjectInquiry): Promise<boolean> {
+  /** Both projects exist, can be linked, and the requesting user may act in both. */
+  async function permitted(inquiry: ProjectInquiry): Promise<boolean> {
     const [source, target] = await Promise.all([
       store.getProject(inquiry.sourceProjectId),
       store.getProject(inquiry.targetProjectId),
@@ -50,9 +51,21 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
       isSessionLinkProject(target) &&
       source.kind !== 'control_plane' &&
       target.kind !== 'control_plane' &&
-      (await store.projectInquiries.allowed(source.id, target.id)) &&
       (await deps.authorized(inquiry.userId, source.id)) &&
       (await deps.authorized(inquiry.userId, target.id))
+    );
+  }
+  /**
+   * Delivery also needs consent: a person allowed this request on its card, or a
+   * standing grant admits it. The grant is read on every check, so revoking it
+   * stops questions it admitted even after they were queued for recovery.
+   */
+  async function allowed(inquiry: ProjectInquiry): Promise<boolean> {
+    return (
+      (await permitted(inquiry)) &&
+      (inquiry.humanApproved ||
+        (inquiry.kind === 'question' &&
+          (await store.projectInquiries.allowed(inquiry.sourceProjectId, inquiry.targetProjectId))))
     );
   }
   async function deliver(inquiry: ProjectInquiry): Promise<void> {
@@ -131,35 +144,60 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
         title: request.title,
         body: request.body,
         kind: request.kind,
-        status: request.kind === 'change' ? ('pending' as const) : ('approved' as const),
+        status: 'provisioning' as const,
         userId,
         answer: null,
         decidedBy: null,
+        humanApproved: false,
         createdAt: new Date().toISOString(),
       };
-      if (!(await allowed(candidate)))
+      if (!(await permitted(candidate)))
         throw new Error('Target project is unavailable or not permitted');
       return serialized(`create:${sourceSessionId}:${request.targetProjectId}`, async () => {
-        const inquiry = await store.projectInquiries.create({
-          ...candidate,
-          status: 'provisioning',
-        });
+        // The store keeps the request pending unless a standing grant admits it;
+        // a pending request neither creates the target session nor reaches it.
+        const inquiry = await store.projectInquiries.create(candidate);
         await provision(inquiry);
         await deliver(inquiry);
         return (await store.projectInquiries.get(inquiry.id))!;
       });
     },
-    async decide(targetSessionId: string, id: string, userId: string | null, approve: boolean) {
+    async decide(
+      targetProjectId: string,
+      id: string,
+      userId: string | null,
+      decision: 'approve' | 'approve_always' | 'reject',
+    ) {
       const inquiry = await store.projectInquiries.get(id);
+      const always = decision === 'approve_always';
+      // A standing grant speaks for the source project too, so it needs both.
       if (
         !inquiry ||
-        inquiry.targetSessionId !== targetSessionId ||
-        !(await deps.authorized(userId, inquiry.targetProjectId))
+        inquiry.targetProjectId !== targetProjectId ||
+        !(await deps.authorized(userId, inquiry.targetProjectId)) ||
+        (always && !(await deps.authorized(userId, inquiry.sourceProjectId)))
       )
         throw new Error('Request unavailable');
-      if (!(await store.projectInquiries.decide(id, targetSessionId, approve, userId)))
-        throw new Error('Request already decided or revoked');
-      if (approve) await deliver((await store.projectInquiries.get(id))!);
+      if (always && inquiry.kind !== 'question')
+        throw new Error('Only questions can be always allowed');
+      const approve = decision !== 'reject';
+      const decided = await store.projectInquiries.decide(
+        id,
+        inquiry.targetSessionId,
+        approve,
+        userId,
+        always,
+      );
+      if (!decided) throw new Error('Request already decided or revoked');
+      if (approve)
+        await serialized(
+          `create:${inquiry.sourceSessionId}:${inquiry.targetProjectId}`,
+          async () => {
+            const current = (await store.projectInquiries.get(id))!;
+            await provision(current);
+            await deliver((await store.projectInquiries.get(id))!);
+          },
+        );
       return store.projectInquiries.get(id);
     },
     async answer(targetSessionId: string, id: string, answer: string) {
@@ -217,12 +255,16 @@ export function registerProjectInquiryRoutes(
   const params = z.object({ id: z.string().min(1) });
   const named = async (inquiries: ProjectInquiry[]) => {
     const projects = await deps.store.listProjects();
+    const sessionNames = new Map<string, string | null>();
+    for (const id of new Set(inquiries.map((inquiry) => inquiry.sourceSessionId)))
+      sessionNames.set(id, (await deps.store.getSession(id))?.name ?? null);
     return inquiries.map((inquiry) => ({
       ...inquiry,
+      sourceSessionName: sessionNames.get(inquiry.sourceSessionId) ?? null,
       sourceProjectName:
-        projects.find((p) => p.id === inquiry.sourceProjectId)?.repo ?? inquiry.sourceProjectId,
+        projects.find((p) => p.id === inquiry.sourceProjectId)?.name ?? inquiry.sourceProjectId,
       targetProjectName:
-        projects.find((p) => p.id === inquiry.targetProjectId)?.repo ?? inquiry.targetProjectId,
+        projects.find((p) => p.id === inquiry.targetProjectId)?.name ?? inquiry.targetProjectId,
     }));
   };
   app.get('/projects/:id/inquiry-grants', async (request) => ({
@@ -230,13 +272,15 @@ export function registerProjectInquiryRoutes(
   }));
   app.put('/projects/:id/inquiry-grants', async (request, reply) => {
     const { id } = params.parse(request.params);
-    const body = z
-      .object({ targetProjectId: z.string().min(1), enabled: z.boolean() })
+    // Grants are created only by "Always allow" on a request's card; this route revokes.
+    const parsed = z
+      .object({ targetProjectId: z.string().min(1), enabled: z.literal(false) })
       .strict()
-      .parse(request.body);
-    if (body.enabled && !(await deps.authorized(userId(request), body.targetProjectId)))
-      return reply.code(403).send({ error: 'Target project unavailable' });
-    await deps.store.projectInquiries.setGrant(id, body.targetProjectId, body.enabled);
+      .safeParse(request.body);
+    if (!parsed.success)
+      return reply.code(400).send({ error: 'Allow a project from a request instead' });
+    const body = parsed.data;
+    await deps.store.projectInquiries.setGrant(id, body.targetProjectId, false);
     return { grants: await deps.store.projectInquiries.grants(id) };
   });
   app.get('/sessions/:id/project-inquiries', async (request) => ({
@@ -272,15 +316,16 @@ export function registerProjectInquiryRoutes(
         .send({ error: error instanceof Error ? error.message : 'Request failed' });
     }
   });
-  app.post('/sessions/:id/project-inquiries/:inquiryId/decision', async (request, reply) => {
+  // Scoped to the target project: a pending request has no target session yet.
+  app.post('/projects/:id/project-inquiries/:inquiryId/decision', async (request, reply) => {
     const { id, inquiryId } = params.extend({ inquiryId: z.string().min(1) }).parse(request.params);
     const { decision } = z
-      .object({ decision: z.enum(['approve', 'reject']) })
+      .object({ decision: z.enum(['approve', 'approve_always', 'reject']) })
       .strict()
       .parse(request.body);
     try {
       return {
-        inquiry: await service.decide(id, inquiryId, userId(request), decision === 'approve'),
+        inquiry: await service.decide(id, inquiryId, userId(request), decision),
       };
     } catch (error) {
       return reply

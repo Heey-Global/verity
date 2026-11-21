@@ -79,6 +79,38 @@ process table cannot be read. A bundle is renamed out of the way before it is
 deleted; a removal interrupted by a crash is completed on the next run. Neither
 step ever blocks provisioning, and neither is a reason to run the installer.
 
+Managed provisioning also installs a separate `verity-egress-maintenance.timer`
+using the immutable recovery helper. It runs five minutes after boot and every
+15 minutes afterward, so terminal payloads and retired bundles do not require
+another provisioning operation to become collectable. The diagnostic collector
+remains read-only. Each maintenance service has a 30-second deadline, checks at
+most 16 stage units and retires at most 16 bundles; a durable stage cursor rotates
+past held or receipt-only operations. Direct-child inventories are metadata-only;
+the deadline bounds incomplete runs and later invocations resume stage progress.
+Pinned bundles do not consume the removal batch. Interrupted bundle removals
+finish first and share its limit, so neither protected candidates nor withdrawn
+backlogs can starve eligible releases or grow a second unbounded queue.
+Hosts without a reachable systemd manager still prepare the server's control
+paths and retain the existing unsupported-runtime behavior; they do not register
+the timer. After a manager answers the capability probe, timer installation and
+enablement errors remain fatal rather than being silently ignored.
+
+Maintenance takes the deployment's existing installer lock, the staging fence
+shared with launchers, then the native installation lock, all without waiting.
+The installer-lock path comes from the sealed deployment bind, keeping older
+launchers excluded after a rollback as well. Missing authority, lock contention,
+unknown unit state and recovery journals retain data. The service can write only
+the managed state and release roots; it never invokes provisioning, changes
+network policy or restarts a controller. Current bundles, the two newest other
+bundles and live process references keep the existing protections. Interrupted
+stage compaction leaves readiness withdrawn and preserves operation receipts;
+interrupted bundle removal resumes from its atomic withdrawn name.
+
+The maintenance service hides `/root`, `/home` and `/run/user` with read-only
+empty mounts (`ProtectHome=tmpfs`) and binds only the validated installer lock
+read-only. This also supports an installer state directory inside those paths,
+without exposing its sibling files or allowing changes through the lock mount.
+
 The earlier experimental offline installer remains a separate fixture tool. Its
 Docker-stop transaction is not used by automatic provisioning. An installation
 created with its `Upholds` dependency requires a separately verified migration;

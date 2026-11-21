@@ -96,7 +96,7 @@ export function ProjectDestinations({
   const pending = Object.values(policy?.requests ?? {}).filter(
     (request) =>
       request.status === 'pending' &&
-      request.expiresAt > now &&
+      (request.expiresAt === null || request.expiresAt > now) &&
       request.revision === policy?.revision,
   );
   const grants = (policy?.grants ?? []).filter(
@@ -148,7 +148,9 @@ export function ProjectDestinations({
                 <SettingsPanel key={request.id}>
                   <Text>{target}</Text>
                   <Text tone="muted">
-                    Request expires {new Date(request.expiresAt).toLocaleString()}
+                    {request.expiresAt === null
+                      ? 'Waiting for your decision'
+                      : `Request expires ${new Date(request.expiresAt).toLocaleString()}`}
                   </Text>
                   <Button
                     label="Allow for one hour"

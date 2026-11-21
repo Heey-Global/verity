@@ -109,8 +109,22 @@ it('requires administrator consent for the global switch and disables before can
     admin.mockResolvedValue(true);
     expect((await app.inject({ method: 'GET', url: '/settings/qa' })).json().enabled).toBe(false);
     await app.inject({ method: 'PUT', url: '/settings/qa', payload: { enabled: true } });
-    await ctx.store.repairs.qaSession('qa');
-    await ctx.store.repairs.qaClaim((await ctx.store.repairs.qa()).revision, '[]', 0);
+    // Switching QA off stops every project's running review.
+    await ctx.store.repairs.configure('a', 'admin', 'automatic');
+    await ctx.store.createSession({
+      sessionId: 'qa',
+      projectId: 'a',
+      worktree: '/tmp/qa',
+      model: 'm',
+    });
+    await ctx.store.repairs.projectQA.ensureRole('a');
+    await ctx.store.repairs.projectQA.attachSession('a', 'qa');
+    await ctx.store.repairs.projectQA.claimReview(
+      'a',
+      (await ctx.store.repairs.qa()).revision,
+      '{}',
+      0,
+    );
     await app.inject({ method: 'PUT', url: '/settings/qa', payload: { enabled: false } });
     expect(cancel).toHaveBeenCalledWith('qa');
     expect((await ctx.store.repairs.qa()).sponsor).toBe('admin');

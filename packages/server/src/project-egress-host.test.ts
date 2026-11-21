@@ -627,6 +627,48 @@ it('answers names read-only from enforcement, never for unknown or retired gener
   expect(enforcement.requestDirect).toHaveBeenCalledTimes(1);
 });
 
+it('waits for destination request recording before returning an unresolved DNS answer', async () => {
+  let finishRecording!: () => void;
+  const recording = new Promise<void>((resolve) => {
+    finishRecording = resolve;
+  });
+  const { deps } = fixture();
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    {
+      ...deps,
+      bootId: '00000000-0000-4000-8000-000000000000',
+      enforcement: {
+        directAuthority: () => true,
+        invalidate: vi.fn(),
+        connect: vi.fn(),
+        deny: vi.fn(async () => undefined),
+        refresh: vi.fn(async () => undefined),
+        revoke: vi.fn(async () => undefined),
+        admitted: () => undefined,
+        requestDirect: () => recording,
+      },
+    },
+  );
+  await host.execute({ operation: 'register', binding });
+  let replied = false;
+  const answer = host
+    .execute({
+      operation: 'resolve-direct',
+      projectId: binding.projectId,
+      generation: binding.generation,
+      name: 'other.example.com',
+    })
+    .then((result) => {
+      replied = true;
+      return result;
+    });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(replied).toBe(false);
+  finishRecording();
+  expect(await answer).toEqual({ state: 'unresolved', generation: binding.generation });
+});
+
 it('does not advertise health when read-only host compatibility checks fail', async () => {
   const { deps } = fixture();
   const verifyHealth = vi.fn(async () => {
@@ -1141,6 +1183,71 @@ it('carries a correlated startup refusal through host control and confirms relea
       },
     });
     expect(remove).toHaveBeenCalledExactlyOnceWith(buildRequest);
+    expect(warn).toHaveBeenCalledWith('verity: protected build operation refused', {
+      operation: 'begin',
+      ...result.failure,
+    });
+    expect(JSON.stringify(result) + JSON.stringify(warn.mock.calls)).not.toMatch(
+      /SECRET|\/private/u,
+    );
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it('carries the refused authority step, but not its message, to the build client', async () => {
+  const { createProtectedBuildClient } = await import('./project-egress-build-client.js');
+  const { superviseProtectedBuild } = await import('./project-egress-build-worker.js');
+  const { ProtectedBuildFailure } = await import('./project-egress-build-error.js');
+  const { host } = fixture();
+  const root = await directory();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const buildRequest = {
+    projectId: 'project-a',
+    attemptId: '11111111-1111-4111-8111-111111111111',
+    snapshot: 'attempt-a/verity-build-a',
+    image: `verity-devc-repo:${'a'.repeat(12)}`,
+    noCache: false,
+  };
+  try {
+    const builds = new ProtectedBuildHost(
+      {
+        ready: async () => true,
+        prepare: async () => {
+          throw new ProtectedBuildFailure('authority_prepare_failed', {
+            cause: new Error('SECRET /private/path'),
+            detail: 'packet_revoke',
+          });
+        },
+        renew: async () => {},
+        start: async () => {},
+        status: async () => 'failed',
+        deny: async () => {},
+        stop: async () => {},
+        ended: async () => true,
+        remove: async () => {},
+      },
+      async () => {},
+    );
+    servers.push(
+      await listenProjectEgressHost({
+        directory: root,
+        token: 'a'.repeat(64),
+        controller: host,
+        builds,
+      }),
+    );
+    const client = createProtectedBuildClient({
+      socketPath: join(root, 'control.sock'),
+      token: () => 'a'.repeat(64),
+    });
+    const result = await superviseProtectedBuild(buildRequest, client);
+    expect(result.failure).toMatchObject({
+      reason: 'authority_prepare_failed',
+      detail: 'packet_revoke',
+      correlationId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+    });
+    // The journal line carries the same class under the same reference.
     expect(warn).toHaveBeenCalledWith('verity: protected build operation refused', {
       operation: 'begin',
       ...result.failure,

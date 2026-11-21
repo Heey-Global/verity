@@ -1,7 +1,10 @@
 import ipaddr from 'ipaddr.js';
 import { isIP } from 'node:net';
 import { projectDeadlineLease, type ProjectDeadlineLease } from './project-egress-deadline.js';
+import { protectedBuildAuthorityStepRun as step } from './project-egress-build-error.js';
 import {
+  projectFenceExpiryIdentity,
+  projectFenceExpirySets,
   projectFenceTable,
   type ProjectFenceBinding,
   type ProjectFenceDependencies,
@@ -86,12 +89,16 @@ set public${f} { type ipv${f}_addr; flags interval,timeout; ${lease ? `elements 
         return `${ip} ${field} @blocked${f} drop\nct direction ${reverse ? 'reply' : 'original'} ct label == ${label} meta l4proto { tcp, udp } ${ip} ${field} @public${f}${lease ? ` ${reverse ? 'iifname' : 'oifname'} { ${routes} }` : ''} accept`;
       })
       .join('\n');
+  // A build lease carries no wall-clock authority expiry, so only the standing
+  // tombstones exist. They stay empty, but the root deadline helper refuses to
+  // revoke or renew the packet guard of a table that lacks them.
   return `add table inet ${table}
 delete table inet ${table}
 add table bridge ${table}
 delete table bridge ${table}
 table inet ${table} {
 ${sets}
+${projectFenceExpirySets(projectFenceExpiryIdentity(null))}
 chain fence {
  ip saddr != ${binding.ipv4} drop
  ip6 saddr != ${binding.ipv6} drop
@@ -135,6 +142,9 @@ export function createProtectedBuildAdmission(options: {
   let previous: ProjectDeadlineLease | undefined;
   let flow: string | undefined;
   let prepared = false;
+  // Whether the root helper holds a packet guard registration for this binding.
+  // Without one there is nothing to revoke, and revoking would fail forever.
+  let registered = false;
   let retired = false;
   let queue: Promise<unknown> = Promise.resolve();
   const serialize = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -155,25 +165,39 @@ export function createProtectedBuildAdmission(options: {
     previous = undefined;
     flow = undefined;
     try {
-      await deps.deadline.revoke(binding);
+      if (registered) await step('packet_revoke', () => deps.deadline.revoke(binding));
     } finally {
-      await deps.apply(protectedBuildRules(binding, []));
+      await step('fence_rules', () => deps.apply(protectedBuildRules(binding, [])));
       prepared = true;
     }
   };
   return {
     prepare: () =>
       serialize(async () => {
-        await verify();
+        await step('attachment', verify);
+        // The helper's revoke lists this table and its tombstones, so the denying
+        // table must exist before the guard is registered and first revoked.
+        await step('fence_rules', () => deps.apply(protectedBuildRules(binding, [])));
+        const errors: unknown[] = [];
         try {
-          await deps.deadline.prepare(binding);
-        } finally {
-          await deny();
+          await step('packet_guard', () => deps.deadline.prepare(binding));
+          registered = true;
+        } catch (error) {
+          errors.push(error);
         }
+        try {
+          await deny();
+        } catch (error) {
+          errors.push(error);
+        }
+        // The guard's own failure stays first, so it names the refused step.
+        if (errors.length === 1 && errors[0] instanceof Error) throw errors[0];
+        if (errors.length)
+          throw new AggregateError(errors, 'Protected build authority preparation failed');
       }),
     refresh: () =>
       serialize(async () => {
-        if (!prepared || retired) throw new Error('Inactive build admission');
+        if (!prepared || !registered || retired) throw new Error('Inactive build admission');
         try {
           const lease = projectDeadlineLease(binding, 0, null, await deps.deadline.clock());
           const inventory = await options.networkInventory();

@@ -46,26 +46,51 @@ const inquiry = {
   answer: null,
 };
 
-it('approves the concrete request at the target session', async () => {
+it('allows the concrete request once at its target project', async () => {
   const decideProjectInquiry = jest.fn().mockResolvedValue(undefined);
   const client = {
     listProjectInquiries: jest.fn().mockResolvedValue([inquiry]),
     decideProjectInquiry,
   } as unknown as VerityClient;
-  const view = render(<ProjectInquiryCards client={client} sessionId="target" />);
-  await waitFor(() => expect(view.getByText('Approve change')).toBeTruthy());
-  fireEvent.press(view.getByText('Approve change'));
-  await waitFor(() => expect(decideProjectInquiry).toHaveBeenCalledWith('target', 'i', 'approve'));
+  const view = render(<ProjectInquiryCards client={client} />);
+  await waitFor(() => expect(view.getByText('Allow once')).toBeTruthy());
+  expect(view.getByText(inquiry.title)).toBeTruthy();
+  expect(view.getByText(inquiry.body)).toBeTruthy();
+  // A change is never allowed for good: each one needs its own decision.
+  expect(view.queryByText('Always allow')).toBeNull();
+  fireEvent.press(view.getByText('Allow once'));
+  // Addressed to the target project: a pending request has no target session yet.
+  await waitFor(() => expect(decideProjectInquiry).toHaveBeenCalledWith('cluster', 'i', 'approve'));
   await waitFor(() => expect(client.listProjectInquiries).toHaveBeenCalledTimes(2));
 });
 
-it('shows source-side status without offering target approval', async () => {
+it('offers the decision in the asking session and says who asks whom', async () => {
+  const decideProjectInquiry = jest.fn().mockResolvedValue(undefined);
+  const question = {
+    ...inquiry,
+    kind: 'question',
+    sourceProjectName: 'Verity',
+    targetProjectName: 'Deep-OCR',
+    sourceSessionName: 'Backup check',
+  };
   const client = {
-    listProjectInquiries: jest.fn().mockResolvedValue([inquiry]),
+    listProjectInquiries: jest.fn().mockResolvedValue([question]),
+    decideProjectInquiry,
   } as unknown as VerityClient;
-  const view = render(<ProjectInquiryCards client={client} sessionId="source" />);
-  await waitFor(() => expect(view.getByText('Create service')).toBeTruthy());
-  expect(view.queryByText('Approve change')).toBeNull();
+  const asking = render(<ProjectInquiryCards client={client} sessionId="source" />);
+  await waitFor(() => expect(asking.getByText('Verity → Deep-OCR')).toBeTruthy());
+  expect(asking.getByText('From this session · read-only')).toBeTruthy();
+  fireEvent.press(asking.getByText('Always allow'));
+  await waitFor(() =>
+    expect(decideProjectInquiry).toHaveBeenCalledWith('cluster', 'i', 'approve_always'),
+  );
+  asking.unmount();
+  const home = render(<ProjectInquiryCards client={client} />);
+  await waitFor(() =>
+    expect(home.getByText('From session „Backup check“ · read-only')).toBeTruthy(),
+  );
+  // No target session exists before the request is allowed.
+  expect(home.queryByText('Open target session')).toBeNull();
 });
 
 it('shows persisted PR dependencies beside the repository workspace', async () => {

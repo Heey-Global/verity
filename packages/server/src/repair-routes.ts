@@ -8,7 +8,7 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
   const allowed = async (
     request: FastifyRequest,
     projectId: string,
-    permission: 'read' | 'execute',
+    permission: 'read' | 'execute' | 'manage',
   ) => {
     const userId = request.localUserId;
     return (
@@ -27,12 +27,13 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
       incidents: await store.repairs.incidents(id),
     };
   });
+  // Switching a project's QA off or changing its mode is project management.
   app.put('/projects/:id/repairs', async (request, reply) => {
     const { id } = params.parse(request.params);
-    if (!(await allowed(request, id, 'execute')))
-      return reply.code(403).send({ error: 'Project execution permission required' });
+    if (!(await allowed(request, id, 'manage')))
+      return reply.code(403).send({ error: 'Project management permission required' });
     const { mode } = z
-      .object({ mode: z.enum(['off', 'monitor', 'automatic']) })
+      .object({ mode: z.enum(['off', 'monitor', 'automatic', 'paused']) })
       .strict()
       .parse(request.body);
     if (mode !== 'off' && !(await store.repairs.qa()).enabled)
@@ -60,12 +61,18 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
         .send({ error: 'This request is no longer current. Refresh QA activity.' });
     return { accepted: true };
   });
+  // A project QA's cards concern only its project, for people who may act there.
   app.get('/sessions/:id/qa-approvals', async (request, reply) => {
     const { id } = params.parse(request.params);
-    if (!request.localUserId || !(await store.isActiveAdministrator(request.localUserId)))
-      return reply.code(403).send({ error: 'Administrator access required' });
-    if ((await store.repairs.qa()).session_id !== id) return { proposals: [] };
-    return { proposals: await store.repairs.qaProposals() };
+    const role = await store.repairs.projectQA.roleForSession(id);
+    if (!role) return { proposals: [] };
+    if (!(await allowed(request, role.project_id, 'execute')))
+      return reply.code(403).send({ error: 'Project execution permission required' });
+    return {
+      proposals: (await store.repairs.qaProposals()).filter(
+        (p) => p.project_id === role.project_id,
+      ),
+    };
   });
   app.post('/projects/:id/repairs/retry', async (request, reply) => {
     const { id } = params.parse(request.params);
@@ -79,7 +86,8 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
       (await store.repairs.sessionOrigin(id, incident.resource)) ||
       !hasFreshRepairEvidence(incident) ||
       !(await store.repairs.qa()).enabled ||
-      (await store.repairs.budgetUsed(id, incident.resource)) >= 2
+      (await store.repairs.budgetUsed(id, incident.resource)) >=
+        (await store.repairs.projectQA.roundsAllowed(incident.id))
     )
       return reply
         .code(409)
@@ -97,7 +105,11 @@ export function registerQASettingsRoutes(
 ): void {
   const status = async () => {
     const state = await store.repairs.qa();
-    return { enabled: state.enabled, health: state.health, session_id: state.session_id };
+    return {
+      enabled: state.enabled,
+      health: state.health,
+      brakeAt: await store.repairs.projectQA.brake(),
+    };
   };
   app.get('/settings/qa', async (request, reply) => {
     if (!request.localUserId || !(await store.isActiveAdministrator(request.localUserId)))
@@ -110,8 +122,12 @@ export function registerQASettingsRoutes(
     const { enabled } = z.object({ enabled: z.boolean() }).strict().parse(request.body);
     await store.repairs.configureQA(enabled, request.localUserId);
     if (enabled) await store.repairs.seedQAMonitoring(request.localUserId);
-    const state = await store.repairs.qa();
-    if (!enabled && state.session_id && state.active_dispatch) await cancel(state.session_id);
+    // Switching QA off stops every project's running review.
+    if (!enabled)
+      for (const mandate of await store.repairs.mandates()) {
+        const role = await store.repairs.projectQA.role(mandate.project_id);
+        if (role?.session_id && role.active_dispatch) await cancel(role.session_id);
+      }
     return status();
   });
 }

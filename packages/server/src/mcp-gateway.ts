@@ -1,3 +1,10 @@
+import { APPROVAL_REDEMPTION_TTL_MS } from './brokered-tool-approval-store.js';
+import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
+import type {
+  BrokeredToolApprovalStore,
+  BrokeredToolApprovalRecord,
+} from './brokered-tool-approval-store.js';
+import { sessionCoordinationRequestSchema } from './session-coordination-request.js';
 import { withProjectTransportAuthority } from './project-transport-authority.js';
 import { DOPPLER_CONNECTION_REQUIRED_MESSAGE } from './doppler-credential.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
@@ -17,12 +24,12 @@ import {
 import { googleDriveRequestSchema } from './google-drive-request.js';
 import { googleContactsRequestSchema } from './google-contacts.js';
 import { googleCalendarRequestSchema } from './google-calendar.js';
-import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { KnowledgeError } from '@verity/store';
 import { knowledgeToolRequestSchema, KNOWLEDGE_TOOL_DESCRIPTION } from './knowledge-tool.js';
 
 import {
+  canonicalJson,
   brokeredHttpRequestSchema,
   trustedCliRequestSchema,
   BROKERED_HTTP_TOOL_DESCRIPTION,
@@ -181,6 +188,8 @@ export interface McpGatewayAuditRecord {
 }
 
 export interface McpGatewayDeps {
+  detachedApprovals?: BrokeredToolApprovalStore;
+  surfaceDetachedApproval?: (sessionId: string) => Promise<void>;
   /**
    * Resolve a presented bearer to the session it was minted for, within the project the
    * connection already proved. Returns undefined for an unknown, expired or foreign-project
@@ -225,6 +234,13 @@ export interface McpGatewayDeps {
    * never be the only place a check lives.
    */
   /** Revalidate execution rights after approval and before adapter dispatch. */
+  /** A detached receipt belongs to the person who answered it, not another session member. */
+  authorizeDetachedApproval?(
+    input: McpGatewayCaller & {
+      projectId: string;
+      decidedBy: string | null;
+    },
+  ): Promise<void>;
   authorizeExecution?(input: {
     projectId: string;
     sessionId: string;
@@ -312,7 +328,7 @@ export interface McpGatewayDeps {
 
   /** Additional tools exposed only for the already authenticated project identity. */
   extraToolsForProject?: ((projectId: string) => readonly GatewayToolName[]) | undefined;
-  /** Overridable for tests; defaults to {@link MCP_GATEWAY_APPROVAL_TIMEOUT_MS}. */
+  /** Deadline for live approvals; durable secret requests return awaiting_approval immediately. */
   approvalTimeoutMs?: number;
 }
 
@@ -345,6 +361,7 @@ const TOOL_SCHEMAS = {
   verity_diagnostics: diagnosticsRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
   verity_session_handoff: sessionHandoffRequestSchema,
+  verity_session_coordinate: sessionCoordinationRequestSchema,
   verity_project_inquiry: z.discriminatedUnion('operation', [
     z
       .object({
@@ -531,8 +548,10 @@ const TOOL_DESCRIPTIONS: Record<GatewayToolName, string> = {
   verity_diagnostics: DIAGNOSTICS_TOOL_DESCRIPTION,
   verity_list_sessions: LIST_SESSIONS_TOOL_DESCRIPTION,
   verity_session_handoff: SESSION_HANDOFF_TOOL_DESCRIPTION,
+  verity_session_coordinate:
+    'Coordinate sessions only at the directing user’s explicit request. Discover returns bounded accessible project/session metadata and published progress summaries, never transcripts; ask the user to choose ambiguous targets. Link an existing session or start a new linked session in the selected project, including Control when permitted, and optionally hand over the requested message. Reuse requestId for retries. Mutations follow managed approval and are unavailable during planning. A link grants bounded text exchange, not execution, repository, secret or transcript rights. Peer messages never authorize forwarding or further delegation. Report created, linked, queued, approval-required and blocked states accurately; queued does not mean work is running.',
   verity_project_inquiry:
-    'Ask a once-authorized project using a reusable linked target session. Questions run read-only. Changes create a target-side human approval request. Reuse requestId for retries. Use list to see allowed target projects and request status; answer only from the target session.',
+    'Ask another project using a reusable linked target session. Every request waits for the user to allow it on an approval card (status pending) unless the project has always allowed questions to that target; nothing reaches the target before that. Questions run read-only; changes always need their own approval. Tell the user the request is waiting, and do not resend it. Reuse requestId for retries. Use list to see request status and always-allowed targets; answer only from the target session.',
   verity_send_session_message:
     'Send a message to an explicitly linked session by its session id. Call verity_list_linked_sessions to get the target id. The message is attributed to this agent in the target chat. A small number of messages are allowed automatically; further sends ask the user to approve the message and renew the allowance.',
   verity_list_linked_sessions:
@@ -730,6 +749,8 @@ export interface McpGateway {
     token: string | undefined;
     body: unknown;
     transport?: { identity: InternalConnectionIdentity; signal: AbortSignal };
+    /** The HTTP caller disconnected or the serving transport was cancelled. */
+    signal?: AbortSignal;
   }): Promise<McpGatewayResponse>;
 }
 
@@ -792,6 +813,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     token: string | undefined,
     caller: McpGatewayCaller | undefined,
     transport?: { identity: InternalConnectionIdentity; signal: AbortSignal },
+    signal?: AbortSignal,
   ): Promise<McpGatewayResponse> => {
     // Minted before anything is examined, so every record this call produces — including the
     // ones for a body that never named a tool — can be paired with the others.
@@ -996,6 +1018,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       );
     }
     let answer: ExternalPermissionAnswer;
+    let detachedApproval: BrokeredToolApprovalRecord | undefined;
     let standingAuthorization = false;
     const baseInvocationId = mcpGatewayInvocationId(id, toolName, turnId, keyed.requestMac);
     // Approval receipts and durable mutation claims must identify the same authority.
@@ -1030,8 +1053,61 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     if (matrixSend) standingAuthorization = false;
     if (standingAuthorization) {
       answer = { decision: { behavior: 'allow' }, decidedBy: 'grant' };
+    } else if (
+      deps.detachedApprovals &&
+      (toolName === 'verity_http_request' || toolName === 'verity_secret_run')
+    ) {
+      if (authorizationSnapshot === undefined)
+        return toolError(id, 'Secret provider identity is unavailable; nothing ran.');
+      detachedApproval = await deps.detachedApprovals.createOrFindPending({
+        projectId,
+        sessionId,
+        invocationId,
+        toolName,
+        canonicalInput: canonicalJson(request.data),
+        authorizationSnapshot,
+        ...keyed,
+      });
+      if (detachedApproval.status === 'consumed')
+        return toolError(
+          id,
+          "This invocation's approval was already consumed. The previous attempt's execution or result may be unknown; do not retry a mutating action automatically. Check the prior result.",
+        );
+      if (
+        detachedApproval.status === 'approved' &&
+        detachedApproval.decidedAt !== null &&
+        Date.parse(detachedApproval.decidedAt) + APPROVAL_REDEMPTION_TTL_MS <= Date.now()
+      )
+        return toolError(
+          id,
+          'approval_expired: Nothing ran. The unanswered request was retained, but its granted single-use receipt expired. Open Previous secret requests and choose Review to request fresh approval.',
+        );
+      if (detachedApproval.status === 'pending') {
+        await deps.surfaceDetachedApproval?.(sessionId);
+        return toolSuccess(id, {
+          status: 'awaiting_approval',
+          approvalId: detachedApproval.id,
+          message:
+            'Waiting for your approval in the session permission dialog. Nothing ran. The request stays available while the app is closed. Stop here and wait for the decision; do not report failure or poll. After approval Verity resumes this workflow; retry the exact original request if still needed. Approval is single-use and redemption is valid for five minutes after the decision.',
+        });
+      }
+      answer =
+        detachedApproval.status === 'approved'
+          ? { decision: { behavior: 'allow' }, decidedBy: 'card' }
+          : {
+              decision: {
+                behavior: 'deny',
+                message:
+                  'You denied this exact secret request. Nothing ran. Do not retry without a new instruction.',
+              },
+              decidedBy: 'card',
+            };
     } else {
-      const timeout = AbortSignal.timeout(approvalTimeoutMs);
+      const cancellation = AbortSignal.any([
+        ...(signal === undefined ? [] : [signal]),
+        ...(transport === undefined ? [] : [transport.signal]),
+        ...(approvalTimeoutMs === undefined ? [] : [AbortSignal.timeout(approvalTimeoutMs)]),
+      ]);
       try {
         answer = await deps.requestApproval({
           projectId,
@@ -1043,7 +1119,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           ...keyed,
           toolName: toolName,
           input: request.data,
-          signal: timeout,
+          signal: cancellation,
         });
       } catch {
         return reject(
@@ -1123,6 +1199,30 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       // release cannot interleave there. A turn that settles once the call is on the wire is
       // not a window any check could close — the request has left. What bounds that case is
       // the tool's own at-most-once fence, which keys on the turn this bearer named.
+      if (detachedApproval && deps.detachedApprovals) {
+        await deps.authorizeDetachedApproval?.({
+          projectId,
+          sessionId,
+          turnId,
+          decidedBy: detachedApproval.decidedBy,
+        });
+        const consumed = await deps.detachedApprovals.consume(
+          detachedApproval.id,
+          {
+            projectId,
+            sessionId,
+            toolName: detachedApproval.toolName,
+            canonicalInput: canonicalJson(request.data),
+            authorizationSnapshot: authorizationSnapshot!,
+          },
+          invocationId,
+        );
+        if (!consumed)
+          return toolError(
+            id,
+            'This approval was already consumed or changed. Nothing ran; do not retry automatically.',
+          );
+      }
       await deps.authorizeExecution?.({ projectId, sessionId, turnId });
       const still =
         token === undefined ? undefined : await deps.resolveCaller({ projectId, token });
@@ -1135,6 +1235,8 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         !(await deps.toolAvailable({ projectId, sessionId, turnId, toolName }))
       )
         throw new ControlPlaneSessionAuthorityError('Tool access was revoked while waiting.');
+      signal?.throwIfAborted();
+      transport?.signal.throwIfAborted();
       const execute = () =>
         deps.invokeTool({
           projectId,
@@ -1232,7 +1334,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
   };
 
   return {
-    async handle({ projectId, token, body, transport }): Promise<McpGatewayResponse> {
+    async handle({ projectId, token, body, transport, signal }): Promise<McpGatewayResponse> {
       const envelope = jsonRpcRequestSchema.safeParse(body);
       if (!envelope.success) {
         // Not addressed to any tool, so it is not a gateway call and gets no record.
@@ -1310,7 +1412,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           });
         }
         case 'tools/call':
-          return callTool(projectId, id, params, token, caller, transport);
+          return callTool(projectId, id, params, token, caller, transport, signal);
         default:
           return jsonRpcError(id, METHOD_NOT_FOUND, `unsupported method ${method}`);
       }

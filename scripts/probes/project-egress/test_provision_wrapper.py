@@ -1,4 +1,5 @@
 """Exercise the shipped wrapper with an isolated filesystem and a direct-only manager."""
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -152,6 +153,30 @@ class ProvisionWrapperTests(unittest.TestCase):
         (self.root / 'mode').write_text(mode)
         return subprocess.run(['bash', str(self.wrapper)], env=self.env,
                               text=True, capture_output=True, timeout=15)
+
+    def test_maintenance_fence_prevents_staging_and_submission(self):
+        state = self.root / 'state'
+        state.mkdir()
+        with (state / 'provision.lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_wrapper()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('stage maintenance is running', result.stderr)
+        self.assertFalse(self.stage.exists())
+        self.assertFalse((self.root / 'submitted').exists())
+
+    def test_host_installer_authority_is_forwarded_without_shell_evaluation(self):
+        self.env['VERITY_INSTALL_LOCK_HOST_PATH'] = str(self.root / 'lock')
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--installer-lock ' + str(self.root / 'lock'), (self.root / 'calls').read_text())
+
+    def test_unsafe_host_installer_authority_is_refused_before_submission(self):
+        self.env['VERITY_INSTALL_LOCK_HOST_PATH'] = '/host/$(invalid)/lock'
+        result = self.run_wrapper()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('unsafe host installer lock path', result.stderr)
+        self.assertFalse((self.root / 'submitted').exists())
 
     def diagnostic(self, result, code):
         self.assertNotEqual(result.returncode, 0, result.stderr)
