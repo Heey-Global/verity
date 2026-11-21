@@ -657,3 +657,21 @@ migrations['0232_assistant_handoff_results'] = {
       drop column result_summary, drop column result_blocker, drop column result_at`.execute(db);
   },
 };
+
+migrations['0233_project_inquiry_human_approval'] = {
+  // Inquiries are approved per request now; a standing grant only admits
+  // questions without a card. The flag records that a person allowed this one
+  // request, independent of whether the deciding user id is known. Changes that
+  // were already decided under the previous flow keep their approval.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_inquiries
+      add column human_approved boolean not null default false`.execute(db);
+    await sql`update project_inquiries set human_approved = true
+      where kind = 'change' and status in ('approved','queued','answered')`.execute(db);
+    await sql`update project_inquiries set status = 'pending'
+      where kind = 'change' and status = 'provisioning'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_inquiries drop column human_approved`.execute(db);
+  },
+};

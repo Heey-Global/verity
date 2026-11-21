@@ -798,6 +798,8 @@ export type {
 export {
   type ProjectRepository,
   type ProjectInquiry,
+  type ProjectInquiryGrant,
+  type InquiryDecision,
   type RepositoryInstructions,
 } from './projectCollaboration.js';
 export {

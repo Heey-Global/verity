@@ -3,23 +3,10 @@ export type { SecretKeyMetaTable } from './schema-brokered-approvals.js';
 import type { AssistantDatabase } from './schema-assistant.js';
 import type { PeopleDatabase } from './schema-people.js';
 import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
+import type { ProjectInquiryDatabase } from './schema-project-inquiries.js';
 import type { SandboxDatabase } from './schema-sandbox.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
-export interface ProjectInquiryGrantsTable {
-  source_project_id: string;
-  target_project_id: string;
-  enabled: Generated<boolean>;
-  created_at: Generated<Date>;
-}
-
-export interface ProjectInquirySessionsTable {
-  source_session_id: string;
-  target_project_id: string;
-  target_session_id: string;
-  change_approved: Generated<boolean>;
-}
-
 export interface WikiOccasionsTable {
   id: string;
   project_id: string;
@@ -49,23 +36,6 @@ export interface SandboxRepairIntentsTable {
   storage_refused: boolean;
   last_failure_at: Date;
   last_failure_message: string;
-}
-
-export interface ProjectInquiriesTable {
-  id: string;
-  source_session_id: string;
-  target_session_id: string;
-  source_project_id: string;
-  target_project_id: string;
-  title: string;
-  body: string;
-  kind: 'question' | 'change';
-  status: 'provisioning' | 'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
-  created_at: Generated<Date>;
-  answer: string | null;
-  answer_delivered: Generated<boolean>;
-  user_id: string | null;
-  decided_by: string | null;
 }
 
 export interface ProjectRepositoriesTable {
@@ -1786,10 +1756,8 @@ export interface Database
     PeopleDatabase,
     SandboxDatabase,
     SessionCoordinationDatabase,
-    BrokeredApprovalDatabase {
-  project_inquiry_grants: ProjectInquiryGrantsTable;
-  project_inquiry_sessions: ProjectInquirySessionsTable;
-  project_inquiries: ProjectInquiriesTable;
+    BrokeredApprovalDatabase,
+    ProjectInquiryDatabase {
   wiki_occasions: WikiOccasionsTable;
   wiki_maintenance: WikiMaintenanceTable;
   sandbox_repair_intents: SandboxRepairIntentsTable;

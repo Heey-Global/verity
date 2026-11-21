@@ -14,6 +14,7 @@ it('creates exactly the tables and columns the runtime store declares', async ()
     new URL('./schema-assistant.ts', import.meta.url),
     new URL('./schema-brokered-approvals.ts', import.meta.url),
     new URL('./schema-people.ts', import.meta.url),
+    new URL('./schema-project-inquiries.ts', import.meta.url),
     new URL('./schema-sandbox.ts', import.meta.url),
     new URL('./schema-session-coordination.ts', import.meta.url),
   ].map((file) =>

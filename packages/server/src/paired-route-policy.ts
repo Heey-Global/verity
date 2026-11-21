@@ -57,8 +57,8 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
-    routeScopeKey('POST', '/sessions/:id/project-inquiries/:inquiryId/decision'),
-    { kind: 'session', parameter: 'id', permission: 'execute' },
+    routeScopeKey('POST', '/projects/:id/project-inquiries/:inquiryId/decision'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
   ],
   // Working in a shared project (ADR 0023 §1): reading a session, sending its
   // turns and handling its files and servers follow the project permission.
