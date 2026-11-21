@@ -21,7 +21,11 @@ export function useProjectQA(
   const [error, setError] = useState<string>();
   const latest = useRef(0);
   const reload = useCallback(async () => {
-    if (!enabled || !client) return;
+    if (!enabled || !client) {
+      // QA was switched off: its sessions and issues no longer apply.
+      setState(undefined);
+      return;
+    }
     const request = ++latest.current;
     try {
       const next = await client.projectQA.state(projectId);

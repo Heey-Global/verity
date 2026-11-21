@@ -164,7 +164,7 @@ export class ProjectQAStore {
         await sql`update qa_decisions set outcome = ${detail ?? outcome} where dispatch_id = ${dispatchId} and outcome is null returning dispatch_id`.execute(
           trx,
         );
-      await sql`update project_roles set active_dispatch = null, active_seq = null, active_revision = null, active_snapshot = null, health = ${outcome} where project_id = ${projectId} and role = 'qa' and active_dispatch = ${dispatchId}`.execute(
+      await sql`update project_roles set active_dispatch = null, active_seq = null, active_revision = null, active_snapshot = null, health = ${outcome} where role = 'qa' and active_dispatch = ${dispatchId}`.execute(
         trx,
       );
       return result.rows.length > 0;
@@ -224,6 +224,8 @@ export class ProjectQAStore {
     const refused = new Error('group refused');
     try {
       return await this.db.transaction().execute(async (trx) => {
+        // The lock claims take: no repair can start on these issues while they move.
+        await sql`select pg_advisory_xact_lock(712843, 1)`.execute(trx);
         const rows = (
           await sql<{
             id: string;
