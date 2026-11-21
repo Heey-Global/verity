@@ -136,6 +136,9 @@ interface ControlPlaneSessionCall {
    *  HTTP request, so a retry gets a fresh one. */
   invocationId: string;
   request: unknown;
+  /** Server-written text a handoff appends after the briefing, such as the assistant's request
+   *  for a published outcome. Never caller input: it is set by the route, not the request. */
+  closingRequest?: string;
 }
 
 /**
@@ -867,9 +870,13 @@ export function createControlPlaneSessionTools(
       // both agent-written, so both sit inside what it frames. Nothing here carries a
       // capability or an environment — this is a message. A turn it starts runs for the user
       // behind the calling Control turn, whose rights in the target project the gateway checks.
-      const prompt = [SESSION_HANDOFF_ENVELOPE, `Title: ${request.title}`, request.briefing].join(
-        '\n\n',
-      );
+      const closing = input.closingRequest === undefined ? [] : [input.closingRequest];
+      const prompt = [
+        SESSION_HANDOFF_ENVELOPE,
+        `Title: ${request.title}`,
+        request.briefing,
+        ...closing,
+      ].join('\n\n');
       await requireControlPlaneCaller(input);
       await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
       await requireHandoffTarget(input, target.project.id);
@@ -892,6 +899,7 @@ export function createControlPlaneSessionTools(
           SESSION_HANDOFF_TRANSCRIPT_LABEL,
           `Title: ${request.title}`,
           request.briefing,
+          ...closing,
         ].join('\n\n'),
       });
       return {

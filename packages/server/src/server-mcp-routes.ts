@@ -46,6 +46,7 @@ import { httpMcpConnectionUsableBy, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
 import {
   assistantToolRefusal,
+  assistantHandoff,
   executeAssistantTool,
   requireAssistantGrant,
   requireAssistantSession,
@@ -593,10 +594,9 @@ export function registerServerMcpRoutes({
       void deciding.then(clear, clear);
       return deciding;
     };
-    // The two control-plane session tools are bound on the same seam as `requestApproval`,
-    // and for the same reason: they need this server's conductor to deliver a turn, and the
-    // route's own session projection for `status`/`resumable`. Neither exists where the rest
-    // of the executor is composed.
+    // The control-plane session tools are bound on the same seam as `requestApproval`, for the
+    // same reason: they need this server's conductor to deliver a turn and the route's own
+    // session projection for `status`/`resumable`, neither of which the executor has.
     //
     // `listSessionFacts` is where the listing's "metadata only" promise is kept. The summary
     // is narrowed to six fields HERE, at the boundary, so no transcript, PR, usage or
@@ -2026,7 +2026,7 @@ export function registerServerMcpRoutes({
         if (input.toolName === 'verity_list_sessions')
           return controlPlaneSessionTools.listSessions(input);
         if (input.toolName === 'verity_session_handoff')
-          return controlPlaneSessionTools.handoff(input);
+          return assistantHandoff(assistantToolDeps, input, controlPlaneSessionTools);
         if (input.toolName === 'verity_session_progress')
           return controlPlaneSessionTools.progress(input);
         if (input.toolName === 'verity_recent_session_messages') {

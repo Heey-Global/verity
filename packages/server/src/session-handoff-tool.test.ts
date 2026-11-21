@@ -487,6 +487,24 @@ describe('verity_session_handoff', () => {
     expect(dispatchTurn.mock.calls[0]![0].idempotencyKey).toBe('handoff:turn-1:invocation-1');
   });
 
+  it('appends a route-set closing request after the briefing, outside the briefing hash', async () => {
+    const { tools, dispatchTurn, call } = harness();
+    const request = { target: { sessionId: 'sess-web' }, title: 't', briefing: 'Check it.' };
+    const plain = await tools.handoff(call(request));
+    const closed = await tools.handoff({
+      ...call(request),
+      closingRequest: 'Publish the outcome.',
+    });
+    // The hash names the agent-written briefing; the server's own line must not change it.
+    expect(closed.briefingSha256).toBe(plain.briefingSha256);
+    for (const field of ['prompt', 'displayPrompt'] as const) {
+      expect(dispatchTurn.mock.calls[0]![0][field]).not.toContain('Publish the outcome.');
+      expect(
+        dispatchTurn.mock.calls[1]![0][field].endsWith('Check it.\n\nPublish the outcome.'),
+      ).toBe(true);
+    }
+  });
+
   it('queues behind an in-flight turn instead of failing, and says so', async () => {
     const { tools, call } = harness({ dispatchTurn: async () => ({ queued: true }) });
     await expect(

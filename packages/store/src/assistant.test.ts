@@ -77,6 +77,39 @@ describe('assistant project grants', () => {
   });
 });
 
+describe('assistant handoffs', () => {
+  it('lists only the calling session’s handoffs, newest first, refreshed on repeat', async () => {
+    for (const sessionId of ['assistant', 'other', 't1', 't2'])
+      await ctx.store.createSession({ sessionId, worktree: `/${sessionId}`, model: 'm' });
+    const record = (
+      assistantSessionId: string,
+      targetSessionId: string,
+      title: string,
+      at: number,
+    ) =>
+      ctx.store.assistant.recordHandoff({
+        assistantSessionId,
+        targetSessionId,
+        projectId: 'a',
+        title,
+        at: new Date(at),
+      });
+    await record('assistant', 't1', 'first', 1_000);
+    await record('assistant', 't2', 'second', 2_000);
+    await record('other', 't1', 'not mine', 3_000);
+    await record('assistant', 't1', 'again', 4_000);
+    const own = await ctx.store.assistant.handoffs('assistant', 10);
+    expect(own.map((h) => [h.target_session_id, h.title, h.created_at.getTime()])).toEqual([
+      ['t1', 'again', 4_000],
+      ['t2', 'second', 2_000],
+    ]);
+    expect(await ctx.store.assistant.handoffs('assistant', 1)).toHaveLength(1);
+    // A deleted target leaves nothing behind to be read.
+    await ctx.store.deleteProject('a');
+    expect(await ctx.store.assistant.handoffs('assistant', 10)).toEqual([]);
+  });
+});
+
 describe('assistant requests', () => {
   const base = { sessionId: 'assistant', userId: 'u1' } as const;
   beforeEach(async () => {

@@ -39,6 +39,14 @@ export interface AssistantGrant {
   revision: number;
 }
 
+/** A session the assistant handed work to; see {@link AssistantStore.recordHandoff}. */
+export interface AssistantHandoff {
+  target_session_id: string;
+  project_id: string;
+  title: string;
+  created_at: Date;
+}
+
 /** The installation-wide assistant: one Verity Control session plus per-project grants. */
 export class AssistantStore {
   constructor(private readonly db: Kysely<Database>) {}
@@ -103,6 +111,33 @@ export class AssistantStore {
     await sql`insert into assistant_project_grants (project_id, sponsor_user_id, mode) values (${projectId}, ${sponsor}, ${mode}) on conflict (project_id) do update set mode = excluded.mode, sponsor_user_id = excluded.sponsor_user_id, revision = assistant_project_grants.revision + 1, updated_at = now()`.execute(
       this.db,
     );
+  }
+
+  /** Remembers that `assistantSessionId` handed work to `targetSessionId`. A repeat refreshes
+   *  the title and time, so the newest briefing is the one its result is read against. */
+  async recordHandoff(input: {
+    assistantSessionId: string;
+    targetSessionId: string;
+    projectId: string;
+    title: string;
+    /** When the briefing was sent, on the clock that stamps session events. */
+    at: Date;
+  }): Promise<void> {
+    await sql`insert into assistant_handoffs (assistant_session_id, target_session_id, project_id, title, created_at)
+      values (${input.assistantSessionId}, ${input.targetSessionId}, ${input.projectId}, ${input.title.slice(0, 200)}, ${input.at})
+      on conflict (assistant_session_id, target_session_id) do update
+        set project_id = excluded.project_id, title = excluded.title, created_at = excluded.created_at`.execute(
+      this.db,
+    );
+  }
+
+  /** The newest handoffs `assistantSessionId` made, newest first. */
+  async handoffs(assistantSessionId: string, limit: number): Promise<AssistantHandoff[]> {
+    return (
+      await sql<AssistantHandoff>`select target_session_id, project_id, title, created_at
+        from assistant_handoffs where assistant_session_id = ${assistantSessionId}
+        order by created_at desc limit ${limit}`.execute(this.db)
+    ).rows;
   }
 
   /**

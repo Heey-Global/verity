@@ -619,3 +619,23 @@ migrations['0229_session_coordination_requests'] = {
 };
 
 migrations['0230_brokered_tool_approvals'] = brokeredToolApprovalMigration;
+
+migrations['0231_assistant_handoffs'] = {
+  // The sessions the assistant handed work to, so it can read back their published outcome
+  // and nothing of any other session. A repeated handoff to one session refreshes its row.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table assistant_handoffs (
+      assistant_session_id text not null references sessions(session_id) on delete cascade,
+      target_session_id text not null references sessions(session_id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      title text not null check (char_length(title) <= 200),
+      created_at timestamptz not null default now(),
+      primary key (assistant_session_id, target_session_id)
+    )`.execute(db);
+    await sql`create index assistant_handoffs_recent
+      on assistant_handoffs(assistant_session_id, created_at desc)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_handoffs`.execute(db);
+  },
+};

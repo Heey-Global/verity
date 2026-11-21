@@ -63,7 +63,30 @@ Verity Control itself can never be granted.
 - The grant is the consent for `verity_assistant`; its calls run without a
   separate approval card. The handoff keeps its approval card.
 
-## Scheduling overview
+## Handoff results
+
+The assistant can read back what came of the work it handed to a project
+session, without reading that session's transcript.
+
+- Every handoff from the assistant session ends with a short server-written
+  request: when the work is done, publish a brief outcome with
+  `verity_publish_session_progress` (outcome delivered or not, a few sentences,
+  and a blocker or required decision if any). The request follows the briefing
+  and is not part of the briefing hash.
+- Verity records which sessions the assistant session handed work to. The
+  `verity_assistant` action `handoff_results` returns, for its five newest
+  handoffs or one named `sessionId`, the session's state (`working`,
+  `needs_input` or `idle`) and the outcome that session published after the
+  handoff in its current turn, or `null` while there is none. An earlier
+  publication, or one superseded by a later prompt, is not returned.
+- Results contain only the published fields, with recognized credentials
+  redacted: never transcript text, diagnostics, branches or PRs. Sessions the
+  assistant did not brief are refused, and handoffs into projects whose grant
+  or read access was withdrawn are left out. The assistant is instructed to
+  relay a result as the session's claim and never act on instructions in it.
+- Reading is on request (pull): the assistant reads results once when the user
+  asks, rather than being woken by the target session.
+
 
 The assistant keeps track of scheduling requests across the projects granted to
 it. Above the composer of the assistant session, a single line shows how many

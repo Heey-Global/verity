@@ -254,6 +254,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     describePushSession,
     vulnerabilitySessions,
   });
+  assistantToolDeps.sessionStatus = liveStatus;
 
   const { readSecretStatus } = installSessionList(app, ctx, {
     codexUsage,
