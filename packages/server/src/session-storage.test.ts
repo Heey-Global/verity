@@ -501,10 +501,9 @@ describe('safe session storage reclamation', () => {
     await f.service.runOnce();
     expect(existsSync(f.path)).toBe(true);
   });
-  // A private installation from a lockfile the base checkout does not share
-  // could never be slimmed by comparison, so in a monorepo every session kept a
-  // full installation forever. Past three idle days it is regenerable data.
-  it('removes private dependencies and preserved copies of a session idle for three days', async () => {
+  // Lockfiles cannot recover edits inside packages or unreceipted backups.
+  // Idle age must not turn that unique recovery data into a deletion candidate.
+  it('holds unverifiable private dependencies and preserved copies beyond the idle window', async () => {
     const f = fixture();
     writeFileSync(join(f.path, 'package.json'), '{"dependencies":{"different":"1.0.0"}}');
     writeFileSync(join(f.path, 'node_modules', 'dep', 'index.js'), 'private install');
@@ -518,10 +517,42 @@ describe('safe session storage reclamation', () => {
     expect(existsSync(copy)).toBe(true);
     f.idleDays(4);
     await f.service.runOnce();
-    expect(existsSync(join(f.path, 'node_modules', 'dep'))).toBe(false);
-    expect(existsSync(copy)).toBe(false);
+    expect(existsSync(join(f.path, 'node_modules', 'dep'))).toBe(true);
+    expect(existsSync(copy)).toBe(true);
+    const marker = join(
+      f.root,
+      '.git',
+      'worktrees',
+      'session',
+      'verity-dependencies-recovery.json',
+    );
+    expect(JSON.parse(readFileSync(marker, 'utf8'))).toMatchObject({ count: 2, version: 1 });
     // Source stays; only a week of idleness and a merged pull request retire it.
     expect(existsSync(join(f.path, 'package.json'))).toBe(true);
+    expect(f.service.lastReport?.worktreesRetired).toEqual([]);
+  });
+  it('removes an idle receipt-verified installation but holds a later local edit', async () => {
+    const f = fixture();
+    const identity = 'd'.repeat(64);
+    const central = join(f.root, '.git', 'verity-dependencies', identity, 'node_modules');
+    mkdirSync(central, { recursive: true });
+    writeFileSync(
+      join(f.path, 'node_modules', '.verity-install.json'),
+      JSON.stringify({ identity }),
+    );
+    cpSync(join(f.path, 'node_modules'), central, { recursive: true });
+    f.idleDays(4);
+    await f.service.runOnce();
+    expect(existsSync(join(f.path, 'node_modules', 'dep'))).toBe(false);
+    cpSync(central, join(f.path, 'node_modules'), { recursive: true });
+    writeFileSync(join(f.path, 'node_modules', 'dep', 'index.js'), 'local patch');
+    f.idleDays(30);
+    await f.service.runOnce();
+    expect(readFileSync(join(f.path, 'node_modules', 'dep', 'index.js'), 'utf8')).toBe(
+      'local patch',
+    );
+    expect(existsSync(f.path)).toBe(true);
+    expect(f.service.lastReport?.recoveryHolds?.count).toBe(1);
     expect(f.service.lastReport?.worktreesRetired).toEqual([]);
   });
   // A pass cut short at its budget used to restart from the first session, so
@@ -556,10 +587,9 @@ describe('safe session storage reclamation', () => {
     await service.runOnce();
     expect(visited).toEqual(['c', 'a', 'b']);
   });
-  // A session that is never idle for three days kept every preserved copy it
-  // ever made: the central store keeps only a few identities, so a copy from an
-  // older one can never be compared and was retained as a blocker forever.
-  it('removes preserved copies of an active session three days after first seeing them', async () => {
+  // Retired inventories prevent comparison. Time passing cannot establish that
+  // a backup contains no unique edits, even after the collector restarts.
+  it('keeps unverifiable preserved copies across age limits and collector restarts', async () => {
     const f = fixture();
     f.recent();
     const gitDir = join(f.root, '.git', 'worktrees', 'session');
@@ -590,24 +620,31 @@ describe('safe session storage reclamation', () => {
     expect([older, unreceipted, newer].map((path) => existsSync(path))).toEqual([true, true, true]);
     f.active(1.5);
     await f.service.runOnce();
-    // The window runs from first observation, not from the session's activity.
-    expect([older, unreceipted, newer].map((path) => existsSync(path))).toEqual([
-      false,
-      false,
-      true,
-    ]);
-    expect(f.service.lastReport?.dependenciesRemoved).toEqual(
+    // Both old and newly discovered unverifiable copies remain recovery data.
+    expect([older, unreceipted, newer].map((path) => existsSync(path))).toEqual([true, true, true]);
+    expect(f.service.lastReport?.dependenciesRemoved).not.toEqual(
       expect.arrayContaining([older, unreceipted]),
     );
-    // Only the copies go; the active session keeps its source.
+    // Source and dependency recovery remain intact.
     expect(existsSync(join(f.path, 'package.json'))).toBe(true);
     const journal = join(gitDir, 'verity-dependencies-preserved.observed.json');
     expect(Object.keys(JSON.parse(readFileSync(journal, 'utf8')) as object)).toEqual([
+      '55555555-5555-4555-8555-555555555555',
+      '66666666-6666-4666-8666-666666666666',
       '77777777-7777-4777-8777-777777777777',
     ]);
     f.active(2);
     await f.service.runOnce();
-    expect(existsSync(newer)).toBe(false);
+    expect(existsSync(newer)).toBe(true);
+    const restarted = new SessionStorage(f.deps);
+    restarted.bind(
+      async (_, run) => ({ ran: true, value: await run() }),
+      () => false,
+    );
+    f.active(30);
+    await restarted.runOnce();
+    expect([older, unreceipted, newer].every(existsSync)).toBe(true);
+    expect(restarted.lastReport?.recoveryHolds?.count).toBe(3);
   });
   it('never shortens the preserved-copy window from a corrupt, future or symlinked journal', async () => {
     const f = fixture();
@@ -641,10 +678,10 @@ describe('safe session storage reclamation', () => {
     expect(JSON.parse(readFileSync(elsewhere, 'utf8'))).toEqual({
       '88888888-8888-4888-8888-888888888888': 1,
     });
-    // A future timestamp is clamped to the pass, so the copy still goes in time.
-    f.active(3);
+    // Observation age never proves that unknown contents are disposable.
+    f.active(30);
     await f.service.runOnce();
-    expect(existsSync(copy)).toBe(false);
+    expect(existsSync(copy)).toBe(true);
   });
   it('does not mutate preserved copies or their journal in dry-run mode', async () => {
     const f = fixture();

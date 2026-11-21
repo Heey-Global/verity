@@ -68,6 +68,17 @@ class ManagedTests(unittest.TestCase):
         return managed.provision(self.source, self.relay, self.authority, CONTROL_GID,
                                  self.root, run or self.execute, check, group_setup=lambda *_: None, **kwargs)
 
+    def test_prepare_only_installs_maintenance_without_controller_dependencies(self):
+        installer = self.root / '.verity-install.lock'
+        installer.touch(mode=0o600)
+        self.provision(prepare_only=True, installer_lock=installer)
+        self.assertTrue((self.root / managed.MAINTENANCE_UNIT).exists())
+        self.assertTrue((self.root / managed.MAINTENANCE_TIMER).exists())
+        self.assertFalse((self.root / managed.RECOVERY_UNIT).exists())
+        self.assertFalse((self.root / 'opt/verity-egress').exists())
+        self.assertNotIn(('/usr/bin/systemctl', 'start', managed.SERVICE), self.calls)
+        self.assertIn(('/usr/bin/systemctl', 'enable', '--now', 'verity-egress-maintenance.timer'), self.calls)
+
     def test_protected_toolchain_is_immutable_and_helper_is_transactional(self):
         self.assertTrue(self.provision()['available'])
         release = (self.root / 'opt/verity-egress').resolve()
