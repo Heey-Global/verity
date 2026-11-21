@@ -225,6 +225,17 @@ it('reconsiders an assignment after temporary admission failure', async () => {
   await coordinator.tick();
   expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });
+it('reviews a refused assignment once more, then waits for a change', async () => {
+  const incident = await enroll();
+  const { deps, coordinator } = harness();
+  await coordinator.tick();
+  await answer(incident);
+  await coordinator.tick();
+  await coordinator.tick();
+  await answer(incident);
+  for (let n = 0; n < 4; n++) await coordinator.tick();
+  expect(deps.dispatch).toHaveBeenCalledTimes(2);
+});
 it('releases a review claim when session creation fails before dispatch', async () => {
   await enroll();
   const { deps, coordinator } = harness();

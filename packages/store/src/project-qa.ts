@@ -26,6 +26,7 @@ export interface QAIssue {
   reason: QAIssueReason | null;
   detail: string | null;
   extra_rounds: number;
+  /** Revisions failing when the user deferred, comma-separated. */
   deferred_revision: string | null;
   notified_at: string | null;
   created_at: string;
@@ -211,7 +212,7 @@ export class ProjectQAStore {
         this.db,
       );
     }
-    await sql`update qa_issues q set state = 'open', reason = null, detail = null, notified_at = null, updated_at = now() from repair_incidents i where i.id = ${incidentId} and q.id = i.issue_id and i.state not in ('resolved', 'superseded') and (q.state = 'resolved' or (q.state = 'deferred' and q.deferred_revision is distinct from ${revision}))`.execute(
+    await sql`update qa_issues q set state = 'open', reason = null, detail = null, notified_at = null, updated_at = now() from repair_incidents i where i.id = ${incidentId} and q.id = i.issue_id and i.state not in ('resolved', 'superseded') and (q.state = 'resolved' or (q.state = 'deferred' and not (${revision} = any(string_to_array(coalesce(q.deferred_revision, ''), ',')))))`.execute(
       this.db,
     );
   }
@@ -302,14 +303,16 @@ export class ProjectQAStore {
         );
         return true;
       }
-      const latest = (
+      // Every revision failing now, across all of the issue's resources: only a
+      // revision outside this set reopens a deferred issue.
+      const live = (
         await sql<{
-          revision: string;
-        }>`select revision from repair_incidents where issue_id = ${issueId} order by updated_at desc limit 1`.execute(
+          revisions: string | null;
+        }>`select string_agg(distinct revision, ',') as revisions from repair_incidents where issue_id = ${issueId} and state not in ('resolved', 'superseded')`.execute(
           trx,
         )
-      ).rows[0]?.revision;
-      await sql`update qa_issues set state = ${decision === 'take_over' ? 'taken_over' : 'deferred'}, deferred_revision = ${latest ?? null}, notified_at = coalesce(notified_at, now()), updated_at = now() where id = ${issueId}`.execute(
+      ).rows[0]?.revisions;
+      await sql`update qa_issues set state = ${decision === 'take_over' ? 'taken_over' : 'deferred'}, deferred_revision = ${live ?? null}, notified_at = coalesce(notified_at, now()), updated_at = now() where id = ${issueId}`.execute(
         trx,
       );
       return true;

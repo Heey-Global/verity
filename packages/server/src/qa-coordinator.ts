@@ -100,6 +100,7 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
   const preparing = deps.preparingDispatches ?? new Set<string>();
   let running: Promise<void> | undefined;
   let stopped = false;
+  const reviewedAgain = new Map<string, string>();
 
   async function active(revision: number, projectId: string) {
     const state = await store.qa();
@@ -251,8 +252,12 @@ export function createQACoordinator(deps: QACoordinatorDeps) {
     const after = (await store.incidents(projectId)).filter((i) =>
       answer.assignments.some((a) => a.incidentId === i.id),
     );
-    if (after.every((i) => i.state !== 'open' || i.owner_session_id))
+    // A refused assignment gets one more review of the same state, not one per tick.
+    const retried = reviewedAgain.get(projectId) === snapshot.fingerprint;
+    if (retried || after.every((i) => i.state !== 'open' || i.owner_session_id)) {
+      reviewedAgain.delete(projectId);
       await store.qaAcknowledge(projectId, snapshot.fingerprint);
+    } else reviewedAgain.set(projectId, snapshot.fingerprint);
   }
 
   async function review(qa: QAState, mandate: RepairMandate) {

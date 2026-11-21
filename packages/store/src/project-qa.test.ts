@@ -171,6 +171,16 @@ describe('QA issues', () => {
     await repairs().observe('a', 'pr:4', 'sha2', '{}');
     expect((await qa().issue('a', deferred.id))?.state).toBe('open');
     expect(other.issue_id).toBeDefined();
+    // Deferring a grouped issue holds for every resource's current revision.
+    const left = await repairs().observe('a', 'pr:5', 'l1', '{}');
+    const right = await repairs().observe('a', 'pr:6', 'r1', '{}');
+    expect(await qa().group('a', [left.id, right.id])).toBe(true);
+    const grouped = (await qa().issues('a')).find((i) => i.key === 'pr:5')!;
+    await qa().stop('a', grouped.id, 'beyond-mandate', 'later');
+    await qa().decide('a', grouped.id, 'defer');
+    await repairs().observe('a', 'pr:5', 'l1', '{"again":1}');
+    await repairs().observe('a', 'pr:6', 'r1', '{"again":1}');
+    expect((await qa().issue('a', grouped.id))?.state).toBe('deferred');
   });
 
   it('resolves an issue once none of its incidents is open', async () => {
