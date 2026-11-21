@@ -96,7 +96,7 @@ describe('repair supervision', () => {
   it('stops after two repair rounds and tells the user once', async () => {
     await ctx.store.repairs.configure('a', 'user', 'automatic');
     const h = harness();
-    const stopped = vi.fn();
+    const stopped = vi.fn<NonNullable<RepairSupervisorDeps['stopped']>>();
     h.deps.stopped = stopped;
     // Every repair attempt ends, and the pull request keeps failing on the same head.
     vi.mocked(h.deps.terminated).mockResolvedValue(true);
@@ -110,7 +110,7 @@ describe('repair supervision', () => {
       expect.objectContaining({ key: 'pr:42', state: 'needs_you', reason: 'rounds-exhausted' }),
     ]);
     // Another round from the user lets exactly one more repair start.
-    await ctx.store.repairs.projectQA.decide('a', issues[0].id, 'another_round');
+    await ctx.store.repairs.projectQA.decide('a', issues[0]!.id, 'another_round');
     for (let n = 0; n < 4; n++) await supervisor.sweep();
     expect(h.deps.dispatch).toHaveBeenCalledTimes(3);
   });
