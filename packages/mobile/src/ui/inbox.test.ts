@@ -169,9 +169,9 @@ describe('inboxItems', () => {
       ['Review'],
     ]);
     expect(permissions[0]?.actions[0]).toMatchObject({ kind: 'allow', toolUseId: 't1' });
-    // Allow travels with the complete input, never with only the tool's summary.
-    expect(permissions[0]?.request).toBe(JSON.stringify({ url: 'https://api.exa.ai' }, null, 2));
-    expect(permissions.slice(1).map((item) => item.request)).toEqual([undefined, undefined]);
+    // A short covered address is complete without a second JSON copy.
+    expect(permissions[0]?.lines).toEqual([{ kind: 'code', text: 'https://api.exa.ai' }]);
+    for (const item of permissions) expect(item).not.toHaveProperty('request');
     // An awaiting session whose question IS the permission is not also a question.
     expect(kinds(items)).not.toContain('question');
   });
@@ -199,10 +199,11 @@ describe('inboxItems', () => {
         now: NOW,
       });
       const item = items.find((entry) => entry.kind === 'permission');
-      expect(item?.lines).toEqual(permissionSummary('verity_list_sessions', input).lines);
-      expect(item?.request).toBeUndefined();
-      expect(item?.requestOpen).toBeUndefined();
-      expect(item?.actions.map((action) => action.kind)).toEqual(['allow', 'deny', 'open_session']);
+      expect(item?.lines).toBeUndefined();
+      expect(item?.message).toContain('metadata only');
+      expect(item).not.toHaveProperty('request');
+      expect(item).not.toHaveProperty('requestOpen');
+      expect(labels(item)).toEqual(['Review']);
     },
   );
 
@@ -233,11 +234,11 @@ describe('inboxItems', () => {
     expect(item?.title).toBe('Run trusted command with 2 secrets?');
     expect(item?.lines).toBeUndefined();
     expect(item?.message).toBeUndefined();
-    expect(item?.request).toBeUndefined();
+    expect(item).not.toHaveProperty('request');
     expect(item?.actions).toEqual([{ kind: 'open_session', label: 'Review', sessionId: 'k8s' }]);
   });
 
-  it('words an unknown tool by the field it is about and keeps its raw input', () => {
+  it('shows a known address once without raw input', () => {
     const [item] = inboxItems({
       sessions: [
         session('egress', {
@@ -260,7 +261,40 @@ describe('inboxItems', () => {
     // Home opened on the JSON; the address is what the operator decides on.
     expect(item?.lines).toEqual([{ kind: 'code', text: 'https://api.exa.ai' }]);
     expect(item?.message).toBeUndefined();
-    expect(item?.request).toBe(JSON.stringify({ url: 'https://api.exa.ai' }, null, 2));
+    expect(item).not.toHaveProperty('request');
+  });
+
+  it('keeps an unknown summary as a single preview and reviews the exact session', () => {
+    const [item] = inboxItems({
+      sessions: [
+        session('firewall', {
+          status: 'awaiting_input',
+          permissionAwaitingInput: true,
+          pendingPermissions: ['repair'],
+          pendingPermissionRequests: [
+            {
+              toolUseId: 'repair',
+              tool: 'unknown_repair',
+              riskClass: 'ask',
+              input: {
+                summary: 'The investigation found the build failure. '.repeat(40),
+                changes: ['DNS helper'],
+              },
+            },
+          ],
+        }),
+      ],
+      projects: [project()],
+      now: NOW,
+    });
+    expect(item?.title).toBe('Review request');
+    expect(item?.message).toMatch(/^The investigation/);
+    expect(item?.message?.length).toBeLessThanOrEqual(240);
+    expect(item?.lines).toBeUndefined();
+    expect(item).not.toHaveProperty('request');
+    expect(item?.actions).toEqual([
+      { kind: 'open_session', label: 'Review', sessionId: 'firewall' },
+    ]);
   });
 
   it('never offers a generic Allow for a package install', () => {

