@@ -673,7 +673,7 @@ jobs:
                   test=true
                   ;;
                 # Guides the app help catalog cites; a suite checks they exist.
-                docs/attendee-live-meetings.md|docs/connections.md|docs/file-connections.md|docs/getting-started.md|docs/google-calendar.md|docs/knowledge.md|docs/matrix-knowledge-connector.md|docs/session-coordination.md)
+                docs/assistant.md|docs/attendee-live-meetings.md|docs/connections.md|docs/file-connections.md|docs/getting-started.md|docs/google-calendar.md|docs/knowledge.md|docs/matrix-knowledge-connector.md|docs/session-coordination.md)
                   test=true
                   ;;
                 # Mobile auth callback authorization is covered by a root test.

@@ -33,6 +33,13 @@ Granting needs execute permission on the project and an enabled assistant.
 Revoking needs execute permission too, but works while the assistant is off.
 Verity Control itself can never be granted.
 
+When a request names a project the assistant has no grant for, it does not try
+the request. It tells the user this path and the mode the request needs, because
+in-app links open the current project and cannot point at another project's
+settings. The `projects` action returns the same steps as `grantHelp` without
+naming any project that is not granted, and the `Let the assistant use a project`
+app help topic explains them too.
+
 ## Enforcement
 
 - The assistant session is identified by its stored session id, never by its

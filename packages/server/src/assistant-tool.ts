@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { assistantRequestSchema, type AssistantRequest } from '@verity/events';
+import {
+  ASSISTANT_GRANT_INSTRUCTIONS,
+  ASSISTANT_GRANT_LABELS,
+  ASSISTANT_GRANT_PATH,
+  assistantRequestSchema,
+  type AssistantRequest,
+} from '@verity/events';
 import type { AssistantMode, AssistantSettings, EventStore } from '@verity/store';
 import { OnlineMeetingStartError } from './attendee-meetings.js';
 import {
@@ -110,8 +116,8 @@ export async function requireAssistantGrant(
   )
     throw new ControlPlaneSessionAuthorityError(
       needed === 'delegate'
-        ? `The assistant may not hand work to project ${input.projectId}. Grant "Tasks and sessions" in its Agents settings.`
-        : `The assistant has no access to project ${input.projectId}. Grant access in its Agents settings.`,
+        ? `The assistant may not hand work to project ${input.projectId}. The user can choose "${ASSISTANT_GRANT_LABELS.delegate}" in that project's ${ASSISTANT_GRANT_PATH}.`
+        : `The assistant has no access to project ${input.projectId}. The user can choose "${ASSISTANT_GRANT_LABELS.tasks}" or "${ASSISTANT_GRANT_LABELS.delegate}" in that project's ${ASSISTANT_GRANT_PATH}.`,
     );
   return { userId: initiator?.userId, projectName: `${project.owner}/${project.repo}` };
 }
@@ -280,7 +286,13 @@ export async function executeAssistantTool(
 ): Promise<Record<string, unknown>> {
   await requireAssistantSession(deps.eventStore, input.sessionId);
   const request = assistantRequestSchema.parse(input.request);
-  if (request.action === 'projects') return { projects: await grantedProjects(deps, input) };
+  // grantHelp is fixed text: projects without a grant stay unnamed, so the assistant learns
+  // how a project is granted without learning which other projects exist.
+  if (request.action === 'projects')
+    return {
+      projects: await grantedProjects(deps, input),
+      grantHelp: `Projects not listed here are not granted to you, or do not exist. ${ASSISTANT_GRANT_INSTRUCTIONS}`,
+    };
   if (request.action === 'scheduling') return { requests: await schedulingOverview(deps, input) };
   if (
     request.action === 'meetings' ||
