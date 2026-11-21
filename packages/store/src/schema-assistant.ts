@@ -32,6 +32,12 @@ interface AssistantHandoffsTable {
   user_id: string | null;
   title: string;
   handed_off_at: Date;
+  /** A pg `bigint`, read back as a string. */
+  result_seq: string | null;
+  result_delivered: boolean | null;
+  result_summary: string | null;
+  result_blocker: string | null;
+  result_at: Date | null;
 }
 
 export interface AssistantDatabase {
