@@ -547,7 +547,8 @@ describe('assistant handoff cards', () => {
         {
           t: 'tool_result',
           id: 'h1',
-          output: JSON.stringify({ sessionId: 't1', project: 'team/site', queued: false }),
+          // A nested sessionId must not be taken for the target.
+          output: JSON.stringify({ meta: { sessionId: 'x' }, sessionId: 't1', queued: false }),
           isError: false,
         },
         handoff('h2', 'Second'),

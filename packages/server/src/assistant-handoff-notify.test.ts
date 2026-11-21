@@ -210,6 +210,17 @@ describe('assistant handoff result notices', () => {
     expect(warn).toHaveBeenCalled();
   });
 
+  it('records the result and warns when the push itself fails', async () => {
+    const { deps: d, notify } = deps();
+    const warn = vi.fn();
+    notify.mockRejectedValueOnce(new Error('push service down'));
+    await handOff();
+    await publish();
+    expect(await announceAssistantHandoffResult({ ...d, log: { warn } }, 't1')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.anything(), 'assistant handoff push failed');
+    expect(await ctx.store.assistant.recordedResults('assistant', ['t1'])).toHaveLength(1);
+  });
+
   it('cuts the push text to the limit and keeps a short one whole', () => {
     expect(assistantHandoffPushBody(false, 'Needs your approval.')).toBe(
       'Open: Needs your approval.',

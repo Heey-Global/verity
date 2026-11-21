@@ -187,8 +187,29 @@ export function attachHandoffResults(
 /** The target session a handoff's result names. The output is the tool's JSON answer,
  *  possibly wrapped as MCP text content, so the id is read from its serialized form. */
 function handoffTarget(output: unknown): string | undefined {
-  const serialized = JSON.stringify(output) ?? '';
-  return /\\?"sessionId\\?"\s*:\s*\\?"([A-Za-z0-9_-]{1,128})\\?"/u.exec(serialized)?.[1];
+  const text =
+    typeof output === 'string'
+      ? output
+      : Array.isArray(output)
+        ? output
+            .map((part: unknown) =>
+              typeof part === 'object' && part !== null && 'text' in part ? String(part.text) : '',
+            )
+            .join('')
+        : undefined;
+  let parsed: unknown = output;
+  if (text !== undefined) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
+  const sessionId =
+    typeof parsed === 'object' && parsed !== null
+      ? (parsed as { sessionId?: unknown }).sessionId
+      : undefined;
+  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined;
 }
 
 function toolItem(

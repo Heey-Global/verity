@@ -94,18 +94,23 @@ export async function announceAssistantHandoffResult(
   }).catch((err: unknown) => {
     deps.log.warn({ err, sessionId: assistantSessionId }, 'assistant handoff notice failed');
   });
-  await deps.pushRouter?.notify({
-    key: `assistant-handoff:${targetSessionId}:${String(published.seq)}`,
-    sessionId: assistantSessionId,
-    initiatorUserId: userId,
-    notification: {
-      title: `${name} · ${title}`,
-      body: assistantHandoffPushBody(delivered, summary),
-      categoryId: 'SESSION_STATUS',
-      data: { sessionId: assistantSessionId, kind: 'assistant_handoff' },
-      sound: 'default',
-    },
-  });
+  await deps.pushRouter
+    ?.notify({
+      key: `assistant-handoff:${targetSessionId}:${String(published.seq)}`,
+      sessionId: assistantSessionId,
+      initiatorUserId: userId,
+      notification: {
+        title: `${name} · ${title}`,
+        body: assistantHandoffPushBody(delivered, summary),
+        categoryId: 'SESSION_STATUS',
+        data: { sessionId: assistantSessionId, kind: 'assistant_handoff' },
+        sound: 'default',
+      },
+    })
+    .catch((err: unknown) => {
+      // Claimed, so not retried: the card and the notice still carry the result.
+      deps.log.warn({ err, sessionId: assistantSessionId }, 'assistant handoff push failed');
+    });
   return true;
 }
 

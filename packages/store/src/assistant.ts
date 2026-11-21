@@ -253,6 +253,7 @@ export class AssistantStore {
         result_at = ${input.at}
       where target_session_id = ${input.targetSessionId}
         and assistant_session_id = ${input.assistantSessionId}
+        -- Exact: recordHandoff stores the same JS Date (millisecond precision) it was given.
         and handed_off_at = ${input.handedOffAt}
         and (result_seq is null or result_seq < ${input.seq})
       returning target_session_id`.execute(this.db);
