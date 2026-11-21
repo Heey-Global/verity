@@ -191,14 +191,15 @@ export function createGitHubRateBudget(
       quotas.delete(key);
       quotas.set(key, state);
     } else {
-      state = { observedAt: now(), lockedUntil: 0, secondaryStreak: 0 };
-      quotas.set(key, state);
-      // An active lock is the only thing stopping an exhausted account; never evict it.
-      while (quotas.size > MAX_ACCOUNTS) {
+      // An active lock is the only thing stopping an exhausted account; never evict
+      // it. Evict before inserting so the new account cannot evict itself.
+      while (quotas.size >= MAX_ACCOUNTS) {
         const idle = [...quotas].find(([, entry]) => entry.lockedUntil <= now());
         if (!idle) break;
         quotas.delete(idle[0]);
       }
+      state = { observedAt: now(), lockedUntil: 0, secondaryStreak: 0 };
+      quotas.set(key, state);
     }
     return state;
   };

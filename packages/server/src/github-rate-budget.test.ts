@@ -127,6 +127,14 @@ describe('GitHub rate budget', () => {
     expect(budget.snapshot().quotas.length).toBeLessThanOrEqual(256);
   });
 
+  it('records a new lock even when every retained account is locked', () => {
+    const budget = createGitHubRateBudget({ now: () => 0 });
+    for (let index = 0; index < 256; index++)
+      budget.observe({ url: repoUrl(`locked-${index}`, 'a'), category: 'other', status: 429 });
+    budget.observe({ url: repoUrl('latest', 'a'), category: 'other', status: 429 });
+    expect(budget.lockedUntil(repoUrl('latest', 'a'))).toBe(60_000);
+  });
+
   it('counts but never locks endpoints that belong to no repository', () => {
     const budget = createGitHubRateBudget({ now: () => 0 });
     const listing = 'https://api.github.com/installation/repositories?per_page=100';
