@@ -637,7 +637,8 @@ const styles = StyleSheet.create((theme) => ({
   tileMarkTop: { position: 'absolute', top: -3, right: -3 },
   tileMarkBottom: { position: 'absolute', bottom: -3, right: -3 },
   dotSlot: { width: 32, alignItems: 'center' },
-  // The leading tile (32) and the head's gap after it.
+  // The leading tile (32) and `head`'s gap after it; its own gap repeats
+  // `card`'s, so leading and unleaded cards keep one rhythm. Change them together.
   inset: { paddingLeft: 32 + theme.spacing.md, gap: theme.spacing.md },
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },
