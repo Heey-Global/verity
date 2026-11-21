@@ -184,8 +184,11 @@ export function createControlDiagnosticsTool(deps: {
     };
     if (deps.githubDiagnostics !== undefined) {
       try {
-        const parsed = githubDiagnosticSchema.safeParse(deps.githubDiagnostics());
-        github = parsed.success ? parsed.data : { state: 'failed' };
+        const snapshot = deps.githubDiagnostics();
+        if (snapshot !== undefined) {
+          const parsed = githubDiagnosticSchema.safeParse(snapshot);
+          github = parsed.success ? parsed.data : { state: 'failed' };
+        }
       } catch {
         github = { state: 'failed' };
       }

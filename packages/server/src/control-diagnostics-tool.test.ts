@@ -64,6 +64,11 @@ describe('Control diagnostics', () => {
       events: [{ kind: 'primary', account: 'team', repo: 'app', endpoint: 'pulls' }],
     });
     expect(JSON.stringify(result.github)).not.toContain('secret');
+    const absent = await createControlDiagnosticsTool({
+      ...setup(),
+      githubDiagnostics: () => undefined,
+    })(input);
+    expect(absent.github).toEqual({ state: 'unavailable' });
   });
   it('reports unavailable evidence without inventing health or a cause', async () => {
     const deps = setup();

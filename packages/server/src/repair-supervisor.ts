@@ -195,7 +195,7 @@ export function createRepairSupervisor(deps: RepairSupervisorDeps) {
         )
           continue;
         // Repository monitoring is background work; it must not spend the last quota.
-        if (await deps.deferred?.(project.id)) continue;
+        if (await Promise.resolve(deps.deferred?.(project.id)).catch(() => false)) continue;
         try {
           const pageNumber = Math.max(1, Math.min(100, Number(mandate.cursor) || 1));
           const { page, statuses } = await deps.discover(project, pageNumber);

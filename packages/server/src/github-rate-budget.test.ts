@@ -117,6 +117,16 @@ describe('GitHub rate budget', () => {
     expect(budget.lockedUntil(repoUrl('team', 'a')) - now).toBe(15 * 60_000);
   });
 
+  it('keeps an active lock when many other accounts are observed', () => {
+    const budget = createGitHubRateBudget({ now: () => 0 });
+    budget.observe({ url: repoUrl('locked', 'a'), category: 'other', status: 429 });
+    for (let index = 0; index < 300; index++)
+      budget.observe({ url: repoUrl(`account-${index}`, 'a'), category: 'other', status: 200 });
+    // Evicting the lock would let every repository resume spending an exhausted quota.
+    expect(budget.lockedUntil(repoUrl('locked', 'b'))).toBe(60_000);
+    expect(budget.snapshot().quotas.length).toBeLessThanOrEqual(256);
+  });
+
   it('treats a permission denial as an ordinary failure', () => {
     const budget = createGitHubRateBudget();
     budget.observe({

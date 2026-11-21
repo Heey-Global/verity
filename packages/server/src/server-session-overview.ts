@@ -566,8 +566,7 @@ export function createServerSessionOverview({
         if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
           continue;
         // Near quota exhaustion background discovery yields to agents and open apps.
-        if (session.projectId && (await deps.deferBackgroundForgeReads?.(session.projectId)))
-          continue;
+        if (session.projectId && (await deferForgeReads(session.projectId))) continue;
         try {
           if (!(await worktreeExists(session.worktree))) continue;
           await maybeDispatchPrRepairTurns(session, await backgroundPrStatus(session));
@@ -595,12 +594,17 @@ export function createServerSessionOverview({
     clearInterval(prRepairTimer);
     await prRepairSweep;
   });
+  // A failing quota check must not abort the sweep; it only forgoes the deferral.
+  const deferForgeReads = (projectId: string): Promise<boolean> =>
+    Promise.resolve()
+      .then(() => deps.deferBackgroundForgeReads?.(projectId) ?? false)
+      .catch(() => false);
   const prActivityRefresh = createPrActivityRefresh({
     refresh: async (sessionId) => {
       const session = await deps.eventStore.getSession(sessionId);
       if (prRepairStopped || session === undefined || !(await backgroundPr.allows(session))) return;
       invalidateBranchCache(session.worktree);
-      if (session.projectId && (await deps.deferBackgroundForgeReads?.(session.projectId))) {
+      if (session.projectId && (await deferForgeReads(session.projectId))) {
         resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
         return;
       }

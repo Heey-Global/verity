@@ -87,6 +87,10 @@ describe('repair supervision', () => {
     deferred.mockResolvedValue(false);
     await createRepairSupervisor({ ...h.deps, deferred }).sweep();
     expect(h.deps.discover).toHaveBeenCalledTimes(1);
+    // A failing quota check forgoes the deferral instead of aborting the sweep.
+    deferred.mockRejectedValue(new Error('provider unavailable'));
+    await createRepairSupervisor({ ...h.deps, deferred }).sweep();
+    expect(h.deps.discover).toHaveBeenCalledTimes(2);
   });
   it('discovers a sessionless Renovate failure without running agents in monitor mode', async () => {
     await ctx.store.repairs.configure('a', 'user', 'monitor');

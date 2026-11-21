@@ -122,9 +122,16 @@ export function githubRequestTarget(url: string | URL): Target | undefined {
       : rest[0] === 'commits' && rest[2] !== undefined
         ? rest[2]
         : rest[0]!;
+  const decode = (segment: string) => {
+    try {
+      return decodeURIComponent(segment).toLowerCase();
+    } catch {
+      return segment.toLowerCase();
+    }
+  };
   return {
-    account: decodeURIComponent(parts[1]!).toLowerCase(),
-    repo: decodeURIComponent(parts[2]!).toLowerCase(),
+    account: decode(parts[1]!),
+    repo: decode(parts[2]!),
     resource,
     endpoint: /^[a-z_-]{1,40}$/u.test(endpoint) ? endpoint : 'other',
   };
@@ -174,7 +181,12 @@ export function createGitHubRateBudget(
     if (!state) {
       state = { observedAt: now(), lockedUntil: 0, secondaryStreak: 0 };
       quotas.set(key, state);
-      while (quotas.size > MAX_ACCOUNTS) quotas.delete(quotas.keys().next().value!);
+      // An active lock is the only thing stopping an exhausted account; never evict it.
+      while (quotas.size > MAX_ACCOUNTS) {
+        const idle = [...quotas].find(([, entry]) => entry.lockedUntil <= now());
+        if (!idle) break;
+        quotas.delete(idle[0]);
+      }
     }
     return state;
   };
@@ -300,8 +312,10 @@ export function createGitHubRateBudget(
           resource,
           retryAt: new Date(until).toISOString(),
         });
-      state.lockedUntil = Math.max(state.lockedUntil, until);
-      state.lockKind = kind;
+      if (until > state.lockedUntil) {
+        state.lockedUntil = until;
+        state.lockKind = kind;
+      }
     },
     snapshot(): GitHubRateSnapshot {
       const at = now();

@@ -361,3 +361,24 @@ it('pauses discovery of another repository after the installation quota is exhau
     discovery: { suppressed: 1 },
   });
 });
+
+it('forgets the merged repository validators so the next status read is unconditional', async () => {
+  const fetch = vi
+    .fn<HttpFetch>()
+    .mockResolvedValueOnce(response([], 200, { etag: '"before-merge"' }))
+    .mockResolvedValueOnce(response({ merged: true }))
+    .mockResolvedValue(response([]));
+  const service = createGitHubPrService({
+    repoDir: '',
+    identity,
+    token: 'fixture',
+    fetch,
+    ttlMs: 0,
+    negativeTtlMs: 0,
+  });
+  await service.prStatusForBranch('feature');
+  expect(await service.mergePr(1)).toBe(true);
+  await service.prStatusForBranch('feature');
+  // A stale validator could answer 304 with the pre-merge pull request.
+  expect(fetch.mock.calls.at(-1)?.[1]?.headers?.['If-None-Match']).toBeUndefined();
+});
