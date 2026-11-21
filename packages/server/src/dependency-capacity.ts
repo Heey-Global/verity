@@ -142,8 +142,16 @@ export class DependencyCapacity {
   private async retire(lease: CapacityLease): Promise<CapacityLease> {
     // The broker tombstones the original inode while holding it exclusively.
     // A missing file or a client-reported exit never counts as retirement.
-    const state = await this.broker(lease, 'retire');
-    if (state === 'held') return lease;
+    let state = await this.broker(lease, 'retire');
+    if (state === 'unknown' && lease.state === 'reserved') {
+      // No start acknowledgement can precede the durable started transition.
+      // Recover a crash before broker creation by establishing its UUID fence;
+      // only the exclusive retirement proof then releases the allowance.
+      const created = await this.broker(lease, 'create');
+      if (created === 'idle' || created === 'held' || created === 'retired')
+        state = await this.broker(lease, 'retire');
+    }
+    if (state === 'held' || (state === 'unknown' && lease.state === 'reserved')) return lease;
     return this.move(lease, state === 'retired' ? 'settled' : 'uncertain');
   }
 
@@ -202,7 +210,7 @@ export class DependencyCapacity {
         if (lease.state !== 'settled') {
           const state = await this.broker(lease, 'create');
           if (state !== 'idle' && state !== 'held') {
-            lease = await this.move(lease, 'uncertain');
+            // Still reserved: no start acknowledgement or dependency writes occurred.
             throw new Error('Dependency capacity broker could not establish the operation lock.');
           }
         }

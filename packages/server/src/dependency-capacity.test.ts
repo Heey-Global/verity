@@ -372,7 +372,7 @@ it('keeps persisted pressure when broker creation cannot establish the operation
   f.broker.override = (lease) => f.broker.reply(lease, 'unknown');
   await expect(f.manager.request(owner, value)).rejects.toThrow(/could not establish/u);
   expect(f.manager.pressure()).toEqual({ bytes: 60, inodes: 10 });
-  expect(f.store.rows.get(value.id)?.state).toBe('uncertain');
+  expect(f.store.rows.get(value.id)?.state).toBe('reserved');
   await expect(f.manager.request(owner, value)).rejects.toThrow(/could not establish/u);
   expect(f.store.reserveCalls).toBe(1);
 });
@@ -471,4 +471,36 @@ it('fails closed on unsafe aggregate arithmetic and bounds diagnostic samples', 
     reservedInodes: 21,
   });
   expect(f.manager.diagnostics().leases).toHaveLength(20);
+});
+
+it('recovers a crash after persistence but before broker creation without releasing started writers', async () => {
+  const f = fixture();
+  const lease = persisted({ state: 'reserved' });
+  f.store.rows.set(lease.id, lease);
+  await f.manager.initialize();
+  await f.manager.reconcile();
+  expect(f.broker.calls.map((value) => value.action)).toEqual(['retire', 'create', 'retire']);
+  expect(f.store.rows.get(lease.id)?.state).toBe('settled');
+  expect(f.manager.pressure()).toEqual({ bytes: 0, inodes: 0 });
+  expect((await f.manager.request(owner, { action: 'start', id: lease.id })).admitted).toBe(false);
+});
+
+it('retries an unavailable never-started broker after restart and never reopens an uncertain writer', async () => {
+  const f = fixture();
+  const lease = persisted({ state: 'reserved' });
+  f.store.rows.set(lease.id, lease);
+  f.broker.override = (value) => f.broker.reply(value, 'unknown');
+  await f.manager.initialize();
+  await f.manager.reconcile();
+  expect(f.store.rows.get(lease.id)?.state).toBe('reserved');
+  f.broker.override = undefined;
+  const restarted = f.reopen();
+  await restarted.reconcile();
+  expect(restarted.pressure()).toEqual({ bytes: 0, inodes: 0 });
+  const other = fixture();
+  const writing = persisted({ state: 'started' });
+  other.store.rows.set(writing.id, writing);
+  await other.manager.reconcile();
+  expect(other.broker.calls.map((value) => value.action)).toEqual(['retire']);
+  expect(other.manager.pressure()).toEqual({ bytes: writing.bytes, inodes: writing.inodes });
 });
