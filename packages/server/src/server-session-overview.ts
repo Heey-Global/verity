@@ -610,8 +610,16 @@ export function createServerSessionOverview({
       }
       // Tool activity can only change this session's branches. Forgetting the whole
       // repository here re-read every other session's pull request on each tool call.
+      // The checked-out branch always counts; an empty or failed lookup falls back
+      // to forgetting the whole repository rather than serving a stale status.
       const branches = await branchesForSession(session)
-        .then((service) => service?.sessionBranches(session.worktree))
+        .then(async (service) => {
+          if (!service) return undefined;
+          const listed = await service.sessionBranches(session.worktree);
+          const all = [...new Set([await service.current(session.worktree), ...listed])];
+          return all.filter((branch) => branch !== '');
+        })
+        .then((all) => (all && all.length > 0 ? all : undefined))
         .catch(() => undefined);
       if (!invalidatePrSummaryAction(session, true, branches)) return;
       // Near quota exhaustion the stale status is still forgotten, so the next

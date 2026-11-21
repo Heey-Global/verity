@@ -106,7 +106,7 @@ interface Target {
 export function githubRequestTarget(url: string | URL): Target | undefined {
   let parsed: URL;
   try {
-    parsed = typeof url === 'string' ? new URL(url) : url;
+    parsed = url instanceof URL ? url : new URL(String(url));
   } catch {
     return undefined;
   }
@@ -261,9 +261,8 @@ export function createGitHubRateBudget(
       const { status, headers, category } = observation;
       count(category, status === 304 ? 'notModified' : 'requests');
       if (target.repo === undefined) return;
-      const reported = header(headers, 'x-ratelimit-resource');
-      const resource =
-        reported !== null && /^[a-z_]{1,40}$/u.test(reported) ? reported : target.resource;
+      // Keyed by the path-derived resource so the lock is enforced where it is read.
+      const resource = target.resource;
       const state = quotaFor(target.account, resource);
       const limit = numeric(header(headers, 'x-ratelimit-limit'));
       const remaining = numeric(header(headers, 'x-ratelimit-remaining'));

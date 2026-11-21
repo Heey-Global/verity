@@ -50,7 +50,8 @@ describe('PR status refresh after agent activity', () => {
       conductor,
       branches: {
         ...branchSvc,
-        sessionBranches: async () => ['feat/one', 'feat/two'],
+        // The checked-out branch (feat/one) is missing from the tracked list on purpose.
+        sessionBranches: async () => ['feat/two'],
       } as unknown as NonNullable<ServerDeps['branches']>,
       branchPrStatusForBranches,
       invalidateProjectPrStatus,
