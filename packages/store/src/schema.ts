@@ -5,6 +5,7 @@ import type { PeopleDatabase } from './schema-people.js';
 import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
 import type { ProjectInquiryDatabase } from './schema-project-inquiries.js';
 import type { SandboxDatabase } from './schema-sandbox.js';
+import type { ProjectQADatabase } from './schema-project-qa.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
 export interface WikiOccasionsTable {
@@ -1756,6 +1757,7 @@ export interface Database
     PeopleDatabase,
     SandboxDatabase,
     SessionCoordinationDatabase,
+    ProjectQADatabase,
     BrokeredApprovalDatabase,
     ProjectInquiryDatabase {
   wiki_occasions: WikiOccasionsTable;
@@ -1771,12 +1773,10 @@ export interface Database
   qa_assignment_notifications: QAAssignmentNotificationsTable;
   repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
-  repair_incidents: RepairIncidentsTable;
   repair_workflow_heads: RepairWorkflowHeadsTable;
   repair_attempts: RepairAttemptsTable;
   repair_session_history: RepairSessionHistoryTable;
   repair_session_origins: RepairSessionOriginsTable;
-  qa_coordinator: QACoordinatorTable;
   qa_inbox: QAInboxTable;
   qa_proposals: QAProposalsTable;
   qa_decisions: QADecisionsTable;
@@ -1994,21 +1994,6 @@ interface RepairMandatesTable {
   health: Generated<string>;
   checked_at: Date | null;
 }
-interface RepairIncidentsTable {
-  verified_success: Generated<boolean>;
-  repair_pr: number | null;
-  id: string;
-  project_id: string;
-  resource: string;
-  revision: string;
-  evidence: string;
-  state: Generated<import('./repair-supervision.js').RepairIncident['state']>;
-  owner_session_id: string | null;
-  last_session_id: string | null;
-  attempts: Generated<number>;
-  dispatch_id: string | null;
-  updated_at: Generated<Date>;
-}
 interface RepairWorkflowHeadsTable {
   project_id: string;
   workflow: string;
@@ -2087,20 +2072,6 @@ interface SchedulingHoldsTable {
   next_attempt_at: Date | null;
   last_error: string | null;
   updated_at: Generated<Date>;
-}
-interface QACoordinatorTable {
-  id: number;
-  enabled: Generated<boolean>;
-  revision: Generated<number>;
-  sponsor: string | null;
-  session_id: string | null;
-  health: Generated<string>;
-  active_dispatch: string | null;
-  active_seq: ColumnType<string | null, string | number | null, string | number | null>;
-  active_revision: number | null;
-  active_snapshot: string | null;
-  wake_day: string | null;
-  wakes: Generated<number>;
 }
 interface QAInboxTable {
   project_id: string;

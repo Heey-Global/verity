@@ -571,6 +571,14 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
   ],
   [
     routeScopeKey('PUT', '/projects/:id/repairs'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/qa'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/qa/issues/:issueId/decision'),
     { kind: 'project', parameter: 'id', permission: 'execute' },
   ],
   [

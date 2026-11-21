@@ -326,3 +326,35 @@ export async function truncateAll(db: Kysely<Database>): Promise<void> {
     values ('00000000-0000-4000-8000-000000000001', 'administrator', 'active')`.execute(trx);
   });
 }
+
+/** Makes an existing session the QA role of `projectId` (created when missing). */
+export async function assignProjectQA(
+  store: EventStore,
+  projectId: string,
+  sessionId: string,
+): Promise<void> {
+  if (!(await store.getProject(projectId)))
+    await store.upsertProject({
+      id: projectId,
+      owner: 'team',
+      repo: projectId,
+      containerName: projectId,
+      state: 'active',
+    });
+  await store.repairs.projectQA.ensureRole(projectId);
+  await store.repairs.projectQA.attachSession(projectId, sessionId);
+}
+
+/** {@link assignProjectQA}, then reserves one review, switching QA on if it is off. */
+export async function reserveProjectQAReview(
+  store: EventStore,
+  sessionId: string,
+  projectId = 'qa-project',
+): Promise<string> {
+  if (!(await store.repairs.qa()).enabled) await store.repairs.configureQA(true, 'admin');
+  await assignProjectQA(store, projectId, sessionId);
+  const revision = (await store.repairs.qa()).revision;
+  const id = await store.repairs.projectQA.claimReview(projectId, revision, '[]', 0);
+  if (!id) throw new Error('No QA review could be reserved');
+  return id;
+}

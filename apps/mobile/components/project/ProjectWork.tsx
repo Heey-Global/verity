@@ -59,10 +59,12 @@ import { isLinkableSession } from '../../lib/sessionLinks';
 import { useSessionPreviews } from '../../lib/sessionPreviews';
 import { useUnread } from '../../hooks/useUnread';
 
-export type WorkFilter = 'now' | 'all' | 'favorites';
+/** `qa`: the sessions the project's QA started or sent repairs to. */
+export type WorkFilter = 'now' | 'all' | 'favorites' | 'qa';
 
 const EMPTY: Record<Exclude<WorkFilter, 'now'>, string> = {
   all: 'No sessions in this project yet.',
+  qa: 'QA has not worked in any session here.',
   favorites:
     Platform.OS === 'web'
       ? 'No favorites. Right-click a session to add one.'
@@ -104,6 +106,7 @@ const IN_PLACE: ReadonlySet<InboxAction['kind']> = new Set([
   'merge',
   'resume',
   'repair_project',
+  'qa_decision',
 ]);
 
 export { isActive };
@@ -117,7 +120,12 @@ export type NeedsYouEntry = SessionWorkEntry;
 export const nowSections = sessionWorkSections;
 
 /** Which sessions the All and favorites filters keep. */
-export function workFilter(session: SessionSummary, filter: Exclude<WorkFilter, 'now'>): boolean {
+export function workFilter(
+  session: SessionSummary,
+  filter: Exclude<WorkFilter, 'now'>,
+  qaSessions?: ReadonlySet<string>,
+): boolean {
+  if (filter === 'qa') return qaSessions?.has(session.sessionId) === true;
   return filter === 'all' || session.favorite === true;
 }
 
@@ -213,6 +221,7 @@ export function ProjectWork({
   sessions: serverSessions,
   feed,
   leadingRows = [],
+  qaSessions,
   initialFilter = 'now',
   layoutRevision = 0,
   overview = false,
@@ -234,6 +243,8 @@ export function ProjectWork({
   feed?: InboxFeed | undefined;
   /** Rows the page adds at the top of "Needs you", such as severe findings. */
   leadingRows?: readonly ReactElement[];
+  /** Sessions QA started or sent repairs to: marked "From QA" and filterable. */
+  qaSessions?: ReadonlySet<string> | undefined;
   initialFilter?: WorkFilter;
   /** Home reuses the same list without the project-only toolbar. */
   overview?: boolean;
@@ -255,6 +266,10 @@ export function ProjectWork({
     [serverSessions, removedIds],
   );
   const [filter, setFilter] = useState<WorkFilter>(initialFilter);
+  // The From QA chip disappears once QA has no sessions here; its filter goes with it.
+  useEffect(() => {
+    if (filter === 'qa' && !qaSessions?.size) setFilter('all');
+  }, [filter, qaSessions]);
   // The key, not the item: the sheet follows the live feed, so a question
   // answered elsewhere while it is open closes it instead of offering stale
   // answers to a session that no longer waits.
@@ -320,8 +335,9 @@ export function ProjectWork({
     return map;
   }, [items]);
   const freshListed = useMemo(
-    () => (filter === 'now' ? [] : ordered.filter((session) => workFilter(session, filter))),
-    [filter, ordered],
+    () =>
+      filter === 'now' ? [] : ordered.filter((session) => workFilter(session, filter, qaSessions)),
+    [filter, ordered, qaSessions],
   );
   // Store identity and placement only: every row still reads live status/actions.
   const [layout, setLayout] = useState(() => ({
@@ -372,7 +388,9 @@ export function ProjectWork({
   const ids = retain(
     filter === 'favorites'
       ? layout.ids.filter((id) => live.get(id)?.favorite === true)
-      : layout.ids,
+      : filter === 'qa'
+        ? layout.ids.filter((id) => qaSessions?.has(id) === true)
+        : layout.ids,
     freshListed.map((s) => s.sessionId),
   );
   if (reset || layout.source !== sessions || layout.nowSource !== freshNow) {
@@ -427,6 +445,9 @@ export function ProjectWork({
     { value: 'now', label: nowCount > 0 ? `Now · ${String(nowCount)}` : 'Now' },
     { value: 'all', label: 'All' },
     { value: 'favorites', label: 'Favorites', icon: 'star' },
+    ...(qaSessions?.size
+      ? [{ value: 'qa' as const, label: `From QA · ${String(qaSessions.size)}` }]
+      : []),
   ];
   const [settings, setSettings] = useState<{
     session: SessionSummary;
@@ -567,9 +588,13 @@ export function ProjectWork({
     const { working, unread } = activityOf(session);
     const context = overview ? projects.find((p) => p.id === session.projectId) : undefined;
     const subtitle = waiting?.subtitle ?? workSubtitle(session, unread);
-    const displaySubtitle = context
-      ? `${projectDisplayName(context)} · ${subtitle ?? ''}`
-      : subtitle;
+    const marked =
+      qaSessions?.has(session.sessionId) === true
+        ? subtitle
+          ? `From QA · ${subtitle}`
+          : 'From QA'
+        : subtitle;
+    const displaySubtitle = context ? `${projectDisplayName(context)} · ${marked ?? ''}` : marked;
     const item = waiting?.item;
     const tile = tileOf(session);
     const agent = sessionAgentMark({ status: session.status, working, unread });
