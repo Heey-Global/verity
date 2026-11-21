@@ -126,6 +126,19 @@ describe('QA issues', () => {
     expect(new Set((await repairs().incidents('a')).map((i) => i.issue_id)).size).toBe(3);
   });
 
+  it('never lets QA repair an incident that is not filed under an issue', async () => {
+    await repairs().configure('a', 'admin', 'automatic');
+    const incident = await repairs().observe('a', 'pr:1', 'sha', '{}');
+    await sql`update repair_incidents set issue_id = null where id = ${incident.id}`.execute(
+      ctx.db,
+    );
+    expect(await repairs().claim(incident.id, 's1', 1)).toBeUndefined();
+    // The next observation files it again, and only then may a repair start.
+    await repairs().observe('a', 'pr:1', 'sha', '{}');
+    expect(await repairs().claim(incident.id, 's1', 1)).toBeDefined();
+    expect(await repairs().claim(incident.id, 's2', 1)).toBeUndefined();
+  });
+
   it('refuses to group incidents of another project', async () => {
     const one = await repairs().observe('a', 'pr:1', 'sha', '{}');
     const foreign = await repairs().observe('b', 'pr:1', 'sha', '{}');
