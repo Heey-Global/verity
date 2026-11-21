@@ -603,12 +603,12 @@ describe('assistant handoff cards', () => {
       projectId: 'site',
     });
     await ctx.store.assistant.recordHandoff({
-      assistantSessionId: 'assistant',
       targetSessionId: 't1',
+      assistantSessionId: 'assistant',
       projectId: 'site',
+      userId: 'u1',
       title: 'Backup check',
-      briefingSha256: 'a'.repeat(64),
-      at: new Date(1_000),
+      handedOffAt: new Date(1_000),
     });
     await ctx.store.assistant.claimResult({
       assistantSessionId: 'assistant',

@@ -180,7 +180,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     eventStore: deps.eventStore,
     bus: deps.bus,
     pushRouter,
-    initiatorOf: async (sessionId) => pushFirePoints?.initiatorOf(sessionId),
     permitted: (...args) => assistantToolDeps.permitted(...args),
     log: app.log,
   });

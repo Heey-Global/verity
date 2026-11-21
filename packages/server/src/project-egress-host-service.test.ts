@@ -96,11 +96,13 @@ describe('supported host contract', () => {
     verifyProjectEgressDockerHost(host);
     verifyProjectEgressDockerHost({ ...host, ServerVersion: '29.8.0' });
     verifyProjectEgressDockerHost({ ...host, ServerVersion: '29.9.3' });
+    verifyProjectEgressDockerHost({ ...host, ServerVersion: '29.10.0' });
     for (const bad of [
       { ...host, OSType: 'windows' },
       { ...host, ServerVersion: 'unverified' },
       { ...host, ServerVersion: '29.8.1' },
       { ...host, ServerVersion: '29.9.4' },
+      { ...host, ServerVersion: '29.10.1' },
       { ...host, ServerVersion: '30.0.0' },
       { ...host, LiveRestoreEnabled: true },
       { ...host, SecurityOptions: ['name=rootless'] },

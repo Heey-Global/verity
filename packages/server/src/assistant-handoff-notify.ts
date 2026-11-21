@@ -1,7 +1,7 @@
 import type { EventBus } from '@verity/session';
 import { ASSISTANT_HANDOFF_SUMMARY_MAX, type EventStore } from '@verity/store';
 
-import { readHandoffOutcome, type AssistantToolDeps } from './assistant-tool.js';
+import { readDelegatedOutcome, type AssistantToolDeps } from './assistant-tool.js';
 import type { PushRouter } from './push-router.js';
 import { emitNotice } from './session-event-writer.js';
 import { redactSessionObservationText } from './session-observation.js';
@@ -14,8 +14,6 @@ export interface AssistantHandoffNoticeDeps {
   bus: EventBus;
   /** Absent without push; the card and the notice still carry the result. */
   pushRouter?: Pick<PushRouter, 'notify'> | undefined;
-  /** The user whose turns the assistant session runs, who receives the push. */
-  initiatorOf?(sessionId: string): Promise<string | undefined>;
   permitted: AssistantToolDeps['permitted'];
   log: { warn(details: object, message: string): void };
 }
@@ -45,8 +43,8 @@ export async function announceAssistantHandoffResult(
   const assistantSessionId = settings.session_id;
   if (!settings.enabled || assistantSessionId === null || assistantSessionId === targetSessionId)
     return false;
-  const handoff = await deps.eventStore.assistant.handoff(assistantSessionId, targetSessionId);
-  if (handoff === undefined) return false;
+  const handoff = await deps.eventStore.assistant.handoff(targetSessionId);
+  if (handoff?.assistant_session_id !== assistantSessionId) return false;
   const grant = await deps.eventStore.assistant.grant(handoff.project_id);
   const project = await deps.eventStore.getProject(handoff.project_id);
   const target = await deps.eventStore.getSession(targetSessionId);
@@ -59,12 +57,11 @@ export async function announceAssistantHandoffResult(
     target?.projectId !== handoff.project_id
   )
     return false;
-  // The user behind the assistant's turns; between turns, the one who switched it on.
-  const userId =
-    (await deps.initiatorOf?.(assistantSessionId)) ?? settings.sponsor_user_id ?? undefined;
+  // The user the work was delegated for; without one (auth off), who switched the assistant on.
+  const userId = handoff.user_id ?? settings.sponsor_user_id ?? undefined;
   if (!(await deps.permitted(userId, handoff.project_id, 'read'))) return false;
 
-  const { published } = await readHandoffOutcome(deps, handoff);
+  const published = await readDelegatedOutcome(deps, handoff);
   if (published === undefined) return false;
   const summary = redactSessionObservationText(published.event.summary).slice(
     0,
@@ -77,7 +74,7 @@ export async function announceAssistantHandoffResult(
   const claimed = await deps.eventStore.assistant.claimResult({
     assistantSessionId,
     targetSessionId,
-    handedOffAt: handoff.created_at,
+    handedOffAt: handoff.handed_off_at,
     seq: published.seq,
     delivered,
     summary,

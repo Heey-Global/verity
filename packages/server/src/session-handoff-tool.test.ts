@@ -1,9 +1,4 @@
-import {
-  ASSISTANT_HANDOFF_CLOSING_REQUEST,
-  LIST_SESSIONS_FIELDS,
-  LIST_SESSIONS_MAX_ENTRIES,
-} from '@verity/events';
-import { isAssistantBriefing } from './assistant-tool.js';
+import { LIST_SESSIONS_FIELDS, LIST_SESSIONS_MAX_ENTRIES } from '@verity/events';
 import type { ProjectRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -47,6 +42,7 @@ function facts(
 ): ControlPlaneSessionFacts {
   return {
     projectId: 'k8s',
+    name: null,
     model: 'claude-opus-5',
     status: 'idle',
     resumable: true,
@@ -92,6 +88,7 @@ function harness(
     authorizeKnowledgeCaller?: ControlPlaneSessionToolDeps['authorizeKnowledgeCaller'];
     canAccessKnowledgeTarget?: ControlPlaneSessionToolDeps['canAccessKnowledgeTarget'];
     authorizeHandoffTarget?: ControlPlaneSessionToolDeps['authorizeHandoffTarget'];
+    recordHandoff?: ControlPlaneSessionToolDeps['recordHandoff'];
   } = {},
 ) {
   const dispatchTurn = vi.fn(overrides.dispatchTurn ?? (async () => ({ queued: false })));
@@ -110,6 +107,7 @@ function harness(
     authorizeKnowledgeCaller: overrides.authorizeKnowledgeCaller,
     canAccessKnowledgeTarget: overrides.canAccessKnowledgeTarget,
     authorizeHandoffTarget: overrides.authorizeHandoffTarget,
+    recordHandoff: overrides.recordHandoff,
     getSession: async (sessionId) => {
       if (sessionId === 'control-session') return { projectId: CONTROL_PROJECT_ID };
       // A Control session from before sessions carried a project id.
@@ -366,8 +364,7 @@ describe('verity_list_sessions', () => {
     // field, so anything not named in `ControlPlaneSessionEntry` is dropped at the boundary.
     const leaky = {
       ...facts({ sessionId: 'sess-k8s' }),
-      // `name` is on the summary the route reads from, and is left off deliberately: an
-      // unnamed session is auto-titled by its own model from the first prompt.
+      // Auto-titles are visible metadata; unrelated conversation fields stay private.
       name: 'fix the checkout crash for ACME',
       lastMessage: 'the operator said something private',
       worktree: '/work/.verity-sessions/agent-1',
@@ -392,6 +389,7 @@ describe('verity_list_sessions', () => {
     // in `LIST_SESSIONS_FIELDS` for the assertion to hold.
     const declared: Record<keyof ControlPlaneSessionEntry, true> = {
       sessionId: true,
+      name: true,
       projectId: true,
       project: true,
       model: true,
@@ -408,7 +406,7 @@ describe('verity_list_sessions', () => {
     expect(Object.keys(declared).sort()).toEqual(promised);
     expect([...new Set(sessions.flatMap((entry) => Object.keys(entry)))].sort()).toEqual(promised);
     expect(JSON.stringify(sessions)).not.toContain('private');
-    expect(JSON.stringify(sessions)).not.toContain('ACME');
+    expect(sessions[0]?.name).toBe(leaky.name);
     expect(JSON.stringify(sessions)).not.toContain('.verity-sessions');
   });
 
@@ -453,6 +451,80 @@ describe('verity_list_sessions', () => {
 });
 
 describe('verity_session_handoff', () => {
+  it('asks the target for a short published outcome, in Verity’s own words', async () => {
+    const { tools, dispatchTurn, call } = harness();
+    await tools.handoff(
+      call({ target: { sessionId: 'sess-web' }, title: 'Backup check', briefing: 'Look.' }),
+    );
+    const { prompt, displayPrompt } = dispatchTurn.mock.calls[0]![0];
+    // The request sits in the server-written lead, before anything the caller wrote; without
+    // it a sender that cannot read the transcript never hears back.
+    for (const text of [prompt, displayPrompt]) {
+      expect(text.slice(0, text.indexOf('Title: '))).toContain('verity_publish_session_progress');
+      // Sentences joined across string literals must not run together.
+      expect(text).not.toMatch(/\.[A-Z]/u);
+    }
+  });
+
+  it('still reports a delivered briefing when recording it fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { tools, call, dispatchTurn } = harness({
+      recordHandoff: async () => {
+        throw new Error('database unavailable');
+      },
+    });
+    // A refusal here would read as "not delivered" and invite a second, duplicate briefing.
+    await expect(
+      tools.handoff(
+        call({ target: { sessionId: 'sess-web' }, title: 'Backup', briefing: 'Look.' }),
+      ),
+    ).resolves.toMatchObject({ sessionId: 'sess-web' });
+    expect(dispatchTurn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not recorded'));
+    warn.mockRestore();
+  });
+
+  it('records a delivered handoff with a time taken before delivery, and no refused one', async () => {
+    const recordHandoff = vi.fn(async () => {});
+    let deliveredAt = 0;
+    const { tools, call } = harness({
+      recordHandoff,
+      dispatchTurn: async () => {
+        deliveredAt = Date.now();
+        return { queued: false };
+      },
+    });
+    await tools.handoff(
+      call({ target: { sessionId: 'sess-web' }, title: 'Backup check', briefing: 'Look.' }),
+    );
+    expect(recordHandoff).toHaveBeenCalledOnce();
+    const recorded = (recordHandoff.mock.calls[0] as unknown[])[0] as {
+      handedOffAt: Date;
+    };
+    expect(recorded).toMatchObject({
+      callerSessionId: 'control-session',
+      turnId: 'turn-1',
+      targetSessionId: 'sess-web',
+      projectId: 'website',
+      title: 'Backup check',
+    });
+    // A summary the target publishes in answer must never predate the recorded handoff.
+    expect(recorded.handedOffAt.getTime()).toBeLessThanOrEqual(deliveredAt);
+
+    const failing = harness({
+      recordHandoff,
+      dispatchTurn: async () => {
+        throw new Error('delivery failed');
+      },
+    });
+    await expect(
+      failing.tools.handoff(
+        failing.call({ target: { sessionId: 'sess-web' }, title: 'Again', briefing: 'Look.' }),
+      ),
+    ).rejects.toThrow('delivery failed');
+    expect(recordHandoff).toHaveBeenCalledOnce();
+  });
+
   it('delivers the briefing wrapped as agent material and reports it ran immediately', async () => {
     const { tools, dispatchTurn, call } = harness();
     await expect(
@@ -465,6 +537,7 @@ describe('verity_session_handoff', () => {
       ),
     ).resolves.toEqual({
       sessionId: 'sess-web',
+      name: null,
       project: 'acme/website',
       queued: false,
       briefingSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
@@ -490,40 +563,6 @@ describe('verity_session_handoff', () => {
     // request MAC, fresh callId — is memoized into the first delivery rather than dispatched
     // a second time, while a deliberate repeat from a later turn still gets through.
     expect(dispatchTurn.mock.calls[0]![0].idempotencyKey).toBe('handoff:turn-1:invocation-1');
-  });
-
-  it('appends a route-set closing request after the briefing, outside the briefing hash', async () => {
-    const { tools, dispatchTurn, call } = harness();
-    const request = { target: { sessionId: 'sess-web' }, title: 't', briefing: 'Check it.' };
-    const plain = await tools.handoff(call(request));
-    const closed = await tools.handoff({
-      ...call(request),
-      closingRequest: 'Publish the outcome.',
-    });
-    // The hash names the agent-written briefing; the server's own line must not change it.
-    expect(closed.briefingSha256).toBe(plain.briefingSha256);
-    for (const field of ['prompt', 'displayPrompt'] as const) {
-      expect(dispatchTurn.mock.calls[0]![0][field]).not.toContain('Publish the outcome.');
-      expect(
-        dispatchTurn.mock.calls[1]![0][field].endsWith('Check it.\n\nPublish the outcome.'),
-      ).toBe(true);
-    }
-  });
-
-  it('delivers an assistant briefing that handoff_results can recognise by its hash', async () => {
-    const { tools, dispatchTurn, call } = harness();
-    const result = await tools.handoff({
-      ...call({
-        target: { sessionId: 'sess-web' },
-        title: '  Backup check ',
-        briefing: '\n  Are documents excluded from the backup?\n\nReply briefly.  ',
-      }),
-      closingRequest: ASSISTANT_HANDOFF_CLOSING_REQUEST,
-    });
-    // A mismatch here leaves every real result null while the stubbed suite stays green.
-    const displayPrompt = dispatchTurn.mock.calls[0]![0].displayPrompt;
-    expect(isAssistantBriefing(displayPrompt, result.briefingSha256)).toBe(true);
-    expect(isAssistantBriefing(displayPrompt, '0'.repeat(64))).toBe(false);
   });
 
   it('queues behind an in-flight turn instead of failing, and says so', async () => {
@@ -952,4 +991,110 @@ describe('handoffs to retained sleeping sandboxes', () => {
       ]);
     },
   );
+});
+
+describe('named handoff targets', () => {
+  it('retains duplicate names as separate targets and routes the selected ID', async () => {
+    const sessions = [
+      facts({ sessionId: 'first', name: 'API requests', lastActivityAt: 100 }),
+      facts({ sessionId: 'second', name: 'API requests', lastActivityAt: 200 }),
+      facts({ sessionId: 'unnamed', name: null }),
+    ];
+    const { tools, call, dispatchTurn } = harness({ sessions });
+    const listing = await tools.listSessions(call({}));
+    expect(
+      listing.sessions.map(({ sessionId, name, lastActivityAt }) => ({
+        sessionId,
+        name,
+        lastActivityAt,
+      })),
+    ).toEqual(
+      sessions.map(({ sessionId, name, lastActivityAt }) => ({ sessionId, name, lastActivityAt })),
+    );
+    const result = await tools.handoff(
+      call({
+        target: {
+          sessionId: 'second',
+          sessionName: 'API requests',
+          sessionProject: 'acme/k8s',
+          sessionLastActivityAt: 200,
+        },
+        title: 'Investigate API',
+        briefing: 'Check polling.',
+      }),
+    );
+    expect(dispatchTurn.mock.calls[0]?.[0].sessionId).toBe('second');
+    expect(result).toMatchObject({ sessionId: 'second', name: 'API requests' });
+    await tools.handoff(call({ target: { sessionId: 'unnamed' }, title: 't', briefing: 'b' }));
+    expect(dispatchTurn.mock.calls[1]?.[0].sessionId).toBe('unnamed');
+  });
+
+  it('rejects a stale or invented approval-card name before dispatch', async () => {
+    const { tools, call, dispatchTurn } = harness({
+      sessions: [facts({ sessionId: 'target', name: 'Renamed' })],
+    });
+    await expect(
+      tools.handoff(
+        call({
+          target: {
+            sessionId: 'target',
+            sessionName: 'Old name',
+            sessionProject: 'acme/k8s',
+            sessionLastActivityAt: 1_700_000_000_000,
+          },
+          title: 't',
+          briefing: 'b',
+        }),
+      ),
+    ).rejects.toThrow('name or activity changed');
+    expect(dispatchTurn).not.toHaveBeenCalled();
+  });
+
+  it('keeps names behind the target access filter', async () => {
+    const { tools, call, dispatchTurn } = harness({
+      sessions: [facts({ sessionId: 'target', name: 'Private title' })],
+      canAccessKnowledgeTarget: async () => false,
+    });
+    expect((await tools.listSessions(call({}))).sessions).toEqual([]);
+    await expect(
+      tools.handoff(
+        call({
+          target: {
+            sessionId: 'target',
+            sessionName: 'Private title',
+            sessionProject: 'acme/k8s',
+            sessionLastActivityAt: 1_700_000_000_000,
+          },
+          title: 't',
+          briefing: 'b',
+        }),
+      ),
+    ).rejects.toThrow();
+    expect(dispatchTurn).not.toHaveBeenCalled();
+  });
+});
+
+it('rejects stale, mismatched and colliding named-target context before dispatch', async () => {
+  const { tools, call, dispatchTurn } = harness({
+    sessions: [
+      facts({ sessionId: 'first', name: 'API requests', lastActivityAt: 200 }),
+      facts({ sessionId: 'second', name: 'API requests', lastActivityAt: 200 }),
+    ],
+  });
+  for (const context of [
+    { sessionProject: 'acme/k8s', sessionLastActivityAt: 100 },
+    { sessionProject: 'acme/website', sessionLastActivityAt: 200 },
+    { sessionProject: 'acme/k8s', sessionLastActivityAt: 200 },
+  ]) {
+    await expect(
+      tools.handoff(
+        call({
+          target: { sessionId: 'second', sessionName: 'API requests', ...context },
+          title: 't',
+          briefing: 'b',
+        }),
+      ),
+    ).rejects.toThrow();
+  }
+  expect(dispatchTurn).not.toHaveBeenCalled();
 });

@@ -39,16 +39,7 @@ export interface AssistantGrant {
   revision: number;
 }
 
-/** A session the assistant handed work to; see {@link AssistantStore.recordHandoff}. */
-export interface AssistantHandoff {
-  target_session_id: string;
-  project_id: string;
-  title: string;
-  /** SHA-256 of the briefing as delivered, to recognise its prompt in the target. */
-  briefing_sha256: string;
-  created_at: Date;
-}
-
+/** A session the assistant handed work to, recorded so it can read back the outcome. */
 /** The longest result summary kept for a handoff card. */
 export const ASSISTANT_HANDOFF_SUMMARY_MAX = 300;
 
@@ -59,6 +50,15 @@ export interface AssistantHandoffResult {
   summary: string;
   blocker: string | null;
   at: Date;
+}
+
+export interface AssistantHandoff {
+  target_session_id: string;
+  assistant_session_id: string;
+  project_id: string;
+  user_id: string | null;
+  title: string;
+  handed_off_at: Date;
 }
 
 /** The installation-wide assistant: one Verity Control session plus per-project grants. */
@@ -125,93 +125,6 @@ export class AssistantStore {
     await sql`insert into assistant_project_grants (project_id, sponsor_user_id, mode) values (${projectId}, ${sponsor}, ${mode}) on conflict (project_id) do update set mode = excluded.mode, sponsor_user_id = excluded.sponsor_user_id, revision = assistant_project_grants.revision + 1, updated_at = now()`.execute(
       this.db,
     );
-  }
-
-  /** Remembers that `assistantSessionId` handed work to `targetSessionId`. A repeat refreshes
-   *  the title and time, so the newest briefing is the one its result is read against. */
-  async recordHandoff(input: {
-    assistantSessionId: string;
-    targetSessionId: string;
-    projectId: string;
-    title: string;
-    briefingSha256: string;
-    /** When the briefing was sent, on the clock that stamps session events. */
-    at: Date;
-  }): Promise<void> {
-    await sql`insert into assistant_handoffs
-        (assistant_session_id, target_session_id, project_id, title, briefing_sha256, created_at)
-      values (${input.assistantSessionId}, ${input.targetSessionId}, ${input.projectId},
-        ${input.title.slice(0, 200)}, ${input.briefingSha256}, ${input.at})
-      on conflict (assistant_session_id, target_session_id) do update
-        set project_id = excluded.project_id, title = excluded.title,
-          briefing_sha256 = excluded.briefing_sha256, created_at = excluded.created_at,
-          result_seq = null, result_delivered = null, result_summary = null,
-          result_blocker = null, result_at = null`.execute(this.db);
-  }
-
-  /** The handoff `assistantSessionId` made to `targetSessionId`, if it made one. */
-  async handoff(
-    assistantSessionId: string,
-    targetSessionId: string,
-  ): Promise<AssistantHandoff | undefined> {
-    return (
-      await sql<AssistantHandoff>`select target_session_id, project_id, title, briefing_sha256, created_at
-        from assistant_handoffs where assistant_session_id = ${assistantSessionId}
-          and target_session_id = ${targetSessionId}`.execute(this.db)
-    ).rows[0];
-  }
-
-  /**
-   * Records the result published at `seq` for a handoff, once. Returns true only for the caller
-   * that recorded it: a repeat of the same publication, a concurrent one or an older one
-   * records nothing, so each publication is announced exactly once.
-   */
-  async claimResult(input: {
-    assistantSessionId: string;
-    targetSessionId: string;
-    /** The handoff the result was matched against; a newer handoff refuses the claim. */
-    handedOffAt: Date;
-    seq: number;
-    delivered: boolean;
-    summary: string;
-    blocker?: string | undefined;
-    at: Date;
-  }): Promise<boolean> {
-    const updated = await sql`update assistant_handoffs
-      set result_seq = ${input.seq}, result_delivered = ${input.delivered},
-        result_summary = ${input.summary.slice(0, ASSISTANT_HANDOFF_SUMMARY_MAX)},
-        result_blocker = ${input.blocker?.slice(0, ASSISTANT_HANDOFF_SUMMARY_MAX) ?? null},
-        result_at = ${input.at}
-      where assistant_session_id = ${input.assistantSessionId}
-        and target_session_id = ${input.targetSessionId}
-        and created_at = ${input.handedOffAt}
-        and (result_seq is null or result_seq < ${input.seq})
-      returning target_session_id`.execute(this.db);
-    return updated.rows.length > 0;
-  }
-
-  /** The recorded results among `targetSessionIds`, for the conversation's handoff cards. */
-  async recordedResults(
-    assistantSessionId: string,
-    targetSessionIds: readonly string[],
-  ): Promise<AssistantHandoffResult[]> {
-    if (targetSessionIds.length === 0) return [];
-    return (
-      await sql<AssistantHandoffResult>`select target_session_id, result_delivered as delivered,
-          result_summary as summary, result_blocker as blocker, result_at as at
-        from assistant_handoffs where assistant_session_id = ${assistantSessionId}
-          and target_session_id in (${sql.join([...targetSessionIds])})
-          and result_seq is not null`.execute(this.db)
-    ).rows;
-  }
-
-  /** The newest handoffs `assistantSessionId` made, newest first. */
-  async handoffs(assistantSessionId: string, limit: number): Promise<AssistantHandoff[]> {
-    return (
-      await sql<AssistantHandoff>`select target_session_id, project_id, title, briefing_sha256, created_at
-        from assistant_handoffs where assistant_session_id = ${assistantSessionId}
-        order by created_at desc limit ${limit}`.execute(this.db)
-    ).rows;
   }
 
   /**
@@ -283,5 +196,94 @@ export class AssistantStore {
     await sql`delete from assistant_requests where request_id = ${requestId} and state = 'pending'`.execute(
       this.db,
     );
+  }
+
+  /** Records a delivered handoff. A later handoff to the same session — for any user —
+   *  replaces the row, so its result is read from the most recent briefing on and belongs to
+   *  whoever sent that one. */
+  async recordHandoff(input: {
+    targetSessionId: string;
+    assistantSessionId: string;
+    projectId: string;
+    userId: string | undefined;
+    title: string;
+    handedOffAt: Date;
+  }): Promise<void> {
+    await sql`insert into assistant_handoffs
+        (target_session_id, assistant_session_id, project_id, user_id, title, handed_off_at)
+      values (${input.targetSessionId}, ${input.assistantSessionId}, ${input.projectId},
+        ${input.userId ?? null}, ${input.title}, ${input.handedOffAt})
+      on conflict (target_session_id) do update set
+        assistant_session_id = excluded.assistant_session_id, project_id = excluded.project_id,
+        user_id = excluded.user_id, title = excluded.title,
+        handed_off_at = excluded.handed_off_at,
+        result_seq = null, result_delivered = null, result_summary = null,
+        result_blocker = null, result_at = null`.execute(this.db);
+  }
+
+  /** The handoff recorded for `targetSessionId`, if the assistant briefed it. */
+  async handoff(targetSessionId: string): Promise<AssistantHandoff | undefined> {
+    return (
+      await sql<AssistantHandoff>`select * from assistant_handoffs
+        where target_session_id = ${targetSessionId}`.execute(this.db)
+    ).rows[0];
+  }
+
+  /**
+   * Records the result published at `seq` for a handoff, once. Returns true only for the caller
+   * that recorded it: a repeat of the same publication, a concurrent one, an older one, or one
+   * matched against a handoff that has since been replaced records nothing, so each
+   * publication is announced exactly once.
+   */
+  async claimResult(input: {
+    assistantSessionId: string;
+    targetSessionId: string;
+    /** The handoff the result was matched against; a newer handoff refuses the claim. */
+    handedOffAt: Date;
+    seq: number;
+    delivered: boolean;
+    summary: string;
+    blocker?: string | undefined;
+    at: Date;
+  }): Promise<boolean> {
+    const updated = await sql`update assistant_handoffs
+      set result_seq = ${input.seq}, result_delivered = ${input.delivered},
+        result_summary = ${input.summary.slice(0, ASSISTANT_HANDOFF_SUMMARY_MAX)},
+        result_blocker = ${input.blocker?.slice(0, ASSISTANT_HANDOFF_SUMMARY_MAX) ?? null},
+        result_at = ${input.at}
+      where target_session_id = ${input.targetSessionId}
+        and assistant_session_id = ${input.assistantSessionId}
+        and handed_off_at = ${input.handedOffAt}
+        and (result_seq is null or result_seq < ${input.seq})
+      returning target_session_id`.execute(this.db);
+    return updated.rows.length > 0;
+  }
+
+  /** The recorded results among `targetSessionIds`, for the conversation's handoff cards. */
+  async recordedResults(
+    assistantSessionId: string,
+    targetSessionIds: readonly string[],
+  ): Promise<AssistantHandoffResult[]> {
+    if (targetSessionIds.length === 0) return [];
+    return (
+      await sql<AssistantHandoffResult>`select target_session_id, result_delivered as delivered,
+          result_summary as summary, result_blocker as blocker, result_at as at
+        from assistant_handoffs where assistant_session_id = ${assistantSessionId}
+          and target_session_id in (${sql.join([...targetSessionIds])})
+          and result_seq is not null`.execute(this.db)
+    ).rows;
+  }
+
+  /** The newest handoffs made for `userId` (null when auth is off) since `since`. */
+  async handoffs(input: {
+    userId: string | undefined;
+    since: Date;
+    limit: number;
+  }): Promise<AssistantHandoff[]> {
+    return (
+      await sql<AssistantHandoff>`select * from assistant_handoffs
+        where user_id is not distinct from ${input.userId ?? null} and handed_off_at >= ${input.since}
+        order by handed_off_at desc limit ${input.limit}`.execute(this.db)
+    ).rows;
   }
 }

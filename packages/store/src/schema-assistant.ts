@@ -26,12 +26,12 @@ interface AssistantRequestsTable {
   created_at: Generated<Date>;
 }
 interface AssistantHandoffsTable {
-  assistant_session_id: string;
   target_session_id: string;
+  assistant_session_id: string;
   project_id: string;
+  user_id: string | null;
   title: string;
-  briefing_sha256: string;
-  created_at: Generated<Date>;
+  handed_off_at: Date;
   /** A pg `bigint`, read back as a string. */
   result_seq: string | null;
   result_delivered: boolean | null;

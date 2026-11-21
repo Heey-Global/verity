@@ -11,6 +11,7 @@ import {
   renderWelcomeOpener,
   welcomeChoices,
 } from './app-help.js';
+import { ASSISTANT_GRANT_INSTRUCTIONS, ASSISTANT_SYSTEM_PROMPT } from './assistant-tool.js';
 
 describe('APP_HELP_TOPICS', () => {
   it('uses unique kebab-case ids', () => {
@@ -70,6 +71,8 @@ describe('answerAppHelp', () => {
     ['Can agents read my Gmail?', 'google'],
     ['I forgot my password', 'secrets-storage'],
     ['Where do I put an API key for my app?', 'doppler'],
+    ['How do I enable a project for the assistant?', 'assistant-project-access'],
+    ['Why can the assistant not use my Deep OCR project?', 'assistant-project-access'],
   ])('ranks the matching topic first for %j', (query, id) => {
     const answer = answerAppHelp({ query });
     expect('entries' in answer && answer.entries[0]?.id).toBe(id);
@@ -195,4 +198,20 @@ it('provides complete hint copy and docs for each hint-bearing catalog topic', (
     expect(topic.hint?.question.trim(), topic.id).toBeTruthy();
     expect(topic.docsPath, topic.id).toBeTruthy();
   }
+});
+
+// The assistant once answered a missing project with "enable access in the Agents settings",
+// which named no screen the user could find. Both the prompt it always has and the help entry
+// it can look up must carry the same concrete steps.
+describe('assistant project access', () => {
+  it('gives the assistant the grant steps without a tool call', () => {
+    expect(ASSISTANT_SYSTEM_PROMPT).toContain(ASSISTANT_GRANT_INSTRUCTIONS);
+  });
+
+  it('explains the grant in app help without linking the current project', () => {
+    const topic = APP_HELP_TOPICS.find((entry) => entry.id === 'assistant-project-access');
+    expect(topic?.details).toContain(ASSISTANT_GRANT_INSTRUCTIONS);
+    // A project link opens the current project, which for the assistant is Verity Control.
+    expect(topic?.appLink).toBeUndefined();
+  });
 });

@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-import { ASSISTANT_HANDOFF_CLOSING_REQUEST } from '@verity/events';
 import { InMemoryEventBus } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,7 +20,7 @@ afterAll(async () => {
 });
 
 const ADMIN = '00000000-0000-4000-8000-000000000001';
-const BRIEFING = 'Are documents excluded from the backup?';
+const MEMBER = 'u-member';
 const LONG_SUMMARY =
   'Documents are excluded from the backup since the last release. The exclusion is in backup.yml, and a restore test ran without documents. Nothing else changed in the schedule.';
 
@@ -34,40 +32,32 @@ function deps(readable = true) {
     eventStore: ctx.store,
     bus: new InMemoryEventBus(),
     pushRouter: { notify },
-    initiatorOf: async () => ADMIN,
     permitted: async (_user, projectId) => readable && projectId === 'a',
     log: { warn: vi.fn() },
   };
   return { deps: value, notify };
 }
 
-async function handOff(at = new Date()) {
+/** The briefing's line in the target transcript, as the handoff tool writes it. */
+const briefingPrompt = (title = 'Backup check') => ({
+  t: 'prompt' as const,
+  text: `${SESSION_HANDOFF_TRANSCRIPT_LABEL} Publish a short outcome.\n\nTitle: ${title}\n\nAre documents excluded from the backup?`,
+});
+
+async function handOff(userId: string | null = MEMBER, title = 'Backup check') {
   await ctx.store.assistant.recordHandoff({
-    assistantSessionId: 'assistant',
     targetSessionId: 't1',
+    assistantSessionId: 'assistant',
     projectId: 'a',
-    title: 'Backup check',
-    briefingSha256: createHash('sha256').update(BRIEFING).digest('hex'),
-    at,
+    userId: userId ?? undefined,
+    title,
+    handedOffAt: new Date(),
   });
-  await ctx.store.appendEvent('t1', {
-    t: 'prompt',
-    text: [
-      SESSION_HANDOFF_TRANSCRIPT_LABEL,
-      'Title: Backup check',
-      BRIEFING,
-      ASSISTANT_HANDOFF_CLOSING_REQUEST,
-    ].join('\n\n'),
-  });
+  await ctx.store.appendEvent('t1', briefingPrompt(title));
 }
 
-const publish = (summary = LONG_SUMMARY, outcomeDelivered = true, blocker?: string) =>
-  ctx.store.appendEvent('t1', {
-    t: 'session_progress',
-    summary,
-    outcomeDelivered,
-    ...(blocker === undefined ? {} : { blocker }),
-  });
+const publish = (summary = LONG_SUMMARY, outcomeDelivered = true) =>
+  ctx.store.appendEvent('t1', { t: 'session_progress', summary, outcomeDelivered });
 
 const notices = async () =>
   (await ctx.store.getEvents('assistant')).flatMap((event) =>
@@ -101,7 +91,8 @@ describe('assistant handoff result notices', () => {
     expect(notify).toHaveBeenCalledTimes(1);
     const { notification, sessionId, initiatorUserId } = notify.mock.calls[0]![0];
     expect(sessionId).toBe('assistant');
-    expect(initiatorUserId).toBe(ADMIN);
+    // The push goes to the user the work was delegated for.
+    expect(initiatorUserId).toBe(MEMBER);
     expect(notification.title).toBe('heey-global/deep-ocr · Backup check');
     expect(notification.body.startsWith('Done: Documents are excluded')).toBe(true);
     expect(notification.body).toHaveLength(ASSISTANT_HANDOFF_PUSH_MAX);
@@ -112,7 +103,8 @@ describe('assistant handoff result notices', () => {
     expect(await ctx.store.assistant.recordedResults('assistant', ['t1'])).toEqual([
       expect.objectContaining({ delivered: true, summary: LONG_SUMMARY }),
     ]);
-    // A replacing publication is one more announcement.
+    // A replacing publication is one more announcement; a required decision stands in for a
+    // blocker the session did not name.
     await ctx.store.appendEvent('t1', {
       t: 'session_progress',
       summary: 'Exclusion reverted; waiting for your decision.',
@@ -120,12 +112,12 @@ describe('assistant handoff result notices', () => {
       requiredDecision: 'Needs your approval.',
     });
     expect(await announceAssistantHandoffResult(d, 't1')).toBe(true);
-    expect(await ctx.store.assistant.recordedResults('assistant', ['t1'])).toEqual([
-      expect.objectContaining({ delivered: false, blocker: 'Needs your approval.' }),
-    ]);
     expect(notify.mock.calls[1]![0].notification.body).toBe(
       'Open: Exclusion reverted; waiting for your decision.',
     );
+    expect(await ctx.store.assistant.recordedResults('assistant', ['t1'])).toEqual([
+      expect.objectContaining({ delivered: false, blocker: 'Needs your approval.' }),
+    ]);
   });
 
   it('stays silent for unrelated publications, a disabled assistant or withdrawn access', async () => {
@@ -133,27 +125,19 @@ describe('assistant handoff result notices', () => {
     // No handoff at all.
     await publish();
     expect(await announceAssistantHandoffResult(d, 't1')).toBe(false);
-    // Published before the briefing started: another request's answer.
+    // Recorded, but the briefing has not started: what the session publishes answers another.
     await ctx.store.assistant.recordHandoff({
-      assistantSessionId: 'assistant',
       targetSessionId: 't1',
+      assistantSessionId: 'assistant',
       projectId: 'a',
+      userId: MEMBER,
       title: 'Backup check',
-      briefingSha256: createHash('sha256').update(BRIEFING).digest('hex'),
-      at: new Date(),
+      handedOffAt: new Date(),
     });
     await publish();
     expect(await announceAssistantHandoffResult(d, 't1')).toBe(false);
 
-    await ctx.store.appendEvent('t1', {
-      t: 'prompt',
-      text: [
-        SESSION_HANDOFF_TRANSCRIPT_LABEL,
-        'Title: Backup check',
-        BRIEFING,
-        ASSISTANT_HANDOFF_CLOSING_REQUEST,
-      ].join('\n\n'),
-    });
+    await ctx.store.appendEvent('t1', briefingPrompt());
     await publish();
     expect(await announceAssistantHandoffResult(deps(false).deps, 't1')).toBe(false);
     await ctx.store.assistant.setGrant('a', ADMIN, 'off');
@@ -163,6 +147,23 @@ describe('assistant handoff result notices', () => {
     expect(await announceAssistantHandoffResult(d, 't1')).toBe(false);
     expect(notify).not.toHaveBeenCalled();
     expect(await notices()).toEqual([]);
+  });
+
+  it('ignores a handoff recorded for an earlier assistant session', async () => {
+    const { deps: d, notify } = deps();
+    await ctx.store.createSession({ sessionId: 'old', worktree: '/old', model: 'm' });
+    await ctx.store.assistant.recordHandoff({
+      targetSessionId: 't1',
+      assistantSessionId: 'old',
+      projectId: 'a',
+      userId: MEMBER,
+      title: 'Backup check',
+      handedOffAt: new Date(),
+    });
+    await ctx.store.appendEvent('t1', briefingPrompt());
+    await publish();
+    expect(await announceAssistantHandoffResult(d, 't1')).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it('announces when a published progress event reaches the bus, without starting a turn', async () => {
@@ -184,13 +185,11 @@ describe('assistant handoff result notices', () => {
     }
   });
 
-  it('pushes to the user who switched the assistant on when no turn names one', async () => {
+  it('pushes to the user who switched the assistant on when no user was recorded', async () => {
     const { deps: d, notify } = deps();
-    await handOff();
+    await handOff(null);
     await publish();
-    expect(
-      await announceAssistantHandoffResult({ ...d, initiatorOf: async () => undefined }, 't1'),
-    ).toBe(true);
+    expect(await announceAssistantHandoffResult(d, 't1')).toBe(true);
     expect(notify.mock.calls[0]![0].initiatorUserId).toBe(ADMIN);
   });
 

@@ -77,88 +77,45 @@ describe('assistant project grants', () => {
   });
 });
 
-describe('assistant handoffs', () => {
-  it('lists only the calling session’s handoffs, newest first, refreshed on repeat', async () => {
-    for (const sessionId of ['assistant', 'other', 't1', 't2'])
-      await ctx.store.createSession({ sessionId, worktree: `/${sessionId}`, model: 'm' });
-    const record = (
-      assistantSessionId: string,
-      targetSessionId: string,
-      title: string,
-      at: number,
-    ) =>
-      ctx.store.assistant.recordHandoff({
-        assistantSessionId,
-        targetSessionId,
-        projectId: 'a',
-        title,
-        briefingSha256: 'a'.repeat(64),
-        at: new Date(at),
-      });
-    await record('assistant', 't1', 'first', 1_000);
-    await record('assistant', 't2', 'second', 2_000);
-    await record('other', 't1', 'not mine', 3_000);
-    await record('assistant', 't1', 'again', 4_000);
-    const own = await ctx.store.assistant.handoffs('assistant', 10);
-    expect(own.map((h) => [h.target_session_id, h.title, h.created_at.getTime()])).toEqual([
-      ['t1', 'again', 4_000],
-      ['t2', 'second', 2_000],
-    ]);
-    expect(await ctx.store.assistant.handoffs('assistant', 1)).toHaveLength(1);
-    expect(await ctx.store.assistant.handoff('assistant', 't2')).toMatchObject({ title: 'second' });
-    expect(await ctx.store.assistant.handoff('other', 't2')).toBeUndefined();
-    // A deleted target leaves nothing behind to be read.
-    await ctx.store.deleteProject('a');
-    expect(await ctx.store.assistant.handoffs('assistant', 10)).toEqual([]);
-  });
-});
-
 describe('assistant handoff results', () => {
   it('records each publication once and forgets it when the handoff is repeated', async () => {
     for (const sessionId of ['assistant', 't1'])
       await ctx.store.createSession({ sessionId, worktree: `/${sessionId}`, model: 'm' });
-    const handOff = () =>
+    const handOff = (title: string, at: number) =>
       ctx.store.assistant.recordHandoff({
-        assistantSessionId: 'assistant',
         targetSessionId: 't1',
+        assistantSessionId: 'assistant',
         projectId: 'a',
-        title: 'Backup check',
-        briefingSha256: 'a'.repeat(64),
-        at: new Date(1_000),
+        userId: 'u1',
+        title,
+        handedOffAt: new Date(at),
       });
-    const claim = (seq: number, summary = 'Done.') =>
+    const claim = (seq: number, summary = 'Done.', handedOffAt = 1_000) =>
       ctx.store.assistant.claimResult({
         assistantSessionId: 'assistant',
         targetSessionId: 't1',
-        handedOffAt: new Date(1_000),
+        handedOffAt: new Date(handedOffAt),
         seq,
         delivered: true,
         summary,
         at: new Date(2_000),
       });
-    await handOff();
+    await handOff('Backup check', 1_000);
+    expect(await ctx.store.assistant.handoff('t1')).toMatchObject({ title: 'Backup check' });
     // Concurrent announcers of one publication: exactly one wins.
     expect((await Promise.all([claim(5), claim(5)])).filter(Boolean)).toHaveLength(1);
     expect(await claim(4)).toBe(false);
     expect(await claim(7, 'x'.repeat(400))).toBe(true);
     const [recorded] = await ctx.store.assistant.recordedResults('assistant', ['t1', 'nope']);
-    expect(recorded).toMatchObject({ target_session_id: 't1', delivered: true });
+    expect(recorded).toMatchObject({ target_session_id: 't1', delivered: true, blocker: null });
     expect(recorded!.summary).toHaveLength(300);
     expect(await ctx.store.assistant.recordedResults('other', ['t1'])).toEqual([]);
-    // A new briefing to the same session starts without the old answer.
-    await handOff();
+    // A new briefing to the same session starts without the old answer, and a result matched
+    // against the earlier briefing cannot land on it.
+    await handOff('Second question', 3_000);
     expect(await ctx.store.assistant.recordedResults('assistant', ['t1'])).toEqual([]);
-    expect(await claim(5)).toBe(true);
-    // A result matched against an earlier briefing cannot land on a newer handoff.
-    await ctx.store.assistant.recordHandoff({
-      assistantSessionId: 'assistant',
-      targetSessionId: 't1',
-      projectId: 'a',
-      title: 'Second question',
-      briefingSha256: 'b'.repeat(64),
-      at: new Date(3_000),
-    });
     expect(await claim(9)).toBe(false);
+    expect(await claim(9, 'Second answer.', 3_000)).toBe(true);
   });
 });
 
@@ -207,5 +164,57 @@ describe('assistant requests', () => {
     expect(
       await ctx.store.assistant.claimRequest({ ...message, userId: 'u2', staleAfterMs: 0 }),
     ).toMatchObject({ claimed: false });
+  });
+});
+
+describe('assistant handoffs', () => {
+  const at = (minutes: number) => new Date(Date.UTC(2026, 10, 21, 12, minutes));
+  beforeEach(async () => {
+    for (const sessionId of ['t1', 't2', 't3'])
+      await ctx.store.createSession({ sessionId, worktree: `/${sessionId}`, model: 'm' });
+  });
+
+  it('lists only the turn user’s handoffs, newest first, and replaces a repeated target', async () => {
+    const base = { assistantSessionId: 'assistant', projectId: 'a', title: 'Backup' };
+    await ctx.store.assistant.recordHandoff({
+      ...base,
+      targetSessionId: 't1',
+      userId: 'u1',
+      handedOffAt: at(1),
+    });
+    await ctx.store.assistant.recordHandoff({
+      ...base,
+      targetSessionId: 't2',
+      userId: 'u2',
+      handedOffAt: at(2),
+    });
+    await ctx.store.assistant.recordHandoff({
+      ...base,
+      targetSessionId: 't3',
+      userId: 'u1',
+      handedOffAt: at(3),
+    });
+    // A second briefing to the same session starts its result window anew.
+    await ctx.store.assistant.recordHandoff({
+      ...base,
+      targetSessionId: 't1',
+      userId: 'u1',
+      title: 'Again',
+      handedOffAt: at(4),
+    });
+    const listed = await ctx.store.assistant.handoffs({ userId: 'u1', since: at(0), limit: 10 });
+    expect(listed.map((row) => [row.target_session_id, row.title])).toEqual([
+      ['t1', 'Again'],
+      ['t3', 'Backup'],
+    ]);
+    expect(
+      (await ctx.store.assistant.handoffs({ userId: 'u1', since: at(3), limit: 1 })).map(
+        (row) => row.target_session_id,
+      ),
+    ).toEqual(['t1']);
+    // Auth off records no user; those rows are not another user's.
+    expect(
+      await ctx.store.assistant.handoffs({ userId: undefined, since: at(0), limit: 10 }),
+    ).toEqual([]);
   });
 });
