@@ -57,6 +57,7 @@ export function installRepairSupervision(
       coordinate: true,
       store: deps.eventStore,
       discover: deps.repairDiscovery,
+      ...(deps.deferBackgroundForgeReads ? { deferred: deps.deferBackgroundForgeReads } : {}),
       ...(deps.repairPullRequest ? { pullRequest: deps.repairPullRequest } : {}),
       changed: (projectId) => {
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/repairs`);

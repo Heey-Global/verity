@@ -116,7 +116,11 @@ export interface ServerSessionOverview {
   ) => Promise<{ basePath: string; project: ProjectRecord } | undefined>;
   prCleanupPending: Set<string>;
   withPrVisibility: <T>(session: SessionRecord, action: () => Promise<T>) => Promise<T>;
-  invalidatePrSummaryAction: (session: SessionRecord, retainStatus?: boolean) => boolean;
+  invalidatePrSummaryAction: (
+    session: SessionRecord,
+    retainStatus?: boolean,
+    branches?: readonly string[],
+  ) => boolean;
   invalidateBranchCache: (worktree: string) => void;
 }
 
@@ -561,6 +565,9 @@ export function createServerSessionOverview({
         if (prRepairStopped) break;
         if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
           continue;
+        // Near quota exhaustion background discovery yields to agents and open apps.
+        if (session.projectId && (await deps.deferBackgroundForgeReads?.(session.projectId)))
+          continue;
         try {
           if (!(await worktreeExists(session.worktree))) continue;
           await maybeDispatchPrRepairTurns(session, await backgroundPrStatus(session));
@@ -593,11 +600,20 @@ export function createServerSessionOverview({
       const session = await deps.eventStore.getSession(sessionId);
       if (prRepairStopped || session === undefined || !(await backgroundPr.allows(session))) return;
       invalidateBranchCache(session.worktree);
+      if (session.projectId && (await deps.deferBackgroundForgeReads?.(session.projectId))) {
+        resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
+        return;
+      }
       if (!(await prMarkerEnabled(session))) {
         resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
         return;
       }
-      if (!invalidatePrSummaryAction(session, true)) return;
+      // Tool activity can only change this session's branches. Forgetting the whole
+      // repository here re-read every other session's pull request on each tool call.
+      const branches = await branchesForSession(session)
+        .then((service) => service?.sessionBranches(session.worktree))
+        .catch(() => undefined);
+      if (!invalidatePrSummaryAction(session, true, branches)) return;
       await backgroundPrStatus(session);
       resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
     },
@@ -694,10 +710,14 @@ export function createServerSessionOverview({
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.set(worktree, { pr, at: Date.now() });
   };
-  const invalidatePrSummaryAction = (session: SessionRecord, retainStatus = false): boolean => {
+  const invalidatePrSummaryAction = (
+    session: SessionRecord,
+    retainStatus = false,
+    branches?: readonly string[],
+  ): boolean => {
     const { worktree } = session;
     if (!sessionPrCache.invalidate(worktree, retainStatus)) return false;
-    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
+    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId, branches);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     if (!retainStatus) prSummaryCache.delete(worktree);
     return true;

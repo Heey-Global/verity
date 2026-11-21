@@ -7,6 +7,7 @@ import {
   createGitHubIdentityResolver,
   createGitHubInstallationService,
   createGitHubPrService,
+  createGitHubResponseCache,
   createGitHubReleaseService,
   openPullRequest,
   parseGitHubRemote,
@@ -15,6 +16,11 @@ import {
 import { listProjectGitHubIssues } from './project-github-issues.js';
 import { createGitHubRepositoryOperations } from './github-repository-operations.js';
 import { GitHubPollCache, type GitHubPollingCooldown } from './github-poll-cache.js';
+import {
+  trackGitHubFetch,
+  type GitHubCallerCategory,
+  type GitHubRateBudget,
+} from './github-rate-budget.js';
 
 export interface GitHubForgeProviderOptions {
   /** Cached repository-scoped installation token used for PR, release and broker calls. */
@@ -33,6 +39,8 @@ export interface GitHubForgeProviderOptions {
   git?: GitOutput;
   /** Injected fetch (tests). */
   fetch?: HttpFetch;
+  /** Installation-wide rate-limit observer shared with other GitHub readers. */
+  rateBudget?: GitHubRateBudget;
 }
 
 /**
@@ -40,8 +48,23 @@ export interface GitHubForgeProviderOptions {
  * and identity resolvers, and the fleet-wide installation and release services.
  */
 export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): ForgeProvider {
-  const fetchOpt = opts.fetch !== undefined ? { fetch: opts.fetch } : {};
+  const baseFetch: HttpFetch = opts.fetch ?? ((url, init) => fetch(url, init));
+  // Every reader reports to the shared budget under its own category, so a limit
+  // can be attributed to the polling path that spent the quota.
+  const fetchFor = (category: GitHubCallerCategory): { fetch?: HttpFetch } =>
+    opts.rateBudget
+      ? { fetch: trackGitHubFetch(opts.rateBudget, category, baseFetch) }
+      : opts.fetch !== undefined
+        ? { fetch: opts.fetch }
+        : {};
+  const fetchOpt = fetchFor('other');
+  const sessionStatusFetch = fetchFor('session-status');
+  const repositoryStatusFetch = fetchFor('repository-status');
+  const discoveryFetch = fetchFor('discovery').fetch ?? baseFetch;
   const prServices = new GitHubPollCache<string, ForgePrService>(200);
+  // One validator store for every PR reader, so scoped services that are rebuilt
+  // after an invalidation still revalidate with If-None-Match.
+  const responseCache = createGitHubResponseCache();
   // Share cooldowns between session worktrees of the SAME repository without
   // pausing unrelated projects that may use a different GitHub installation.
   const prFailureCooldowns = new GitHubPollCache<string, GitHubPollingCooldown>(
@@ -71,7 +94,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
   });
   const releases = createGitHubReleaseService({
     asyncToken: (owner, repo) => opts.projectTokenMint({ owner, repo }),
-    ...fetchOpt,
+    ...fetchFor('release'),
   });
 
   const repositoryServices = new GitHubPollCache<string, ForgePrService>(200);
@@ -99,7 +122,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           throw new ForgeObservationError('credentials', path.split('?')[0] || 'repository');
         if (Date.now() < (discoveryFailureCooldowns.get(key) ?? 0))
           throw new ForgeObservationError('rate-limit', 'discovery-backoff');
-        const response = await (opts.fetch ?? fetch)(
+        const response = await discoveryFetch(
           `https://api.github.com/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/${path}`,
           {
             headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
@@ -230,12 +253,19 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           asyncToken: (owner, repo) =>
             (opts.repositoryStatusTokenMint ?? opts.projectTokenMint)({ owner, repo }),
           failureCooldownFor: prFailureCooldownFor,
-          ...fetchOpt,
+          responseCache,
+          ...repositoryStatusFetch,
         });
         services.set(key, service);
       }
       return service;
     },
+    ...(opts.rateBudget
+      ? {
+          deferBackgroundReads: (ref: ForgeRepoRef) => opts.rateBudget!.deferBackground(ref.owner),
+          rateDiagnostics: () => opts.rateBudget!.snapshot(),
+        }
+      : {}),
     id: 'github',
     capabilities: {
       repositoryListing: true,
@@ -265,8 +295,9 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           asyncToken: (owner, repo) => opts.projectTokenMint({ owner, repo }),
           ...(opts.prStatusTtlMs !== undefined ? { ttlMs: opts.prStatusTtlMs } : {}),
           failureCooldownFor: prFailureCooldownFor,
+          responseCache,
           ...(opts.git !== undefined ? { git: opts.git } : {}),
-          ...fetchOpt,
+          ...sessionStatusFetch,
         });
         prServices.set(repoDir, svc);
       }
@@ -274,7 +305,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
     },
     openPullRequest: (target, token, pr) => openPullRequest(target, token, pr, fetchOpt),
     listIssues: (project: ProjectRecord) =>
-      listProjectGitHubIssues(project, opts.issuesTokenMint, opts.fetch),
+      listProjectGitHubIssues(project, opts.issuesTokenMint, fetchOpt.fetch),
     repositoryOperations: (project) =>
       createGitHubRepositoryOperations({
         project,

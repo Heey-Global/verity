@@ -18,6 +18,9 @@ export function createForgeStatusCache(now: () => number = Date.now) {
   const entries = new Map<string, Entry>();
   const pending = new Map<string, Promise<PullRequestStatus | null>>();
   const aliases = new Map<string, string>();
+  // Branch-scoped invalidations advance an epoch so a read already in flight when
+  // its branch was invalidated cannot store its (possibly pre-activity) result.
+  const branchEpochs = new Map<string, number>();
   interface ObservationScope {
     generation: object;
     valid: boolean;
@@ -77,6 +80,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       const generation = observation;
       const branchKey = `${scope(id)}:branch:${branch}`;
       const key = aliases.get(branchKey) ?? branchKey;
+      const epoch = branchEpochs.get(branchKey) ?? 0;
       const running = pending.get(key);
       if (running) return running;
       const previous = entries.get(key);
@@ -116,6 +120,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
                 : 30_000;
         const entry = { value, failures, checkedAt: now(), nextReadAt: now() + ttl };
         if (!generation.valid) return unknown(value);
+        if ((branchEpochs.get(branchKey) ?? 0) !== epoch) return value;
         entries.set(key, entry);
         if (value) {
           const prKey = `${scope(id)}:pr:${value.number}`;
@@ -145,6 +150,28 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       for (const key of pending.keys()) if (key.startsWith(prefix)) pending.delete(key);
       for (const key of entries.keys()) if (key.startsWith(prefix)) entries.delete(key);
       for (const key of aliases.keys()) if (key.startsWith(prefix)) aliases.delete(key);
+    },
+    /**
+     * Forget only the given branches of one repository. Activity in one session
+     * must not discard every other branch's observation in the same project: that
+     * turned each agent tool call into a full re-read of the whole repository.
+     */
+    invalidateBranches(id: ForgeStatusIdentity, branches: readonly string[]): void {
+      const scopeKey = scope(id);
+      for (const branch of branches) {
+        const branchKey = `${scopeKey}:branch:${branch}`;
+        const prKey = aliases.get(branchKey);
+        const nextEpoch = (branchEpochs.get(branchKey) ?? 0) + 1;
+        // Re-insert so the bound below evicts the least recently invalidated branch.
+        branchEpochs.delete(branchKey);
+        branchEpochs.set(branchKey, nextEpoch);
+        for (const key of prKey === undefined ? [branchKey] : [branchKey, prKey]) {
+          pending.delete(key);
+          entries.delete(key);
+        }
+        aliases.delete(branchKey);
+      }
+      while (branchEpochs.size > 4096) branchEpochs.delete(branchEpochs.keys().next().value!);
     },
   };
 }

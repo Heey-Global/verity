@@ -172,3 +172,39 @@ it('clears actionable fields on explicitly failed provider observations', async 
   await cache.read(id, 'x', load);
   expect(load).toHaveBeenCalledTimes(1);
 });
+
+describe('branch-scoped invalidation', () => {
+  it('re-reads only the invalidated branch and keeps the rest of the repository cached', async () => {
+    const cache = createForgeStatusCache();
+    const load = vi.fn(async () => status);
+    const other = vi.fn(async () => ({ ...status, number: 2 }));
+    await cache.read(id, 'active', load);
+    await cache.read(id, 'idle', other);
+    cache.invalidateBranches(id, ['active']);
+    await cache.read(id, 'active', load);
+    await cache.read(id, 'idle', other);
+    // Project-wide invalidation on every agent tool call re-read every other PR.
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(other).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a read that started before the invalidation become the cached answer', async () => {
+    const cache = createForgeStatusCache();
+    let finish!: (value: PullRequestStatus) => void;
+    const old = cache.read(
+      id,
+      'active',
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    cache.invalidateBranches(id, ['active']);
+    finish(status);
+    await old;
+    const fresh = vi.fn(async () => ({ ...status, pipeline: 'success' as const }));
+    expect(await cache.read(id, 'active', fresh)).toMatchObject({ pipeline: 'success' });
+    expect(fresh).toHaveBeenCalledTimes(1);
+  });
+});
