@@ -46,8 +46,8 @@ import { httpMcpConnectionUsableBy, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
 import {
   assistantToolRefusal,
+  assistantHandoffHooks,
   executeAssistantTool,
-  requireAssistantGrant,
   requireAssistantSession,
   type AssistantToolDeps,
 } from './assistant-tool.js';
@@ -599,21 +599,12 @@ export function registerServerMcpRoutes({
     // of the executor is composed.
     //
     // `listSessionFacts` is where the listing's "metadata only" promise is kept. The summary
-    // is narrowed to six fields HERE, at the boundary, so no transcript, PR, usage or
-    // attention data is even in reach of the tool that answers the caller — `name` included,
-    // for the reason `ControlPlaneSessionFacts` gives.
+    // explicitly includes visible names (also auto-titles), but no transcript, PR, usage
+    // or attention data. Caller/target authorization and per-call approval still apply.
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
       allowKnowledgeControlOperations: true,
-      // Plain Control sessions keep their reach; the assistant needs a "delegate" grant.
-      authorizeHandoffTarget: async ({ sessionId, turnId, projectId }) => {
-        if ((await deps.eventStore.assistant.settings()).session_id !== sessionId) return;
-        await requireAssistantGrant(
-          assistantToolDeps,
-          { sessionId, turnId, projectId },
-          'delegate',
-        );
-      },
+      ...assistantHandoffHooks(assistantToolDeps),
       authorizeKnowledgeCaller: async ({ projectId, sessionId }) => {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
@@ -651,6 +642,7 @@ export function registerServerMcpRoutes({
         return {
           sessions: summaries.map((session) => ({
             sessionId: session.sessionId,
+            name: session.name ?? null,
             projectId: session.projectId,
             model: session.model,
             status: session.status,
