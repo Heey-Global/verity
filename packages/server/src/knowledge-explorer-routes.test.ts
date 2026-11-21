@@ -598,7 +598,7 @@ describe('session explorer knowledge roots', () => {
 
     const renamed = await rename(from, 'kickoff.md');
     expect(renamed.statusCode).toBe(200);
-    expect(renamed.json()).toEqual({ path: 'sources/documents/kickoff.md' });
+    expect(renamed.json()).toEqual({ path: 'sources/documents/kickoff.md', linksUpdated: [] });
     expect(existsSync(join(dir, from))).toBe(false);
     expect(readFileSync(join(dir, 'sources/documents/kickoff.md'), 'utf8')).toBe('# Call');
     // Search reads the extracted text, so it has to name the file by its new path.
@@ -664,7 +664,7 @@ describe('session explorer knowledge roots', () => {
 
     const renamed = await rename('sources/interviews', 'customer-interviews');
     expect(renamed.statusCode).toBe(200);
-    expect(renamed.json()).toEqual({ path: 'sources/customer-interviews' });
+    expect(renamed.json()).toEqual({ path: 'sources/customer-interviews', linksUpdated: [] });
     expect(existsSync(join(dir, 'sources/interviews'))).toBe(false);
     const moved = 'sources/customer-interviews/2026/anna.md';
     expect(readFileSync(join(dir, moved), 'utf8')).toBe('# Anna');
@@ -672,7 +672,7 @@ describe('session explorer knowledge roots', () => {
     expect(existsSync(join(dir, EXTRACTED_TEXT_DIR, 'sources/interviews'))).toBe(false);
   });
 
-  it('renames only ordinary Sources entries', async () => {
+  it('renames only ordinary Wiki and Sources entries', async () => {
     const dir = projectKnowledgeDir(dataRoot, 'p-1');
     await app.inject('/projects/p-1/knowledge/files');
     writeFileSync(join(dir, 'insights/page.md'), 'Page');
@@ -688,8 +688,6 @@ describe('session explorer knowledge roots', () => {
       'sources/documents',
       'sources/meetings',
       'sources/matrix',
-      // Renaming a Wiki page would break the links to it.
-      'insights/page.md',
       'insights/decisions',
       'sources/../insights/page.md',
       'sources\\..\\insights\\page.md',

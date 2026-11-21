@@ -24,6 +24,9 @@ export interface ProjectCardNote {
   label: string;
   /** `attention` when the person has something to do or check. */
   tone: 'muted' | 'attention';
+  /** The project is on its way between states (starting, waking, pausing), so a
+   *  surface with room for it can show the word with a spinner. */
+  transient?: true;
 }
 
 export interface ProjectCardState {
@@ -45,10 +48,16 @@ type CardProject = Pick<
 // until someone decides which of the three it is.
 const LIFECYCLE: Record<ProjectLifecycleState, ProjectCardState> = {
   active: { state: 'running' },
-  cloning: { state: 'paused', note: { label: 'Preparing…', tone: 'muted' } },
-  container_starting: { state: 'paused', note: { label: 'Starting…', tone: 'muted' } },
-  waking: { state: 'paused', note: { label: 'Waking…', tone: 'muted' } },
-  sleeping_starting: { state: 'paused', note: { label: 'Pausing…', tone: 'muted' } },
+  cloning: { state: 'paused', note: { label: 'Preparing…', tone: 'muted', transient: true } },
+  container_starting: {
+    state: 'paused',
+    note: { label: 'Starting…', tone: 'muted', transient: true },
+  },
+  waking: { state: 'paused', note: { label: 'Waking…', tone: 'muted', transient: true } },
+  sleeping_starting: {
+    state: 'paused',
+    note: { label: 'Pausing…', tone: 'muted', transient: true },
+  },
   sleeping: { state: 'paused', note: { label: 'asleep', tone: 'muted' } },
   absent: { state: 'paused' },
   // The only state the reconciler gives a project whose container stopped or
@@ -74,7 +83,7 @@ export function shortProvisionReason(error: string | null | undefined): string |
 export function projectCardState(project: CardProject): ProjectCardState {
   const lifecycle = project.lifecycleState ?? project.state;
   if (lifecycle === 'absent' && project.setupStatus === 'pending')
-    return { state: 'paused', note: { label: 'Preparing…', tone: 'muted' } };
+    return { state: 'paused', note: { label: 'Preparing…', tone: 'muted', transient: true } };
   const base = LIFECYCLE[lifecycle];
   if (base.state === 'error') {
     const reason = shortProvisionReason(project.provisionError);

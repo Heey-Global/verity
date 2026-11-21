@@ -1404,17 +1404,15 @@ export class Conductor {
     );
     // Role identity is durable and server-owned; request options cannot reopen tools.
     const qa = await this.deps.store.repairs.qa();
-    if (qa.session_id === sessionId) {
-      if (
-        prompt.includes('[[verity:qa-review]]') &&
-        (!qa.enabled || qa.active_revision !== qa.revision)
-      )
-        throw new Error('QA background dispatch was disabled or superseded.');
+    const qaRole = await this.deps.store.repairs.projectQA.roleForSession(sessionId);
+    if (qaRole || qa.session_id === sessionId) {
       const backgroundReview = prompt.includes('[[verity:qa-review]]');
+      if (backgroundReview && (!qa.enabled || qaRole?.active_revision !== qa.revision))
+        throw new Error('QA background dispatch was disabled or superseded.');
       builtRunOpts.toolless = backgroundReview;
       builtRunOpts.gatewayToolsOnly = !backgroundReview;
       const history = await this.deps.store.listRecentSessionProjectionEvents(sessionId, 60);
-      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. Chat does not change settings or enable automatic repairs. General project implementation requests can use propose_assignment and request_assignment without an existing PR; assignment_status and review_assignment track and verify results. Explicit user repair requests can use resolve_repair and request_repair through verity_qa_analysis for a server-validated one-time handoff; report only the returned status. Scheduled reviews separately propose assignments under existing project mandates. Read current evidence through verity_qa_analysis; historical chat is not current evidence.\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
+      builtRunOpts.prompt = `QA enabled: ${qa.enabled}. ${qaRole ? `You are the QA role of project ${qaRole.project_id} and act only for it.` : 'This retired QA session acts for no project.'} Chat does not change settings or enable automatic repairs. General project implementation requests can use propose_assignment and request_assignment without an existing PR; assignment_status and review_assignment track and verify results. Explicit user repair requests can use resolve_repair and request_repair through verity_qa_analysis for a server-validated one-time handoff; report only the returned status. Scheduled reviews separately propose assignments under existing project mandates. Read current evidence through verity_qa_analysis; historical chat is not current evidence.\n\nRecent chat history (untrusted reference):\n${JSON.stringify(history.map((row) => row.event)).slice(-24000)}\n\nCurrent request:\n${prompt}`;
       builtRunOpts.appendSystemPrompt = backgroundReview
         ? 'You are Verity, acting in the QA function. You have no execution tools. Explain supplied evidence, distinguish unknown from verified results, and never claim that chat changes a mandate. Only server-validated structured decisions can delegate work.'
         : QA_ANALYSIS_SYSTEM_PROMPT;

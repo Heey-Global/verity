@@ -1,24 +1,13 @@
 import type { BrokeredApprovalDatabase, SecretKeyMetaTable } from './schema-brokered-approvals.js';
 export type { SecretKeyMetaTable } from './schema-brokered-approvals.js';
+import type { AssistantDatabase } from './schema-assistant.js';
 import type { PeopleDatabase } from './schema-people.js';
 import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
+import type { ProjectInquiryDatabase } from './schema-project-inquiries.js';
 import type { SandboxDatabase } from './schema-sandbox.js';
+import type { ProjectQADatabase } from './schema-project-qa.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
-export interface ProjectInquiryGrantsTable {
-  source_project_id: string;
-  target_project_id: string;
-  enabled: Generated<boolean>;
-  created_at: Generated<Date>;
-}
-
-export interface ProjectInquirySessionsTable {
-  source_session_id: string;
-  target_project_id: string;
-  target_session_id: string;
-  change_approved: Generated<boolean>;
-}
-
 export interface WikiOccasionsTable {
   id: string;
   project_id: string;
@@ -48,23 +37,6 @@ export interface SandboxRepairIntentsTable {
   storage_refused: boolean;
   last_failure_at: Date;
   last_failure_message: string;
-}
-
-export interface ProjectInquiriesTable {
-  id: string;
-  source_session_id: string;
-  target_session_id: string;
-  source_project_id: string;
-  target_project_id: string;
-  title: string;
-  body: string;
-  kind: 'question' | 'change';
-  status: 'provisioning' | 'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
-  created_at: Generated<Date>;
-  answer: string | null;
-  answer_delivered: Generated<boolean>;
-  user_id: string | null;
-  decided_by: string | null;
 }
 
 export interface ProjectRepositoriesTable {
@@ -1780,10 +1752,14 @@ interface VulnerabilityFixesTable {
 }
 
 export interface Database
-  extends PeopleDatabase, SandboxDatabase, SessionCoordinationDatabase, BrokeredApprovalDatabase {
-  project_inquiry_grants: ProjectInquiryGrantsTable;
-  project_inquiry_sessions: ProjectInquirySessionsTable;
-  project_inquiries: ProjectInquiriesTable;
+  extends
+    AssistantDatabase,
+    PeopleDatabase,
+    SandboxDatabase,
+    SessionCoordinationDatabase,
+    ProjectQADatabase,
+    BrokeredApprovalDatabase,
+    ProjectInquiryDatabase {
   wiki_occasions: WikiOccasionsTable;
   wiki_maintenance: WikiMaintenanceTable;
   sandbox_repair_intents: SandboxRepairIntentsTable;
@@ -1797,18 +1773,13 @@ export interface Database
   qa_assignment_notifications: QAAssignmentNotificationsTable;
   repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
-  repair_incidents: RepairIncidentsTable;
   repair_workflow_heads: RepairWorkflowHeadsTable;
   repair_attempts: RepairAttemptsTable;
   repair_session_history: RepairSessionHistoryTable;
   repair_session_origins: RepairSessionOriginsTable;
-  qa_coordinator: QACoordinatorTable;
   qa_inbox: QAInboxTable;
   qa_proposals: QAProposalsTable;
   qa_decisions: QADecisionsTable;
-  assistant_settings: AssistantSettingsTable;
-  assistant_project_grants: AssistantProjectGrantsTable;
-  assistant_requests: AssistantRequestsTable;
   scheduling_requests: SchedulingRequestsTable;
   scheduling_holds: SchedulingHoldsTable;
   vuln_digests: VulnDigestsTable;
@@ -2023,21 +1994,6 @@ interface RepairMandatesTable {
   health: Generated<string>;
   checked_at: Date | null;
 }
-interface RepairIncidentsTable {
-  verified_success: Generated<boolean>;
-  repair_pr: number | null;
-  id: string;
-  project_id: string;
-  resource: string;
-  revision: string;
-  evidence: string;
-  state: Generated<import('./repair-supervision.js').RepairIncident['state']>;
-  owner_session_id: string | null;
-  last_session_id: string | null;
-  attempts: Generated<number>;
-  dispatch_id: string | null;
-  updated_at: Generated<Date>;
-}
 interface RepairWorkflowHeadsTable {
   project_id: string;
   workflow: string;
@@ -2062,30 +2018,6 @@ interface RepairSessionHistoryTable {
   project_id: string;
   resource: string;
   session_id: string;
-  created_at: Generated<Date>;
-}
-interface AssistantSettingsTable {
-  id: number;
-  enabled: Generated<boolean>;
-  revision: Generated<number>;
-  sponsor_user_id: string | null;
-  session_id: string | null;
-  updated_at: Generated<Date>;
-}
-interface AssistantProjectGrantsTable {
-  project_id: string;
-  mode: import('./assistant.js').AssistantMode;
-  sponsor_user_id: string;
-  revision: Generated<number>;
-  updated_at: Generated<Date>;
-}
-interface AssistantRequestsTable {
-  request_id: string;
-  session_id: string;
-  user_id: string;
-  kind: import('./assistant.js').AssistantRequestKind;
-  question_id: string | null;
-  state: Generated<'pending' | 'accepted'>;
   created_at: Generated<Date>;
 }
 interface SchedulingRequestsTable {
@@ -2140,20 +2072,6 @@ interface SchedulingHoldsTable {
   next_attempt_at: Date | null;
   last_error: string | null;
   updated_at: Generated<Date>;
-}
-interface QACoordinatorTable {
-  id: number;
-  enabled: Generated<boolean>;
-  revision: Generated<number>;
-  sponsor: string | null;
-  session_id: string | null;
-  health: Generated<string>;
-  active_dispatch: string | null;
-  active_seq: ColumnType<string | null, string | number | null, string | number | null>;
-  active_revision: number | null;
-  active_snapshot: string | null;
-  wake_day: string | null;
-  wakes: Generated<number>;
 }
 interface QAInboxTable {
   project_id: string;

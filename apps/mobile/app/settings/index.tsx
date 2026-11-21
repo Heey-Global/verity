@@ -230,8 +230,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
           <SettingsNavRow
             icon="activity"
-            title="QA · CI supervision"
-            subtitle="Project monitoring and repair ownership"
+            title="QA"
+            subtitle="Watches and repairs CI in every coding project"
             onPress={() => router.push('/settings/repairs')}
           />
           <SettingsNavRow

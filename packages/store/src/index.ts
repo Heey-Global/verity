@@ -257,6 +257,9 @@ export type {
 export {
   AssistantStore,
   type AssistantGrant,
+  type AssistantHandoff,
+  type AssistantHandoffResult,
+  ASSISTANT_HANDOFF_SUMMARY_MAX,
   type AssistantMode,
   type AssistantRequest,
   type AssistantRequestClaim,
@@ -284,9 +287,22 @@ export {
   type ManualRepairProposal,
   type RepairIncident,
   type RepairMode,
+  type QAState,
 } from './repair-supervision.js';
 
 export { QAAssignmentStore, type QAAssignment, type QAAssignmentState } from './qa-assignments.js';
+export {
+  ProjectQAStore,
+  QA_EMERGENCY_BRAKE_STARTS,
+  QA_PARALLEL_REPAIRS,
+  QA_REPAIR_ROUNDS,
+  type ProjectQARole,
+  type ProjectQASummary,
+  type QAIssue,
+  type QAIssueDecision,
+  type QAIssueReason,
+  type QAIssueState,
+} from './project-qa.js';
 
 export {
   UserContextStore,

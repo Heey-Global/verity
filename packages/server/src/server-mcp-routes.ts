@@ -1,3 +1,4 @@
+import { createMcpAppAuthorization } from './mcp-apps-authorization.js';
 import { installDetachedSecretApprovals } from './detached-secret-approvals.js';
 import { createGatewaySessionCoordination } from './session-coordination-runtime.js';
 import type { SpawnSession } from './session-create-route.js';
@@ -45,18 +46,17 @@ import { httpMcpConnectionUsableBy, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
 import {
   assistantToolRefusal,
+  assistantHandoffHooks,
   executeAssistantTool,
-  requireAssistantGrant,
   requireAssistantSession,
   type AssistantToolDeps,
 } from './assistant-tool.js';
-import { requestCredential } from './auth.js';
 import { type GitBranchService } from './branches.js';
 import {
   brokeredDopplerBindingId,
   parseBrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
-import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
+import { createControlDiagnosticsTool, diagnosticSources } from './control-diagnostics-tool.js';
 import { documentViewForSession } from './document-workspace.js';
 import './fastify-augmentation.js';
 import { gmailHasStandingAuthorization } from './gmail-tool.js';
@@ -96,7 +96,6 @@ import { registerMcpAppsRoutes } from './mcp-apps-routes.js';
 import { createMcpAppsInterceptor } from './mcp-apps.js';
 import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { createMcpGateway } from './mcp-gateway.js';
-import { authorizePairedRoute } from './paired-route-policy.js';
 import {
   createSessionPlanning,
   OPEN_DECISIONS_ERROR,
@@ -497,23 +496,7 @@ export function registerServerMcpRoutes({
       }),
     });
     registerMcpAppsRoutes(app, {
-      authorizeRequest: async (request) => {
-        const registry = deps.authRegistry;
-        if (registry === undefined || !registry.isEnabled()) return true;
-        const token = requestCredential(request);
-        if (!registry.verify(token)) return false;
-        const userId = registry.resolveUserId(token);
-        if (userId === undefined || userId !== request.localUserId) return false;
-        return (
-          (await authorizePairedRoute(
-            deps.eventStore,
-            userId,
-            request.method,
-            request.routeOptions.url ?? request.url,
-            (request.params ?? {}) as Record<string, unknown>,
-          )) === 'allow'
-        );
-      },
+      ...createMcpAppAuthorization(deps),
       resolveConnection: resolveMcpAppConnection,
       getProjectId: async (sessionId) =>
         (await deps.eventStore.getSession(sessionId))?.projectId ?? undefined,
@@ -616,21 +599,12 @@ export function registerServerMcpRoutes({
     // of the executor is composed.
     //
     // `listSessionFacts` is where the listing's "metadata only" promise is kept. The summary
-    // is narrowed to six fields HERE, at the boundary, so no transcript, PR, usage or
-    // attention data is even in reach of the tool that answers the caller — `name` included,
-    // for the reason `ControlPlaneSessionFacts` gives.
+    // explicitly includes visible names (also auto-titles), but no transcript, PR, usage
+    // or attention data. Caller/target authorization and per-call approval still apply.
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
       allowKnowledgeControlOperations: true,
-      // Plain Control sessions keep their reach; the assistant needs a "delegate" grant.
-      authorizeHandoffTarget: async ({ sessionId, turnId, projectId }) => {
-        if ((await deps.eventStore.assistant.settings()).session_id !== sessionId) return;
-        await requireAssistantGrant(
-          assistantToolDeps,
-          { sessionId, turnId, projectId },
-          'delegate',
-        );
-      },
+      ...assistantHandoffHooks(assistantToolDeps),
       authorizeKnowledgeCaller: async ({ projectId, sessionId }) => {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
@@ -668,6 +642,7 @@ export function registerServerMcpRoutes({
         return {
           sessions: summaries.map((session) => ({
             sessionId: session.sessionId,
+            name: session.name ?? null,
             projectId: session.projectId,
             model: session.model,
             status: session.status,
@@ -872,8 +847,7 @@ export function registerServerMcpRoutes({
       version: SERVER_VERSION,
       pushEnabled: deps.pushEnabled === true,
       publicPreviewsEnabled: () => deps.previewShareManager?.isAvailable() === true,
-      runtimeReadiness: deps.secretJobRuntimeReadiness,
-      uplinkDiagnostics: deps.uplinkDiagnostics,
+      ...diagnosticSources(deps),
     });
     const planningApprovalRevisions = new WeakMap<object, number>();
     const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();
@@ -899,7 +873,7 @@ export function registerServerMcpRoutes({
         const user = await runningTurnInitiator(input.sessionId, input.turnId);
         if (!(await canExecuteAs(user?.userId, input.projectId))) return false;
         if (
-          (await deps.eventStore.repairs.qa()).session_id === input.sessionId &&
+          (await deps.eventStore.repairs.projectQA.isQASession(input.sessionId)) &&
           input.toolName !== 'verity_qa_analysis'
         )
           return false;
@@ -950,7 +924,7 @@ export function registerServerMcpRoutes({
             'External tools are unavailable in planning mode; Wiki maintenance allows only Wiki operations.',
           );
         if (
-          (await deps.eventStore.repairs.qa()).session_id === sessionId &&
+          (await deps.eventStore.repairs.projectQA.isQASession(sessionId)) &&
           toolName !== 'verity_qa_analysis'
         )
           throw new ControlPlaneSessionAuthorityError(
@@ -2064,7 +2038,7 @@ export function registerServerMcpRoutes({
         }
         if (input.toolName === 'verity_publish_session_progress') {
           const progress = publishSessionProgressRequestSchema.parse(input.request);
-          await deps.eventStore.appendEvent(input.sessionId, {
+          await publishSessionEvent(input.sessionId, {
             t: 'session_progress',
             ...progress,
           });

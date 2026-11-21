@@ -1,3 +1,5 @@
+import { assistantHandoffResultsSpec } from './assistant-handoff-results';
+import { nativeMcpAppsSpec } from './native-mcp-apps';
 import { teamJoinRecoverySpec } from './team-join-recovery';
 import { sandboxUpdatesSpec } from './sandbox-updates';
 import { aiAccountsSpec } from './ai-accounts';
@@ -8,12 +10,16 @@ import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
 import { homeAnswersSpec } from './home-answers';
 import { homeVerityEntrySpec } from './home-verity-entry';
+import { fileExplorerSpec } from './file-explorer';
 import { instructionSourcesSpec } from './instruction-sources';
 import { mcpOAuthDetectionSpec } from './mcp-oauth-detection';
 import { mockupReviewSpec } from './mockup-review';
 import { meetingRecoverySpec } from './meeting-recovery';
 import { planCardSpec } from './plan-card';
+import { projectInquiryApprovalSpec } from './project-inquiry-approval';
 import { projectNamesSpec } from './project-names';
+import { projectQASpec } from './project-qa';
+import { projectStatusSpec } from './project-status';
 import { repositoriesSpec } from './repositories';
 import { sourceActionsSpec } from './source-actions';
 import { teamInvitationsSpec } from './team-invitations';
@@ -23,6 +29,8 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  assistantHandoffResultsSpec,
+  nativeMcpAppsSpec,
   teamJoinRecoverySpec,
   sandboxUpdatesSpec,
   aiAccountsSpec,
@@ -36,9 +44,13 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   mockupReviewSpec,
   meetingRecoverySpec,
   instructionSourcesSpec,
+  fileExplorerSpec,
   mcpOAuthDetectionSpec,
   planCardSpec,
+  projectInquiryApprovalSpec,
   projectNamesSpec,
+  projectQASpec,
+  projectStatusSpec,
   repositoriesSpec,
   sourceActionsSpec,
   teamInvitationsSpec,

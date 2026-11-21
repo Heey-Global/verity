@@ -3,6 +3,7 @@ import type { ProjectRelayControl } from './provisioner.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { projectRelayContainerName } from './project-relay-identity.js';
 import { DockerError, type DockerClient } from './docker.js';
+import { CONTAINER_GENERATION_LABEL, PROJECT_ID_LABEL } from './project-relay-migration.js';
 
 export function validateEmbeddedProjectRelay({
   config,
@@ -71,9 +72,13 @@ export function createEmbeddedProjectRelayControl({
 }: {
   projectRelayEnabled: boolean;
   getLifecycle: () =>
-    | Pick<ProjectRelayLifecycle, 'start' | 'resume' | 'sleep' | 'reactivate' | 'stop' | 'isActive'>
+    | Pick<
+        ProjectRelayLifecycle,
+        'start' | 'resume' | 'sleep' | 'reactivate' | 'stop' | 'isActive' | 'heldRelays'
+      >
     | undefined;
-  projectDocker: Pick<DockerClient, 'inspectContainer'> | undefined;
+  projectDocker:
+    Pick<DockerClient, 'inspectContainer' | 'stopContainer' | 'removeContainer'> | undefined;
 }): ProjectRelayControl | undefined {
   return projectRelayEnabled
     ? {
@@ -110,6 +115,37 @@ export function createEmbeddedProjectRelayControl({
           return projectRelayLifecycle.reactivate(binding);
         },
         stop: (sandbox) => getLifecycle()?.stop(sandbox) ?? Promise.resolve(),
+        // Only a relay this process no longer holds, and only the container that
+        // carries exactly this project and generation: a parked Sandbox's relay.
+        discardGeneration: async ({ projectId, containerGeneration }) => {
+          if (projectDocker === undefined) return;
+          const held = getLifecycle()?.heldRelays() ?? [];
+          if (
+            held.some(
+              (relay) =>
+                relay.projectId === projectId && relay.containerGeneration === containerGeneration,
+            )
+          )
+            throw new Error('Refusing to discard a relay generation that is still held');
+          const name = projectRelayContainerName({ projectId, containerGeneration });
+          const ignoreMissing = (error: unknown) => {
+            if (!(error instanceof DockerError && error.kind === 'container_not_found'))
+              throw error;
+          };
+          let relay: Awaited<ReturnType<DockerClient['inspectContainer']>>;
+          try {
+            relay = await projectDocker.inspectContainer(name);
+          } catch (error) {
+            return ignoreMissing(error);
+          }
+          if (
+            relay.labels?.[PROJECT_ID_LABEL] !== projectId ||
+            relay.labels?.[CONTAINER_GENERATION_LABEL] !== containerGeneration
+          )
+            throw new Error('Relay container ownership is unproven');
+          await projectDocker.stopContainer(relay.id).catch(ignoreMissing);
+          await projectDocker.removeContainer(relay.id).catch(ignoreMissing);
+        },
         brokerUrl: (activation) => `http://${projectRelayContainerName(activation.identity)}:8080`,
         claudeGatewayUrl: (activation) =>
           `https://${projectRelayContainerName(activation.identity)}:8443`,

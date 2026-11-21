@@ -109,5 +109,20 @@ export function createEmbeddedRepositoryPullRequests(
       }
     },
   };
-  return { readProjectStatus, invalidateProjectStatus, projectPullRequests };
+  // Server dependencies that keep GitHub polling within the shared App quota.
+  const forgeStatusDeps = {
+    invalidateProjectPrStatus: invalidateProjectStatus,
+    deferBackgroundForgeReads: async (projectId: string): Promise<boolean> => {
+      try {
+        const project = await eventStore.getProject(projectId);
+        if (!project || project.kind === 'local' || project.kind === 'control_plane') return false;
+        const provider = await projectForgeProvider(eventStore, githubForge, project);
+        return provider?.deferBackgroundReads?.(project) ?? false;
+      } catch {
+        return false;
+      }
+    },
+    githubDiagnostics: () => githubForge.rateDiagnostics?.(),
+  };
+  return { readProjectStatus, invalidateProjectStatus, projectPullRequests, forgeStatusDeps };
 }

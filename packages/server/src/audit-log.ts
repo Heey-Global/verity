@@ -64,6 +64,11 @@ const payloads = {
       /** Content hash over the devcontainer configuration and base image; never secret-bearing. */
       configFingerprint: z.string().regex(/^[0-9a-f]{8,128}$/),
       features: z.array(z.string().min(1).max(500)).max(20),
+      /** Per-attempt keyed snapshot identity; absent on older build events. */
+      snapshotFingerprint: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .optional(),
     })
     .strict(),
   'build.succeeded': z

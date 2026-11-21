@@ -1,5 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
-import { authorizePairedRoute, type PairedRoutePolicyStore } from './paired-route-policy.js';
+import {
+  authorizePairedRoute,
+  pairedRoutePolicy,
+  type PairedRoutePolicyStore,
+} from './paired-route-policy.js';
 
 it('requires execute access to mark or end a session mockup review', async () => {
   const store: PairedRoutePolicyStore = {
@@ -272,6 +277,28 @@ it('requires project management permission to delete Wiki entries', async () => 
       id: 'p',
     }),
   ).toBe('allow');
+});
+
+// Read from the route module rather than listed: a knowledge route added there
+// later must land in the same split, or managers lose it silently (nothing
+// declared means administrator-only) or a member gains write access to Shared.
+it('lets project members read and managers change project knowledge, Shared only administrators', () => {
+  const source = readFileSync(new URL('./knowledge-file-routes.ts', import.meta.url), 'utf8');
+  const routes = [...source.matchAll(/\bapp\.(get|post|put|delete)\(\s*'([^']+)'/g)].map(
+    ([, method, url]) => [method!.toUpperCase(), url!] as const,
+  );
+  const shared = routes.filter(([, url]) => url.startsWith('/knowledge/shared/'));
+  const project = routes.filter(([, url]) => url.startsWith('/projects/:id/knowledge/'));
+  expect(shared.length).toBeGreaterThan(8);
+  expect(project.length).toBe(shared.length);
+  for (const [method, url] of shared)
+    expect(pairedRoutePolicy(method, url), `${method} ${url}`).toEqual({ kind: 'administrator' });
+  for (const [method, url] of project)
+    expect(pairedRoutePolicy(method, url), `${method} ${url}`).toEqual({
+      kind: 'project',
+      parameter: 'id',
+      permission: method === 'GET' ? 'read' : 'manage',
+    });
 });
 
 it('lets a reader keep their own view state but hides resources they cannot read', async () => {

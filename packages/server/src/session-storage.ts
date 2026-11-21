@@ -1,4 +1,14 @@
+import {
+  workspaceDependencyLinks,
+  type WorkspaceDependencyLinks,
+} from './dependency-workspace-links.js';
 import { dependencyInputIdentity } from './dependency-inputs.js';
+import {
+  recordRecoveryHolds,
+  readDependencyCopyObservation,
+  type RecoveryHolds,
+  type DependencyCopyObservation,
+} from './dependency-recovery.js';
 import { digest, shareDependencyFiles } from './dependency-sharing.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -21,9 +31,8 @@ import { linkWorkspacePackages, WORKTREE_SIDECAR } from './worktree.js';
 
 const WEEK = 7 * 24 * 60 * 60_000;
 /** A session without a turn for this long gives up its private dependency
- *  installation and preserved copies of earlier ones. Both are regenerated from
- *  the session's own lockfile by `verity-dependencies install`; edits made
- *  directly inside them are not kept. */
+ *  installation only after its contents have been verified against a known
+ *  installation. Age never proves that local edits can be regenerated. */
 const IDLE_DEPENDENCIES = 3 * 24 * 60 * 60_000;
 /** Spacing of the follow-up passes after one stopped at its 60-second budget. */
 const CONTINUE_AFTER = 15 * 60_000;
@@ -71,6 +80,8 @@ export function sessionStorageDiagnostics(report: SessionStorageReport) {
     worktreesRetired: report.worktreesRetired.length,
     comparedDependencyBytes: report.comparedDependencyBytes,
     sharedDependencyBytes: report.sharedDependencyBytes,
+    recoveryHolds: report.recoveryHolds,
+    dependencyCopies: report.dependencyCopies,
     worktreeSampledBytes: report.worktreeSampledBytes,
     dependencySampledBytes: report.dependencySampledBytes,
     usageComplete: report.usageComplete,
@@ -95,6 +106,8 @@ interface SessionCoverage {
 }
 
 export interface SessionStorageReport {
+  recoveryHolds?: RecoveryHolds;
+  dependencyCopies?: DependencyCopyObservation[];
   observedAt: string;
   /** Set once a pass has visited every project; absent while running or after a cut-short pass. */
   completed?: boolean;
@@ -259,7 +272,10 @@ export async function compareDependencyTrees(
   privatePath: string,
   sharedPath: string,
   signal: AbortSignal,
-  roots = { local: privatePath, shared: sharedPath },
+  roots: { local: string; shared: string; workspaceLinks?: WorkspaceDependencyLinks } = {
+    local: privatePath,
+    shared: sharedPath,
+  },
   links: 'exact' | 'content-free' = 'exact',
 ): Promise<number> {
   signal.throwIfAborted();
@@ -272,6 +288,16 @@ export async function compareDependencyTrees(
     return 0;
   }
   if (local.isSymbolicLink()) {
+    const workspace = roots.workspaceLinks?.get(relative(roots.local, privatePath));
+    if (workspace) {
+      if (
+        !shared.isSymbolicLink() ||
+        (await realpath(privatePath)) !== workspace.local ||
+        (await realpath(sharedPath)) !== workspace.shared
+      )
+        throw new Error('Workspace dependency link differs from its declared source');
+      return 0;
+    }
     if (!shared.isSymbolicLink() || (await readlink(privatePath)) !== (await readlink(sharedPath)))
       throw new Error('Dependency link differs');
     const target = await readlink(privatePath);
@@ -802,30 +828,96 @@ export class SessionStorage {
   ): Promise<void> {
     const root = await this.safeRoot(project, path);
     const firstRemoval = report.dependenciesRemoved.length;
-    // Separate steps: a preserved copy that fails must not keep the private
-    // installation of an idle session in place, nor the other way round.
-    for (const step of [
-      () => this.reclaimPreservedDependencies(root, path, git, report, signal, idleDependencies),
-      // An idle session gives its installation up; an active one shares it.
-      async () => {
-        if (idleDependencies) await this.removeIdleDependencies(path, git, report);
-        else
-          report.sharedDependencyBytes += (
-            await shareDependencyFiles(root, path, signal, this.deps.dryRun)
-          ).bytes;
-      },
-    ])
-      try {
-        await step();
-      } catch (error) {
-        signal.throwIfAborted();
-        report.blockers.push({
-          path,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
+    const firstBlocker = report.blockers.length;
     try {
-      await this.reclaimContents(project, path, sessionId, git, report, signal, retireWorktree);
+      // Separate steps: a preserved copy that fails must not keep the private
+      // installation of an idle session in place, nor the other way round.
+      for (const step of [
+        () => this.reclaimPreservedDependencies(root, path, git, report, signal),
+        // An idle session gives its installation up; an active one shares it.
+        async () => {
+          if (idleDependencies) await this.removeIdleDependencies(root, path, git, report, signal);
+          else
+            report.sharedDependencyBytes += (
+              await shareDependencyFiles(root, path, signal, this.deps.dryRun)
+            ).bytes;
+        },
+      ])
+        try {
+          await step();
+        } catch (error) {
+          report.blockers.push({
+            path,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          if (signal.aborted) break;
+        }
+      if (!(await exists(path))) return;
+      const holds = report.blockers.slice(firstBlocker).map((hold) => ({
+        ...hold,
+        path: hold.path === path ? join(path, 'node_modules') : hold.path,
+      }));
+      const gitDir = this.hostGitPath(
+        root,
+        (await git(['-C', path, 'rev-parse', '--absolute-git-dir'])).trim(),
+      );
+      if (
+        dirname(gitDir) !== join(root, '.git', 'worktrees') ||
+        (await realpath(gitDir)) !== gitDir
+      )
+        throw new Error('Worktree Git directory is unknown or symlinked');
+      if ((report.dependencyCopies?.length ?? 0) < 20) {
+        const copy = await readDependencyCopyObservation(gitDir, path);
+        if (copy) (report.dependencyCopies ??= []).push(copy);
+      }
+      const recovery = await recordRecoveryHolds(
+        gitDir,
+        holds,
+        this.passStartedAt,
+        signal,
+        this.deps.dryRun,
+      );
+      const previous = report.recoveryHolds;
+      report.recoveryHolds = {
+        count: (previous?.count ?? 0) + recovery.count,
+        sampledBytes: (previous?.sampledBytes ?? 0) + recovery.sampledBytes,
+        oldestObservedAt: Math.min(
+          previous?.oldestObservedAt ?? Infinity,
+          recovery.oldestObservedAt ?? Infinity,
+        ),
+        complete: (previous?.complete ?? true) && recovery.complete,
+      };
+      if (!Number.isFinite(report.recoveryHolds.oldestObservedAt))
+        report.recoveryHolds.oldestObservedAt = null;
+      // Retiring a worktree removes its Git recovery directory as well. A hold
+      // therefore protects the entire graph, including preserved workspace links.
+      if (holds.length) return;
+      try {
+        await this.reclaimContents(project, path, sessionId, git, report, signal, retireWorktree);
+      } catch (error) {
+        const lateHolds = report.blockers
+          .slice(firstBlocker)
+          .filter((hold) => hold.path === join(path, 'node_modules'));
+        if (lateHolds.length) {
+          const late = await recordRecoveryHolds(
+            gitDir,
+            lateHolds,
+            this.passStartedAt,
+            signal,
+            this.deps.dryRun,
+          );
+          report.recoveryHolds = {
+            count: (report.recoveryHolds?.count ?? 0) + late.count,
+            sampledBytes: (report.recoveryHolds?.sampledBytes ?? 0) + late.sampledBytes,
+            oldestObservedAt: Math.min(
+              report.recoveryHolds?.oldestObservedAt ?? Infinity,
+              late.oldestObservedAt ?? Infinity,
+            ),
+            complete: (report.recoveryHolds?.complete ?? true) && late.complete,
+          };
+        }
+        throw error;
+      }
     } finally {
       // Restore wiring only for installations this pass verified and removed.
       // A rejected private graph can contain intentionally customized workspace links.
@@ -837,24 +929,15 @@ export class SessionStorage {
         linkWorkspacePackages(root, path);
     }
   }
-  /**
-   * `verity-dependencies` moves a session's previous installation into its
-   * worktree Git directory before activating a new one, as recovery for local
-   * package edits, and never removes it. A copy whose files are byte-identical
-   * to the central installation named by its own receipt holds no such edits
-   * and is removed. Any other copy is kept for {@link IDLE_DEPENDENCIES} after
-   * this collector first saw it, and then removed like the copies of an idle
-   * session: the central store keeps only a few identities, so a copy from an
-   * older one can never be compared again, and a session that is never idle
-   * for three days would otherwise keep every copy it ever made.
-   */
+  /** A preserved tree is recovery data until comparison proves it redundant.
+   * Missing receipts and retired inventories never become deletion authority
+   * merely because a session or an observation has grown old. */
   private async reclaimPreservedDependencies(
     root: string,
     path: string,
     git: GitOutput,
     report: SessionStorageReport,
     signal: AbortSignal,
-    idle = false,
   ): Promise<void> {
     if (!(await exists(path))) return;
     const gitDir = this.hostGitPath(
@@ -874,18 +957,6 @@ export class SessionStorage {
     const seen = await readObservations(journal);
     const observed: Record<string, number> = {};
     const now = this.passStartedAt;
-    const discard = async (copy: string): Promise<void> => {
-      try {
-        if (!this.deps.dryRun) await rm(copy, { recursive: true });
-        report.dependenciesRemoved.push(copy);
-      } catch (error) {
-        // One copy that cannot be removed must not keep the others in place.
-        report.blockers.push({
-          path: copy,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
-    };
     let reachedAll = false;
     try {
       for (const entry of await readdir(preserved, { withFileTypes: true })) {
@@ -895,12 +966,6 @@ export class SessionStorage {
         // A clock that moved backwards must not extend the window indefinitely.
         const since = Math.min(seen[entry.name] ?? now, now);
         observed[entry.name] = since;
-        // Idle sessions keep no copy; others keep one only for the same window.
-        if (idle || now - since >= IDLE_DEPENDENCIES) {
-          await discard(copy);
-          if (!(await exists(copy))) delete observed[entry.name];
-          continue;
-        }
         try {
           const receipt = await optionalFile(join(copy, '.verity-install.json'));
           const identity = (JSON.parse(receipt ?? 'null') as { identity?: unknown } | null)
@@ -927,11 +992,11 @@ export class SessionStorage {
           report.dependenciesRemoved.push(copy);
           delete observed[entry.name];
         } catch (error) {
-          signal.throwIfAborted();
           report.blockers.push({
             path: copy,
             reason: error instanceof Error ? error.message : String(error),
           });
+          signal.throwIfAborted();
         }
       }
       reachedAll = true;
@@ -944,15 +1009,15 @@ export class SessionStorage {
         await atomicJson(journal, next);
     }
   }
-  /** Removes the private top-level installation of a session idle past
-   *  {@link IDLE_DEPENDENCIES}. Tracked files under it and a symlinked or
-   *  non-directory `node_modules` keep it in place. Workspace links are restored
-   *  afterwards by {@link reclaim}, so workspace imports keep resolving to the
-   *  session's own sources until it installs again. */
+  /** Idle age permits comparison, never deletion of unknown package edits.
+   *  Only a byte-identical reference permits removing a private installation;
+   *  tracked files and symlinked roots remain protected. */
   private async removeIdleDependencies(
+    root: string,
     path: string,
     git: GitOutput,
     report: SessionStorageReport,
+    signal: AbortSignal,
   ): Promise<void> {
     if (!(await exists(path))) return;
     const modules = join(path, 'node_modules');
@@ -963,6 +1028,32 @@ export class SessionStorage {
     if (await linksOnly(modules)) return;
     if ((await git(['-C', path, 'ls-files', '-z', '--', 'node_modules'])).trim())
       throw new Error('Tracked dependency files');
+    const receipt = JSON.parse(
+      (await optionalFile(join(modules, '.verity-install.json'))) ?? 'null',
+    ) as { identity?: unknown } | null;
+    const identity = receipt?.identity;
+    if (
+      identity !== undefined &&
+      (typeof identity !== 'string' || !/^[a-f0-9]{64}$/u.test(identity))
+    )
+      throw new Error('Private dependencies have an invalid installation receipt');
+    const central =
+      typeof identity === 'string'
+        ? join(root, '.git', 'verity-dependencies', identity, 'node_modules')
+        : join(root, 'node_modules');
+    if ((await realpath(central)) !== central)
+      throw new Error('Private dependency reference is unavailable or symlinked');
+    const workspaceLinks = await workspaceDependencyLinks(path, dirname(central), root);
+    const bytes = await compareDependencyTrees(modules, central, signal, {
+      local: modules,
+      shared: central,
+      workspaceLinks,
+    });
+    signal.throwIfAborted();
+    const latest = await lstat(modules);
+    if (latest.ino !== stat.ino || latest.dev !== stat.dev)
+      throw new Error('Dependency root changed');
+    report.comparedDependencyBytes += bytes;
     if (!this.deps.dryRun) await rm(modules, { recursive: true });
     report.dependenciesRemoved.push(modules);
   }

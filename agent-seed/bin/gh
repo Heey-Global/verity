@@ -56,6 +56,12 @@ for ((i=0; i<${#args[@]}; i++)); do
     *) command_parts+=("$arg") ;;
   esac
 done
+# Only a person merges; the forge broker refuses merges, this just explains why.
+if [ "${command_parts[0]:-}" = pr ] && [ "${command_parts[1]:-}" = merge ] && [ "$help" = false ]; then
+  echo "verity: agents cannot merge pull requests; only a person merges, from the Verity app or the code host." >&2
+  echo "Leave the PR ready for review with green checks." >&2
+  exit 1
+fi
 if [ "${command_parts[0]:-}" = pr ] && [ "${command_parts[1]:-}" = create ] && [ "$help" = false ]; then
   reject_pr() {
     echo "verity PR guard: $*" >&2

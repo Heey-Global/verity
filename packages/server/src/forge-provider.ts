@@ -243,6 +243,10 @@ export interface ForgeProvider {
   discover?(ref: ForgeRepoRef, page: number): Promise<ForgeDiscoveryPage>;
   /** Opaque scope changes with credentials and explicit status invalidation. */
   repositoryPrService?(ref: ForgeRepoRef, observationScope?: object): ForgePrService;
+  /** True while background polling of this account should yield its API quota. */
+  deferBackgroundReads?(ref: ForgeRepoRef): boolean;
+  /** Bounded, credential-free API usage and rate-limit evidence for diagnostics. */
+  rateDiagnostics?(): unknown;
   readonly id: ForgeProviderId;
   readonly capabilities: ForgeCapabilities;
   /** The repository a git remote URL points at on this forge, or null for any other host. */

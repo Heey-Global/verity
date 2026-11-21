@@ -230,8 +230,12 @@ export interface ControlPlaneDeps {
    * Omit → no PR chip. (Previously declared only on {@link buildServer}'s deps and
    * dropped here — now forwarded so the embedded composition actually wires it.) */
   branchPr?: ((branch: string, worktree: string) => Promise<number | null>) | undefined;
-  /** Compact PR strip status for a branch: title, URL, check counts and mergeability. */
-  invalidateProjectPrStatus?: (projectId: string) => void;
+  /** Forget observed PR status; `branches` limits it to those branches. */
+  invalidateProjectPrStatus?: (projectId: string, branches?: readonly string[]) => void;
+  /** True while background PR polling of a project should yield GitHub API quota. */
+  deferBackgroundForgeReads?: (projectId: string) => Promise<boolean>;
+  /** Bounded GitHub API usage and rate-limit evidence for Control diagnostics. */
+  githubDiagnostics?: () => unknown;
   repairPullRequest?: (
     project: ProjectRecord,
     number: number,
@@ -557,6 +561,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.invalidateProjectPrStatus !== undefined
       ? { invalidateProjectPrStatus: deps.invalidateProjectPrStatus }
       : {}),
+    ...(deps.deferBackgroundForgeReads !== undefined
+      ? { deferBackgroundForgeReads: deps.deferBackgroundForgeReads }
+      : {}),
+    ...(deps.githubDiagnostics !== undefined ? { githubDiagnostics: deps.githubDiagnostics } : {}),
     ...(deps.repairPullRequest ? { repairPullRequest: deps.repairPullRequest } : {}),
     ...(deps.qaAnalysisRead !== undefined ? { qaAnalysisRead: deps.qaAnalysisRead } : {}),
     ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),

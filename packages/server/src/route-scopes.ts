@@ -103,6 +103,12 @@ const declare = (
  * which is the duplication this replaces.
  */
 export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = new Map([
+  declare(
+    'GET',
+    '/mcp-app-document',
+    'device-pairing',
+    'short-lived single-use MCP app document ticket with requester access revalidation',
+  ),
   declare('GET', '/healthz', 'public', 'none — liveness probe, no operator data in the response'),
   declare(
     'GET',

@@ -1,3 +1,4 @@
+import { mcpAppsClient } from './mcp-apps-client.js';
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
   agentLoginResponseSchema,
@@ -5,9 +6,14 @@ import {
   type AgentLogin,
   type AgentLoginProvider,
 } from './people-api.js';
+import { projectQAClient, projectQASummarySchema } from './project-qa-api.js';
 export * from './people-api.js';
+export * from './project-qa-api.js';
 export * from './session-workspace-api.js';
 import { sessionWorkspaceClient } from './session-workspace-api.js';
+export * from './knowledge-files-api.js';
+import { knowledgeFilesClient, projectGoogleDriveFilesClient } from './knowledge-files-api.js';
+import { uploadBodyWithMimeType } from './upload-body.js';
 export * from './backup-api.js';
 import {
   backupProbeJobSchema,
@@ -19,7 +25,9 @@ import {
 } from './backup-api.js';
 import {
   projectRepositorySchema,
+  projectInquiryGrantSchema,
   projectInquirySchema,
+  type InquiryDecision,
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
 import { repositoryPullRequestsSchema } from './projectPullRequests.js';
@@ -675,6 +683,7 @@ export const projectRecordSchema = z.object({
   // no releases / the lookup hasn't resolved yet, and `optional` tolerates a
   // producer that predates these fields. Today only `latestReleaseTag` is
   // rendered; the rest are carried for a follow-up detail view / link-out.
+  qaSummary: projectQASummarySchema.optional(),
   vulnerabilitySummary: z
     .object({
       maintenance: z.number().optional(),
@@ -2398,31 +2407,6 @@ export interface VerityClientOptions {
   connection?: ConnectionReporter;
 }
 
-function uploadBodyWithMimeType(data: Blob): Blob {
-  if (data.type === 'application/octet-stream') return data;
-
-  // expo/fetch copies the body Blob's `type` into its native Content-Type
-  // header, overriding the one the caller set. Two ways that breaks an upload:
-  // expo-file-system's File reports `null` when iOS cannot infer a MIME type,
-  // and the native bridge accepts strings only, so the request fails before it
-  // is sent; and when iOS *does* infer one, the picked file's own type (a PDF's
-  // `application/pdf`, say) replaces the `application/octet-stream` the upload
-  // routes are declared with. Always report the binary type both upload
-  // endpoints expect — they stream raw bytes and take the real media type from
-  // the file name or an explicit header. Preserve the native file object and
-  // all of its file-backed methods; native methods are bound to the original
-  // host object because Expo host objects can reject a Proxy as their receiver.
-  return new Proxy(data, {
-    get(target, property) {
-      if (property === 'type') return 'application/octet-stream';
-      const value: unknown = Reflect.get(target, property, target);
-      if (typeof value !== 'function') return value;
-      const boundValue: unknown = value.bind(target);
-      return boundValue;
-    },
-  });
-}
-
 /** Response of `POST /secret/init` and `POST /secret/unlock`. `token` +
  *  `tokenId` are present when the server's auth gate is active (a per-device
  *  bearer token to store); absent on an unmanaged/gate-off deployment. */
@@ -2750,6 +2734,7 @@ export class VerityClient {
   readonly secretApprovals = createSecretApprovalsClient((path, init) => this.request(path, init));
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
+  readonly projectQA = projectQAClient((path, init) => this.request(path, init));
   readonly getProjectTeam = this.people.getProjectTeam;
   readonly createProjectInvitation = this.people.createProjectInvitation;
   readonly getProjectInvitation = this.people.getProjectInvitation;
@@ -2767,27 +2752,28 @@ export class VerityClient {
   private readonly workspaces = sessionWorkspaceClient((path, init) => this.request(path, init));
   readonly moveSession = this.workspaces.moveSession;
   readonly restoreSessionCodeWorkspace = this.workspaces.restoreSessionCodeWorkspace;
+  private readonly knowledgeFiles = knowledgeFilesClient(
+    (path, init) => this.request(path, init),
+    (path, init) => this.request(path, init, this.uploadFetchImpl),
+  );
+  readonly deleteKnowledgeFile = this.knowledgeFiles.deleteKnowledgeFile;
+  readonly renameKnowledgeFile = this.knowledgeFiles.renameKnowledgeFile;
+  readonly moveKnowledgeFile = this.knowledgeFiles.moveKnowledgeFile;
+  readonly uploadKnowledgeFile = this.knowledgeFiles.uploadKnowledgeFile;
+  readonly createKnowledgeFileFolder = this.knowledgeFiles.createKnowledgeFileFolder;
+  readonly listKnowledgeBacklinks = this.knowledgeFiles.listKnowledgeBacklinks;
+  readonly createSessionFolder = this.knowledgeFiles.createSessionFolder;
+  private readonly driveFiles = projectGoogleDriveFilesClient(
+    (path, init) => this.request(path, init),
+    driveFileSchema,
+  );
+  readonly createProjectGoogleDriveFolder = this.driveFiles.createProjectGoogleDriveFolder;
+  readonly updateProjectGoogleDriveFile = this.driveFiles.updateProjectGoogleDriveFile;
 
-  async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
-    const response = await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,
-      { method: 'GET', ...(signal ? { signal } : {}) },
-    );
-    return z.object({ document: z.string() }).parse(await response.json()).document;
-  }
-
-  async callMcpAppTool(
-    sessionId: string,
-    appId: string,
-    call: { name: string; arguments?: Record<string, unknown> },
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
-    const response = await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}/call`,
-      { method: 'POST', body: JSON.stringify(call), ...(signal ? { signal } : {}) },
-    );
-    return z.record(z.string(), z.unknown()).parse(await response.json());
-  }
+  private readonly mcpApps = mcpAppsClient(this.request.bind(this), () => this.baseUrl);
+  readonly getMcpAppDocument = this.mcpApps.getMcpAppDocument;
+  readonly createMcpAppDocumentUrl = this.mcpApps.createMcpAppDocumentUrl;
+  readonly callMcpAppTool = this.mcpApps.callMcpAppTool;
 
   async getAttendeeSettings(): Promise<{ configured: boolean }> {
     return z
@@ -3588,25 +3574,15 @@ export class VerityClient {
     const res = await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
       method: 'GET',
     });
-    return z
-      .object({
-        grants: z.array(
-          z.object({
-            sourceProjectId: z.string(),
-            targetProjectId: z.string(),
-            enabled: z.boolean(),
-            createdAt: z.string(),
-          }),
-        ),
-      })
-      .parse(await res.json()).grants;
+    return z.object({ grants: z.array(projectInquiryGrantSchema) }).parse(await res.json()).grants;
   }
 
-  async setInquiryGrant(projectId: string, targetProjectId: string, enabled: boolean) {
+  /** Grants come only from "Always allow" on a request's card; this withdraws one. */
+  async revokeInquiryGrant(projectId: string, targetProjectId: string) {
     await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ targetProjectId, enabled }),
+      body: JSON.stringify({ targetProjectId, enabled: false }),
     });
   }
 
@@ -3619,9 +3595,9 @@ export class VerityClient {
     return z.object({ inquiries: z.array(projectInquirySchema) }).parse(await res.json()).inquiries;
   }
 
-  async decideProjectInquiry(sessionId: string, inquiryId: string, decision: 'approve' | 'reject') {
+  async decideProjectInquiry(projectId: string, inquiryId: string, decision: InquiryDecision) {
     await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/project-inquiries/${encodeURIComponent(inquiryId)}/decision`,
+      `/projects/${encodeURIComponent(projectId)}/project-inquiries/${encodeURIComponent(inquiryId)}/decision`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -6557,7 +6533,7 @@ export class VerityClient {
     projectId: string,
     path: string,
     content: string,
-    expectedVersion: string,
+    expectedVersion: string | null,
   ): Promise<SessionFileContent> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/knowledge/files/content`,
@@ -6611,7 +6587,7 @@ export class VerityClient {
   async writeSharedKnowledgeFile(
     path: string,
     content: string,
-    expectedVersion: string,
+    expectedVersion: string | null,
   ): Promise<SessionFileContent> {
     const res = await this.request('/knowledge/shared/files/content', {
       method: 'PUT',
@@ -6752,9 +6728,9 @@ export class VerityClient {
   async moveSessionFile(
     id: string,
     body: {
-      root: Exclude<SessionFileRoot, 'worktree'>;
+      root: SessionFileRoot;
       path: string;
-      toRoot: Exclude<SessionFileRoot, 'worktree'>;
+      toRoot: SessionFileRoot;
       toPath?: string;
       toFileName?: string;
     },
@@ -6959,61 +6935,6 @@ export class VerityClient {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ proposalId, allow }),
     });
-  }
-  async qaSettings(enabled?: boolean) {
-    const res = await this.request(
-      '/settings/qa',
-      enabled === undefined
-        ? { method: 'GET' }
-        : {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ enabled }),
-          },
-    );
-    return z
-      .object({ enabled: z.boolean(), health: z.string(), session_id: z.string().nullable() })
-      .parse(await res.json());
-  }
-
-  async projectRepairs(id: string, mode?: 'off' | 'monitor' | 'automatic') {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(id)}/repairs`,
-      mode
-        ? {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ mode }),
-          }
-        : { method: 'GET' },
-    );
-    return z
-      .object({
-        qaEnabled: z.boolean().optional(),
-        mandate: z
-          .object({
-            mode: z.enum(['off', 'monitor', 'automatic']),
-            health: z.string(),
-            checked_at: z.string().nullable(),
-          })
-          .nullable(),
-        incidents: z
-          .array(
-            z.object({
-              id: z.string(),
-              resource: z.string(),
-              revision: z.string(),
-              state: z.string(),
-              originating_session_id: z.string().nullable().optional(),
-              owner_session_id: z.string().nullable(),
-              last_session_id: z.string().nullable(),
-              attempts: z.number(),
-              evidence: z.string(),
-            }),
-          )
-          .optional(),
-      })
-      .parse(await res.json());
   }
   /** The Verity assistant: one Verity Control session plus per-project grants. */
   async assistantSettings(enabled?: boolean) {

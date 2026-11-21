@@ -406,6 +406,7 @@ function ItemView({
         </Card>
       );
     // A case Verity handed to a project; while it needs the user it is also on Home.
+    // Once the session publishes its result, the card shows it: Done or Open, its own words.
     case 'assignment':
       return (
         <Card stacked>
@@ -413,7 +414,13 @@ function ItemView({
             title={item.title}
             subtitle={item.state === 'failed' ? 'Not handed over' : (item.project ?? 'Project')}
             trailing={
-              item.state === 'sent' ? (
+              item.result ? (
+                item.result.delivered ? (
+                  <StatusTag intent="ready" label="Done" />
+                ) : (
+                  <StatusTag intent="action" label="Open" />
+                )
+              ) : item.state === 'sent' ? (
                 <StatusTag intent="ready" label="Handed over" />
               ) : item.state === 'failed' ? (
                 <StatusTag intent="needsSetup" label="Failed" />
@@ -422,6 +429,21 @@ function ItemView({
               )
             }
           />
+          {item.result ? (
+            <>
+              <Text variant="bodySmall" numberOfLines={2} testID="handoff-result">
+                {item.result.summary}
+              </Text>
+              {item.result.blocker ? (
+                <Text variant="subtitle" tone="attention" numberOfLines={2}>
+                  {`Blocker: ${item.result.blocker}`}
+                </Text>
+              ) : null}
+              <Text variant="footnote" tone="faint">
+                {`Result from the session · ${resultTime(item.result.at, item.at)}`}
+              </Text>
+            </>
+          ) : null}
         </Card>
       );
     case 'meeting':
@@ -547,6 +569,16 @@ export function dayLabel(
     day: 'numeric',
     month: 'short',
   });
+}
+
+/** When a handoff's result arrived: the time, with the date once it is not the card's day,
+ *  since the day heading above the card belongs to the handoff. */
+function resultTime(at: number, handedOffAt: number): string {
+  const when = new Date(at);
+  const time = when.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return when.toDateString() === new Date(handedOffAt).toDateString()
+    ? time
+    : `${when.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, ${time}`;
 }
 
 function DayHeading({ at, previous }: { at: number; previous: number | undefined }) {

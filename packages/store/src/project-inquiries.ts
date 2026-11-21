@@ -23,6 +23,8 @@ export interface ProjectInquiry {
   answer: string | null;
   userId: string | null;
   decidedBy: string | null;
+  /** A person allowed this request on its card; standing grants admit questions only. */
+  humanApproved: boolean;
 }
 type Row = {
   id: string;
@@ -38,6 +40,7 @@ type Row = {
   answer: string | null;
   user_id: string | null;
   decided_by: string | null;
+  human_approved: boolean;
 };
 const record = (r: Row): ProjectInquiry => ({
   id: r.id,
@@ -53,6 +56,7 @@ const record = (r: Row): ProjectInquiry => ({
   answer: r.answer,
   userId: r.user_id,
   decidedBy: r.decided_by,
+  humanApproved: r.human_approved,
 });
 
 /** Durable project-to-project requests; a peer can never write the human decision. */
@@ -81,10 +85,13 @@ export class ProjectInquiryStore {
       await sql`insert into project_inquiry_grants(source_project_id,target_project_id,enabled)
         values(${source},${target},${enabled}) on conflict(source_project_id,target_project_id)
         do update set enabled=excluded.enabled`.execute(tx);
+      // Revoking stops questions the grant admitted on its own; requests a person
+      // allowed on their card, and those still waiting for one, keep their state.
       if (!enabled)
         await sql`update project_inquiries set status='blocked'
           where source_project_id=${source} and target_project_id=${target}
-            and status in ('provisioning','pending','approved')`.execute(tx);
+            and kind='question' and not human_approved
+            and status in ('provisioning','approved')`.execute(tx);
     });
   }
 
@@ -164,8 +171,13 @@ export class ProjectInquiryStore {
     return rows.rows.map(record);
   }
 
+  /**
+   * Records a request. A `provisioning` request is admitted only when it is a
+   * question and the source project holds a standing grant for the target;
+   * otherwise it is stored as `pending` and waits for a person's decision.
+   */
   async create(
-    input: Omit<ProjectInquiry, 'createdAt' | 'answer' | 'decidedBy'>,
+    input: Omit<ProjectInquiry, 'createdAt' | 'answer' | 'decidedBy' | 'humanApproved'>,
   ): Promise<ProjectInquiry> {
     return this.db.transaction().execute(async (tx) => {
       // Serialize the grant check, daily cap and insert across concurrent turns.
@@ -187,7 +199,10 @@ export class ProjectInquiryStore {
       const grant = await sql`select 1 from project_inquiry_grants
         where source_project_id=${input.sourceProjectId} and target_project_id=${input.targetProjectId}
         and enabled for update`.execute(tx);
-      if (!grant.rows.length) throw new Error('Target project is not permitted');
+      const status =
+        input.status === 'provisioning' && !(input.kind === 'question' && grant.rows.length > 0)
+          ? 'pending'
+          : input.status;
       const usage = (
         await sql<{ n: string }>`select count(*) n from project_inquiries
         where source_project_id=${input.sourceProjectId} and created_at >= date_trunc('day',now())`.execute(
@@ -198,10 +213,10 @@ export class ProjectInquiryStore {
       const result = await sql<Row>`insert into project_inquiries
         (id,source_session_id,target_session_id,source_project_id,target_project_id,title,body,kind,status,user_id)
         values(${input.id},${input.sourceSessionId},${input.targetSessionId},${input.sourceProjectId},
-          ${input.targetProjectId},${input.title},${input.body},${input.kind},${input.status},${input.userId}) returning *`.execute(
+          ${input.targetProjectId},${input.title},${input.body},${input.kind},${status},${input.userId}) returning *`.execute(
         tx,
       );
-      if (input.status !== 'provisioning')
+      if (status !== 'provisioning' && status !== 'pending')
         await sql`insert into qa_dispatches(id,session_id,state)
         values (${`project-inquiry:${input.id}`},${input.targetSessionId},'reserved')
         on conflict do nothing`.execute(tx);
@@ -213,7 +228,7 @@ export class ProjectInquiryStore {
   async completeProvisioning(id: string): Promise<void> {
     await this.db.transaction().execute(async (tx) => {
       const result = await sql<{ target_session_id: string }>`update project_inquiries
-        set status=case when kind='change' then 'pending' else 'approved' end
+        set status=case when kind='change' and not human_approved then 'pending' else 'approved' end
         where id=${id} and status='provisioning' returning target_session_id`.execute(tx);
       const row = result.rows[0];
       if (row)
@@ -223,21 +238,37 @@ export class ProjectInquiryStore {
     });
   }
 
+  /**
+   * A person's decision on a pending request. Approval sends it to provisioning;
+   * `always` also stores a standing grant, which only questions can receive.
+   */
   async decide(
     id: string,
     targetSessionId: string,
     approve: boolean,
     userId: string | null,
+    always = false,
   ): Promise<boolean> {
-    const result =
-      await sql`update project_inquiries set status=${approve ? 'approved' : 'rejected'},
-      decided_by=${userId} where id=${id} and target_session_id=${targetSessionId}
-      and kind='change' and status='pending'
-      and exists(select 1 from project_inquiry_grants g where g.source_project_id=project_inquiries.source_project_id
-        and g.target_project_id=project_inquiries.target_project_id and g.enabled)`.execute(
-        this.db,
-      );
-    return (result.numAffectedRows ?? 0n) > 0n;
+    return this.db.transaction().execute(async (tx) => {
+      const result = await sql<{
+        kind: ProjectInquiry['kind'];
+        source_project_id: string;
+        target_project_id: string;
+      }>`update project_inquiries set status=${approve ? 'provisioning' : 'rejected'},
+        human_approved=${approve}, decided_by=${userId}
+        where id=${id} and target_session_id=${targetSessionId} and status='pending'
+        and (${!always} or kind='question')
+        returning kind, source_project_id, target_project_id`.execute(tx);
+      const row = result.rows[0];
+      if (!row) return false;
+      if (approve && always)
+        await sql`insert into project_inquiry_grants(source_project_id,target_project_id,enabled)
+          values(${row.source_project_id},${row.target_project_id},true)
+          on conflict(source_project_id,target_project_id) do update set enabled=true,
+            created_at=case when project_inquiry_grants.enabled
+              then project_inquiry_grants.created_at else now() end`.execute(tx);
+      return true;
+    });
   }
 
   async block(id: string): Promise<void> {

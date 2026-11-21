@@ -365,15 +365,30 @@ export function ServerUpdateSection({
   return (
     <>
       <Card stacked divided attention={panel.cards.some((card) => card.status.tone === 'problem')}>
-        <CardHead
-          title="Verity Server"
-          subtitle={panel.installed === null ? undefined : installedSubtitle(panel.installed)}
-          trailing={
-            panel.tag === null ? undefined : (
-              <StatusTag intent={panel.tag.intent} label={panel.tag.label} />
-            )
-          }
-        />
+        <View style={styles.updateBlock}>
+          <CardHead
+            title="Verity Server"
+            subtitle={panel.installed === null ? undefined : installedSubtitle(panel.installed)}
+            trailing={
+              panel.tag === null ? undefined : (
+                <StatusTag intent={panel.tag.intent} label={panel.tag.label} />
+              )
+            }
+          />
+          <View style={styles.updateLinks}>
+            <Button
+              label="Check for updates"
+              loading={checking}
+              variant="text"
+              size="compact"
+              disabled={checking || starting || view.busy || changingChannel}
+              onPress={() => {
+                setChecking(true);
+                void refresh().finally(() => setChecking(false));
+              }}
+            />
+          </View>
+        </View>
         {pendingRetry?.accepted ? (
           <HintBox
             title="Retry requested"
@@ -394,16 +409,6 @@ export function ServerUpdateSection({
           />
         ))}
       </Card>
-      <Button
-        label="Check for updates"
-        loading={checking}
-        variant="secondary"
-        disabled={checking || starting || view.busy || changingChannel}
-        onPress={() => {
-          setChecking(true);
-          void refresh().finally(() => setChecking(false));
-        }}
-      />
       {actionError !== undefined ? <Text style={styles.reproHint}>{actionError}</Text> : null}
     </>
   );
