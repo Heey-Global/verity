@@ -559,7 +559,8 @@ jobs:
                   test=true
                   server_image=true
                   ;;
-                packages/mobile/*)
+                # Plus the screens whose labels packages/mobile suites check.
+                packages/mobile/*|apps/mobile/app/settings/index.tsx|apps/mobile/app/settings/services/index.tsx|apps/mobile/app/project/\[id\]/settings/*)
                   case $file in */src/api.ts) contract_test=true;; esac
                   lint=true
                   typecheck=true

@@ -16,9 +16,12 @@ export const ASSISTANT_GRANT_LABELS = {
   delegate: 'Tasks and sessions',
 } as const;
 
+/** Where an administrator switches the assistant on for the whole installation. */
+export const ASSISTANT_SWITCH_PATH = 'Settings → Assistant';
+
 /** How the user grants a project to the assistant. Shared by the system prompt, the tool's
  *  refusals and app help, so none of them falls back to a vague "check the settings". */
-export const ASSISTANT_GRANT_INSTRUCTIONS = `Open that project in the app and go to ${ASSISTANT_GRANT_PATH}. Choose "${ASSISTANT_GRANT_LABELS.tasks}" to let the assistant file tasks there, or "${ASSISTANT_GRANT_LABELS.delegate}" to also let it hand work to the project's sessions, which asking the project anything requires. Changing it needs permission to run sessions in that project, and the assistant must be switched on in Settings → Assistant by an administrator. Verity Control itself cannot be granted.`;
+export const ASSISTANT_GRANT_INSTRUCTIONS = `Open the project in the app and go to ${ASSISTANT_GRANT_PATH}. Choose "${ASSISTANT_GRANT_LABELS.tasks}" to let the assistant file tasks there, or "${ASSISTANT_GRANT_LABELS.delegate}" to also let it hand work to the project's sessions, which asking the project anything requires. Changing it needs permission to run sessions in that project, and the assistant must be switched on in ${ASSISTANT_SWITCH_PATH} by an administrator. Verity Control itself cannot be granted.`;
 
 const title = z.string().trim().min(1).max(2_000);
 const detail = z.string().trim().min(1).max(20_000);

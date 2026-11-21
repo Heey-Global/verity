@@ -3,6 +3,7 @@ import {
   APP_HELP_TOPICS,
   ASSISTANT_GRANT_LABELS,
   ASSISTANT_GRANT_PATH,
+  ASSISTANT_SWITCH_PATH,
   renderWelcomeOpener,
 } from '@verity/events';
 import { describe, expect, it } from 'vitest';
@@ -113,11 +114,9 @@ it('handles every catalog link target in the session screen', () => {
 // link there. A renamed row or mode would leave it sending users to a screen that does not
 // exist, with every other test still green.
 describe('assistant grant path', () => {
-  const screen = (path: string) =>
-    readFileSync(
-      new URL(`../../../../apps/mobile/app/project/[id]/settings/${path}`, import.meta.url),
-      'utf8',
-    );
+  const app = (path: string) =>
+    readFileSync(new URL(`../../../../apps/mobile/app/${path}`, import.meta.url), 'utf8');
+  const screen = (path: string) => app(`project/[id]/settings/${path}`);
   const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   it('names the rows that lead to the Assistant screen', () => {
@@ -131,6 +130,15 @@ describe('assistant grant path', () => {
       new RegExp(
         `title="${escape(functions ?? '')}"[\\s\\S]*?title="${escape(assistant ?? '')}"[\\s\\S]{0,400}?settings/assistant`,
       ),
+    );
+  });
+
+  it('names the row that switches the assistant on', () => {
+    const [settings, assistant, ...rest] = ASSISTANT_SWITCH_PATH.split(' → ');
+    expect(settings).toBe('Settings');
+    expect(rest).toEqual([]);
+    expect(app('settings/index.tsx')).toMatch(
+      new RegExp(`title="${escape(assistant ?? '')}"[\\s\\S]{0,400}?'/settings/assistant'`),
     );
   });
 
