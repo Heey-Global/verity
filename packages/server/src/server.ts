@@ -453,7 +453,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionPrStatus,
     branchesForSession,
     spawn: sessionCreate.spawn,
-    ensureVerityControlProject,
     repairTerminated,
     preparingRepairDispatches,
   });

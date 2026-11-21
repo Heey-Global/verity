@@ -1,13 +1,14 @@
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
+import { registerProjectQARoutes } from './project-qa-routes.js';
 import { worktreeExists } from '@verity/session';
 import { type FastifyInstance } from 'fastify';
 import { createQACoordinator } from './qa-coordinator.js';
 import { createRepairSupervisor } from './repair-supervisor.js';
+import { pushQABrake, pushQAStopped } from './project-qa-push.js';
 import { type ServerContext } from './server-context.js';
 import type { createServerSessionOverview } from './server-session-overview.js';
 import type { SpawnSession } from './session-create-route.js';
 import type { PrRepairTurns } from './server-pr-repair.js';
-import type { ProjectRecord } from '@verity/store';
 
 type SessionOverview = ReturnType<typeof createServerSessionOverview>;
 
@@ -17,7 +18,6 @@ export interface RepairSupervisionWiring {
   sessionPrStatus: SessionOverview['sessionPrStatus'];
   branchesForSession: SessionOverview['branchesForSession'];
   spawn: SpawnSession;
-  ensureVerityControlProject: () => Promise<ProjectRecord>;
   repairTerminated: PrRepairTurns['repairTerminated'];
   preparingRepairDispatches: PrRepairTurns['preparingRepairDispatches'];
 }
@@ -37,7 +37,6 @@ export function installRepairSupervision(
     canExecuteAs,
     sessionPrStatus,
     branchesForSession,
-    ensureVerityControlProject,
     repairTerminated,
     preparingRepairDispatches,
   } = wiring;
@@ -61,6 +60,8 @@ export function installRepairSupervision(
       ...(deps.repairPullRequest ? { pullRequest: deps.repairPullRequest } : {}),
       changed: (projectId) => {
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/repairs`);
+        resources.invalidate(`/projects/${encodeURIComponent(projectId)}/qa`);
+        resources.invalidate('/projects');
         void deps.eventStore.repairs
           .incidents(projectId)
           .then((incidents) => {
@@ -73,6 +74,19 @@ export function installRepairSupervision(
                 });
           })
           .catch(() => undefined);
+      },
+      stopped: (projectId, issues) => {
+        // Home's QA items come from the project list: refresh it before the push lands.
+        resources.invalidate('/projects');
+        resources.invalidate(`/projects/${encodeURIComponent(projectId)}/qa`);
+        void pushQAStopped(deps.eventStore, ctx.pushSender, projectId, issues).catch(
+          (error: unknown) => app.log.warn({ error }, 'QA push failed'),
+        );
+      },
+      braked: () => {
+        void pushQABrake(deps.eventStore, ctx.pushSender).catch((error: unknown) =>
+          app.log.warn({ error }, 'QA push failed'),
+        );
       },
       authorized: (userId, projectId) => canExecuteAs(userId, projectId),
       busy: (id) => conductor.isBusy(id),
@@ -142,13 +156,10 @@ export function installRepairSupervision(
       authorized: canExecuteAs,
       administrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
       busy: (id) => conductor.isBusy(id),
-      ensureSession: async (id) => {
+      // Each coding project's QA works in a session of that project.
+      ensureSession: async (projectId, id) => {
         if (await deps.eventStore.getSession(id)) return;
-        const project = await ensureVerityControlProject();
-        const result = await wiring.spawn(
-          { projectId: project.id, sessionId: id, name: 'Verity · QA' },
-          app.log,
-        );
+        const result = await wiring.spawn({ projectId, sessionId: id, name: 'QA' }, app.log);
         if (result.statusCode >= 300) throw new Error('QA session could not be created');
       },
       dispatch: async (id, prompt, validate, sponsor, dispatchId) => {
@@ -157,7 +168,7 @@ export function installRepairSupervision(
           prompt,
           { timeoutMs: 180_000 },
           {
-            displayPrompt: 'QA: review changes in CI supervision',
+            displayPrompt: 'QA: review changes in this project',
             durableDispatchId: dispatchId,
             initiatedBy: { userId: sponsor },
             validateSession: validate,
@@ -186,5 +197,9 @@ export function installRepairSupervision(
 
 export function installRepairRoutes(app: FastifyInstance, ctx: ServerContext): void {
   registerRepairRoutes(app, ctx.deps.eventStore);
+  registerProjectQARoutes(app, ctx.deps.eventStore, (projectId) => {
+    ctx.resources.invalidate(`/projects/${encodeURIComponent(projectId)}/qa`);
+    ctx.resources.invalidate('/projects');
+  });
   registerQASettingsRoutes(app, ctx.deps.eventStore, (id) => ctx.conductor.cancelTurn(id));
 }

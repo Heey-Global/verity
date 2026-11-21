@@ -1,4 +1,5 @@
 import { brokeredToolApprovalMigration } from './brokered-tool-approval-migration.js';
+import { projectQAMigration } from './project-qa-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -675,3 +676,5 @@ migrations['0233_project_inquiry_human_approval'] = {
     await sql`alter table project_inquiries drop column human_approved`.execute(db);
   },
 };
+
+migrations['0234_project_qa'] = projectQAMigration;

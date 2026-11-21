@@ -12,7 +12,7 @@ import {
 } from '@verity/mobile';
 import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { ActivityIndicator, RefreshControl, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Alert, RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useInboxFeed } from '../home/HomeInbox';
@@ -31,6 +31,8 @@ import { ProjectRepositoriesRow } from './ProjectRepositoriesRow';
 import { projectLine } from '../../lib/projectRepositories';
 import { useProjectPullRequests } from '../../lib/useProjectPullRequests';
 import { ProjectWork } from './ProjectWork';
+import { ProjectQARole } from './ProjectQARole';
+import { useProjectQA } from '../../lib/useProjectQA';
 import {
   packagesToUpdate,
   ProjectSecurityRow,
@@ -118,6 +120,13 @@ export function ProjectPage({
     projectId,
     onOpenSession,
     detail?.project.kind === 'github' || detail?.project.kind === 'forgejo',
+  );
+  // The project's QA role; its sessions are marked and filterable in the work list.
+  const qaSummary = detail?.project.qaSummary;
+  const qa = useProjectQA(client, projectId, qaSummary !== undefined, qaSummary);
+  const qaSessions = useMemo(
+    () => new Set(qa.state?.repairSessions.map((row) => row.session_id) ?? []),
+    [qa.state],
   );
   const knowledgeScope = useMemo<KnowledgeScope>(
     () => ({ kind: 'project', projectId }),
@@ -239,9 +248,27 @@ export function ProjectPage({
           line={projectLine(detail.project, null, pullRequests.repositories?.length)}
           onSave={detail.viewer?.canManage === true ? saveProfile : undefined}
         />
+        {qaSummary ? (
+          <ProjectQARole
+            summary={qaSummary}
+            canManage={detail.viewer?.canManage === true}
+            onOpen={() => router.push({ pathname: '/project/[id]/qa', params: { id: projectId } })}
+            onTurnOn={() => {
+              void client.projectQA.setMode(projectId, 'automatic').then(
+                () => load(true),
+                (caught: unknown) =>
+                  Alert.alert(
+                    'Could not turn QA on',
+                    caught instanceof Error ? caught.message : 'Please try again.',
+                  ),
+              );
+            }}
+          />
+        ) : null}
         <ProjectWork
           client={client}
           projectId={projectId}
+          qaSessions={qaSessions}
           sessions={detail.sessions}
           layoutRevision={layoutRevision}
           selectedSessionId={selectedSessionId}

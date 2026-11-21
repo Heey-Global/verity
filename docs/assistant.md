@@ -4,7 +4,7 @@ The assistant is the general function of Verity: a persistent session, Verity ·
 Assistant, that lives in Verity Control. You reach it by voice note or chat and
 it turns short requests into outcomes: an answer, a task in the right project,
 or a briefing handed to a project session. QA ([CI supervision](ci-supervision.md))
-is a second, specialised function next to it.
+is a separate role of each coding project, not part of Verity Control.
 
 ## Switching it on
 
@@ -43,7 +43,7 @@ app help topic explains them too.
 ## Enforcement
 
 - The assistant session is identified by its stored session id, never by its
-  name, the same way QA is.
+  name, the same way a project's QA session is.
 - `verity_assistant` is advertised to Verity Control sessions but runs only for
   the enabled assistant session. `projects` lists granted projects the turn's
   user can still read (administrators count as readers, as in the project

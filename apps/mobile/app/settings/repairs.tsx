@@ -1,36 +1,50 @@
-import { projectTitle } from '@verity/mobile';
-import { Linking } from 'react-native';
-import { useCallback, useMemo, useState } from 'react';
+import { projectTitle, qaRowView } from '@verity/mobile';
 import { router } from 'expo-router';
-import { SettingsScaffold, SettingsGroup } from '../../components/settings/SettingsChrome';
-import { Button, Text, Group } from '../../components/ui';
+import { useCallback, useMemo, useState } from 'react';
+import {
+  SettingsGroup,
+  SettingsListPanel,
+  SettingsNavRow,
+  SettingsScaffold,
+  SettingsToggleRow,
+} from '../../components/settings/SettingsChrome';
+import { Button, Row, Text } from '../../components/ui';
+import type { StatusIntent } from '../../components/ui/Status';
 import { createVerityClient } from '../../lib/client';
 import { useScanResource } from '../../lib/useScanResource';
 
-function evidenceLink(raw: string): string | undefined {
-  try {
-    const evidence = JSON.parse(raw) as { url?: unknown; status?: { url?: unknown } } | null;
-    const candidate = evidence?.status?.url ?? evidence?.url;
-    if (typeof candidate === 'string' && new URL(candidate).protocol === 'https:') return candidate;
-  } catch {
-    /* An unavailable evidence link must not hide the incident. */
-  }
-  return undefined;
-}
+const ROW_STATUS: Record<string, { intent: StatusIntent; label: string }> = {
+  needsYou: { intent: 'needsSetup', label: 'Needs you' },
+  access: { intent: 'needsSetup', label: 'Check access' },
+  working: { intent: 'transient', label: 'Working' },
+  clear: { intent: 'ready', label: 'All clear' },
+  paused: { intent: 'unknown', label: 'Paused' },
+  off: { intent: 'unknown', label: 'Off' },
+};
 
+const MODE: Record<string, string> = {
+  automatic: 'Repair within mandate',
+  monitor: 'Observe and propose',
+  paused: 'Paused',
+  off: 'Switched off in the project',
+};
+
+/**
+ * The system switch for QA (docs/ci-supervision.md): when on, every coding
+ * project has its own QA, which projects can switch off. Administrators only.
+ */
 export default function RepairSettingsScreen() {
   const client = useMemo(() => createVerityClient(), []);
   const [saving, setSaving] = useState(false);
   const resource = useScanResource(
     useCallback(async () => {
       if (!client) throw new Error('Connect to a server first.');
-      const projects = (await client.listProjects()).filter(
-        (p) => !p.kind || p.kind === 'github' || p.kind === 'forgejo',
-      );
-      const rows = [];
-      for (const project of projects)
-        rows.push({ project, ...(await client.projectRepairs(project.id)) });
-      return { rows, qa: await client.qaSettings().catch(() => null) };
+      // Only administrators read the system switch; everyone else still sees projects.
+      const [qa, projects] = await Promise.all([
+        client.projectQA.settings().catch(() => null),
+        client.listProjects(),
+      ]);
+      return { qa, projects: projects.filter((project) => project.qaSummary !== undefined) };
     }, [client]),
   );
   const act = async (work: () => Promise<unknown>) => {
@@ -39,135 +53,87 @@ export default function RepairSettingsScreen() {
       await work();
       resource.reload();
     } catch (error) {
-      resource.setError(error instanceof Error ? error.message : 'Could not update supervision.');
+      resource.setError(error instanceof Error ? error.message : 'Could not change QA.');
     } finally {
       setSaving(false);
     }
   };
+  const qa = resource.data?.qa;
+  const value = (text: string) => <Text variant="bodySmall">{text}</Text>;
   return (
     <SettingsScaffold
-      title="QA · CI supervision"
+      title="QA"
       detail
       state={{ error: resource.error, saving }}
       onRetry={resource.reload}
     >
-      <Text variant="footnote">
-        Choose access and repair mode in each project’s settings. Monitoring shares status reads
-        with PR bars. Automatic repair creates ordinary project sessions with existing project
-        rights and approval gates; it does not provide restricted repository permissions.
-      </Text>
       <SettingsGroup title="QA">
-        <Text>
-          {resource.data?.qa?.enabled ? 'Enabled' : 'Disabled'} ·{' '}
-          {resource.data?.qa?.health ?? 'Global settings unavailable'}
-        </Text>
-        <Text variant="footnote">
-          Disabled by default. Turning QA off stops background monitoring, automatic AI reviews and
-          new repair assignments. Running repair sessions continue; open a session to stop it. PR
-          bars remain available.
-        </Text>
-        <Button
-          label={resource.data?.qa?.enabled ? 'Disable QA' : 'Enable QA'}
-          disabled={saving || !resource.data?.qa}
-          onPress={() => void act(() => client!.qaSettings(!resource.data!.qa?.enabled))}
-        />
-        {resource.data?.qa?.session_id ? (
-          <Button
-            variant="secondary"
-            label="Open QA activity"
-            onPress={() => router.push(`/session/${resource.data!.qa?.session_id}`)}
-          />
+        {resource.data && !qa ? (
+          <Text variant="footnote">Only administrators can switch QA on or off.</Text>
         ) : null}
-      </SettingsGroup>
-      {resource.data?.rows.map(({ project, mandate, incidents }) => (
-        <SettingsGroup key={project.id} title={projectTitle(project)}>
-          <Text>
-            {mandate?.mode ?? 'off'} · {mandate?.health ?? 'Not enabled'}
-          </Text>
-          <Text variant="footnote">
-            {mandate?.checked_at
-              ? `Last checked: ${new Date(mandate.checked_at).toLocaleString()}`
-              : 'No completed check'}
-          </Text>
-          <Button
-            variant="secondary"
-            label="Project settings"
-            onPress={() => router.push(`/project/${project.id}/settings/model`)}
+        <SettingsListPanel>
+          <SettingsToggleRow
+            label="QA in coding projects"
+            subtitle="Active in every project with a repository; projects can switch it off"
+            value={qa?.enabled === true}
+            disabled={saving || !qa}
+            onValueChange={(enabled) => void act(() => client!.projectQA.settings(enabled))}
           />
-          {incidents?.map((incident) => (
-            <Group key={incident.id}>
-              <Text>
-                {incident.resource} ·{' '}
-                {incident.state === 'blocked'
-                  ? incident.owner_session_id
-                    ? 'Needs attention · worker still assigned'
-                    : 'Needs a decision'
-                  : incident.state === 'awaiting_merge'
-                    ? 'Fix prepared · awaiting merge'
-                    : incident.state}{' '}
-                · {incident.attempts}/2 attempts
-              </Text>
-              {evidenceLink(incident.evidence) ? (
-                <Button
-                  variant="text"
-                  label="Open PR or workflow"
-                  onPress={() => {
-                    void Linking.openURL(evidenceLink(incident.evidence)!).catch(() =>
-                      resource.setError('Could not open the forge link.'),
-                    );
-                  }}
-                />
-              ) : null}
-              {incident.originating_session_id ? (
-                <>
-                  <Text variant="footnote">
-                    The originating session handles this PR. QA observes recurring causes; changing
-                    QA access does not pause session repairs. Open the session to inspect or stop
-                    its work.
-                  </Text>
-                  <Button
-                    variant="secondary"
-                    label="Open originating session"
-                    onPress={() => router.push(`/session/${incident.originating_session_id}`)}
-                  />
-                </>
-              ) : null}
-              {incident.last_session_id && !incident.originating_session_id ? (
-                <Button
-                  variant="secondary"
-                  label="Open repair session"
-                  onPress={() => router.push(`/session/${incident.last_session_id}`)}
-                />
-              ) : null}
-              {incident.last_session_id && !incident.originating_session_id ? (
-                <Button
-                  variant="secondary"
-                  label="Take over"
-                  accessibilityHint="Pause new automatic repairs and open the session. Running work continues."
-                  disabled={saving}
+        </SettingsListPanel>
+      </SettingsGroup>
+      {qa?.brakeAt ? (
+        <SettingsGroup
+          title="Emergency brake"
+          description="Repairs started unusually fast, so QA stopped starting new ones everywhere. Running work continues. Check the projects below before releasing it."
+        >
+          <Button
+            label="Release brake"
+            disabled={saving}
+            onPress={() => void act(() => client!.projectQA.releaseBrake())}
+          />
+        </SettingsGroup>
+      ) : null}
+      <SettingsGroup
+        title="Mode and limits"
+        description="New projects start in “Repair within mandate”. QA never merges, releases or deploys."
+      >
+        <SettingsListPanel>
+          <Row title="Rework rounds per issue" trailing={value('2')} />
+          <Row title="Parallel repairs per project" trailing={value('3, then queued')} />
+          <Row
+            title="Emergency brake"
+            subtitle="Stops QA everywhere after 20 repair starts in an hour"
+            trailing={value(qa?.brakeAt ? 'Engaged' : 'Ready')}
+          />
+        </SettingsListPanel>
+      </SettingsGroup>
+      {(qa?.enabled ?? true) && resource.data?.projects.length ? (
+        <SettingsGroup title="Projects">
+          <SettingsListPanel>
+            {resource.data.projects.map((project) => {
+              const view = qaRowView(project.qaSummary!);
+              return (
+                <SettingsNavRow
+                  key={project.id}
+                  icon="folder"
+                  title={projectTitle(project)}
+                  subtitle={MODE[project.qaSummary!.mode] ?? 'QA'}
+                  status={ROW_STATUS[view.state]}
                   onPress={() =>
-                    void act(async () => {
-                      await client!.projectRepairs(project.id, 'off');
-                      router.push(`/session/${incident.last_session_id}`);
+                    router.push({
+                      pathname:
+                        view.state === 'off'
+                          ? '/project/[id]/settings/repairs'
+                          : '/project/[id]/qa',
+                      params: { id: project.id },
                     })
                   }
                 />
-              ) : null}
-              {['blocked', 'verifying'].includes(incident.state) &&
-              !incident.owner_session_id &&
-              !incident.originating_session_id &&
-              incident.attempts < 2 ? (
-                <Button
-                  variant="secondary"
-                  label="Retry repair"
-                  disabled={saving}
-                  onPress={() => void act(() => client!.retryRepair(project.id, incident.id))}
-                />
-              ) : null}
-            </Group>
-          ))}
+              );
+            })}
+          </SettingsListPanel>
         </SettingsGroup>
-      ))}
+      ) : null}
     </SettingsScaffold>
   );
 }

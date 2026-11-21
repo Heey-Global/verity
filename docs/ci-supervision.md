@@ -1,14 +1,14 @@
 # CI supervision
 
-QA is a function of the [Verity assistant](assistant.md). Its persistent technical session,
-Verity · QA, lives in Verity Control and reviews
-changes from repository monitoring and delegates ordinary project repair sessions.
-The installation-wide switch in Settings → QA · CI supervision is disabled by
-default for both new and upgraded installations. Enable it explicitly before
-selecting monitoring or automatic repairs in Project settings → Agents → QA. Eligible coding projects without an existing choice start in Monitor. Project choices alone cannot
-activate the background service. In Project settings → Agents → QA, enable monitoring
-for a pilot project first; choose automatic repairs only when you want the server
-to delegate corrections under that project's existing permissions.
+QA is a role of each coding project. Every project with a code repository has its
+own QA once an administrator turns QA on under Settings → QA; there is no
+central QA agent. A project's QA lives in that project: a pinned row in the
+project's Roles group (state, sources read and when) and its own page with the
+issues it tracks and a chat with its session. QA is off by default for new and
+upgraded installations. When switched on, coding projects without a saved choice
+start in "Repair within mandate"; a project switches QA off, to "Observe and
+propose" or to "Pause" under Project settings → Agents → QA, which needs project
+management permission. Control and local projects without a forge have no QA.
 
 ## Shared observations
 
@@ -27,45 +27,52 @@ standalone workflow monitoring is reported as unsupported, not healthy.
 
 ## Ownership and execution
 
-An incident records its project, resource, revision, evidence, assigned session
-and attempts. Database claims allow one active repair per project and two across
-the installation. Repeated observations do not launch repeated agents.
+An incident records its project, resource (a PR or a workflow), revision,
+evidence, assigned session and attempts. Incidents are filed under an issue: one
+issue per resource by default, or the issue QA grouped them into when they fail
+for the same evident cause. An issue is repaired by at most one session at a
+time; the others wait for it. Up to three repairs run at once per project, as a
+queue rather than a limit: further issues start when one finishes. There is no
+daily cap on repairs. Repeated observations do not launch repeated agents.
 
-PRs associated with an originating session are repaired automatically in that session,
-independently of the global QA switch and project QA mode (Off, Monitor or Automatic).
-A busy session waits until idle; planning and current project execution permissions
-are checked before admission. QA observes these failures for analysis but neither
-requests repair consent nor starts another worker for them. A blocked or exhausted
-session repair requires attention in that session, not automatic QA takeover.
+PRs associated with an originating session are repaired in that session,
+independently of the project's QA mode. A busy session waits until idle; planning
+and current project execution permissions are checked before admission. QA
+observes these failures for analysis but starts no other worker for them. When
+the originating session is deleted, its responsibility ends with it and QA treats
+the PR like one without an origin (Renovate or external PRs): it starts a new
+repair session, and follow-up rounds stay in that session.
 
 Durable PR responsibility is separate from historical session associations and
 active repair ownership. Session repairs and QA repairs use the same atomic claim,
-admission receipt and bounded retry budget. Registering an origin does not revoke
-an already active QA worker: it must terminate before the session can repair.
+admission receipt and bounded rounds. Registering an origin does not revoke an
+already active QA worker: it must terminate before the session can repair.
 Uncertain execution after a restart retains ownership; a timeout is not proof of
 termination. An unadmitted reservation can be cancelled and retried without losing
-the session's once-per-revision marker or consuming its repair budget.
+the session's once-per-revision marker or consuming its rounds.
 
-QA delegates only resources without an originating session. Existing PR branches
-in session worktrees are reserved for those sessions even when busy or dirty.
-For unassigned resources the coordinator creates a visible ordinary project session. The brief identifies the observed
+For unassigned resources QA creates a visible ordinary project session, marked
+"From QA" in the project's session list. The brief identifies the observed
 revision and requires checking it before editing, respecting active worktrees,
 running verification and preserving review/approval gates. Standalone workflow
 repairs prepare a separate PR rather than writing directly to the default branch.
 
 These are ordinary sessions with existing project authority, **not restricted
-repair sandboxes**. The standing instruction excludes merging, releases,
-deployment reruns and additional secrets, but this feature does not introduce a
-new technical branch-level permission boundary. Consent never grants a project
-permission the sponsoring user lacks; access and mandate are rechecked before
-admission. External titles, logs and worker output are diagnostic data, not grants.
+repair sandboxes**. The brief excludes merging, releases, deployment reruns and
+additional secrets; QA itself has no tools that could do any of these, and no
+mandate can grant them. The sandbox's forge access is not yet bound to a single
+session, so the repair sessions themselves are restricted by instruction, not by
+a technical per-session boundary. Consent never grants a project permission the
+sponsoring user lacks; access and mandate are rechecked before admission.
+External titles, logs and worker output are diagnostic data, not grants.
 
 ## Recovery and proof
 
 An accepted dispatch remains owned until the worker's terminal status is known;
 an expired timer alone does not authorize takeover. Work older than 30 minutes
 is flagged for attention without releasing its owner. Attempts are bounded to
-two across unresolved revisions of a resource. QA-managed same-revision failures can retry after confirmed termination; session
+two rounds across unresolved revisions of a resource, plus any the user grants
+with "Another round". QA-managed same-revision failures can retry after confirmed termination; session
 repairs retain their once-per-head (or head/base pair for conflicts) markers; ambiguous failures need inspection.
 
 A worker saying it is finished is not CI proof. Fresh successful checks identify
@@ -83,60 +90,65 @@ success. Observation and status changes refresh supervision; unchanged polls do
 not emit additional notifications.
 
 
-## Coordinator lifecycle and authority
+## QA roles, reviews and authority
 
-The global switch stops QA background discovery, new QA reviews and new QA repair
-assignments. It does not stop session PR discovery or session-based repair. It also requests cancellation of an active automatic QA review;
-ordinary project repair sessions continue and can be stopped from their chats.
-Their ownership is not released on a timeout. PR-bar status reads remain independent.
-Re-enabling reconciles current forge state before reviewing pending events, and
-invalidates decisions prepared under an older switch revision.
+The system switch stops QA background discovery, new reviews and new QA repair
+assignments in every project, and cancels running reviews. It does not stop
+session PR discovery or session-based repair, nor ordinary project repair
+sessions, which can be stopped from their chats. Re-enabling reconciles current
+forge state before reviewing, and invalidates decisions prepared under an older
+switch revision.
 
-The QA function has one durable technical session under Verity Control, with its own chat and
-history. Opening that chat does not enable monitoring or change project consent.
-The chat can request current and historical evidence through the bounded
-`verity_qa_analysis` gateway tool. Each read checks the current user and project
-QA access; old chat messages are not fresh evidence. Automatic reviews propose structured assignments tied to observed
-incident IDs and revisions. The server checks consent, access, current evidence
-and ownership before admitting them. Model output never closes an incident.
+Each coding project's QA has one durable session in that project, created at its
+first review. Its reviews see only that project's incidents and issues, and its
+decisions are applied only to that project: an assignment, grouping or
+escalation naming another project's incident is ignored. The chat can request
+current and historical evidence of its own project through the bounded
+`verity_qa_analysis` gateway tool; every read checks the current user and
+project QA access, and old chat messages are not fresh evidence.
 
-Automatic reviews remain tool-free. Interactive QA uses the backend's enforced
+Reviews are tool-free. Interactive QA chat uses the backend's enforced
 Verity-gateway-only mode, with the server permitting only `verity_qa_analysis`.
 The model receives no shell, general file access, arbitrary HTTP, credentials or
-other project tools. The current Claude backend enforces these modes; unsupported
-backends fail closed and require choosing a compatible model in the session.
-This does not change the permissions of ordinary project repair sessions.
+other project tools; unsupported backends fail closed. The retired
+installation-wide QA session in Verity Control stays readable with the same
+restrictions but acts for no project and receives no reviews.
 
-The persistent inbox coalesces unchanged observations and retains decision
-snapshots and outcomes. Automatic reviews are capped at 24 per UTC day, at most
-one active review, three minutes per review, and two proposed assignments per
-review. Existing repair limits remain one worker per project, two installation-wide
-and two attempts per resource since its last newly verified successful revision. Invalid decisions, unavailable backends,
-unknown dispatch acceptance and exhausted budgets remain visible as coordinator
-health states. A possibly running review is never replaced merely because time
-has elapsed. Decisions are consumed before dispatch to prevent replay; a crash
-at this boundary may leave an assignment unstarted and require review rather
-than risk duplicate execution.
+A review runs only when a project's observations changed, at most one at a time
+per project, for up to three minutes, and proposes at most three repairs. A
+decision may also group incidents that share one cause and escalate failures
+that need more than a bounded repair (a migration, a product decision, missing
+permissions). Model output never closes an incident and never grants authority;
+the server checks consent, access, current evidence and ownership. Decisions are
+consumed before dispatch to prevent replay.
 
-These changes require deploying both the server and app. No project is enrolled
-or pilot enabled by installing the update. Live forge and AI-provider validation
-should follow the scoped automated checks on an explicitly selected pilot.
+QA stops and asks the user when an issue's two rounds are used up, when its
+review escalates it, or when the emergency brake engages. A stopped issue shows
+"Needs you" in the project's QA row, as a Home item from "QA · project" and as a
+push to everyone who may act in the project. The answers are "Another round"
+(one more round), "Take over" (QA stops repairing this issue) and "Defer" (QA
+waits for a new revision). Routine progress sends no push.
 
+The emergency brake replaces a daily cap. It engages when 20 repairs started
+within an hour across the installation, stops every QA from starting reviews and
+repairs, and notifies the administrator who switched QA on. Running work
+continues. An administrator releases it under Settings → QA; starts before the
+release do not count again.
 
 ## Project access and approval cards
 
-Enabling QA enrolls GitHub and Forgejo coding projects in Monitor if they have no
-saved QA choice. Newly discovered coding projects follow the same default while
-QA is enabled. Explicit Off, Monitor and Automatic choices survive global toggles.
-Control and local non-forge projects are not enrolled; QA needs forge CI evidence.
-Project access lives under Project settings → Agents → QA.
+Enabling QA enrolls GitHub and Forgejo coding projects in "Repair within mandate"
+if they have no saved QA choice; newly discovered coding projects follow while QA
+is on. Explicit choices (Off, Observe and propose, Repair within mandate, Pause)
+survive global toggles. Pause keeps the project's issues but neither watches nor
+repairs.
 
-For a repairable monitor-only failure, Verity can show an approval card in the
-Verity · QA activity session. Approving changes that project's standing mode to
-Automatic repairs, including future repairs; declining preserves monitoring.
-The card states this scope before the action. Server-side permission, mandate
-revision, global revision and incident checks reject stale or unauthorized cards.
-No repair is started merely because the model requested permission.
+In "Observe and propose", QA can show an approval card in its project chat for a
+repairable failure. Approving changes that project to "Repair within mandate",
+including future repairs; declining preserves observation. The card states this
+scope before the action and is offered only to people with execution permission
+in the project. Server-side permission, mandate revision, global revision and
+incident checks reject stale or unauthorized cards.
 
 ## Restart recovery and bounded retries
 
@@ -150,9 +162,9 @@ Pre-upgrade in-flight claims have no atomic receipt and remain conservative:
 inspect their associated session if terminal evidence cannot be established.
 
 Repair history remains intact across budget cycles. A newly verified successful
-revision resets the resource's two-attempt budget; repeated observations of that
-same success do not reset it again. Per-project and installation-wide worker
-limits remain in force.
+revision resets the resource's rounds; repeated observations of that same success
+do not reset them again. The per-project limit of three running repairs remains
+in force.
 
 Standalone workflow repairs retain their correction PR number within the
 project's repository. A closed, unmerged PR can reopen the incident only after

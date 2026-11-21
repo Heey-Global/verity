@@ -19,7 +19,14 @@ beforeEach(async () => {
     state: 'active',
   });
   await ctx.store.repairs.configureQA(true, 'admin');
-  await ctx.store.repairs.qaSession('qa');
+  await ctx.store.createSession({
+    sessionId: 'qa',
+    projectId: 'p',
+    worktree: '/tmp/qa',
+    model: 'm',
+  });
+  await ctx.store.repairs.projectQA.ensureRole('p');
+  await ctx.store.repairs.projectQA.attachSession('p', 'qa');
   await ctx.store.repairs.configure('p', 'admin', 'monitor');
 });
 const call = { sessionId: 'qa', turnId: 'turn' };
@@ -43,6 +50,31 @@ it('reads only enabled projects for the current user', async () => {
   await expect(
     executeQAAnalysis(d, { ...call, request: { action: 'pulls', projectId: 'p' } }),
   ).rejects.toThrow('no current read');
+  expect(d.read).not.toHaveBeenCalled();
+});
+it('keeps a project QA inside its own project', async () => {
+  await ctx.store.upsertProject({
+    id: 'other',
+    owner: 'team',
+    repo: 'other',
+    containerName: 'other',
+    state: 'active',
+  });
+  await ctx.store.repairs.configure('other', 'admin', 'automatic');
+  const d = deps();
+  expect(await executeQAAnalysis(d, { ...call, request: { action: 'projects' } })).toMatchObject({
+    projects: [{ projectId: 'p' }],
+  });
+  expect(
+    (
+      (await executeQAAnalysis(d, { ...call, request: { action: 'projects' } })) as {
+        projects: unknown[];
+      }
+    ).projects,
+  ).toHaveLength(1);
+  await expect(
+    executeQAAnalysis(d, { ...call, request: { action: 'pulls', projectId: 'other' } }),
+  ).rejects.toThrow('its own project');
   expect(d.read).not.toHaveBeenCalled();
 });
 it('rejects a result after access is withdrawn during retrieval', async () => {
@@ -105,12 +137,6 @@ it('saves only server-generated report snapshots for the same session and projec
 
 it('saves an approved systemic follow-up once without launching or assigning work', async () => {
   await sql`insert into users(id,role,status) values ('reader','member','active')`.execute(ctx.db);
-  await ctx.store.createSession({
-    sessionId: 'qa',
-    projectId: 'p',
-    worktree: '/tmp/qa',
-    model: 'm',
-  });
   const d = deps();
   const publishSessionEvent = vi.fn(async () => {});
   const followupDeps = { ...d, publishSessionEvent };

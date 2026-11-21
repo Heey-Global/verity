@@ -18,6 +18,7 @@ import type { OpenChoices, PendingPermissionRequest } from './session-inbox-fact
 import type { SessionStatus } from './status.js';
 import type { ToolkitCarrier, ToolkitDriftVerdict } from './toolkit-drift.js';
 import type { VulnerabilitySummary } from './vulnerability-session.js';
+import type { ProjectQASummary } from '@verity/store';
 
 /** What the reconciler knows about a sandbox update that the image checker cannot:
  *  whether the automatic repair has given up, and whether it is being held off by
@@ -168,6 +169,8 @@ export interface PublicProjectRecord extends Omit<
   latestReleaseUrl: string | null;
   latestReleasePublishedAt: string | null;
   vulnerabilitySummary?: VulnerabilitySummary | undefined;
+  /** The project's QA role at a glance; absent when QA does not watch the project. */
+  qaSummary?: ProjectQASummary | undefined;
   sandboxUpdate: SandboxUpdateStatus;
   /** Whether this project's recorded attestation verdict still holds against the
    *  toolkit this Server ships — `null` for every row the drift report declines
