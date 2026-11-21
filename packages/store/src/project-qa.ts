@@ -194,12 +194,23 @@ export class ProjectQAStore {
    * issue reopens it.
    */
   async file(projectId: string, incidentId: string, resource: string, revision: string) {
-    await sql`insert into qa_issues (id, project_id, key) values (${randomUUID()}, ${projectId}, ${resource}) on conflict (project_id, key) do nothing`.execute(
+    // A resource QA grouped stays with that issue: later revisions join it too.
+    await sql`update repair_incidents i set issue_id = (select o.issue_id from repair_incidents o where o.project_id = ${projectId} and o.resource = ${resource} and o.issue_id is not null order by o.updated_at desc limit 1) where i.id = ${incidentId} and i.issue_id is null`.execute(
       this.db,
     );
-    await sql`update repair_incidents i set issue_id = q.id from qa_issues q where i.id = ${incidentId} and i.issue_id is null and q.project_id = ${projectId} and q.key = ${resource}`.execute(
-      this.db,
-    );
+    const filed = (
+      await sql<{
+        issue_id: string | null;
+      }>`select issue_id from repair_incidents where id = ${incidentId}`.execute(this.db)
+    ).rows[0]?.issue_id;
+    if (!filed) {
+      await sql`insert into qa_issues (id, project_id, key) values (${randomUUID()}, ${projectId}, ${resource}) on conflict (project_id, key) do nothing`.execute(
+        this.db,
+      );
+      await sql`update repair_incidents i set issue_id = q.id from qa_issues q where i.id = ${incidentId} and i.issue_id is null and q.project_id = ${projectId} and q.key = ${resource}`.execute(
+        this.db,
+      );
+    }
     await sql`update qa_issues q set state = 'open', reason = null, detail = null, notified_at = null, updated_at = now() from repair_incidents i where i.id = ${incidentId} and q.id = i.issue_id and i.state not in ('resolved', 'superseded') and (q.state = 'resolved' or (q.state = 'deferred' and q.deferred_revision is distinct from ${revision}))`.execute(
       this.db,
     );

@@ -95,6 +95,14 @@ describe('QA issues', () => {
     expect(await qa().issues('a')).toHaveLength(1);
     expect(await repairs().claim(one.id, 's1', 1)).toBeDefined();
     expect(await repairs().claim(two.id, 's2', 1)).toBeUndefined();
+    // Observing a grouped resource again, even at a new revision, adds no issue.
+    await repairs().observe('a', 'pr:2', 'sha2', '{"again":true}');
+    await repairs().supersede('a', 'pr:2', 'sha3');
+    const next = await repairs().observe('a', 'pr:2', 'sha3', '{}');
+    expect(await qa().issues('a')).toHaveLength(1);
+    expect(
+      next.issue_id ?? (await repairs().incidents('a')).find((i) => i.id === next.id)?.issue_id,
+    ).toBe(one.issue_id ?? (await repairs().incidents('a')).find((i) => i.id === one.id)?.issue_id);
   });
 
   it('never groups over a user decision or into two running repairs', async () => {
