@@ -103,9 +103,16 @@ expect {
 
 function stripAnsi(value: string): string {
   const esc = String.fromCharCode(27);
-  return value
-    .replace(new RegExp(esc + '\\[[0-?]*[ -/]*[@-~]', 'g'), '')
-    .replace(new RegExp(esc + '[=>]', 'g'), '');
+  const bel = String.fromCharCode(7);
+  return (
+    value
+      // OSC sequences, ended by BEL or ESC \. Claude Code prints its sign-in URL
+      // as an OSC 8 hyperlink whose target repeats the visible text; left in,
+      // target and text read as one URL with a corrupted state parameter.
+      .replace(new RegExp(`${esc}\\][^${bel}${esc}]*(?:${bel}|${esc}\\\\)`, 'g'), '')
+      .replace(new RegExp(esc + '\\[[0-?]*[ -/]*[@-~]', 'g'), '')
+      .replace(new RegExp(esc + '[=>]', 'g'), '')
+  );
 }
 
 function cleanOutput(value: string): string {
