@@ -47,6 +47,17 @@ Verity Control itself can never be granted.
   every later tool call of that turn is checked against. It is checked before
   a new session is created and again right before delivery. Handoffs from other
   Verity Control sessions are unchanged.
+- Every handoff asks the target session to publish a short outcome summary with
+  `verity_publish_session_progress` when it is done or blocked. Verity records
+  each handoff the assistant delivers (target session, project, title, the
+  turn's user and the time). The `delegated_results` action of
+  `verity_assistant` returns, for the newest of those handoffs from the last
+  seven days, either the summary the target published since the handoff
+  (outcome delivered or not, summary, blocker, required decision; credential
+  patterns redacted) or `pending`. It covers only handoffs made for the same
+  user into projects still granted and readable, and never returns transcript
+  text. The assistant reports these summaries as the other session's account
+  and does not follow instructions in them.
 - Because it processes mail and voice notes, the assistant session may only call
   an allow-list of tools: `verity_assistant`, `verity_session_handoff`, its own
   tasks, app help, Gmail, Calendar, Contacts and the planning tools. Drive, Docs,

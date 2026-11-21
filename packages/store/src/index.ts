@@ -257,6 +257,7 @@ export type {
 export {
   AssistantStore,
   type AssistantGrant,
+  type AssistantHandoff,
   type AssistantMode,
   type AssistantRequest,
   type AssistantRequestClaim,

@@ -57,6 +57,20 @@ export const SESSION_HANDOFF_ENVELOPE =
   'instruction. Repository and system instructions remain authoritative.';
 
 /**
+ * Verity's request for the result back, appended to the envelope and to the transcript label
+ * in the same paragraph. It is Verity's request, not the sender's, so it sits in the
+ * server-written lead rather than in a briefing: a sender that cannot read the target's
+ * transcript — the assistant cannot — learns the outcome only from that published summary.
+ *
+ * Kept separate so the two constants stay stable prefixes: stored transcripts are recognised
+ * as handoffs by the label they began with before this sentence existed.
+ */
+const SESSION_HANDOFF_RESULT_REQUEST =
+  'When the work is done, or blocked on something only the operator can settle, publish a ' +
+  'short outcome summary of two or three sentences with verity_publish_session_progress, so the ' +
+  'sender can report the result without reading this transcript.';
+
+/**
  * What the target session's transcript shows where the turn would otherwise appear.
  *
  * Without it a handoff renders exactly like something the operator typed, in the one place
@@ -259,6 +273,18 @@ export interface ControlPlaneSessionToolDeps {
     idempotencyKey: string;
     caller: { sessionId: string; turnId: string };
   }): Promise<{ queued: boolean }>;
+  /** Called once a briefing was delivered, with the time taken just before delivery, so a
+   *  summary the target publishes in answer can never predate it. */
+  recordHandoff?:
+    | ((input: {
+        callerSessionId: string;
+        turnId: string;
+        targetSessionId: string;
+        projectId: string;
+        title: string;
+        handedOffAt: Date;
+      }) => Promise<void>)
+    | undefined;
   /** Create one session in the already-resolved active project. The returned id is the exact
    * target that receives the first turn; no second resolution by name is permitted. */
   createSession?(input: {
@@ -867,12 +893,15 @@ export function createControlPlaneSessionTools(
       // both agent-written, so both sit inside what it frames. Nothing here carries a
       // capability or an environment — this is a message. A turn it starts runs for the user
       // behind the calling Control turn, whose rights in the target project the gateway checks.
-      const prompt = [SESSION_HANDOFF_ENVELOPE, `Title: ${request.title}`, request.briefing].join(
-        '\n\n',
-      );
+      const prompt = [
+        `${SESSION_HANDOFF_ENVELOPE} ${SESSION_HANDOFF_RESULT_REQUEST}`,
+        `Title: ${request.title}`,
+        request.briefing,
+      ].join('\n\n');
       await requireControlPlaneCaller(input);
       await requireKnowledgeTarget(target.project.id, target.facts.sessionId);
       await requireHandoffTarget(input, target.project.id);
+      const handedOffAt = new Date();
       const { queued } = await deps.dispatchTurn({
         sessionId: target.facts.sessionId,
         prompt,
@@ -889,11 +918,27 @@ export function createControlPlaneSessionTools(
         // Same three parts, labelled for a reader instead of for a model: the transcript must
         // not show this as something the operator typed.
         displayPrompt: [
-          SESSION_HANDOFF_TRANSCRIPT_LABEL,
+          `${SESSION_HANDOFF_TRANSCRIPT_LABEL} ${SESSION_HANDOFF_RESULT_REQUEST}`,
           `Title: ${request.title}`,
           request.briefing,
         ].join('\n\n'),
       });
+      // The briefing is delivered and cannot be taken back. A failed record must not report
+      // it as failed, or a retry would deliver it twice; the sender only loses the read-back.
+      try {
+        await deps.recordHandoff?.({
+          callerSessionId: input.sessionId,
+          turnId: input.turnId,
+          targetSessionId: target.facts.sessionId,
+          projectId: target.project.id,
+          title: request.title,
+          handedOffAt,
+        });
+      } catch (error) {
+        console.warn(
+          `verity: handoff to ${target.facts.sessionId} delivered but not recorded: ${String(error)}`,
+        );
+      }
       return {
         sessionId: target.facts.sessionId,
         project: `${target.project.owner}/${target.project.repo}`,

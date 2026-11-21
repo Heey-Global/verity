@@ -46,8 +46,8 @@ import { httpMcpConnectionUsableBy, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
 import {
   assistantToolRefusal,
+  assistantHandoffHooks,
   executeAssistantTool,
-  requireAssistantGrant,
   requireAssistantSession,
   type AssistantToolDeps,
 } from './assistant-tool.js';
@@ -605,15 +605,7 @@ export function registerServerMcpRoutes({
     const controlPlaneSessionTools = createControlPlaneSessionTools({
       controlProjectId: VERITY_CONTROL_PROJECT_ID,
       allowKnowledgeControlOperations: true,
-      // Plain Control sessions keep their reach; the assistant needs a "delegate" grant.
-      authorizeHandoffTarget: async ({ sessionId, turnId, projectId }) => {
-        if ((await deps.eventStore.assistant.settings()).session_id !== sessionId) return;
-        await requireAssistantGrant(
-          assistantToolDeps,
-          { sessionId, turnId, projectId },
-          'delegate',
-        );
-      },
+      ...assistantHandoffHooks(assistantToolDeps),
       authorizeKnowledgeCaller: async ({ projectId, sessionId }) => {
         const knowledge = deps.eventStore.knowledge;
         if (knowledge === undefined) return;
