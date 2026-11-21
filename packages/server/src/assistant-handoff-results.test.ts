@@ -229,5 +229,15 @@ describe('assistant handoff results', () => {
     expect((await results()).handoffs[0]).toMatchObject({
       result: { summary: 'Done after a long run' },
     });
-  }, 120_000);
+    // A later request whose prompt has also left the newest events supersedes the briefing.
+    await ctx.store.appendEvent('t1', { t: 'prompt', text: 'Unrelated request' });
+    for (let i = 0; i < 2_050; i++)
+      await ctx.store.appendEvent('t1', { t: 'text', delta: `more ${String(i)}` });
+    await ctx.store.appendEvent('t1', {
+      t: 'session_progress',
+      summary: 'Answer to the unrelated request',
+      outcomeDelivered: true,
+    });
+    expect((await results()).handoffs[0]).toMatchObject({ result: null });
+  }, 180_000);
 });

@@ -407,6 +407,7 @@ async function handoffResults(
     // A long turn can push its own prompt out of the tail; look further back, but never past
     // the handoff itself.
     let older = { events, hasMore };
+    const fetched = [...events];
     for (
       let page = 0;
       briefing === undefined &&
@@ -421,10 +422,18 @@ async function handoffResults(
         older.events[0]?.seq,
       );
       briefing = older.events.findLast(isBriefing);
+      fetched.unshift(...older.events);
     }
+    // A later standalone prompt starts another request, even one older than the tail.
     const latest = currentPublishedProgress(events);
     const published =
-      briefing !== undefined && latest !== undefined && latest.seq > briefing.seq
+      briefing !== undefined &&
+      latest !== undefined &&
+      latest.seq > briefing.seq &&
+      !fetched.some(
+        ({ event, seq }) =>
+          event.t === 'prompt' && event.steered !== true && seq > briefing.seq && seq < latest.seq,
+      )
         ? latest
         : undefined;
     const progress = published?.event;
