@@ -88,11 +88,14 @@ export async function announceAssistantHandoffResult(
 
   const name = `${project.owner}/${project.repo}`;
   const title = handoff.title || 'Handoff';
+  // The claim is taken, so nothing retries: a failed notice must not also cost the push.
   await emitNotice({
     eventStore: deps.eventStore,
     bus: deps.bus,
     sessionId: assistantSessionId,
     text: `${name}: the result for “${title}” is in. It is shown on the handoff card.`,
+  }).catch((err: unknown) => {
+    deps.log.warn({ err, sessionId: assistantSessionId }, 'assistant handoff notice failed');
   });
   await deps.pushRouter?.notify({
     key: `assistant-handoff:${targetSessionId}:${String(published.seq)}`,

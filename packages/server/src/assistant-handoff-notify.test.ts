@@ -194,6 +194,23 @@ describe('assistant handoff result notices', () => {
     expect(notify.mock.calls[0]![0].initiatorUserId).toBe(ADMIN);
   });
 
+  it('still pushes when the notice cannot be written', async () => {
+    const { deps: d, notify } = deps();
+    const warn = vi.fn();
+    await handOff();
+    await publish();
+    const store = Object.create(ctx.store) as typeof ctx.store;
+    store.appendEvent = async (sessionId, event) => {
+      if (sessionId === 'assistant') throw new Error('store unavailable');
+      return ctx.store.appendEvent(sessionId, event);
+    };
+    expect(
+      await announceAssistantHandoffResult({ ...d, eventStore: store, log: { warn } }, 't1'),
+    ).toBe(true);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+  });
+
   it('cuts the push text to the limit and keeps a short one whole', () => {
     expect(assistantHandoffPushBody(false, 'Needs your approval.')).toBe(
       'Open: Needs your approval.',

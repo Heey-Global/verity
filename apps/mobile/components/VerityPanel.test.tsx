@@ -425,3 +425,29 @@ it('shows a handoff’s published result on its card: Done, or Open with the blo
   ]);
   expect(screen.getByText('Blocker: Needs your approval.')).toBeTruthy();
 });
+
+it('dates a result that arrived on another day than its handoff', () => {
+  const handedOff = new Date(2026, 10, 20, 9).getTime();
+  const answered = new Date(2026, 10, 21, 14, 32).getTime();
+  jest.mocked(useVerity).mockReturnValue({
+    ...ready,
+    conversation: {
+      ...ready.conversation!,
+      items: [
+        {
+          kind: 'assignment',
+          id: 'a',
+          at: handedOff,
+          title: 'Backup check',
+          project: 'heey-global/deep-ocr',
+          state: 'sent',
+          sessionId: 't1',
+          result: { delivered: true, summary: 'Excluded.', at: answered },
+        },
+      ],
+    },
+  });
+  const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  const day = new Date(answered).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  expect(screen.getByText(new RegExp(`Result from the session · ${day}, `))).toBeTruthy();
+});

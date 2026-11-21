@@ -440,7 +440,7 @@ function ItemView({
                 </Text>
               ) : null}
               <Text variant="footnote" tone="faint">
-                {`Result from the session · ${resultTime(item.result.at)}`}
+                {`Result from the session · ${resultTime(item.result.at, item.at)}`}
               </Text>
             </>
           ) : null}
@@ -571,9 +571,14 @@ export function dayLabel(
   });
 }
 
-/** The time a handoff's result arrived, as the conversation's day headings imply the day. */
-function resultTime(at: number): string {
-  return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+/** When a handoff's result arrived: the time, with the date once it is not the card's day,
+ *  since the day heading above the card belongs to the handoff. */
+function resultTime(at: number, handedOffAt: number): string {
+  const when = new Date(at);
+  const time = when.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return when.toDateString() === new Date(handedOffAt).toDateString()
+    ? time
+    : `${when.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, ${time}`;
 }
 
 function DayHeading({ at, previous }: { at: number; previous: number | undefined }) {
