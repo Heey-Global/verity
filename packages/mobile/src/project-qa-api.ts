@@ -6,14 +6,10 @@ import type { TransportRequestInit } from './api.js';
 // the user's answers when QA stops. `VerityClient` carries these calls as
 // `projectQA` (docs/adr/0029-module-boundaries-and-file-size.md).
 
-export const qaModeSchema = z.enum(['off', 'monitor', 'automatic', 'paused']);
+const qaModeSchema = z.enum(['off', 'monitor', 'automatic', 'paused']);
 /** `automatic` is "repair within mandate". */
 export type QAMode = z.infer<typeof qaModeSchema>;
-export const qaIssueReasonSchema = z.enum([
-  'rounds-exhausted',
-  'beyond-mandate',
-  'emergency-brake',
-]);
+const qaIssueReasonSchema = z.enum(['rounds-exhausted', 'beyond-mandate', 'emergency-brake']);
 export type QAIssueReason = z.infer<typeof qaIssueReasonSchema>;
 export type QAIssueDecision = 'another_round' | 'take_over' | 'defer';
 
@@ -41,7 +37,7 @@ export const projectQASummarySchema = z.object({
 });
 export type ProjectQASummary = z.infer<typeof projectQASummarySchema>;
 
-export const qaIssueSchema = z.object({
+const qaIssueSchema = z.object({
   id: z.string(),
   key: z.string(),
   state: z.enum(['open', 'needs_you', 'deferred', 'taken_over', 'resolved']),
@@ -61,7 +57,7 @@ export const qaIssueSchema = z.object({
 });
 export type QAIssue = z.infer<typeof qaIssueSchema>;
 
-export const projectQAStateSchema = z.object({
+const projectQAStateSchema = z.object({
   enabled: z.boolean(),
   coding: z.boolean(),
   mode: qaModeSchema.nullable(),
@@ -77,7 +73,7 @@ export const projectQAStateSchema = z.object({
 });
 export type ProjectQAState = z.infer<typeof projectQAStateSchema>;
 
-export const qaSettingsSchema = z.object({
+const qaSettingsSchema = z.object({
   enabled: z.boolean(),
   health: z.string(),
   brakeAt: z.string().nullable().optional(),

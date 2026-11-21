@@ -8,7 +8,7 @@ const FRESH_MS = 10 * 60_000;
 type Permission = 'read' | 'execute' | 'manage';
 
 /** One issue as the QA page shows it: state, the newest incident and the work done on it. */
-export interface PublicQAIssue {
+interface PublicQAIssue {
   id: string;
   key: string;
   state: QAIssue['state'];
@@ -47,7 +47,7 @@ function failing(incident: RepairIncident | undefined): string | null {
 }
 
 /** The QA role of one coding project as the app shows it. */
-export async function projectQAState(store: EventStore, projectId: string) {
+async function projectQAState(store: EventStore, projectId: string) {
   const qa = await store.repairs.qa();
   const project = await store.getProject(projectId);
   const coding = !!project && ['github', 'forgejo'].includes(project.kind ?? 'github');

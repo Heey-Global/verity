@@ -2,7 +2,7 @@ import type { ProjectQASummary } from '../project-qa-api.js';
 
 /** The six states of a project's QA row (docs/ci-supervision.md). */
 export type QARowState = 'needsYou' | 'working' | 'clear' | 'access' | 'paused' | 'off';
-export type QASourceIntent = 'ready' | 'needsSetup' | 'optional' | 'unknown';
+type QASourceIntent = 'ready' | 'needsSetup' | 'optional' | 'unknown';
 
 export interface QARowView {
   state: QARowState;
