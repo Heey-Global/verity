@@ -2,13 +2,9 @@ import { createUnmanagedBuildLease } from './unmanaged-build-storage.js';
 import { BuildStorageCapacityError, afterReclamation } from './build-storage-capacity-error.js';
 export { isBuildStorageCapacityRefusal } from './build-storage-capacity-error.js';
 import { readHostStorageEvidence } from './host-storage-evidence.js';
-export { readHostStorageEvidence, type HostStorageEvidence } from './host-storage-evidence.js';
+export { readHostStorageEvidence } from './host-storage-evidence.js';
 import { buildStoragePolicy, estimateBuildStorageBytes } from './build-storage-policy.js';
-export {
-  buildStoragePolicy,
-  estimateBuildStorageBytes,
-  type BuildStoragePolicy,
-} from './build-storage-policy.js';
+export { buildStoragePolicy, estimateBuildStorageBytes } from './build-storage-policy.js';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   closeSync,
