@@ -604,10 +604,6 @@ export function createServerSessionOverview({
       const session = await deps.eventStore.getSession(sessionId);
       if (prRepairStopped || session === undefined || !(await backgroundPr.allows(session))) return;
       invalidateBranchCache(session.worktree);
-      if (session.projectId && (await deferForgeReads(session.projectId))) {
-        resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
-        return;
-      }
       if (!(await prMarkerEnabled(session))) {
         resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
         return;
@@ -618,7 +614,10 @@ export function createServerSessionOverview({
         .then((service) => service?.sessionBranches(session.worktree))
         .catch(() => undefined);
       if (!invalidatePrSummaryAction(session, true, branches)) return;
-      await backgroundPrStatus(session);
+      // Near quota exhaustion the stale status is still forgotten, so the next
+      // interactive read is fresh; only the speculative background read is skipped.
+      if (!session.projectId || !(await deferForgeReads(session.projectId)))
+        await backgroundPrStatus(session);
       resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
     },
     onError: (err, sessionId) => app.log.warn({ err, sessionId }, 'PR activity refresh failed'),

@@ -137,6 +137,17 @@ describe('GitHub rate budget', () => {
     expect(budget.snapshot().categories.other.requests).toBe(1);
   });
 
+  it('holds a fallback lock when the reported reset already passed', () => {
+    const budget = createGitHubRateBudget({ now: () => 5_000_000 });
+    budget.observe({
+      url: repoUrl('team', 'a'),
+      category: 'other',
+      status: 403,
+      headers: quota(0, 5000, 1000),
+    });
+    expect(budget.lockedUntil(repoUrl('team', 'a'))).toBe(5_060_000);
+  });
+
   it('treats a permission denial as an ordinary failure', () => {
     const budget = createGitHubRateBudget();
     budget.observe({
@@ -220,6 +231,22 @@ describe('tracked GitHub fetch', () => {
     now = 600_000;
     await tracked(repoUrl('team', 'b'));
     expect(base).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets writes through a lock while still observing them', async () => {
+    const budget = createGitHubRateBudget({ now: () => 0 });
+    budget.observe({ url: repoUrl('team', 'a'), category: 'discovery', status: 429 });
+    const base = vi.fn(async (url: string, init?: { method?: string }) => ({
+      ok: url.endsWith('/merge') && init?.method === 'PUT',
+      status: 200,
+    }));
+    const tracked = trackGitHubFetch(budget, 'other', base, () => 0);
+    // A merge refused locally would never reach GitHub and fail without a reason.
+    expect((await tracked(repoUrl('team', 'a', 'pulls/1/merge'), { method: 'PUT' })).status).toBe(
+      200,
+    );
+    expect((await tracked(repoUrl('team', 'a', 'pulls/1'))).status).toBe(429);
+    expect(base).toHaveBeenCalledTimes(1);
   });
 
   it('reads a cloned 403 body to recognize a secondary limit', async () => {

@@ -261,7 +261,9 @@ export function createGitHubRateBudget(
       const { status, headers, category } = observation;
       count(category, status === 304 ? 'notModified' : 'requests');
       if (target.repo === undefined) return;
-      const resource = header(headers, 'x-ratelimit-resource') ?? target.resource;
+      const reported = header(headers, 'x-ratelimit-resource');
+      const resource =
+        reported !== null && /^[a-z_]{1,40}$/u.test(reported) ? reported : target.resource;
       const state = quotaFor(target.account, resource);
       const limit = numeric(header(headers, 'x-ratelimit-limit'));
       const remaining = numeric(header(headers, 'x-ratelimit-remaining'));
@@ -291,7 +293,10 @@ export function createGitHubRateBudget(
         kind = 'primary';
         until = Math.max(
           retry === undefined ? 0 : at + retry,
-          state.resetAt ?? at + PRIMARY_FALLBACK_MS,
+          // A reset already in the past (clock skew) must still hold a short lock.
+          state.resetAt !== undefined && state.resetAt > at
+            ? state.resetAt
+            : at + PRIMARY_FALLBACK_MS,
         );
       } else {
         kind = 'secondary';
@@ -381,7 +386,10 @@ export function trackGitHubFetch<
   F extends (url: never, init?: never) => Promise<TrackableResponse>,
 >(budget: GitHubRateBudget, category: GitHubCallerCategory, base: F, now = Date.now): F {
   const tracked = async (url: string | URL, init?: unknown): Promise<TrackableResponse> => {
-    const until = budget.lockedUntil(url);
+    const method = (init as { method?: string } | undefined)?.method?.toUpperCase() ?? 'GET';
+    // Only reads yield to the lock. A user's merge or pull request must reach GitHub
+    // and fail there, never be refused locally because background polling hit a limit.
+    const until = method === 'GET' || method === 'HEAD' ? budget.lockedUntil(url) : 0;
     if (until > 0) {
       budget.suppressed(category);
       return new Response(null, {
