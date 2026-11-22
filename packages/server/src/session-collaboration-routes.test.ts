@@ -205,6 +205,16 @@ it('merges an inquiry and its link into one entry per peer', async () => {
   await app.close();
 });
 
+it('does not call an old collaboration working because the peer is busy elsewhere', async () => {
+  const { app, read } = setup({
+    requests: [request({ linkedAt: new Date(NOW - 3 * COLLABORATION_RECENT_MS) })],
+    busy: ['peer'],
+    lastEvent: { peer: NOW },
+  });
+  expect((await read()).body.entries[0]).toMatchObject({ state: 'done', section: 'current' });
+  await app.close();
+});
+
 it('drops a coordination whose link was revoked, even while the peer works', async () => {
   const { app, read } = setup({ requests: [request({ linkedAt: null })], busy: ['peer'] });
   expect((await read()).body.entries).toEqual([]);

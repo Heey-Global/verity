@@ -28,7 +28,7 @@ const MOBILE = entry({
   sessionName: 'Header rework',
   projectId: 'mobile',
   projectName: 'Mobile',
-  direction: 'askedBy',
+  direction: 'asked',
   state: 'answer',
   updatedAt: minutesAgo(12),
 });
@@ -164,7 +164,7 @@ describe('CollaborationSheet', () => {
       />,
     );
     expect(screen.getByText('Earlier')).toBeOnTheScreen();
-    expect(screen.getByText('Mobile · asked us · 12 min')).toBeOnTheScreen();
+    expect(screen.getByText('Mobile · we asked · 12 min')).toBeOnTheScreen();
     expect(screen.getByText('Docs · handed over · 1 h')).toBeOnTheScreen();
     // Every state is a tag; "working" keeps its spoken meaning, not just a grey word.
     expect(screen.getByLabelText('Working, in progress')).toBeOnTheScreen();

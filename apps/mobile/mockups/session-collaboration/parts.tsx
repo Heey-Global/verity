@@ -28,7 +28,7 @@ export const MOBILE_HEADER: CollaborationEntry = {
   sessionName: 'Header rework',
   projectId: 'mobile',
   projectName: 'Mobile',
-  direction: 'askedBy',
+  direction: 'asked',
   state: 'answer',
   updatedAt: minutesAgo(12),
   section: 'current',

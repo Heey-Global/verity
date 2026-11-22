@@ -141,7 +141,10 @@ export async function readSessionCollaboration(
       const at = Math.max(candidate.at, latest);
       let state = candidate.state;
       if (waitingPeers.has(peer.sessionId)) state = 'waitingForYou';
-      else if (deps.busy(peer.sessionId)) state = 'working';
+      // Busy counts only while the collaboration itself is recent: a peer working on
+      // something else days later must not pin a finished entry as working.
+      else if (deps.busy(peer.sessionId) && now - candidate.at <= COLLABORATION_RECENT_MS)
+        state = 'working';
       const age = now - at;
       // An answer is news only for a day; after that it is simply done.
       if (state === 'answer' && age > COLLABORATION_RECENT_MS) state = 'done';
