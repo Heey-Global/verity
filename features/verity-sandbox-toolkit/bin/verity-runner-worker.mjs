@@ -166,9 +166,9 @@ var require_util = __commonJS({
       return ratio - roundedRatio;
     }
     var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
-    function defineLazy(object3, key, getter) {
+    function defineLazy(object2, key, getter) {
       let value = void 0;
-      Object.defineProperty(object3, key, {
+      Object.defineProperty(object2, key, {
         get() {
           if (value === EVALUATING) {
             return void 0;
@@ -180,7 +180,7 @@ var require_util = __commonJS({
           return value;
         },
         set(v) {
-          Object.defineProperty(object3, key, {
+          Object.defineProperty(object2, key, {
             value: v
             // configurable: true,
           });
@@ -1632,11 +1632,11 @@ var require_regexes = __commonJS({
       return new RegExp(`^${dateSource}T(?:${timeRegex})$`);
     }
     exports.anyString = /^[\s\S]{0,}$/;
-    var string3 = (params) => {
+    var string2 = (params) => {
       const regex = params ? `[\\s\\S]{${params?.minimum ?? 0},${params?.maximum ?? ""}}` : `[\\s\\S]*`;
       return new RegExp(`^${regex}$`);
     };
-    exports.string = string3;
+    exports.string = string2;
     exports.bigint = /^-?\d+n?$/;
     exports.integer = /^-?\d+$/;
     exports.number = /^-?\d+(?:\.\d+)?$/;
@@ -3624,8 +3624,8 @@ var require_schemas = __commonJS({
         });
       };
     });
-    function getDiscriminatedOption(union3, value) {
-      const internals = union3._zod;
+    function getDiscriminatedOption(union2, value) {
+      const internals = union2._zod;
       let map = internals.bag.optionsMap;
       if (!map) {
         map = discriminatorMap(internals.def);
@@ -18402,8 +18402,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       }
       const properties = {};
       const required = /* @__PURE__ */ new Set();
-      for (const object3 of objects) {
-        for (const key in object3.properties) {
+      for (const object2 of objects) {
+        for (const key in object2.properties) {
           if (Object.prototype.hasOwnProperty.call(properties, key))
             continue;
           const parts = [];
@@ -18417,18 +18417,18 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
           const merged = parts.length === 1 ? parts[0] : foldObjects(parts) ?? { allOf: parts };
           (0, util_js_1.assignProp)(properties, key, merged);
         }
-        for (const key of object3.required ?? [])
+        for (const key of object2.required ?? [])
           required.add(key);
       }
       const folded = { type: "object", properties };
       if (required.size)
         folded.required = [...required];
-      if (objects.every((object3) => object3.additionalProperties === false)) {
+      if (objects.every((object2) => object2.additionalProperties === false)) {
         folded.additionalProperties = false;
       } else {
         const constraints = [];
-        for (const object3 of objects) {
-          const constraint = undeclaredConstraint(object3);
+        for (const object2 of objects) {
+          const constraint = undeclaredConstraint(object2);
           if (constraint && !constraints.some((seen) => JSON.stringify(seen) === JSON.stringify(constraint)))
             constraints.push(constraint);
         }
@@ -18451,12 +18451,12 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       if (!unions.length) {
         folded = foldObjects(allOf);
       } else {
-        const union3 = unions[0];
-        const keyword = UNION_KEYS.find((k) => Array.isArray(union3[k]));
-        if (Object.keys(union3).length !== 1)
+        const union2 = unions[0];
+        const keyword = UNION_KEYS.find((k) => Array.isArray(union2[k]));
+        if (Object.keys(union2).length !== 1)
           return;
-        const rest = allOf.filter((m) => m !== union3);
-        const branches = union3[keyword].map((branch) => foldObjects([...rest, branch]));
+        const rest = allOf.filter((m) => m !== union2);
+        const branches = union2[keyword].map((branch) => foldObjects([...rest, branch]));
         if (branches.some((b) => !b))
           return;
         folded = { [keyword]: branches };
@@ -20090,7 +20090,7 @@ var require_schemas2 = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.ZodIntersection = exports.ZodDiscriminatedUnion = exports.ZodXor = exports.ZodUnion = exports.ZodObject = exports.ZodArray = exports.ZodDate = exports.ZodVoid = exports.ZodNever = exports.ZodUnknown = exports.ZodAny = exports.ZodNull = exports.ZodUndefined = exports.ZodSymbol = exports.ZodBigIntFormat = exports.ZodBigInt = exports.ZodBoolean = exports.ZodNumberFormat = exports.ZodNumber = exports.ZodCustomStringFormat = exports.ZodJWT = exports.ZodIBAN = exports.ZodCreditCard = exports.ZodE164 = exports.ZodBase64URL = exports.ZodBase64 = exports.ZodCIDRv6 = exports.ZodCIDRv4 = exports.ZodIPv6 = exports.ZodMAC = exports.ZodIPv4 = exports.ZodKSUID = exports.ZodXID = exports.ZodULID = exports.ZodCUID2 = exports.ZodCUID = exports.ZodNanoID = exports.ZodEmoji = exports.ZodURL = exports.ZodUUID = exports.ZodGUID = exports.ZodEmail = exports.ZodISODuration = exports.ZodISOTime = exports.ZodISODate = exports.ZodISODateTime = exports.ZodStringFormat = exports.ZodString = exports._ZodString = exports.ZodType = void 0;
     exports.stringbool = exports.ZodInstanceOf = exports.meta = exports.describe = exports.ZodCustom = exports.ZodFunction = exports.ZodPromise = exports.ZodLazy = exports.ZodTemplateLiteral = exports.ZodReadonly = exports.ZodPreprocess = exports.ZodCodec = exports.ZodPipe = exports.ZodNaN = exports.ZodCatch = exports.ZodSuccess = exports.ZodNonOptional = exports.ZodPrefault = exports.ZodDefault = exports.ZodNullable = exports.ZodExactOptional = exports.ZodOptional = exports.ZodTransform = exports.ZodFile = exports.ZodLiteral = exports.ZodEnum = exports.ZodSet = exports.ZodMap = exports.ZodRecord = exports.ZodTuple = void 0;
-    exports.string = string3;
+    exports.string = string2;
     exports.email = email;
     exports.guid = guid;
     exports.uuid = uuid;
@@ -20142,10 +20142,10 @@ var require_schemas2 = __commonJS({
     exports.date = date;
     exports.array = array3;
     exports.keyof = keyof;
-    exports.object = object3;
+    exports.object = object2;
     exports.strictObject = strictObject;
     exports.looseObject = looseObject2;
-    exports.union = union3;
+    exports.union = union2;
     exports.xor = xor;
     exports.discriminatedUnion = discriminatedUnion;
     exports.intersection = intersection2;
@@ -20157,7 +20157,7 @@ var require_schemas2 = __commonJS({
     exports.set = set;
     exports.enum = _enum;
     exports.nativeEnum = nativeEnum;
-    exports.literal = literal3;
+    exports.literal = literal2;
     exports.file = file;
     exports.transform = transform;
     exports.optional = optional;
@@ -20261,7 +20261,7 @@ var require_schemas2 = __commonJS({
         return array3(this);
       },
       or(arg) {
-        return union3([this, arg]);
+        return union2([this, arg]);
       },
       and(arg) {
         return intersection2(this, arg);
@@ -20521,7 +20521,7 @@ var require_schemas2 = __commonJS({
         return this.check(core._isoDuration(exports.ZodISODuration, params));
       }
     });
-    function string3(params) {
+    function string2(params) {
       return core._string(exports.ZodString, params);
     }
     exports.ZodStringFormat = core.$constructor("ZodStringFormat", (inst, def) => {
@@ -21057,7 +21057,7 @@ var require_schemas2 = __commonJS({
         return index_js_1.util.required(exports.ZodNonOptional, this, args[0]);
       }
     });
-    function object3(shape, params) {
+    function object2(shape, params) {
       const def = {
         type: "object",
         shape: shape ?? {},
@@ -21087,7 +21087,7 @@ var require_schemas2 = __commonJS({
       inst._zod.processJSONSchema = (ctx, json2, params) => processors.unionProcessor(inst, ctx, json2, params);
       inst.options = def.options;
     });
-    function union3(options, params) {
+    function union2(options, params) {
       return new exports.ZodUnion({
         type: "union",
         options,
@@ -21177,7 +21177,7 @@ var require_schemas2 = __commonJS({
       if (!valueType || !valueType._zod) {
         return new exports.ZodRecord({
           type: "record",
-          keyType: string3(),
+          keyType: string2(),
           valueType: keyType,
           ...index_js_1.util.normalizeParams(valueType)
         });
@@ -21311,7 +21311,7 @@ var require_schemas2 = __commonJS({
         }
       });
     });
-    function literal3(value, params) {
+    function literal2(value, params) {
       return new exports.ZodLiteral({
         type: "literal",
         values: Array.isArray(value) ? value : [value],
@@ -21649,7 +21649,7 @@ var require_schemas2 = __commonJS({
     exports.stringbool = stringbool;
     function json(params) {
       const jsonSchema = lazy(() => {
-        return union3([string3(params), number3(), boolean2(), _null(), array3(jsonSchema), record3(string3(), jsonSchema)]);
+        return union2([string2(params), number3(), boolean2(), _null(), array3(jsonSchema), record3(string2(), jsonSchema)]);
       });
       return jsonSchema;
     }
@@ -21886,7 +21886,7 @@ var require_from_json_schema = __commonJS({
     var _checks = __importStar(require_checks2());
     var _iso = __importStar(require_iso());
     var _schemas = __importStar(require_schemas2());
-    var z24 = {
+    var z23 = {
       ..._schemas,
       ..._checks,
       iso: _iso
@@ -22000,7 +22000,7 @@ var require_from_json_schema = __commonJS({
       throw new Error(`Reference not found: ${ref}`);
     }
     function checkObjectGuards(objectSchema, guards) {
-      const guard = z24.transform((value) => value).check((payload) => {
+      const guard = z23.transform((value) => value).check((payload) => {
         const value = payload.value;
         if (typeof value !== "object" || value === null || Array.isArray(value))
           return;
@@ -22129,7 +22129,7 @@ var require_from_json_schema = __commonJS({
       return n === 1 ? "element" : "elements";
     }
     function checkArrayGuards(arraySchema, guards) {
-      const guard = z24.transform((value) => value).check((payload) => {
+      const guard = z23.transform((value) => value).check((payload) => {
         const items = payload.value;
         if (!Array.isArray(items))
           return;
@@ -22186,7 +22186,7 @@ var require_from_json_schema = __commonJS({
         return void 0;
       }
       if (restSchema === void 0 || restSchema === true) {
-        return z24.any();
+        return z23.any();
       }
       return convertSchema(restSchema, ctx);
     }
@@ -22194,7 +22194,7 @@ var require_from_json_schema = __commonJS({
     function convertBaseSchema(schema, ctx) {
       if (schema.not !== void 0) {
         if (typeof schema.not === "object" && Object.keys(schema.not).length === 0) {
-          return z24.never();
+          return z23.never();
         }
         throw new Error("not is not supported in Zod (except { not: {} } for never)");
       }
@@ -22216,7 +22216,7 @@ var require_from_json_schema = __commonJS({
           return ctx.refs.get(refPath);
         }
         if (ctx.processing.has(refPath)) {
-          return z24.lazy(() => {
+          return z23.lazy(() => {
             if (!ctx.refs.has(refPath)) {
               throw new Error(`Circular reference not resolved: ${refPath}`);
             }
@@ -22233,25 +22233,25 @@ var require_from_json_schema = __commonJS({
       if (schema.enum !== void 0) {
         const enumValues = schema.enum;
         if (ctx.version === "openapi-3.0" && schema.nullable === true && enumValues.length === 1 && enumValues[0] === null) {
-          return z24.null();
+          return z23.null();
         }
         if (enumValues.length === 0) {
-          return z24.never();
+          return z23.never();
         }
         if (enumValues.length === 1) {
-          return z24.literal(enumValues[0]);
+          return z23.literal(enumValues[0]);
         }
         if (enumValues.every((v) => typeof v === "string")) {
-          return z24.enum(enumValues);
+          return z23.enum(enumValues);
         }
-        const literalSchemas = enumValues.map((v) => z24.literal(v));
+        const literalSchemas = enumValues.map((v) => z23.literal(v));
         if (literalSchemas.length < 2) {
           return literalSchemas[0];
         }
-        return z24.union([literalSchemas[0], literalSchemas[1], ...literalSchemas.slice(2)]);
+        return z23.union([literalSchemas[0], literalSchemas[1], ...literalSchemas.slice(2)]);
       }
       if (schema.const !== void 0) {
-        return z24.literal(schema.const);
+        return z23.literal(schema.const);
       }
       const type = schema.type;
       if (Array.isArray(type)) {
@@ -22260,74 +22260,74 @@ var require_from_json_schema = __commonJS({
           return convertBaseSchema(typeSchema, ctx);
         });
         if (typeSchemas.length === 0) {
-          return z24.never();
+          return z23.never();
         }
         if (typeSchemas.length === 1) {
           return typeSchemas[0];
         }
-        return z24.union(typeSchemas);
+        return z23.union(typeSchemas);
       }
       if (!type) {
-        return z24.any();
+        return z23.any();
       }
       let zodSchema;
       switch (type) {
         case "string": {
-          let stringSchema = z24.string();
+          let stringSchema = z23.string();
           if (schema.format) {
             const format = schema.format;
             if (format === "email") {
-              stringSchema = stringSchema.check(z24.email());
+              stringSchema = stringSchema.check(z23.email());
             } else if (format === "uri" || format === "uri-reference") {
-              stringSchema = stringSchema.check(z24.url());
+              stringSchema = stringSchema.check(z23.url());
             } else if (format === "uuid" || format === "guid") {
-              stringSchema = stringSchema.check(z24.uuid());
+              stringSchema = stringSchema.check(z23.uuid());
             } else if (format === "date-time") {
-              stringSchema = stringSchema.check(z24.iso.datetime({ offset: true }));
+              stringSchema = stringSchema.check(z23.iso.datetime({ offset: true }));
             } else if (format === "date") {
-              stringSchema = stringSchema.check(z24.iso.date());
+              stringSchema = stringSchema.check(z23.iso.date());
             } else if (format === "time") {
-              stringSchema = stringSchema.check(z24.regex(fullTime));
+              stringSchema = stringSchema.check(z23.regex(fullTime));
             } else if (format === "duration") {
-              stringSchema = stringSchema.check(z24.iso.duration());
+              stringSchema = stringSchema.check(z23.iso.duration());
             } else if (format === "hostname") {
-              stringSchema = stringSchema.check(z24.hostname());
+              stringSchema = stringSchema.check(z23.hostname());
             } else if (format === "ipv4") {
-              stringSchema = stringSchema.check(z24.ipv4());
+              stringSchema = stringSchema.check(z23.ipv4());
             } else if (format === "ipv6") {
-              stringSchema = stringSchema.check(z24.ipv6());
+              stringSchema = stringSchema.check(z23.ipv6());
             } else if (format === "mac") {
-              stringSchema = stringSchema.check(z24.mac());
+              stringSchema = stringSchema.check(z23.mac());
             } else if (format === "cidr") {
-              stringSchema = stringSchema.check(z24.cidrv4());
+              stringSchema = stringSchema.check(z23.cidrv4());
             } else if (format === "cidr-v6") {
-              stringSchema = stringSchema.check(z24.cidrv6());
+              stringSchema = stringSchema.check(z23.cidrv6());
             } else if (format === "base64") {
-              stringSchema = stringSchema.check(z24.base64());
+              stringSchema = stringSchema.check(z23.base64());
             } else if (format === "base64url") {
-              stringSchema = stringSchema.check(z24.base64url());
+              stringSchema = stringSchema.check(z23.base64url());
             } else if (format === "e164") {
-              stringSchema = stringSchema.check(z24.e164());
+              stringSchema = stringSchema.check(z23.e164());
             } else if (format === "credit_card") {
-              stringSchema = stringSchema.check(z24.creditCard());
+              stringSchema = stringSchema.check(z23.creditCard());
             } else if (format === "iban") {
-              stringSchema = stringSchema.check(z24.iban());
+              stringSchema = stringSchema.check(z23.iban());
             } else if (format === "jwt") {
-              stringSchema = stringSchema.check(z24.jwt());
+              stringSchema = stringSchema.check(z23.jwt());
             } else if (format === "emoji") {
-              stringSchema = stringSchema.check(z24.emoji());
+              stringSchema = stringSchema.check(z23.emoji());
             } else if (format === "nanoid") {
-              stringSchema = stringSchema.check(z24.nanoid());
+              stringSchema = stringSchema.check(z23.nanoid());
             } else if (format === "cuid") {
-              stringSchema = stringSchema.check(z24.cuid());
+              stringSchema = stringSchema.check(z23.cuid());
             } else if (format === "cuid2") {
-              stringSchema = stringSchema.check(z24.cuid2());
+              stringSchema = stringSchema.check(z23.cuid2());
             } else if (format === "ulid") {
-              stringSchema = stringSchema.check(z24.ulid());
+              stringSchema = stringSchema.check(z23.ulid());
             } else if (format === "xid") {
-              stringSchema = stringSchema.check(z24.xid());
+              stringSchema = stringSchema.check(z23.xid());
             } else if (format === "ksuid") {
-              stringSchema = stringSchema.check(z24.ksuid());
+              stringSchema = stringSchema.check(z23.ksuid());
             }
           }
           if (typeof schema.minLength === "number") {
@@ -22344,7 +22344,7 @@ var require_from_json_schema = __commonJS({
         }
         case "number":
         case "integer": {
-          let numberSchema = type === "integer" ? z24.number().int() : z24.number();
+          let numberSchema = type === "integer" ? z23.number().int() : z23.number();
           if (typeof schema.minimum === "number" && schema.exclusiveMinimum !== true) {
             numberSchema = numberSchema.min(schema.minimum);
           }
@@ -22368,11 +22368,11 @@ var require_from_json_schema = __commonJS({
           break;
         }
         case "boolean": {
-          zodSchema = z24.boolean();
+          zodSchema = z23.boolean();
           break;
         }
         case "null": {
-          zodSchema = z24.null();
+          zodSchema = z23.null();
           break;
         }
         case "object": {
@@ -22390,22 +22390,22 @@ var require_from_json_schema = __commonJS({
             const looseRecords = [];
             for (const pattern of patternKeys) {
               const patternValue = convertSchema(patternProps[pattern], ctx);
-              const keySchema = z24.string().regex(new RegExp(pattern));
-              looseRecords.push(z24.looseRecord(keySchema, patternValue));
+              const keySchema = z23.string().regex(new RegExp(pattern));
+              looseRecords.push(z23.looseRecord(keySchema, patternValue));
             }
             const schemasToIntersect = [];
             if (Object.keys(shape).length > 0) {
-              schemasToIntersect.push(z24.object(shape).passthrough());
+              schemasToIntersect.push(z23.object(shape).passthrough());
             }
             schemasToIntersect.push(...looseRecords);
             if (schemasToIntersect.length === 0) {
-              zodSchema = z24.object({}).passthrough();
+              zodSchema = z23.object({}).passthrough();
             } else if (schemasToIntersect.length === 1) {
               zodSchema = schemasToIntersect[0];
             } else {
-              let result3 = z24.intersection(schemasToIntersect[0], schemasToIntersect[1]);
+              let result3 = z23.intersection(schemasToIntersect[0], schemasToIntersect[1]);
               for (let i = 2; i < schemasToIntersect.length; i++) {
-                result3 = z24.intersection(result3, schemasToIntersect[i]);
+                result3 = z23.intersection(result3, schemasToIntersect[i]);
               }
               zodSchema = result3;
             }
@@ -22435,7 +22435,7 @@ var require_from_json_schema = __commonJS({
               });
             }
           } else {
-            const objectSchema = z24.object(shape);
+            const objectSchema = z23.object(shape);
             if (schema.additionalProperties === false) {
               zodSchema = objectSchema.strict();
             } else if (additionalSchema) {
@@ -22465,30 +22465,30 @@ var require_from_json_schema = __commonJS({
             const tupleItems = prefixItems.map((item) => convertSchema(item, ctx));
             const positionalItems = applyMinItems(tupleItems, minItems);
             const rest = !Array.isArray(items) ? getTupleRest(items, ctx) : void 0;
-            const tupleSchema = z24.tuple(positionalItems);
+            const tupleSchema = z23.tuple(positionalItems);
             zodSchema = rest ? tupleSchema.rest(rest) : tupleSchema;
             if (typeof schema.minItems === "number") {
-              zodSchema = zodSchema.check(z24.minLength(schema.minItems));
+              zodSchema = zodSchema.check(z23.minLength(schema.minItems));
             }
             if (typeof schema.maxItems === "number") {
-              zodSchema = zodSchema.check(z24.maxLength(schema.maxItems));
+              zodSchema = zodSchema.check(z23.maxLength(schema.maxItems));
             }
           } else if (Array.isArray(items)) {
             const minItems = typeof schema.minItems === "number" ? schema.minItems : 0;
             const tupleItems = items.map((item) => convertSchema(item, ctx));
             const positionalItems = applyMinItems(tupleItems, minItems);
             const rest = getTupleRest(schema.additionalItems, ctx);
-            const tupleSchema = z24.tuple(positionalItems);
+            const tupleSchema = z23.tuple(positionalItems);
             zodSchema = rest ? tupleSchema.rest(rest) : tupleSchema;
             if (typeof schema.minItems === "number") {
-              zodSchema = zodSchema.check(z24.minLength(schema.minItems));
+              zodSchema = zodSchema.check(z23.minLength(schema.minItems));
             }
             if (typeof schema.maxItems === "number") {
-              zodSchema = zodSchema.check(z24.maxLength(schema.maxItems));
+              zodSchema = zodSchema.check(z23.maxLength(schema.maxItems));
             }
           } else if (items !== void 0) {
             const element = convertSchema(items, ctx);
-            let arraySchema = z24.array(element);
+            let arraySchema = z23.array(element);
             if (typeof schema.minItems === "number") {
               arraySchema = arraySchema.min(schema.minItems);
             }
@@ -22497,7 +22497,7 @@ var require_from_json_schema = __commonJS({
             }
             zodSchema = arraySchema;
           } else {
-            zodSchema = z24.array(z24.any());
+            zodSchema = z23.array(z23.any());
           }
           if (schema.uniqueItems === true || schema.contains !== void 0) {
             zodSchema = checkArrayGuards(zodSchema, {
@@ -22516,37 +22516,37 @@ var require_from_json_schema = __commonJS({
     }
     function convertSchema(schema, ctx) {
       if (typeof schema === "boolean") {
-        return schema ? z24.any() : z24.never();
+        return schema ? z23.any() : z23.never();
       }
       let baseSchema = convertBaseSchema(schema, ctx);
       const hasExplicitType = schema.type || schema.enum !== void 0 || schema.const !== void 0;
       if (schema.anyOf && Array.isArray(schema.anyOf)) {
         const options = schema.anyOf.map((s) => convertSchema(s, ctx));
-        const anyOfUnion = z24.union(options);
-        baseSchema = hasExplicitType ? z24.intersection(baseSchema, anyOfUnion) : anyOfUnion;
+        const anyOfUnion = z23.union(options);
+        baseSchema = hasExplicitType ? z23.intersection(baseSchema, anyOfUnion) : anyOfUnion;
       }
       if (schema.oneOf && Array.isArray(schema.oneOf)) {
         const options = schema.oneOf.map((s) => convertSchema(s, ctx));
-        const oneOfUnion = z24.xor(options);
-        baseSchema = hasExplicitType ? z24.intersection(baseSchema, oneOfUnion) : oneOfUnion;
+        const oneOfUnion = z23.xor(options);
+        baseSchema = hasExplicitType ? z23.intersection(baseSchema, oneOfUnion) : oneOfUnion;
       }
       if (schema.allOf && Array.isArray(schema.allOf)) {
         if (schema.allOf.length === 0) {
-          baseSchema = hasExplicitType ? baseSchema : z24.any();
+          baseSchema = hasExplicitType ? baseSchema : z23.any();
         } else {
           let result3 = hasExplicitType ? baseSchema : convertSchema(schema.allOf[0], ctx);
           const startIdx = hasExplicitType ? 0 : 1;
           for (let i = startIdx; i < schema.allOf.length; i++) {
-            result3 = z24.intersection(result3, convertSchema(schema.allOf[i], ctx));
+            result3 = z23.intersection(result3, convertSchema(schema.allOf[i], ctx));
           }
           baseSchema = result3;
         }
       }
       if (schema.nullable === true && ctx.version === "openapi-3.0") {
-        baseSchema = z24.nullable(baseSchema);
+        baseSchema = z23.nullable(baseSchema);
       }
       if (schema.readOnly === true) {
-        baseSchema = z24.readonly(baseSchema);
+        baseSchema = z23.readonly(baseSchema);
       }
       if (schema.default !== void 0) {
         baseSchema = baseSchema.default(schema.default);
@@ -22597,7 +22597,7 @@ var require_from_json_schema = __commonJS({
     }
     function fromJSONSchema(schema, params) {
       if (typeof schema === "boolean") {
-        return schema ? z24.any() : z24.never();
+        return schema ? z23.any() : z23.never();
       }
       let normalized;
       try {
@@ -23023,14 +23023,14 @@ var require_coerce = __commonJS({
       return result3;
     };
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.string = string3;
+    exports.string = string2;
     exports.number = number3;
     exports.boolean = boolean2;
     exports.bigint = bigint;
     exports.date = date;
     var core = __importStar(require_core2());
     var schemas = __importStar(require_schemas2());
-    function string3(params) {
+    function string2(params) {
       return core._coercedString(schemas.ZodString, params);
     }
     function number3(params) {
@@ -23266,9 +23266,9 @@ var require_zod = __commonJS({
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = exports.z = void 0;
-    var z24 = __importStar(require_external());
-    exports.z = z24;
-    exports.default = z24;
+    var z23 = __importStar(require_external());
+    exports.z = z23;
+    exports.default = z23;
     __exportStar(require_external(), exports);
     (function() {
       var keys = Object.getOwnPropertyNames(exports);
@@ -23325,9 +23325,9 @@ var require_classic = __commonJS({
     };
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = exports.z = void 0;
-    var z24 = __importStar(require_external());
-    exports.z = z24;
-    exports.default = z24;
+    var z23 = __importStar(require_external());
+    exports.z = z23;
+    exports.default = z23;
     __exportStar(require_external(), exports);
     (function() {
       var keys = Object.getOwnPropertyNames(exports);
@@ -25969,6 +25969,1164 @@ import { join as join2 } from "node:path";
 // packages/session/dist/acp-backend.js
 import { constants as osConstants } from "node:os";
 
+// node_modules/@agentclientprotocol/sdk/dist/core/jsonrpc.js
+var CANCEL_REQUEST_METHOD = "$/cancel_request";
+function treatSessionNotFoundAsSuccess(method, response, success) {
+  if (method !== "session/close" && method !== "session/delete") {
+    return response;
+  }
+  return response.catch((error) => {
+    if (error instanceof RequestError && error.code === -32002) {
+      return success();
+    }
+    throw error;
+  });
+}
+function isRequestMessage(value) {
+  return isJsonRpcEnvelope(value) && "id" in value && typeof value["method"] === "string" && isJsonRpcId(value["id"]);
+}
+function isResponseMessage(value) {
+  if (!isJsonRpcEnvelope(value) || "method" in value) {
+    return false;
+  }
+  if (!("id" in value) || !isJsonRpcId(value["id"])) {
+    return false;
+  }
+  const hasResult = Object.hasOwn(value, "result");
+  const hasError = Object.hasOwn(value, "error");
+  if (hasResult === hasError) {
+    return false;
+  }
+  return !hasError || isErrorResponse(value["error"]);
+}
+function isNotificationMessage(value) {
+  return isJsonRpcEnvelope(value) && !("id" in value) && typeof value["method"] === "string";
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null;
+}
+function isJsonRpcEnvelope(value) {
+  return isRecord(value) && value["jsonrpc"] === "2.0";
+}
+function isJsonRpcId(value) {
+  return value === null || typeof value === "string" || typeof value === "number" && Number.isFinite(value);
+}
+function isResponseShapedMessage(value) {
+  return isRecord(value) && !("method" in value) && ("id" in value || "result" in value || "error" in value);
+}
+function cancelRequestId(params) {
+  if (!isRecord(params) || !isJsonRpcId(params["requestId"])) {
+    return void 0;
+  }
+  return params["requestId"];
+}
+function isErrorResponse(value) {
+  return isRecord(value) && typeof value["code"] === "number" && Number.isInteger(value["code"]) && typeof value["message"] === "string";
+}
+var Handled = {
+  /**
+   * Marks a message as handled.
+   */
+  yes() {
+    return { handled: true };
+  },
+  /**
+   * Leaves a message unhandled so later handlers can process it.
+   */
+  no(message, retry = false) {
+    return { handled: false, message, retry };
+  }
+};
+function rejectedPromise(error) {
+  const promise = Promise.reject(error);
+  promise.catch(() => {
+  });
+  return promise;
+}
+function errorDetails(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "object" && error != null && "message" in error && typeof error.message === "string") {
+    return error.message;
+  }
+  return void 0;
+}
+function isZodError(error) {
+  return typeof error === "object" && error !== null && "name" in error && error.name === "ZodError" && "issues" in error && Array.isArray(error.issues) && "format" in error && typeof error.format === "function";
+}
+function describeInvalidMessage(message) {
+  if (Array.isArray(message)) {
+    return { type: "array" };
+  }
+  if (isRecord(message)) {
+    return { type: "object", keys: Object.keys(message) };
+  }
+  return { type: message === null ? "null" : typeof message };
+}
+function errorToResult(error) {
+  if (error instanceof RequestError) {
+    return error.toResult();
+  }
+  if (isZodError(error)) {
+    return RequestError.invalidParams(error.format()).toResult();
+  }
+  const details = errorDetails(error);
+  try {
+    return RequestError.internalError(details ? JSON.parse(details) : {}).toResult();
+  } catch {
+    return RequestError.internalError({ details }).toResult();
+  }
+}
+function requestCancelledError(reason) {
+  if (reason instanceof RequestError && reason.code === -32800) {
+    return reason;
+  }
+  return RequestError.requestCancelled(reason);
+}
+function errorToRequestResult(error, signal) {
+  const requestCancelled = abortErrorToRequestCancelled(error, signal);
+  return requestCancelled ? requestCancelled.toResult() : errorToResult(error);
+}
+function abortErrorToRequestCancelled(error, signal) {
+  if (!signal.aborted || !isAbortError(error)) {
+    return void 0;
+  }
+  return requestCancelledError(signal.reason);
+}
+function isAbortError(error) {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const maybeAbortError = error;
+  return maybeAbortError.name === "AbortError" || maybeAbortError.code === "ABORT_ERR";
+}
+var RequestResponder = class {
+  id;
+  sendResult;
+  signal;
+  finishRequest;
+  didRespond = false;
+  constructor(id4, sendResult, signal = new AbortController().signal, finishRequest) {
+    this.id = id4;
+    this.sendResult = sendResult;
+    this.signal = signal;
+    this.finishRequest = finishRequest;
+  }
+  /**
+   * Whether this request has already received a response.
+   */
+  get responded() {
+    return this.didRespond;
+  }
+  /**
+   * Sends a successful JSON-RPC response.
+   */
+  respond(response) {
+    return this.respondWithResult({ result: response ?? null });
+  }
+  /**
+   * Sends an error JSON-RPC response.
+   */
+  respondWithError(error) {
+    const errorResponse = error instanceof RequestError ? error.toErrorResponse() : error;
+    return this.respondWithResult({ error: errorResponse });
+  }
+  /**
+   * Sends a complete JSON-RPC result payload.
+   */
+  respondWithResult(result3) {
+    if (this.didRespond) {
+      return rejectedPromise(new Error("JSON-RPC request already responded"));
+    }
+    this.didRespond = true;
+    return this.sendResult(result3).finally(() => {
+      this.finishRequest?.();
+    });
+  }
+};
+var nullIdResponders = /* @__PURE__ */ new WeakSet();
+var HandlerRegistration = class {
+  disposeHandler;
+  active = true;
+  constructor(disposeHandler) {
+    this.disposeHandler = disposeHandler;
+  }
+  /**
+   * Unregisters the associated handler.
+   */
+  dispose() {
+    if (!this.active) {
+      return;
+    }
+    this.active = false;
+    this.disposeHandler();
+  }
+  /**
+   * Supports explicit resource management with `using`.
+   */
+  [Symbol.dispose]() {
+    this.dispose();
+  }
+  /**
+   * Returns this registration for call sites that intentionally keep it active.
+   */
+  runIndefinitely() {
+    return this;
+  }
+};
+var ConnectionContext = class {
+  connection;
+  constructor(connection) {
+    this.connection = connection;
+  }
+  /**
+   * Sends a request over the connection.
+   */
+  sendRequest(method, params, mapResponse, options) {
+    return this.connection.sendRequest(method, params, mapResponse, options);
+  }
+  /**
+   * Sends a notification over the connection.
+   */
+  sendNotification(method, params) {
+    return this.connection.sendNotification(method, params);
+  }
+  /**
+   * Sends a protocol-level request cancellation notification.
+   */
+  sendCancelRequest(requestId2) {
+    return this.connection.sendCancelRequest(requestId2);
+  }
+  /**
+   * Registers a handler that can be disposed independently.
+   */
+  addDynamicHandler(handler) {
+    return this.connection.addDynamicHandler(handler);
+  }
+  /**
+   * AbortSignal that aborts when the connection closes.
+   *
+   * Unless `close()` closed the connection, notifications received before it
+   * closed can still reach their handlers after the signal aborts.
+   */
+  get signal() {
+    return this.connection.signal;
+  }
+  /**
+   * Promise that resolves when the connection closes.
+   *
+   * Unless `close()` closed the connection, notifications received before it
+   * closed can still reach their handlers after this resolves.
+   */
+  get closed() {
+    return this.connection.closed;
+  }
+};
+var Connection = class {
+  pendingResponses = /* @__PURE__ */ new Map();
+  incomingRequests = /* @__PURE__ */ new Map();
+  nextRequestId = 0;
+  staticHandlers = [];
+  dynamicHandlers = /* @__PURE__ */ new Set();
+  fallbackHandlers = [];
+  stream;
+  writeQueue = Promise.resolve();
+  abortController = new AbortController();
+  closedPromise;
+  retryQueue = [];
+  context = new ConnectionContext(this);
+  receiveReader;
+  // Whether `close()` closed the connection. Otherwise the peer ended its
+  // stream, or reading or writing failed, and the notifications received
+  // before then are still dispatched: the peer sent them before it went away.
+  closedLocally = false;
+  constructor(requestHandlerOrStream, notificationHandlerOrHandlers, streamOrOptions, options) {
+    if (typeof requestHandlerOrStream === "function") {
+      const requestHandler = requestHandlerOrStream;
+      const notificationHandler = notificationHandlerOrHandlers;
+      const stream2 = streamOrOptions;
+      this.initialize(stream2, [
+        ...options?.handlers ?? [],
+        this.legacyHandler(requestHandler, notificationHandler)
+      ], options);
+      return;
+    }
+    const stream = requestHandlerOrStream;
+    const handlers = notificationHandlerOrHandlers;
+    const connectionOptions = streamOrOptions;
+    this.initialize(stream, [...connectionOptions?.handlers ?? [], ...handlers], connectionOptions);
+  }
+  /**
+   * Creates a builder for configuring a handler-based connection.
+   */
+  static builder() {
+    return new ConnectionBuilder();
+  }
+  /**
+   * Runs an operation while the connection is open, then closes the connection.
+   *
+   * If the stream closes before `op` settles, the returned promise rejects with
+   * the connection close reason.
+   */
+  runUntil(op) {
+    let opSettled = false;
+    const opPromise = Promise.resolve().then(() => op(this.context)).finally(() => {
+      opSettled = true;
+    });
+    const closedPromise = this.closed.then(() => {
+      if (opSettled) {
+        return new Promise(() => {
+        });
+      }
+      throw this.closedReason();
+    });
+    return Promise.race([opPromise, closedPromise]).finally(() => {
+      opSettled = true;
+      this.close();
+    });
+  }
+  /**
+   * Adds a handler after the connection has started.
+   *
+   * Any messages queued with `Handled.no(message, true)` are retried after the
+   * handler is added.
+   */
+  addDynamicHandler(handler) {
+    this.dynamicHandlers.add(handler);
+    if (this.retryQueue.length > 0) {
+      for (const message of this.retryQueue.splice(0)) {
+        void this.processIncomingMessage(message).catch((error) => this.shutdown(error));
+      }
+    }
+    return new HandlerRegistration(() => {
+      this.dynamicHandlers.delete(handler);
+    });
+  }
+  /**
+   * AbortSignal that aborts when the connection closes.
+   *
+   * Unless `close()` closed the connection, notifications received before it
+   * closed can still reach their handlers after the signal aborts.
+   */
+  get signal() {
+    return this.abortController.signal;
+  }
+  /**
+   * Promise that resolves when the connection closes.
+   *
+   * Unless `close()` closed the connection, notifications received before it
+   * closed can still reach their handlers after this resolves.
+   */
+  get closed() {
+    return this.closedPromise;
+  }
+  /** @internal */
+  getContext() {
+    return this.context;
+  }
+  /**
+   * Sends a JSON-RPC request.
+   *
+   * `mapResponse` can convert the raw result before the returned promise
+   * resolves.
+   */
+  sendRequest(method, params, mapResponse, options = {}) {
+    if (this.abortController.signal.aborted) {
+      return rejectedPromise(this.closedReason());
+    }
+    const request2 = this.prepareRequest(method, params, mapResponse, options);
+    const requestSent = this.sendMessage(request2.message);
+    void requestSent.catch(() => {
+    });
+    if (options.cancellationSignal?.aborted) {
+      request2.cancel();
+    }
+    return request2.response;
+  }
+  /**
+   * Sends a protocol-level request cancellation notification.
+   */
+  sendCancelRequest(requestId2) {
+    return this.sendNotification(CANCEL_REQUEST_METHOD, { requestId: requestId2 });
+  }
+  /**
+   * Sends a JSON-RPC notification.
+   */
+  sendNotification(method, params) {
+    if (this.abortController.signal.aborted) {
+      return rejectedPromise(this.closedReason());
+    }
+    return this.sendMessage({ jsonrpc: "2.0", method, params });
+  }
+  prepareRequest(method, params, mapResponse, options = {}) {
+    const id4 = this.nextRequestId++;
+    let cancel = () => {
+    };
+    const response = new Promise((resolve4, reject) => {
+      const pendingResponse = {
+        resolve: (value) => {
+          try {
+            resolve4(mapResponse ? mapResponse(value) : value);
+          } catch (error) {
+            reject(error);
+          }
+        },
+        reject
+      };
+      cancel = () => {
+        if (pendingResponse.cancellationSent) {
+          return;
+        }
+        pendingResponse.cancellationSent = true;
+        pendingResponse.cleanup?.();
+        void this.sendCancelRequest(id4).catch(() => {
+        });
+        if (options.stopWaitingOnCancel) {
+          pendingResponse.abandoned = true;
+          reject(requestCancelledError(options.cancellationSignal?.reason));
+        }
+      };
+      options.cancellationSignal?.addEventListener("abort", cancel, {
+        once: true
+      });
+      pendingResponse.cleanup = () => {
+        options.cancellationSignal?.removeEventListener("abort", cancel);
+      };
+      this.pendingResponses.set(id4, pendingResponse);
+    });
+    response.catch(() => {
+    });
+    return {
+      message: { jsonrpc: "2.0", id: id4, method, params },
+      response,
+      cancel: () => cancel()
+    };
+  }
+  /**
+   * Closes the connection and rejects pending requests. Messages received but
+   * not yet dispatched are dropped. Does nothing once the connection is closed.
+   */
+  close(error) {
+    if (this.abortController.signal.aborted) {
+      return;
+    }
+    this.closedLocally = true;
+    this.shutdown(error);
+  }
+  /**
+   * Closes the connection because its peer closed, as when the peer ends its
+   * stream: notifications already received are still dispatched.
+   *
+   * @internal
+   */
+  closeFromPeer(error) {
+    this.shutdown(error);
+  }
+  shutdown(error) {
+    if (this.abortController.signal.aborted) {
+      return;
+    }
+    const closeError = error ?? new Error("ACP connection closed");
+    this.abortController.abort(closeError);
+    for (const pendingResponse of this.pendingResponses.values()) {
+      pendingResponse.cleanup?.();
+      pendingResponse.reject(closeError);
+    }
+    this.pendingResponses.clear();
+    for (const controller of this.incomingRequests.values()) {
+      controller.abort(closeError);
+    }
+    this.incomingRequests.clear();
+    void this.receiveReader?.cancel(closeError).catch(() => {
+    });
+  }
+  initialize(stream, handlers, options) {
+    this.stream = stream;
+    this.staticHandlers = handlers;
+    this.fallbackHandlers = [...options?.fallbackHandlers ?? []];
+    this.closedPromise = new Promise((resolve4) => {
+      this.abortController.signal.addEventListener("abort", () => resolve4());
+    });
+    void this.receive();
+  }
+  legacyHandler(requestHandler, notificationHandler) {
+    return {
+      handleMessage: async (message, cx) => {
+        if (message.kind === "request") {
+          const result3 = await requestHandler(message.method, message.params, cx);
+          await message.responder.respond(result3);
+        } else {
+          await notificationHandler(message.method, message.params, cx);
+        }
+        return Handled.yes();
+      }
+    };
+  }
+  async receive() {
+    let closeError = void 0;
+    try {
+      const reader = this.stream.readable.getReader();
+      this.receiveReader = reader;
+      try {
+        while (!this.abortController.signal.aborted) {
+          const { value: message, done } = await reader.read();
+          if (this.abortController.signal.aborted) {
+            break;
+          }
+          if (done) {
+            break;
+          }
+          this.receiveUnvalidatedMessage(message);
+        }
+      } finally {
+        if (this.receiveReader === reader) {
+          this.receiveReader = void 0;
+        }
+        reader.releaseLock();
+      }
+    } catch (error) {
+      closeError = error;
+    } finally {
+      this.shutdown(closeError);
+    }
+  }
+  receiveUnvalidatedMessage(message) {
+    if (Array.isArray(message)) {
+      void this.sendMessage(protocolErrorResponse(RequestError.invalidRequest(void 0, "JSON-RPC batches are not supported"))).catch(() => {
+      });
+      return;
+    }
+    if (!isRequestMessage(message) && !isNotificationMessage(message) && !isResponseShapedMessage(message)) {
+      void this.sendMessage(protocolErrorResponse(RequestError.invalidRequest(message))).catch(() => {
+      });
+      return;
+    }
+    this.receiveMessage(message);
+  }
+  receiveMessage(message) {
+    if (this.abortController.signal.aborted) {
+      return Promise.resolve();
+    }
+    if (!isRecord(message)) {
+      console.error("Invalid message", describeInvalidMessage(message));
+      return Promise.resolve();
+    }
+    if ("method" in message) {
+      if (!("id" in message)) {
+        this.handleProtocolNotification(message);
+      }
+      return this.processIncomingMessage(this.toIncomingMessage(message)).catch((error) => this.shutdown(error));
+    } else if ("id" in message) {
+      this.handleResponse(message);
+    } else {
+      console.error("Invalid message", describeInvalidMessage(message));
+    }
+    return Promise.resolve();
+  }
+  // Once the connection is closed, a request can no longer be answered, so
+  // only notifications are still dispatched, unless `close()` closed it.
+  dispatchStopped(message) {
+    return this.abortController.signal.aborted && (this.closedLocally || message.kind === "request");
+  }
+  async processIncomingMessage(message) {
+    if (this.dispatchStopped(message)) {
+      return;
+    }
+    let current = message;
+    let retry = false;
+    try {
+      for (const handler of [
+        ...this.staticHandlers,
+        ...this.dynamicHandlers.values(),
+        ...this.fallbackHandlers
+      ]) {
+        if (this.dispatchStopped(current)) {
+          return;
+        }
+        const result3 = await handler.handleMessage(current, this.context) ?? {
+          handled: true
+        };
+        if (result3.handled) {
+          return;
+        }
+        current = result3.message ?? current;
+        retry = retry || Boolean(result3.retry);
+      }
+      if (retry) {
+        this.retryQueue.push(current);
+      } else if (current.kind === "request") {
+        await current.responder.respondWithError(RequestError.methodNotFound(current.method));
+      }
+    } catch (error) {
+      if (this.dispatchStopped(current)) {
+        return;
+      }
+      if (current.kind === "request" && !current.responder.responded) {
+        await current.responder.respondWithResult(errorToRequestResult(error, current.responder.signal));
+      } else {
+        const response = errorToResult(error);
+        if ("error" in response) {
+          console.error("Error handling notification", {
+            method: message.method,
+            code: response.error.code,
+            message: response.error.message
+          });
+        }
+      }
+    }
+  }
+  toIncomingMessage(message) {
+    if ("id" in message) {
+      const abortController = new AbortController();
+      this.incomingRequests.set(message.id, abortController);
+      const finishRequest = () => {
+        if (this.incomingRequests.get(message.id) === abortController) {
+          this.incomingRequests.delete(message.id);
+        }
+      };
+      const responder = new RequestResponder(message.id, (result3) => {
+        const response = {
+          jsonrpc: "2.0",
+          id: nullIdResponders.has(responder) ? null : message.id,
+          ...result3
+        };
+        return this.sendMessage(response);
+      }, abortController.signal, finishRequest);
+      return {
+        kind: "request",
+        method: message.method,
+        params: message.params,
+        raw: message,
+        signal: abortController.signal,
+        responder
+      };
+    }
+    return {
+      kind: "notification",
+      method: message.method,
+      params: message.params,
+      raw: message
+    };
+  }
+  handleResponse(response) {
+    const pendingResponse = this.pendingResponses.get(response.id);
+    if (pendingResponse) {
+      this.pendingResponses.delete(response.id);
+      pendingResponse.cleanup?.();
+      if (pendingResponse.abandoned) {
+        return;
+      }
+      if (!isResponseMessage(response)) {
+        pendingResponse.reject(RequestError.invalidRequest(response));
+      } else if ("result" in response) {
+        pendingResponse.resolve(response.result);
+      } else {
+        const { code, message, data } = response.error;
+        pendingResponse.reject(new RequestError(code, message, data));
+      }
+    } else {
+      console.error("Got response to unknown request", response.id);
+    }
+  }
+  handleProtocolNotification(message) {
+    if (message.method !== CANCEL_REQUEST_METHOD) {
+      return;
+    }
+    const requestId2 = cancelRequestId(message.params);
+    if (requestId2 === void 0) {
+      return;
+    }
+    const controller = this.incomingRequests.get(requestId2);
+    if (!controller || controller.signal.aborted) {
+      return;
+    }
+    controller.abort(RequestError.requestCancelled({ requestId: requestId2 }));
+  }
+  closedReason() {
+    return this.abortController.signal.reason ?? new Error("ACP connection closed");
+  }
+  async sendMessage(message) {
+    if (this.abortController.signal.aborted) {
+      return rejectedPromise(this.closedReason());
+    }
+    this.writeQueue = this.writeQueue.then(async () => {
+      if (this.abortController.signal.aborted) {
+        throw this.closedReason();
+      }
+      const writer = this.stream.writable.getWriter();
+      try {
+        await writer.write(message);
+      } finally {
+        writer.releaseLock();
+      }
+    }).catch((error) => {
+      this.shutdown(error);
+      throw error;
+    });
+    return this.writeQueue;
+  }
+};
+var ConnectionBuilder = class {
+  handlers = [];
+  fallbackHandlers = [];
+  connectionName;
+  /**
+   * Sets a diagnostic name used by handlers created from this builder.
+   */
+  name(name2) {
+    this.connectionName = name2;
+    return this;
+  }
+  /**
+   * Adds a raw JSON-RPC handler to the handler chain.
+   */
+  withHandler(handler) {
+    this.handlers.push(handler);
+    return this;
+  }
+  /**
+   * Adds a fallback after static and dynamic handlers. Each connection snapshots
+   * this registration alongside the builder's other handlers.
+   */
+  withFallbackHandler(handler) {
+    this.fallbackHandlers.push(handler);
+    return this;
+  }
+  /**
+   * Adds a handler that can inspect every incoming request or notification.
+   *
+   * Observer callbacks that return void pass the message through to later
+   * handlers. Return `Handled.yes()` to stop dispatch explicitly.
+   */
+  onReceiveMessage(handler) {
+    return this.withHandler({
+      handleMessage: async (message, cx) => await handler(message, cx) ?? Handled.no(message),
+      describe: () => this.connectionName ?? "onReceiveMessage"
+    });
+  }
+  /**
+   * Adds a typed request handler for one method.
+   */
+  onReceiveRequest(method, parse, handler) {
+    return this.withHandler({
+      handleMessage: async (message, cx) => {
+        if (message.kind !== "request" || message.method !== method) {
+          return Handled.no(message);
+        }
+        const request2 = parse(message.params);
+        return await handler(request2, message.responder, cx) ?? Handled.yes();
+      },
+      describe: () => `${this.connectionName ?? "request"}:${method}`
+    });
+  }
+  /**
+   * Adds a typed notification handler for one method.
+   */
+  onReceiveNotification(method, parse, handler) {
+    return this.withHandler({
+      handleMessage: async (message, cx) => {
+        if (message.kind !== "notification" || message.method !== method) {
+          return Handled.no(message);
+        }
+        const notification = parse(message.params);
+        return await handler(notification, cx) ?? Handled.yes();
+      },
+      describe: () => `${this.connectionName ?? "notification"}:${method}`
+    });
+  }
+  /**
+   * Connects the configured handlers to a stream.
+   */
+  connect(stream, options) {
+    return new Connection(stream, this.handlers, {
+      ...options,
+      fallbackHandlers: [
+        ...options?.fallbackHandlers ?? [],
+        ...this.fallbackHandlers
+      ]
+    });
+  }
+  /**
+   * Connects to a stream for the lifetime of `op`, then closes the connection.
+   */
+  connectWith(stream, op, options) {
+    return this.connect(stream, options).runUntil(op);
+  }
+};
+var RequestError = class _RequestError extends Error {
+  code;
+  /**
+   * Additional JSON-RPC error data.
+   */
+  data;
+  constructor(code, message, data) {
+    super(message);
+    this.code = code;
+    this.name = "RequestError";
+    this.data = data;
+  }
+  /**
+   * Invalid JSON was received by the server. An error occurred on the server while parsing the JSON text.
+   */
+  static parseError(data, additionalMessage) {
+    return new _RequestError(-32700, `Parse error${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
+  }
+  /**
+   * The JSON sent is not a valid Request object.
+   */
+  static invalidRequest(data, additionalMessage) {
+    return new _RequestError(-32600, `Invalid request${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
+  }
+  /**
+   * The method does not exist / is not available.
+   */
+  static methodNotFound(method) {
+    return new _RequestError(-32601, `"Method not found": ${method}`, {
+      method
+    });
+  }
+  /**
+   * Invalid method parameter(s).
+   */
+  static invalidParams(data, additionalMessage) {
+    return new _RequestError(-32602, `Invalid params${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
+  }
+  /**
+   * Internal JSON-RPC error.
+   */
+  static internalError(data, additionalMessage) {
+    return new _RequestError(-32603, `Internal error${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
+  }
+  /**
+   * Execution of the request was aborted.
+   */
+  static requestCancelled(data, additionalMessage) {
+    return new _RequestError(-32800, `Request cancelled${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
+  }
+  /**
+   * Authentication required.
+   */
+  static authRequired(data, additionalMessage) {
+    return new _RequestError(-32e3, `Authentication required${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
+  }
+  /**
+   * A referenced resource, such as a session or file, does not exist.
+   *
+   * For an unknown or inactive session, prefer
+   * {@link RequestError.sessionNotFound}, which sets `data.sessionId` as the
+   * protocol expects.
+   */
+  static resourceNotFound(uri) {
+    return new _RequestError(-32002, `Resource not found${uri ? `: ${uri}` : ""}`, uri && { uri });
+  }
+  /**
+   * The session named by a session-scoped request does not exist or is not
+   * active on this connection.
+   *
+   * Produces a `-32002` (Resource not found) error with `data.sessionId` set
+   * to the requested session ID.
+   */
+  static sessionNotFound(sessionId2) {
+    return new _RequestError(-32002, "Resource not found", {
+      sessionId: sessionId2
+    });
+  }
+  /**
+   * No supported protocol version is at or below the requested version.
+   *
+   * Produces a `-32022` error whose data lists the `requested` version and the
+   * `supported` versions.
+   */
+  static unsupportedProtocolVersion(requested, supported) {
+    return new _RequestError(-32022, "Unsupported protocol version", {
+      requested,
+      supported: [...supported]
+    });
+  }
+  /**
+   * Converts this error to a JSON-RPC result object.
+   */
+  toResult() {
+    return {
+      error: {
+        code: this.code,
+        message: this.message,
+        data: this.data
+      }
+    };
+  }
+  /**
+   * Converts this error to a JSON-RPC error response payload.
+   */
+  toErrorResponse() {
+    return {
+      code: this.code,
+      message: this.message,
+      data: this.data
+    };
+  }
+};
+function protocolErrorResponse(error) {
+  return {
+    jsonrpc: "2.0",
+    id: null,
+    error: error.toErrorResponse()
+  };
+}
+
+// node_modules/@agentclientprotocol/sdk/dist/core/stream-limits.js
+var DEFAULT_MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
+var MessageTooLargeError = class extends Error {
+  maxMessageBytes;
+  constructor(maxMessageBytes) {
+    super(`Incoming ACP data exceeds the configured ${maxMessageBytes} byte limit`);
+    this.maxMessageBytes = maxMessageBytes;
+    this.name = "MessageTooLargeError";
+  }
+};
+function resolveMaxMessageBytes(value) {
+  const maxMessageBytes = value ?? DEFAULT_MAX_MESSAGE_BYTES;
+  if (!Number.isSafeInteger(maxMessageBytes) || maxMessageBytes <= 0) {
+    throw new RangeError("maxMessageBytes must be a positive safe integer");
+  }
+  return maxMessageBytes;
+}
+var MessageBuffer = class {
+  #buffer = new Uint8Array(0);
+  #length = 0;
+  #maxMessageBytes;
+  constructor(maxMessageBytes) {
+    this.#maxMessageBytes = resolveMaxMessageBytes(maxMessageBytes);
+  }
+  get byteLength() {
+    return this.#length;
+  }
+  get lastByte() {
+    return this.#buffer[this.#length - 1];
+  }
+  #checkAppend(byteLength) {
+    if (byteLength > this.#maxMessageBytes - this.#length) {
+      this.clear();
+      throw new MessageTooLargeError(this.#maxMessageBytes);
+    }
+  }
+  append(bytes2) {
+    this.#checkAppend(bytes2.byteLength);
+    const length = this.#length + bytes2.byteLength;
+    if (length > this.#buffer.byteLength) {
+      const capacity = Math.min(this.#maxMessageBytes, Math.max(length, this.#buffer.byteLength * 2, 1024));
+      const buffer = new Uint8Array(capacity);
+      buffer.set(this.#buffer.subarray(0, this.#length));
+      this.#buffer = buffer;
+    }
+    this.#buffer.set(bytes2, this.#length);
+    this.#length = length;
+  }
+  take() {
+    const bytes2 = this.#buffer.subarray(0, this.#length);
+    this.clear();
+    return bytes2;
+  }
+  clear() {
+    this.#buffer = new Uint8Array(0);
+    this.#length = 0;
+  }
+};
+
+// node_modules/@agentclientprotocol/sdk/dist/core/line-buffer.js
+var newline = 10;
+var carriageReturn = 13;
+var LineBuffer = class {
+  /** Bytes of the current (incomplete) line, carried across chunks. */
+  #pending;
+  #maxMessageBytes;
+  #splitOnCarriageReturn;
+  /** Whether the last line ended at a CR whose LF may start the next chunk. */
+  #afterCarriageReturn = false;
+  constructor(maxMessageBytes, { splitOnCarriageReturn = false } = {}) {
+    this.#maxMessageBytes = resolveMaxMessageBytes(maxMessageBytes);
+    this.#pending = new MessageBuffer(Math.min(Number.MAX_SAFE_INTEGER, this.#maxMessageBytes + 1));
+    this.#splitOnCarriageReturn = splitOnCarriageReturn;
+  }
+  /**
+   * Consumes a chunk, yielding each complete line without its line ending.
+   */
+  *push(chunk) {
+    let start = 0;
+    if (this.#afterCarriageReturn && chunk.byteLength > 0) {
+      this.#afterCarriageReturn = false;
+      if (chunk[0] === newline) {
+        start = 1;
+      }
+    }
+    let newlineIndex = chunk.indexOf(newline, start);
+    let carriageReturnIndex = this.#splitOnCarriageReturn ? chunk.indexOf(carriageReturn, start) : -1;
+    while (newlineIndex !== -1 || carriageReturnIndex !== -1) {
+      if (carriageReturnIndex === -1 || newlineIndex !== -1 && newlineIndex < carriageReturnIndex) {
+        yield this.#takeLine(chunk.subarray(start, newlineIndex));
+        start = newlineIndex + 1;
+        newlineIndex = chunk.indexOf(newline, start);
+      } else {
+        yield this.#takeLine(chunk.subarray(start, carriageReturnIndex));
+        start = carriageReturnIndex + 1;
+        if (start === chunk.byteLength) {
+          this.#afterCarriageReturn = true;
+        } else if (chunk[start] === newline) {
+          start++;
+          newlineIndex = chunk.indexOf(newline, start);
+        }
+        carriageReturnIndex = chunk.indexOf(carriageReturn, start);
+      }
+    }
+    if (start < chunk.byteLength) {
+      const tail = chunk.subarray(start);
+      this.#checkLine(tail);
+      this.#pending.append(tail);
+    }
+  }
+  /**
+   * Returns the trailing unterminated line and resets the buffer, or
+   * undefined if no bytes are buffered.
+   */
+  flush() {
+    this.#afterCarriageReturn = false;
+    if (this.#pending.byteLength === 0) {
+      return void 0;
+    }
+    return stripCarriageReturn(this.#pending.take());
+  }
+  clear() {
+    this.#afterCarriageReturn = false;
+    this.#pending.clear();
+  }
+  #takeLine(tail) {
+    this.#checkLine(tail);
+    if (this.#pending.byteLength === 0) {
+      return stripCarriageReturn(tail);
+    }
+    this.#pending.append(tail);
+    return stripCarriageReturn(this.#pending.take());
+  }
+  #checkLine(tail) {
+    const lastByte = tail.byteLength > 0 ? tail[tail.byteLength - 1] : this.#pending.lastByte;
+    const byteLength = this.#pending.byteLength + tail.byteLength - (lastByte === carriageReturn ? 1 : 0);
+    if (byteLength > this.#maxMessageBytes) {
+      this.clear();
+      throw new MessageTooLargeError(this.#maxMessageBytes);
+    }
+  }
+};
+function stripCarriageReturn(line) {
+  return line[line.byteLength - 1] === carriageReturn ? line.subarray(0, -1) : line;
+}
+
+// node_modules/@agentclientprotocol/sdk/dist/core/stream.js
+function ndJsonStream(output, input, options = {}) {
+  const maxMessageBytes = resolveMaxMessageBytes(options.maxMessageBytes);
+  const textEncoder = new TextEncoder();
+  const textDecoder = new TextDecoder();
+  let cancelled = false;
+  let inputReader;
+  let outputWrite = Promise.resolve();
+  const writeJson = (message) => {
+    const content2 = JSON.stringify(message) + "\n";
+    const write = outputWrite.then(async () => {
+      const writer = output.getWriter();
+      try {
+        await writer.write(textEncoder.encode(content2));
+      } finally {
+        writer.releaseLock();
+      }
+    });
+    outputWrite = write.catch(() => {
+    });
+    return write;
+  };
+  const readable = new ReadableStream({
+    async start(controller) {
+      const lines = new LineBuffer(maxMessageBytes);
+      const enqueueLine = async (lineBytes) => {
+        const trimmedLine = textDecoder.decode(lineBytes).trim();
+        if (!trimmedLine) {
+          return;
+        }
+        let message;
+        try {
+          message = JSON.parse(trimmedLine);
+        } catch {
+          await writeJson(protocolErrorResponse(RequestError.parseError()));
+          return;
+        }
+        if (Array.isArray(message)) {
+          await writeJson(protocolErrorResponse(RequestError.invalidRequest(void 0, "JSON-RPC batches are not supported")));
+        } else if (isRecord(message)) {
+          controller.enqueue(message);
+        } else {
+          await writeJson(protocolErrorResponse(RequestError.invalidRequest(message)));
+        }
+      };
+      const reader = input.getReader();
+      inputReader = reader;
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (cancelled) {
+            return;
+          }
+          if (done) {
+            break;
+          }
+          if (!value) {
+            continue;
+          }
+          for (const line of lines.push(value)) {
+            await enqueueLine(line);
+            if (cancelled) {
+              return;
+            }
+          }
+        }
+        if (cancelled) {
+          return;
+        }
+        const lastLine = lines.flush();
+        if (lastLine) {
+          await enqueueLine(lastLine);
+        }
+      } catch (err) {
+        if (cancelled) {
+          return;
+        }
+        controller.error(err);
+        void reader.cancel(err).catch(() => {
+        });
+        return;
+      } finally {
+        lines.clear();
+        if (inputReader === reader) {
+          inputReader = void 0;
+        }
+        reader.releaseLock();
+      }
+      if (cancelled) {
+        return;
+      }
+      controller.close();
+    },
+    cancel(reason) {
+      cancelled = true;
+      return inputReader?.cancel(reason);
+    }
+  });
+  const writable = new WritableStream({
+    write(message) {
+      return writeJson(message);
+    }
+  });
+  return { readable, writable };
+}
+
 // node_modules/@agentclientprotocol/sdk/dist/v1/unstable/schema/index.js
 var AGENT_METHODS = {
   initialize: "initialize",
@@ -27063,6 +28221,77 @@ var zPromptSuggestionsUpdate = z21.object({
   suggestions: vecSkipError(zPromptSuggestion),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zCursorId = z21.string();
+var zCursorForkCapabilities = z21.object({
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zCursorCapabilities = z21.object({
+  fork: defaultOnError(zCursorForkCapabilities.nullish(), () => void 0),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zCursorAnchorPosition = z21.union([
+  z21.literal("before"),
+  z21.literal("after"),
+  z21.string()
+]);
+var zCursorMessageAnchor = z21.object({
+  messageId: zMessageId,
+  position: zCursorAnchorPosition,
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zCursorToolCallAnchor = z21.object({
+  toolCallId: zToolCallId,
+  position: zCursorAnchorPosition,
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zCursorCompactionAnchor = z21.object({
+  compactionId: zCompactionId,
+  position: zCursorAnchorPosition,
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zCursorAnchor = preserveCustomPayload(z21.union([
+  zCursorMessageAnchor.and(z21.object({
+    type: z21.literal("user_message")
+  })),
+  zCursorMessageAnchor.and(z21.object({
+    type: z21.literal("agent_message")
+  })),
+  zCursorMessageAnchor.and(z21.object({
+    type: z21.literal("agent_thought")
+  })),
+  zCursorMessageAnchor.and(z21.object({
+    type: z21.literal("session_message")
+  })),
+  zCursorToolCallAnchor.and(z21.object({
+    type: z21.literal("tool_call")
+  })),
+  zCursorCompactionAnchor.and(z21.object({
+    type: z21.literal("compaction")
+  })),
+  excludeKnownTags(z21.object({
+    type: z21.string()
+  }), "type", [
+    "agent_message",
+    "agent_thought",
+    "compaction",
+    "session_message",
+    "tool_call",
+    "user_message"
+  ])
+]), "type", [
+  "agent_message",
+  "agent_thought",
+  "compaction",
+  "session_message",
+  "tool_call",
+  "user_message"
+]);
+var zCursorUpdate = z21.object({
+  cursorId: zCursorId,
+  capabilities: defaultOnError(zCursorCapabilities.nullish(), () => void 0),
+  anchor: zCursorAnchor.nullish(),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zSessionCancelCapabilities = z21.object({
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
@@ -27219,6 +28448,9 @@ var zSessionUpdate = z21.union([
   zPromptSuggestionsUpdate.and(z21.object({
     sessionUpdate: z21.literal("prompt_suggestions_update")
   })),
+  zCursorUpdate.and(z21.object({
+    sessionUpdate: z21.literal("cursor_update")
+  })),
   zSubagentUpdate.and(z21.object({
     sessionUpdate: z21.literal("subagent_update")
   })),
@@ -27282,11 +28514,13 @@ var zPromptSuggestionsCapabilities = z21.object({
   embeddedContext: defaultOnError(zPromptSuggestionsEmbeddedContextCapabilities.nullish(), () => void 0),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zSessionCursorsCapabilities = z21.record(z21.string(), z21.unknown());
 var zClientSessionCapabilities = z21.object({
   compaction: defaultOnError(zCompactionCapabilities.nullish(), () => void 0),
   configOptions: defaultOnError(zSessionConfigOptionsCapabilities.nullish(), () => void 0),
   notices: defaultOnError(zNoticeCapabilities.nullish(), () => void 0),
   promptSuggestions: defaultOnError(zPromptSuggestionsCapabilities.nullish(), () => void 0),
+  cursors: defaultOnError(zSessionCursorsCapabilities.nullish(), () => void 0),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zSubagentCapabilities = z21.object({
@@ -27456,6 +28690,7 @@ var zDeleteSessionRequest = z21.object({
 });
 var zForkSessionRequest = z21.object({
   sessionId: zSessionId,
+  cursorId: zCursorId.nullish(),
   cwd: z21.string(),
   additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
   mcpServers: defaultOnNull(z21.array(zMcpServer), () => []).optional(),
@@ -27723,1166 +28958,6 @@ var zProxyNotification = z21.object({
   params: zProxySuccessorNotification.nullish()
 });
 
-// node_modules/@agentclientprotocol/sdk/dist/core/jsonrpc.js
-var CANCEL_REQUEST_METHOD = "$/cancel_request";
-function treatSessionNotFoundAsSuccess(method, response, success) {
-  if (method !== "session/close" && method !== "session/delete") {
-    return response;
-  }
-  return response.catch((error) => {
-    if (error instanceof RequestError && error.code === -32002) {
-      return success();
-    }
-    throw error;
-  });
-}
-function isRequestMessage(value) {
-  return isJsonRpcEnvelope(value) && "id" in value && typeof value["method"] === "string" && isJsonRpcId(value["id"]);
-}
-function isResponseMessage(value) {
-  if (!isJsonRpcEnvelope(value) || "method" in value) {
-    return false;
-  }
-  if (!("id" in value) || !isJsonRpcId(value["id"])) {
-    return false;
-  }
-  const hasResult = Object.hasOwn(value, "result");
-  const hasError = Object.hasOwn(value, "error");
-  if (hasResult === hasError) {
-    return false;
-  }
-  return !hasError || isErrorResponse(value["error"]);
-}
-function isNotificationMessage(value) {
-  return isJsonRpcEnvelope(value) && !("id" in value) && typeof value["method"] === "string";
-}
-function isRecord(value) {
-  return typeof value === "object" && value !== null;
-}
-function isJsonRpcEnvelope(value) {
-  return isRecord(value) && value["jsonrpc"] === "2.0";
-}
-function isJsonRpcId(value) {
-  return value === null || typeof value === "string" || typeof value === "number" && Number.isFinite(value);
-}
-function isResponseShapedMessage(value) {
-  return isRecord(value) && !("method" in value) && ("id" in value || "result" in value || "error" in value);
-}
-function cancelRequestId(params) {
-  if (!isRecord(params) || !isJsonRpcId(params["requestId"])) {
-    return void 0;
-  }
-  return params["requestId"];
-}
-function isErrorResponse(value) {
-  return isRecord(value) && typeof value["code"] === "number" && Number.isInteger(value["code"]) && typeof value["message"] === "string";
-}
-var Handled = {
-  /**
-   * Marks a message as handled.
-   */
-  yes() {
-    return { handled: true };
-  },
-  /**
-   * Leaves a message unhandled so later handlers can process it.
-   */
-  no(message, retry = false) {
-    return { handled: false, message, retry };
-  }
-};
-function rejectedPromise(error) {
-  const promise = Promise.reject(error);
-  promise.catch(() => {
-  });
-  return promise;
-}
-function errorDetails(error) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "object" && error != null && "message" in error && typeof error.message === "string") {
-    return error.message;
-  }
-  return void 0;
-}
-function isZodError(error) {
-  return typeof error === "object" && error !== null && "name" in error && error.name === "ZodError" && "issues" in error && Array.isArray(error.issues) && "format" in error && typeof error.format === "function";
-}
-function describeInvalidMessage(message) {
-  if (Array.isArray(message)) {
-    return { type: "array" };
-  }
-  if (isRecord(message)) {
-    return { type: "object", keys: Object.keys(message) };
-  }
-  return { type: message === null ? "null" : typeof message };
-}
-function errorToResult(error) {
-  if (error instanceof RequestError) {
-    return error.toResult();
-  }
-  if (isZodError(error)) {
-    return RequestError.invalidParams(error.format()).toResult();
-  }
-  const details = errorDetails(error);
-  try {
-    return RequestError.internalError(details ? JSON.parse(details) : {}).toResult();
-  } catch {
-    return RequestError.internalError({ details }).toResult();
-  }
-}
-function requestCancelledError(reason) {
-  if (reason instanceof RequestError && reason.code === -32800) {
-    return reason;
-  }
-  return RequestError.requestCancelled(reason);
-}
-function errorToRequestResult(error, signal) {
-  const requestCancelled = abortErrorToRequestCancelled(error, signal);
-  return requestCancelled ? requestCancelled.toResult() : errorToResult(error);
-}
-function abortErrorToRequestCancelled(error, signal) {
-  if (!signal.aborted || !isAbortError(error)) {
-    return void 0;
-  }
-  return requestCancelledError(signal.reason);
-}
-function isAbortError(error) {
-  if (typeof error !== "object" || error === null) {
-    return false;
-  }
-  const maybeAbortError = error;
-  return maybeAbortError.name === "AbortError" || maybeAbortError.code === "ABORT_ERR";
-}
-var RequestResponder = class {
-  id;
-  sendResult;
-  signal;
-  finishRequest;
-  didRespond = false;
-  constructor(id4, sendResult, signal = new AbortController().signal, finishRequest) {
-    this.id = id4;
-    this.sendResult = sendResult;
-    this.signal = signal;
-    this.finishRequest = finishRequest;
-  }
-  /**
-   * Whether this request has already received a response.
-   */
-  get responded() {
-    return this.didRespond;
-  }
-  /**
-   * Sends a successful JSON-RPC response.
-   */
-  respond(response) {
-    return this.respondWithResult({ result: response ?? null });
-  }
-  /**
-   * Sends an error JSON-RPC response.
-   */
-  respondWithError(error) {
-    const errorResponse = error instanceof RequestError ? error.toErrorResponse() : error;
-    return this.respondWithResult({ error: errorResponse });
-  }
-  /**
-   * Sends a complete JSON-RPC result payload.
-   */
-  respondWithResult(result3) {
-    if (this.didRespond) {
-      return rejectedPromise(new Error("JSON-RPC request already responded"));
-    }
-    this.didRespond = true;
-    return this.sendResult(result3).finally(() => {
-      this.finishRequest?.();
-    });
-  }
-};
-var nullIdResponders = /* @__PURE__ */ new WeakSet();
-var HandlerRegistration = class {
-  disposeHandler;
-  active = true;
-  constructor(disposeHandler) {
-    this.disposeHandler = disposeHandler;
-  }
-  /**
-   * Unregisters the associated handler.
-   */
-  dispose() {
-    if (!this.active) {
-      return;
-    }
-    this.active = false;
-    this.disposeHandler();
-  }
-  /**
-   * Supports explicit resource management with `using`.
-   */
-  [Symbol.dispose]() {
-    this.dispose();
-  }
-  /**
-   * Returns this registration for call sites that intentionally keep it active.
-   */
-  runIndefinitely() {
-    return this;
-  }
-};
-var ConnectionContext = class {
-  connection;
-  constructor(connection) {
-    this.connection = connection;
-  }
-  /**
-   * Sends a request over the connection.
-   */
-  sendRequest(method, params, mapResponse, options) {
-    return this.connection.sendRequest(method, params, mapResponse, options);
-  }
-  /**
-   * Sends a notification over the connection.
-   */
-  sendNotification(method, params) {
-    return this.connection.sendNotification(method, params);
-  }
-  /**
-   * Sends a protocol-level request cancellation notification.
-   */
-  sendCancelRequest(requestId2) {
-    return this.connection.sendCancelRequest(requestId2);
-  }
-  /**
-   * Registers a handler that can be disposed independently.
-   */
-  addDynamicHandler(handler) {
-    return this.connection.addDynamicHandler(handler);
-  }
-  /**
-   * AbortSignal that aborts when the connection closes.
-   */
-  get signal() {
-    return this.connection.signal;
-  }
-  /**
-   * Promise that resolves when the connection closes.
-   */
-  get closed() {
-    return this.connection.closed;
-  }
-};
-var Connection = class {
-  pendingResponses = /* @__PURE__ */ new Map();
-  incomingRequests = /* @__PURE__ */ new Map();
-  nextRequestId = 0;
-  staticHandlers = [];
-  dynamicHandlers = /* @__PURE__ */ new Set();
-  fallbackHandlers = [];
-  stream;
-  writeQueue = Promise.resolve();
-  abortController = new AbortController();
-  closedPromise;
-  retryQueue = [];
-  context = new ConnectionContext(this);
-  receiveReader;
-  constructor(requestHandlerOrStream, notificationHandlerOrHandlers, streamOrOptions, options) {
-    if (typeof requestHandlerOrStream === "function") {
-      const requestHandler = requestHandlerOrStream;
-      const notificationHandler = notificationHandlerOrHandlers;
-      const stream2 = streamOrOptions;
-      this.initialize(stream2, [
-        ...options?.handlers ?? [],
-        this.legacyHandler(requestHandler, notificationHandler)
-      ], options);
-      return;
-    }
-    const stream = requestHandlerOrStream;
-    const handlers = notificationHandlerOrHandlers;
-    const connectionOptions = streamOrOptions;
-    this.initialize(stream, [...connectionOptions?.handlers ?? [], ...handlers], connectionOptions);
-  }
-  /**
-   * Creates a builder for configuring a handler-based connection.
-   */
-  static builder() {
-    return new ConnectionBuilder();
-  }
-  /**
-   * Runs an operation while the connection is open, then closes the connection.
-   *
-   * If the stream closes before `op` settles, the returned promise rejects with
-   * the connection close reason.
-   */
-  runUntil(op) {
-    let opSettled = false;
-    const opPromise = Promise.resolve().then(() => op(this.context)).finally(() => {
-      opSettled = true;
-    });
-    const closedPromise = this.closed.then(() => {
-      if (opSettled) {
-        return new Promise(() => {
-        });
-      }
-      throw this.closedReason();
-    });
-    return Promise.race([opPromise, closedPromise]).finally(() => {
-      opSettled = true;
-      this.close();
-    });
-  }
-  /**
-   * Adds a handler after the connection has started.
-   *
-   * Any messages queued with `Handled.no(message, true)` are retried after the
-   * handler is added.
-   */
-  addDynamicHandler(handler) {
-    this.dynamicHandlers.add(handler);
-    if (this.retryQueue.length > 0) {
-      for (const message of this.retryQueue.splice(0)) {
-        void this.processIncomingMessage(message).catch((error) => this.close(error));
-      }
-    }
-    return new HandlerRegistration(() => {
-      this.dynamicHandlers.delete(handler);
-    });
-  }
-  /**
-   * AbortSignal that aborts when the connection closes.
-   */
-  get signal() {
-    return this.abortController.signal;
-  }
-  /**
-   * Promise that resolves when the connection closes.
-   */
-  get closed() {
-    return this.closedPromise;
-  }
-  /** @internal */
-  getContext() {
-    return this.context;
-  }
-  /**
-   * Sends a JSON-RPC request.
-   *
-   * `mapResponse` can convert the raw result before the returned promise
-   * resolves.
-   */
-  sendRequest(method, params, mapResponse, options = {}) {
-    if (this.abortController.signal.aborted) {
-      return rejectedPromise(this.closedReason());
-    }
-    const request2 = this.prepareRequest(method, params, mapResponse, options);
-    const requestSent = this.sendMessage(request2.message);
-    void requestSent.catch(() => {
-    });
-    if (options.cancellationSignal?.aborted) {
-      request2.cancel();
-    }
-    return request2.response;
-  }
-  /**
-   * Sends a protocol-level request cancellation notification.
-   */
-  sendCancelRequest(requestId2) {
-    return this.sendNotification(CANCEL_REQUEST_METHOD, { requestId: requestId2 });
-  }
-  /**
-   * Sends a JSON-RPC notification.
-   */
-  sendNotification(method, params) {
-    if (this.abortController.signal.aborted) {
-      return rejectedPromise(this.closedReason());
-    }
-    return this.sendMessage({ jsonrpc: "2.0", method, params });
-  }
-  prepareRequest(method, params, mapResponse, options = {}) {
-    const id4 = this.nextRequestId++;
-    let cancel = () => {
-    };
-    const response = new Promise((resolve4, reject) => {
-      const pendingResponse = {
-        resolve: (value) => {
-          try {
-            resolve4(mapResponse ? mapResponse(value) : value);
-          } catch (error) {
-            reject(error);
-          }
-        },
-        reject
-      };
-      cancel = () => {
-        if (pendingResponse.cancellationSent) {
-          return;
-        }
-        pendingResponse.cancellationSent = true;
-        pendingResponse.cleanup?.();
-        void this.sendCancelRequest(id4).catch(() => {
-        });
-        if (options.stopWaitingOnCancel) {
-          pendingResponse.abandoned = true;
-          reject(requestCancelledError(options.cancellationSignal?.reason));
-        }
-      };
-      options.cancellationSignal?.addEventListener("abort", cancel, {
-        once: true
-      });
-      pendingResponse.cleanup = () => {
-        options.cancellationSignal?.removeEventListener("abort", cancel);
-      };
-      this.pendingResponses.set(id4, pendingResponse);
-    });
-    response.catch(() => {
-    });
-    return {
-      message: { jsonrpc: "2.0", id: id4, method, params },
-      response,
-      cancel: () => cancel()
-    };
-  }
-  /**
-   * Closes the connection and rejects pending requests.
-   */
-  close(error) {
-    if (this.abortController.signal.aborted) {
-      return;
-    }
-    const closeError = error ?? new Error("ACP connection closed");
-    this.abortController.abort(closeError);
-    for (const pendingResponse of this.pendingResponses.values()) {
-      pendingResponse.cleanup?.();
-      pendingResponse.reject(closeError);
-    }
-    this.pendingResponses.clear();
-    for (const controller of this.incomingRequests.values()) {
-      controller.abort(closeError);
-    }
-    this.incomingRequests.clear();
-    void this.receiveReader?.cancel(closeError).catch(() => {
-    });
-  }
-  initialize(stream, handlers, options) {
-    this.stream = stream;
-    this.staticHandlers = handlers;
-    this.fallbackHandlers = [...options?.fallbackHandlers ?? []];
-    this.closedPromise = new Promise((resolve4) => {
-      this.abortController.signal.addEventListener("abort", () => resolve4());
-    });
-    void this.receive();
-  }
-  legacyHandler(requestHandler, notificationHandler) {
-    return {
-      handleMessage: async (message, cx) => {
-        if (message.kind === "request") {
-          const result3 = await requestHandler(message.method, message.params, cx);
-          await message.responder.respond(result3);
-        } else {
-          await notificationHandler(message.method, message.params, cx);
-        }
-        return Handled.yes();
-      }
-    };
-  }
-  async receive() {
-    let closeError = void 0;
-    try {
-      const reader = this.stream.readable.getReader();
-      this.receiveReader = reader;
-      try {
-        while (!this.abortController.signal.aborted) {
-          const { value: message, done } = await reader.read();
-          if (this.abortController.signal.aborted) {
-            break;
-          }
-          if (done) {
-            break;
-          }
-          this.receiveUnvalidatedMessage(message);
-        }
-      } finally {
-        if (this.receiveReader === reader) {
-          this.receiveReader = void 0;
-        }
-        reader.releaseLock();
-      }
-    } catch (error) {
-      closeError = error;
-    } finally {
-      this.close(closeError);
-    }
-  }
-  receiveUnvalidatedMessage(message) {
-    if (Array.isArray(message)) {
-      void this.sendMessage(protocolErrorResponse(RequestError.invalidRequest(void 0, "JSON-RPC batches are not supported"))).catch(() => {
-      });
-      return;
-    }
-    if (!isRequestMessage(message) && !isNotificationMessage(message) && !isResponseShapedMessage(message)) {
-      void this.sendMessage(protocolErrorResponse(RequestError.invalidRequest(message))).catch(() => {
-      });
-      return;
-    }
-    this.receiveMessage(message);
-  }
-  receiveMessage(message) {
-    if (this.abortController.signal.aborted) {
-      return Promise.resolve();
-    }
-    if (!isRecord(message)) {
-      console.error("Invalid message", describeInvalidMessage(message));
-      return Promise.resolve();
-    }
-    if ("method" in message) {
-      if (!("id" in message)) {
-        this.handleProtocolNotification(message);
-      }
-      return this.processIncomingMessage(this.toIncomingMessage(message)).catch((error) => this.close(error));
-    } else if ("id" in message) {
-      this.handleResponse(message);
-    } else {
-      console.error("Invalid message", describeInvalidMessage(message));
-    }
-    return Promise.resolve();
-  }
-  async processIncomingMessage(message) {
-    if (this.abortController.signal.aborted) {
-      return;
-    }
-    let current = message;
-    let retry = false;
-    try {
-      for (const handler of [
-        ...this.staticHandlers,
-        ...this.dynamicHandlers.values(),
-        ...this.fallbackHandlers
-      ]) {
-        if (this.abortController.signal.aborted) {
-          return;
-        }
-        const result3 = await handler.handleMessage(current, this.context) ?? {
-          handled: true
-        };
-        if (result3.handled) {
-          return;
-        }
-        current = result3.message ?? current;
-        retry = retry || Boolean(result3.retry);
-      }
-      if (retry) {
-        this.retryQueue.push(current);
-      } else if (current.kind === "request") {
-        await current.responder.respondWithError(RequestError.methodNotFound(current.method));
-      }
-    } catch (error) {
-      if (this.abortController.signal.aborted) {
-        return;
-      }
-      if (current.kind === "request" && !current.responder.responded) {
-        await current.responder.respondWithResult(errorToRequestResult(error, current.responder.signal));
-      } else {
-        const response = errorToResult(error);
-        if ("error" in response) {
-          console.error("Error handling notification", {
-            method: message.method,
-            code: response.error.code,
-            message: response.error.message
-          });
-        }
-      }
-    }
-  }
-  toIncomingMessage(message) {
-    if ("id" in message) {
-      const abortController = new AbortController();
-      this.incomingRequests.set(message.id, abortController);
-      const finishRequest = () => {
-        if (this.incomingRequests.get(message.id) === abortController) {
-          this.incomingRequests.delete(message.id);
-        }
-      };
-      const responder = new RequestResponder(message.id, (result3) => {
-        const response = {
-          jsonrpc: "2.0",
-          id: nullIdResponders.has(responder) ? null : message.id,
-          ...result3
-        };
-        return this.sendMessage(response);
-      }, abortController.signal, finishRequest);
-      return {
-        kind: "request",
-        method: message.method,
-        params: message.params,
-        raw: message,
-        signal: abortController.signal,
-        responder
-      };
-    }
-    return {
-      kind: "notification",
-      method: message.method,
-      params: message.params,
-      raw: message
-    };
-  }
-  handleResponse(response) {
-    const pendingResponse = this.pendingResponses.get(response.id);
-    if (pendingResponse) {
-      this.pendingResponses.delete(response.id);
-      pendingResponse.cleanup?.();
-      if (pendingResponse.abandoned) {
-        return;
-      }
-      if (!isResponseMessage(response)) {
-        pendingResponse.reject(RequestError.invalidRequest(response));
-      } else if ("result" in response) {
-        pendingResponse.resolve(response.result);
-      } else {
-        const { code, message, data } = response.error;
-        pendingResponse.reject(new RequestError(code, message, data));
-      }
-    } else {
-      console.error("Got response to unknown request", response.id);
-    }
-  }
-  handleProtocolNotification(message) {
-    if (message.method !== CANCEL_REQUEST_METHOD) {
-      return;
-    }
-    const requestId2 = cancelRequestId(message.params);
-    if (requestId2 === void 0) {
-      return;
-    }
-    const controller = this.incomingRequests.get(requestId2);
-    if (!controller || controller.signal.aborted) {
-      return;
-    }
-    controller.abort(RequestError.requestCancelled({ requestId: requestId2 }));
-  }
-  closedReason() {
-    return this.abortController.signal.reason ?? new Error("ACP connection closed");
-  }
-  async sendMessage(message) {
-    if (this.abortController.signal.aborted) {
-      return rejectedPromise(this.closedReason());
-    }
-    this.writeQueue = this.writeQueue.then(async () => {
-      if (this.abortController.signal.aborted) {
-        throw this.closedReason();
-      }
-      const writer = this.stream.writable.getWriter();
-      try {
-        await writer.write(message);
-      } finally {
-        writer.releaseLock();
-      }
-    }).catch((error) => {
-      this.close(error);
-      throw error;
-    });
-    return this.writeQueue;
-  }
-};
-var ConnectionBuilder = class {
-  handlers = [];
-  fallbackHandlers = [];
-  connectionName;
-  /**
-   * Sets a diagnostic name used by handlers created from this builder.
-   */
-  name(name2) {
-    this.connectionName = name2;
-    return this;
-  }
-  /**
-   * Adds a raw JSON-RPC handler to the handler chain.
-   */
-  withHandler(handler) {
-    this.handlers.push(handler);
-    return this;
-  }
-  /**
-   * Adds a fallback after static and dynamic handlers. Each connection snapshots
-   * this registration alongside the builder's other handlers.
-   */
-  withFallbackHandler(handler) {
-    this.fallbackHandlers.push(handler);
-    return this;
-  }
-  /**
-   * Adds a handler that can inspect every incoming request or notification.
-   *
-   * Observer callbacks that return void pass the message through to later
-   * handlers. Return `Handled.yes()` to stop dispatch explicitly.
-   */
-  onReceiveMessage(handler) {
-    return this.withHandler({
-      handleMessage: async (message, cx) => await handler(message, cx) ?? Handled.no(message),
-      describe: () => this.connectionName ?? "onReceiveMessage"
-    });
-  }
-  /**
-   * Adds a typed request handler for one method.
-   */
-  onReceiveRequest(method, parse, handler) {
-    return this.withHandler({
-      handleMessage: async (message, cx) => {
-        if (message.kind !== "request" || message.method !== method) {
-          return Handled.no(message);
-        }
-        const request2 = parse(message.params);
-        return await handler(request2, message.responder, cx) ?? Handled.yes();
-      },
-      describe: () => `${this.connectionName ?? "request"}:${method}`
-    });
-  }
-  /**
-   * Adds a typed notification handler for one method.
-   */
-  onReceiveNotification(method, parse, handler) {
-    return this.withHandler({
-      handleMessage: async (message, cx) => {
-        if (message.kind !== "notification" || message.method !== method) {
-          return Handled.no(message);
-        }
-        const notification = parse(message.params);
-        return await handler(notification, cx) ?? Handled.yes();
-      },
-      describe: () => `${this.connectionName ?? "notification"}:${method}`
-    });
-  }
-  /**
-   * Connects the configured handlers to a stream.
-   */
-  connect(stream, options) {
-    return new Connection(stream, this.handlers, {
-      ...options,
-      fallbackHandlers: [
-        ...options?.fallbackHandlers ?? [],
-        ...this.fallbackHandlers
-      ]
-    });
-  }
-  /**
-   * Connects to a stream for the lifetime of `op`, then closes the connection.
-   */
-  connectWith(stream, op, options) {
-    return this.connect(stream, options).runUntil(op);
-  }
-};
-var RequestError = class _RequestError extends Error {
-  code;
-  /**
-   * Additional JSON-RPC error data.
-   */
-  data;
-  constructor(code, message, data) {
-    super(message);
-    this.code = code;
-    this.name = "RequestError";
-    this.data = data;
-  }
-  /**
-   * Invalid JSON was received by the server. An error occurred on the server while parsing the JSON text.
-   */
-  static parseError(data, additionalMessage) {
-    return new _RequestError(-32700, `Parse error${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
-  }
-  /**
-   * The JSON sent is not a valid Request object.
-   */
-  static invalidRequest(data, additionalMessage) {
-    return new _RequestError(-32600, `Invalid request${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
-  }
-  /**
-   * The method does not exist / is not available.
-   */
-  static methodNotFound(method) {
-    return new _RequestError(-32601, `"Method not found": ${method}`, {
-      method
-    });
-  }
-  /**
-   * Invalid method parameter(s).
-   */
-  static invalidParams(data, additionalMessage) {
-    return new _RequestError(-32602, `Invalid params${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
-  }
-  /**
-   * Internal JSON-RPC error.
-   */
-  static internalError(data, additionalMessage) {
-    return new _RequestError(-32603, `Internal error${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
-  }
-  /**
-   * Execution of the request was aborted.
-   */
-  static requestCancelled(data, additionalMessage) {
-    return new _RequestError(-32800, `Request cancelled${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
-  }
-  /**
-   * Authentication required.
-   */
-  static authRequired(data, additionalMessage) {
-    return new _RequestError(-32e3, `Authentication required${additionalMessage ? `: ${additionalMessage}` : ""}`, data);
-  }
-  /**
-   * A referenced resource, such as a session or file, does not exist.
-   *
-   * For an unknown or inactive session, prefer
-   * {@link RequestError.sessionNotFound}, which sets `data.sessionId` as the
-   * protocol expects.
-   */
-  static resourceNotFound(uri) {
-    return new _RequestError(-32002, `Resource not found${uri ? `: ${uri}` : ""}`, uri && { uri });
-  }
-  /**
-   * The session named by a session-scoped request does not exist or is not
-   * active on this connection.
-   *
-   * Produces a `-32002` (Resource not found) error with `data.sessionId` set
-   * to the requested session ID.
-   */
-  static sessionNotFound(sessionId2) {
-    return new _RequestError(-32002, "Resource not found", {
-      sessionId: sessionId2
-    });
-  }
-  /**
-   * No supported protocol version is at or below the requested version.
-   *
-   * Produces a `-32022` error whose data lists the `requested` version and the
-   * `supported` versions.
-   */
-  static unsupportedProtocolVersion(requested, supported) {
-    return new _RequestError(-32022, "Unsupported protocol version", {
-      requested,
-      supported: [...supported]
-    });
-  }
-  /**
-   * Converts this error to a JSON-RPC result object.
-   */
-  toResult() {
-    return {
-      error: {
-        code: this.code,
-        message: this.message,
-        data: this.data
-      }
-    };
-  }
-  /**
-   * Converts this error to a JSON-RPC error response payload.
-   */
-  toErrorResponse() {
-    return {
-      code: this.code,
-      message: this.message,
-      data: this.data
-    };
-  }
-};
-function protocolErrorResponse(error) {
-  return {
-    jsonrpc: "2.0",
-    id: null,
-    error: error.toErrorResponse()
-  };
-}
-
-// node_modules/@agentclientprotocol/sdk/dist/core/stream-limits.js
-var DEFAULT_MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
-var MessageTooLargeError = class extends Error {
-  maxMessageBytes;
-  constructor(maxMessageBytes) {
-    super(`Incoming ACP data exceeds the configured ${maxMessageBytes} byte limit`);
-    this.maxMessageBytes = maxMessageBytes;
-    this.name = "MessageTooLargeError";
-  }
-};
-function resolveMaxMessageBytes(value) {
-  const maxMessageBytes = value ?? DEFAULT_MAX_MESSAGE_BYTES;
-  if (!Number.isSafeInteger(maxMessageBytes) || maxMessageBytes <= 0) {
-    throw new RangeError("maxMessageBytes must be a positive safe integer");
-  }
-  return maxMessageBytes;
-}
-var MessageBuffer = class {
-  #buffer = new Uint8Array(0);
-  #length = 0;
-  #maxMessageBytes;
-  constructor(maxMessageBytes) {
-    this.#maxMessageBytes = resolveMaxMessageBytes(maxMessageBytes);
-  }
-  get byteLength() {
-    return this.#length;
-  }
-  get lastByte() {
-    return this.#buffer[this.#length - 1];
-  }
-  #checkAppend(byteLength) {
-    if (byteLength > this.#maxMessageBytes - this.#length) {
-      this.clear();
-      throw new MessageTooLargeError(this.#maxMessageBytes);
-    }
-  }
-  append(bytes2) {
-    this.#checkAppend(bytes2.byteLength);
-    const length = this.#length + bytes2.byteLength;
-    if (length > this.#buffer.byteLength) {
-      const capacity = Math.min(this.#maxMessageBytes, Math.max(length, this.#buffer.byteLength * 2, 1024));
-      const buffer = new Uint8Array(capacity);
-      buffer.set(this.#buffer.subarray(0, this.#length));
-      this.#buffer = buffer;
-    }
-    this.#buffer.set(bytes2, this.#length);
-    this.#length = length;
-  }
-  take() {
-    const bytes2 = this.#buffer.subarray(0, this.#length);
-    this.clear();
-    return bytes2;
-  }
-  clear() {
-    this.#buffer = new Uint8Array(0);
-    this.#length = 0;
-  }
-};
-
-// node_modules/@agentclientprotocol/sdk/dist/core/line-buffer.js
-var newline = 10;
-var carriageReturn = 13;
-var LineBuffer = class {
-  /** Bytes of the current (incomplete) line, carried across chunks. */
-  #pending;
-  #maxMessageBytes;
-  #splitOnCarriageReturn;
-  /** Whether the last line ended at a CR whose LF may start the next chunk. */
-  #afterCarriageReturn = false;
-  constructor(maxMessageBytes, { splitOnCarriageReturn = false } = {}) {
-    this.#maxMessageBytes = resolveMaxMessageBytes(maxMessageBytes);
-    this.#pending = new MessageBuffer(Math.min(Number.MAX_SAFE_INTEGER, this.#maxMessageBytes + 1));
-    this.#splitOnCarriageReturn = splitOnCarriageReturn;
-  }
-  /**
-   * Consumes a chunk, yielding each complete line without its line ending.
-   */
-  *push(chunk) {
-    let start = 0;
-    if (this.#afterCarriageReturn && chunk.byteLength > 0) {
-      this.#afterCarriageReturn = false;
-      if (chunk[0] === newline) {
-        start = 1;
-      }
-    }
-    let newlineIndex = chunk.indexOf(newline, start);
-    let carriageReturnIndex = this.#splitOnCarriageReturn ? chunk.indexOf(carriageReturn, start) : -1;
-    while (newlineIndex !== -1 || carriageReturnIndex !== -1) {
-      if (carriageReturnIndex === -1 || newlineIndex !== -1 && newlineIndex < carriageReturnIndex) {
-        yield this.#takeLine(chunk.subarray(start, newlineIndex));
-        start = newlineIndex + 1;
-        newlineIndex = chunk.indexOf(newline, start);
-      } else {
-        yield this.#takeLine(chunk.subarray(start, carriageReturnIndex));
-        start = carriageReturnIndex + 1;
-        if (start === chunk.byteLength) {
-          this.#afterCarriageReturn = true;
-        } else if (chunk[start] === newline) {
-          start++;
-          newlineIndex = chunk.indexOf(newline, start);
-        }
-        carriageReturnIndex = chunk.indexOf(carriageReturn, start);
-      }
-    }
-    if (start < chunk.byteLength) {
-      const tail = chunk.subarray(start);
-      this.#checkLine(tail);
-      this.#pending.append(tail);
-    }
-  }
-  /**
-   * Returns the trailing unterminated line and resets the buffer, or
-   * undefined if no bytes are buffered.
-   */
-  flush() {
-    this.#afterCarriageReturn = false;
-    if (this.#pending.byteLength === 0) {
-      return void 0;
-    }
-    return stripCarriageReturn(this.#pending.take());
-  }
-  clear() {
-    this.#afterCarriageReturn = false;
-    this.#pending.clear();
-  }
-  #takeLine(tail) {
-    this.#checkLine(tail);
-    if (this.#pending.byteLength === 0) {
-      return stripCarriageReturn(tail);
-    }
-    this.#pending.append(tail);
-    return stripCarriageReturn(this.#pending.take());
-  }
-  #checkLine(tail) {
-    const lastByte = tail.byteLength > 0 ? tail[tail.byteLength - 1] : this.#pending.lastByte;
-    const byteLength = this.#pending.byteLength + tail.byteLength - (lastByte === carriageReturn ? 1 : 0);
-    if (byteLength > this.#maxMessageBytes) {
-      this.clear();
-      throw new MessageTooLargeError(this.#maxMessageBytes);
-    }
-  }
-};
-function stripCarriageReturn(line) {
-  return line[line.byteLength - 1] === carriageReturn ? line.subarray(0, -1) : line;
-}
-
-// node_modules/@agentclientprotocol/sdk/dist/core/stream.js
-function ndJsonStream(output, input, options = {}) {
-  const maxMessageBytes = resolveMaxMessageBytes(options.maxMessageBytes);
-  const textEncoder = new TextEncoder();
-  const textDecoder = new TextDecoder();
-  let cancelled = false;
-  let inputReader;
-  let outputWrite = Promise.resolve();
-  const writeJson = (message) => {
-    const content2 = JSON.stringify(message) + "\n";
-    const write = outputWrite.then(async () => {
-      const writer = output.getWriter();
-      try {
-        await writer.write(textEncoder.encode(content2));
-      } finally {
-        writer.releaseLock();
-      }
-    });
-    outputWrite = write.catch(() => {
-    });
-    return write;
-  };
-  const readable = new ReadableStream({
-    async start(controller) {
-      const lines = new LineBuffer(maxMessageBytes);
-      const enqueueLine = async (lineBytes) => {
-        const trimmedLine = textDecoder.decode(lineBytes).trim();
-        if (!trimmedLine) {
-          return;
-        }
-        let message;
-        try {
-          message = JSON.parse(trimmedLine);
-        } catch {
-          await writeJson(protocolErrorResponse(RequestError.parseError()));
-          return;
-        }
-        if (Array.isArray(message)) {
-          await writeJson(protocolErrorResponse(RequestError.invalidRequest(void 0, "JSON-RPC batches are not supported")));
-        } else if (isRecord(message)) {
-          controller.enqueue(message);
-        } else {
-          await writeJson(protocolErrorResponse(RequestError.invalidRequest(message)));
-        }
-      };
-      const reader = input.getReader();
-      inputReader = reader;
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (cancelled) {
-            return;
-          }
-          if (done) {
-            break;
-          }
-          if (!value) {
-            continue;
-          }
-          for (const line of lines.push(value)) {
-            await enqueueLine(line);
-            if (cancelled) {
-              return;
-            }
-          }
-        }
-        if (cancelled) {
-          return;
-        }
-        const lastLine = lines.flush();
-        if (lastLine) {
-          await enqueueLine(lastLine);
-        }
-      } catch (err) {
-        if (cancelled) {
-          return;
-        }
-        controller.error(err);
-        void reader.cancel(err).catch(() => {
-        });
-        return;
-      } finally {
-        lines.clear();
-        if (inputReader === reader) {
-          inputReader = void 0;
-        }
-        reader.releaseLock();
-      }
-      if (cancelled) {
-        return;
-      }
-      controller.close();
-    },
-    cancel(reason) {
-      cancelled = true;
-      return inputReader?.cancel(reason);
-    }
-  });
-  const writable = new WritableStream({
-    write(message) {
-      return writeJson(message);
-    }
-  });
-  return { readable, writable };
-}
-
-// node_modules/@agentclientprotocol/sdk/dist/v1/unstable/schema/guards.gen.js
-var z22 = __toESM(require_v4(), 1);
-var zGuardCreateElicitationRequestForm = zElicitationFormMode.and(z22.object({ mode: z22.literal("form") })).and(z22.object({ message: z22.string() }));
-var zGuardCreateElicitationRequestUrl = zElicitationUrlMode.and(z22.object({ mode: z22.literal("url") })).and(z22.object({ message: z22.string() }));
-var zGuardCreateElicitationRequestCustom = z22.union([zElicitationSessionScope, zElicitationRequestScope]).and(z22.object({ message: z22.string() }));
-var zGuardElicitationPropertySchemaString = zStringPropertySchema.and(z22.object({ type: z22.literal("string") }));
-var zGuardElicitationPropertySchemaNumber = zNumberPropertySchema.and(z22.object({ type: z22.literal("number") }));
-var zGuardElicitationPropertySchemaInteger = zIntegerPropertySchema.and(z22.object({ type: z22.literal("integer") }));
-var zGuardElicitationPropertySchemaBoolean = zBooleanPropertySchema.and(z22.object({ type: z22.literal("boolean") }));
-var zGuardElicitationPropertySchemaArray = zMultiSelectPropertySchema.and(z22.object({ type: z22.literal("array") }));
-var zGuardMultiSelectItemsString = zStringMultiSelectItems.and(z22.object({ type: z22.literal("string") }));
-var zGuardStateUpdateRunning = zRunningStateUpdate.and(z22.object({ state: z22.literal("running") }));
-var zGuardStateUpdateIdle = zIdleStateUpdate.and(z22.object({ usage: zUsage.nullish() })).and(z22.object({ state: z22.literal("idle") }));
-var zGuardStateUpdateRequiresAction = zRequiresActionStateUpdate.and(z22.object({ state: z22.literal("requires_action") }));
-var zGuardStateUpdateUnknown = zUnknownStateUpdate.and(z22.object({ state: z22.literal("unknown") }));
-var zGuardIdleStateUpdateEndTurn = z22.object({
-  stopReason: z22.literal("end_turn")
-});
-var zGuardIdleStateUpdateMaxTokens = z22.object({
-  stopReason: z22.literal("max_tokens")
-});
-var zGuardIdleStateUpdateMaxTurnRequests = z22.object({
-  stopReason: z22.literal("max_turn_requests")
-});
-var zGuardIdleStateUpdateRefusal = z22.object({
-  stopReason: z22.literal("refusal")
-});
-var zGuardIdleStateUpdateCancelled = z22.object({
-  stopReason: z22.literal("cancelled")
-});
-var zGuardIdleStateUpdateError = zErrorStopReason.and(z22.object({ error: zError.nullish() })).and(z22.object({ stopReason: z22.literal("error") }));
-var zGuardIdleStateUpdateNone = z22.object({ stopReason: z22.null().optional() });
-var zGuardCreateElicitationResponseAccept = zElicitationAcceptAction.and(z22.object({ action: z22.literal("accept") }));
-var zGuardCreateElicitationResponseDecline = z22.object({
-  action: z22.literal("decline")
-});
-var zGuardCreateElicitationResponseCancel = z22.object({
-  action: z22.literal("cancel")
-});
-
 // node_modules/@agentclientprotocol/sdk/dist/core/app-handlers.js
 function parseParams(parser, params) {
   if (!parser) {
@@ -28936,10 +29011,7 @@ function registerAppNotification(builder, spec, context, handler) {
 // node_modules/@agentclientprotocol/sdk/dist/core/connection-access.js
 var connectionContextOf = /* @__PURE__ */ Symbol("connectionContextOf");
 
-// node_modules/@agentclientprotocol/sdk/dist/v1/acp.js
-function ndJsonStream2(output, input, options) {
-  return ndJsonStream(output, input, options);
-}
+// node_modules/@agentclientprotocol/sdk/dist/v1/bindings.js
 var initializedConnections = /* @__PURE__ */ new WeakSet();
 function agentInitializationGate(enabled) {
   return {
@@ -28984,72 +29056,6 @@ function memoryStreamPair() {
     }
   ];
 }
-var methods = {
-  agent: {
-    initialize: AGENT_METHODS.initialize,
-    authenticate: AGENT_METHODS.authenticate,
-    logout: AGENT_METHODS.logout,
-    auth: {
-      status: AGENT_METHODS.auth_status
-    },
-    providers: {
-      list: AGENT_METHODS.providers_list,
-      set: AGENT_METHODS.providers_set,
-      disable: AGENT_METHODS.providers_disable
-    },
-    session: {
-      new: AGENT_METHODS.session_new,
-      load: AGENT_METHODS.session_load,
-      list: AGENT_METHODS.session_list,
-      delete: AGENT_METHODS.session_delete,
-      fork: AGENT_METHODS.session_fork,
-      archive: AGENT_METHODS.session_archive,
-      unarchive: AGENT_METHODS.session_unarchive,
-      status: AGENT_METHODS.session_status,
-      options: AGENT_METHODS.session_options,
-      setTitle: AGENT_METHODS.session_set_title,
-      resume: AGENT_METHODS.session_resume,
-      close: AGENT_METHODS.session_close,
-      setMode: AGENT_METHODS.session_set_mode,
-      setConfigOption: AGENT_METHODS.session_set_config_option,
-      prompt: AGENT_METHODS.session_prompt,
-      cancel: AGENT_METHODS.session_cancel
-    },
-    mcp: {
-      message: AGENT_METHODS.mcp_message
-    }
-  },
-  client: {
-    session: {
-      requestPermission: CLIENT_METHODS.session_request_permission,
-      update: CLIENT_METHODS.session_update
-    },
-    fs: {
-      writeTextFile: CLIENT_METHODS.fs_write_text_file,
-      readTextFile: CLIENT_METHODS.fs_read_text_file
-    },
-    terminal: {
-      create: CLIENT_METHODS.terminal_create,
-      output: CLIENT_METHODS.terminal_output,
-      release: CLIENT_METHODS.terminal_release,
-      waitForExit: CLIENT_METHODS.terminal_wait_for_exit,
-      kill: CLIENT_METHODS.terminal_kill
-    },
-    mcp: {
-      message: CLIENT_METHODS.mcp_message
-    },
-    elicitation: {
-      create: CLIENT_METHODS.elicitation_create,
-      complete: CLIENT_METHODS.elicitation_complete
-    },
-    auth: {
-      statusUpdate: CLIENT_METHODS.auth_status_update
-    }
-  },
-  protocol: {
-    cancelRequest: PROTOCOL_METHODS.cancel_request
-  }
-};
 var startActiveSession = /* @__PURE__ */ Symbol("startActiveSession");
 var AcpContext = class {
   cx;
@@ -29748,8 +29754,8 @@ var AgentApp = class {
     const peerRawConnection = target2[appBuilder]().connect(peerStream);
     const peerConnection = clientConnection(peerRawConnection);
     const state = this.openStreamConnection(thisStream);
-    void state.rawConnection.closed.then(() => peerConnection.close());
-    void peerRawConnection.closed.then(() => state.connection.close());
+    void state.rawConnection.closed.then(() => peerRawConnection.closeFromPeer());
+    void peerRawConnection.closed.then(() => state.rawConnection.closeFromPeer());
     try {
       target2[runClientConnectHandlers](peerConnection);
       this[runAgentConnectHandlers](state.connection);
@@ -29869,8 +29875,8 @@ var ClientApp = class {
     const peerRawConnection = target2[appBuilder]().connect(peerStream);
     const peerConnection = agentConnection(peerRawConnection);
     const state = this.openStreamConnection(thisStream);
-    void state.rawConnection.closed.then(() => peerConnection.close());
-    void peerRawConnection.closed.then(() => state.connection.close());
+    void state.rawConnection.closed.then(() => peerRawConnection.closeFromPeer());
+    void peerRawConnection.closed.then(() => state.rawConnection.closeFromPeer());
     try {
       target2[runAgentConnectHandlers](peerConnection);
       this[runClientConnectHandlers](state.connection);
@@ -29964,6 +29970,79 @@ var TerminalHandle = class _TerminalHandle {
     await this.release();
   }
 };
+
+// node_modules/@agentclientprotocol/sdk/dist/v1/methods.js
+var methods = {
+  agent: {
+    initialize: AGENT_METHODS.initialize,
+    authenticate: AGENT_METHODS.authenticate,
+    logout: AGENT_METHODS.logout,
+    auth: {
+      status: AGENT_METHODS.auth_status
+    },
+    providers: {
+      list: AGENT_METHODS.providers_list,
+      set: AGENT_METHODS.providers_set,
+      disable: AGENT_METHODS.providers_disable
+    },
+    session: {
+      new: AGENT_METHODS.session_new,
+      load: AGENT_METHODS.session_load,
+      list: AGENT_METHODS.session_list,
+      delete: AGENT_METHODS.session_delete,
+      fork: AGENT_METHODS.session_fork,
+      archive: AGENT_METHODS.session_archive,
+      unarchive: AGENT_METHODS.session_unarchive,
+      status: AGENT_METHODS.session_status,
+      options: AGENT_METHODS.session_options,
+      setTitle: AGENT_METHODS.session_set_title,
+      resume: AGENT_METHODS.session_resume,
+      close: AGENT_METHODS.session_close,
+      setMode: AGENT_METHODS.session_set_mode,
+      setConfigOption: AGENT_METHODS.session_set_config_option,
+      prompt: AGENT_METHODS.session_prompt,
+      cancel: AGENT_METHODS.session_cancel
+    },
+    mcp: {
+      message: AGENT_METHODS.mcp_message
+    }
+  },
+  client: {
+    session: {
+      requestPermission: CLIENT_METHODS.session_request_permission,
+      update: CLIENT_METHODS.session_update
+    },
+    fs: {
+      writeTextFile: CLIENT_METHODS.fs_write_text_file,
+      readTextFile: CLIENT_METHODS.fs_read_text_file
+    },
+    terminal: {
+      create: CLIENT_METHODS.terminal_create,
+      output: CLIENT_METHODS.terminal_output,
+      release: CLIENT_METHODS.terminal_release,
+      waitForExit: CLIENT_METHODS.terminal_wait_for_exit,
+      kill: CLIENT_METHODS.terminal_kill
+    },
+    mcp: {
+      message: CLIENT_METHODS.mcp_message
+    },
+    elicitation: {
+      create: CLIENT_METHODS.elicitation_create,
+      complete: CLIENT_METHODS.elicitation_complete
+    },
+    auth: {
+      statusUpdate: CLIENT_METHODS.auth_status_update
+    }
+  },
+  protocol: {
+    cancelRequest: PROTOCOL_METHODS.cancel_request
+  }
+};
+
+// node_modules/@agentclientprotocol/sdk/dist/v1/acp.js
+function ndJsonStream2(output, input, options) {
+  return ndJsonStream(output, input, options);
+}
 
 // packages/session/dist/acp-backend.js
 import { createHash as createHash2 } from "node:crypto";
@@ -30249,6 +30328,8 @@ var AcpEventAdapter = class {
       case "session_info_update":
         return lifecycle;
       case "prompt_suggestions_update":
+        return lifecycle;
+      case "cursor_update":
         return lifecycle;
       case "notice":
         return lifecycle;
