@@ -30,8 +30,7 @@ describe('Matrix connector image build', () => {
   });
 
   it("lets Cargo remove the dependency-cache placeholder's artifacts", () => {
-    // Globs into target/ silently stopped matching after a Rust update, and the
-    // placeholder `fn main() {}` shipped as the connector: exit 0, no output.
+    // Cargo cleans the placeholder crate through its own artifact layout.
     const placeholder = builder.find((line) => line.includes('fn main() {}'));
     expect(placeholder).toBeDefined();
     const steps = placeholder!.split('&&').map((step) => step.trim());
@@ -52,11 +51,11 @@ describe('Matrix connector image build', () => {
     expect(steps[0]).toMatch(/^RUN touch src\/\*\.rs$/u);
     const build = steps.findIndex((step) => step.startsWith('cargo build'));
     const binary = `target/release/${packageName}`;
-    const probe = steps.findIndex((step) => step.includes(`${binary} --version`));
+    const probe = steps.indexOf(`version="$(${binary} --version)"`);
     expect(probe).toBeGreaterThan(build);
     const pattern = steps
       .slice(probe)
-      .map((step) => step.match(/grep -qx '([^']+)'/u)?.[1])
+      .map((step) => step.match(/^echo "\$version" \| grep -qx '([^']+)'$/u)?.[1])
       .find(Boolean);
     expect(pattern).toBeDefined();
     const expected = new RegExp(`^${pattern}$`, 'u');
