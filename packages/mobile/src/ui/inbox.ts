@@ -13,9 +13,8 @@ import {
   sandboxUpdateSummary,
 } from './sandboxUpdate.js';
 import { sessionLabel } from './sessionLabel.js';
-import { permissionInputText } from './permissionInput.js';
-import { permissionSummary, type PermissionLine } from './permissionSummary.js';
-import { toolCallPrimaryField, toolCallView } from './toolCall.js';
+import { permissionOverview } from './permissionOverview.js';
+import type { PermissionLine } from './permissionSummary.js';
 
 /**
  * Home's inbox: everything across all projects that needs the operator, each with
@@ -79,17 +78,9 @@ export interface InboxItem {
   /** Where it comes from: project, session, time. */
   context: string;
   message?: string;
-  /** A permission in words: the command, address or message it concerns. When
-   *  present, {@link request} is the full input behind it rather than the thing
-   *  to read first. */
+  /** Complete, short permission details, displayed without clipping next to Allow.
+   *  Longer or incomplete requests use a preview in message and open the session. */
   lines?: PermissionLine[];
-  /** A permission's complete input, formatted. Allow is only offered together
-   *  with it, so the operator can always see what the tool will receive rather
-   *  than only a summary of it. */
-  request?: string;
-  /** The lines leave part of {@link request} unsaid, so it is shown open
-   *  rather than folded behind them. */
-  requestOpen?: boolean;
   sessionId?: string;
   projectId?: string;
   /** The screens of a mockup review, shown as thumbnails on the item. */
@@ -135,9 +126,6 @@ const RANK: Record<InboxItemKind, number> = {
   merge_ready: 2,
   project_health: 1,
 };
-
-/** Tools whose card carries a decision the generic Allow would lose. */
-const OPEN_TO_DECIDE: ReadonlySet<string> = new Set(['verity_package_install']);
 
 export function inboxItems(input: InboxInput): InboxItem[] {
   const projects = new Map(input.projects.map((project) => [project.id, project]));
@@ -242,43 +230,17 @@ function sessionItems(
   // Permissions: one item per parked prompt the server could describe.
   const requests = session.pendingPermissionRequests ?? [];
   for (const request of requests) {
-    const view = toolCallView({
-      name: request.tool,
-      input: request.input,
-      state: 'running',
-      createdAt: 0,
-      startedAt: null,
-      completedAt: null,
-      description: null,
-    });
-    const summary = permissionSummary(request.tool, request.input);
-    // Commands belong in the session review, not in the scan-friendly overview.
-    const reviewCommand =
-      request.tool === 'verity_secret_run' ||
-      toolCallPrimaryField(request.tool, request.input)?.field === 'command';
-    const decidable =
-      !reviewCommand && request.input !== undefined && !OPEN_TO_DECIDE.has(request.tool);
+    const { title, lines, message, decidable } = permissionOverview(request.tool, request.input);
     items.push({
       ...base,
       key: `permission:${session.sessionId}:${request.toolUseId}`,
       kind: 'permission',
       tag: 'Permission',
       tone: 'attention',
-      title: summary.title,
+      title,
       context: where,
-      ...(reviewCommand
-        ? {}
-        : summary.lines.length > 0
-          ? { lines: summary.lines }
-          : view.subtitle
-            ? { message: view.subtitle }
-            : {}),
-      ...(decidable && !(request.tool === 'verity_list_sessions' && summary.covered)
-        ? {
-            request: permissionInputText(request.input),
-            ...(summary.covered ? {} : { requestOpen: true }),
-          }
-        : {}),
+      ...(lines === undefined ? {} : { lines }),
+      ...(message === undefined ? {} : { message }),
       actions: decidable
         ? [
             {

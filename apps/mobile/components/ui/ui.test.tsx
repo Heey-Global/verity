@@ -762,6 +762,14 @@ describe('toneColor', () => {
 });
 
 describe('CardHead', () => {
+  it('shows an approval subject in full when requested', () => {
+    const title = `Send to session ${'destination'.repeat(8)}?`;
+    const view = render(<CardHead title={title} wrapTitle />);
+    expect(screen.getByText(title).props.numberOfLines).toBeUndefined();
+    view.rerender(<CardHead title={title} />);
+    expect(screen.getByText(title).props.numberOfLines).toBe(2);
+  });
+
   it('draws a leading mark in the same tile a row uses', () => {
     render(<CardHead title="acme/api" leading={{ element: <View testID="host-mark" /> }} />);
     let tile = screen.getByTestId('host-mark').parent;

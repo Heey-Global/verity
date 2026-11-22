@@ -1,4 +1,5 @@
 import { assistantHandoffResultsSpec } from './assistant-handoff-results';
+import { permissionOverviewSpec } from './permission-overview';
 import { nativeMcpAppsSpec } from './native-mcp-apps';
 import { teamJoinRecoverySpec } from './team-join-recovery';
 import { sandboxUpdatesSpec } from './sandbox-updates';
@@ -29,6 +30,7 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  permissionOverviewSpec,
   assistantHandoffResultsSpec,
   nativeMcpAppsSpec,
   teamJoinRecoverySpec,

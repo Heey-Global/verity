@@ -109,6 +109,7 @@ function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> =
     unknown
   >;
   Object.assign(client, {
+    decidePermission: jest.fn(),
     listHttpMcpConnections: jest.fn().mockResolvedValue([]),
     listProjectMcpBindings: jest.fn().mockResolvedValue([]),
     listProjectDriveFolders: jest.fn().mockResolvedValue([]),
@@ -684,6 +685,35 @@ describe('project page', () => {
     expect(client.setSessionInboxDismissed).toHaveBeenCalled();
     fireEvent.press(await screen.findByRole('button', { name: '1 hidden' }));
     expect(screen.getByTestId('inbox-hidden-question')).toBeTruthy();
+  });
+
+  it('reviews unknown permission details with the same compact card as Home', async () => {
+    const { client, onOpenSession } = await renderPage([
+      session('firewall', {
+        status: 'awaiting_input',
+        permissionAwaitingInput: true,
+        pendingPermissions: ['repair'],
+        pendingPermissionRequests: [
+          {
+            toolUseId: 'repair',
+            tool: 'unknown_repair',
+            riskClass: 'ask',
+            input: {
+              summary: 'The investigation found the build failure. '.repeat(40),
+              changes: ['DNS helper'],
+            },
+          },
+        ],
+      }),
+    ]);
+    const needs = within(screen.getByTestId('work-needs-you'));
+    expect(needs.getAllByTestId('inbox-item-permission')).toHaveLength(1);
+    expect(needs.getAllByText(/^The investigation/)).toHaveLength(1);
+    expect(needs.queryByTestId('inbox-request')).toBeNull();
+    expect(needs.queryByRole('button', { name: 'Allow once' })).toBeNull();
+    fireEvent.press(needs.getByRole('button', { name: 'Review' }));
+    expect(onOpenSession).toHaveBeenCalledWith('firewall');
+    expect(client.decidePermission).not.toHaveBeenCalled();
   });
 
   it('draws a session with a question and a ready pull request as one row', async () => {
