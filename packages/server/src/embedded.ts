@@ -1,3 +1,4 @@
+import { createEmbeddedAudit, createEmbeddedAuditBindings } from './embedded-audit.js';
 import { createEmbeddedProjectRuntimeBindings } from './embedded-project-runtime.js';
 import { createEmbeddedSecretUnlock } from './embedded-secret-unlock.js';
 import {
@@ -125,11 +126,12 @@ export {
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
 import { resolveAgentContext } from './agent-context.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
-import { installEmbeddedDockerGc } from './embedded-docker-gc.js';
+import {
+  installEmbeddedDockerGc,
+  createEmbeddedProjectHiddenGcBindings,
+} from './embedded-docker-gc.js';
 import { createEmbeddedSessionStorage } from './embedded-session-storage.js';
 import type { DockerGcReport } from './docker-gc.js';
-import { createServerLogSource } from './server-log-source.js';
-import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import type { BuildStorage } from './build-storage.js';
 import {
@@ -195,13 +197,9 @@ import { healAdminGitdirsAtStartup } from './worktree.js';
 import { startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
 import type { DockerClient } from './docker.js';
-import { runDockerGc } from './docker-gc.js';
 import { DataVolumeUsage } from './data-volume-usage.js';
 import { PreviewShareConflictError, PreviewShareManager } from './preview-share-manager.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
-import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
-import { createAuditRecorder } from './audit-recorder.js';
-import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring } from './gateway-request-mac.js';
 import { createTurnCredentials } from './turn-credentials.js';
 import { createGitHubUserAuthorization } from './github-user-authorization.js';
@@ -778,39 +776,10 @@ export async function buildEmbeddedServer(
     ? new MaintenanceImages(projectDocker, imageReferences)
     : undefined;
   const preparedWorktreeImages = new Map<string, string>();
-  // Durable audit trail for project image builds (ADR 0028). The Server generation is
-  // read from this container's own label once; outside a managed deployment it is null.
-  let auditServer: AuditServerIdentity | undefined;
-  const buildDiagnostics = createBuildDiagnosticStore(
-    join(
-      config.dataDir ?? config.dataVolumeRoot ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
-      'build-diagnostics',
-    ),
-  );
-  const auditLog = createPostgresAuditLog(db);
-  const auditRecorder = createAuditRecorder(auditLog, {
-    server: async () => {
-      if (auditServer !== undefined) return auditServer;
-      let generation: number | null = null;
-      let settled = true;
-      try {
-        const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
-          'verity.generation'
-        ];
-        const parsed = label === undefined ? Number.NaN : Number(label);
-        generation = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
-      } catch {
-        // Recorded as unknown this time, and asked again next time: a transient
-        // failure must neither block a build nor stick for the life of the process.
-        settled = false;
-      }
-      const identity = { release: runtimeServerVersion(), generation };
-      if (settled) auditServer = identity;
-      return identity;
-    },
-    onError: (error, kind) => {
-      console.warn(`verity: audit event ${kind} could not be recorded`, error);
-    },
+  const { auditRecorder, auditLog, buildDiagnostics } = createEmbeddedAudit({
+    config,
+    db,
+    projectDocker,
   });
   const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
@@ -1497,27 +1466,20 @@ export async function buildEmbeddedServer(
       projectSandboxLifecycleTelemetry,
       resolvePreviewUser,
     }),
-    audit: {
-      recorder: auditRecorder,
-      log: auditLog,
+    ...createEmbeddedAuditBindings({
+      config,
+      auditRecorder,
+      auditLog,
       buildDiagnostics,
-      serverLogs: createServerLogSource(runtimeDocker, config.diagnosticServerContainerId),
-    },
-    ...(projectDocker === undefined
-      ? {}
-      : {
-          onProjectHidden: async () => {
-            await runDockerGc({
-              docker: projectDocker,
-              log: app.log,
-              imageReferences,
-              ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
-              imagesOnly: true,
-              onProjectImageRemoved: (image) =>
-                auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
-            });
-          },
-        }),
+      runtimeDocker,
+    }),
+    ...createEmbeddedProjectHiddenGcBindings({
+      config,
+      projectDocker,
+      imageReferences,
+      auditRecorder,
+      log: () => app.log,
+    }),
     ...(deprovisioner !== undefined ? { deprovisioner } : {}),
     // Per-project session worktree factory whose `refreshBase` fetch carries the
     // project-scoped token (only wired when the App-token mint + docker/clone-root
