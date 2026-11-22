@@ -71,12 +71,14 @@ export async function readSessionCollaboration(
   ]);
   const candidates: Candidate[] = [];
   for (const request of requests) {
+    // A revoked link ended the collaboration; the peer's later work is its own.
+    if (request.linkedAt === null) continue;
     const outgoing = request.sourceSessionId === sessionId;
     candidates.push({
       peerSessionId: outgoing ? request.targetSessionId : request.sourceSessionId,
       direction: !outgoing ? 'askedBy' : request.createdSession ? 'handedOver' : 'asked',
       state: 'done',
-      at: request.linkedAt?.getTime() ?? 0,
+      at: request.linkedAt.getTime(),
     });
   }
   for (const inquiry of inquiries) {
@@ -121,33 +123,42 @@ export async function readSessionCollaboration(
     (await store.listProjects()).map((project) => [project.id, project]),
   );
   const access = new Map<string, Promise<boolean>>();
-  const entries: CollaborationEntry[] = [];
-  for (const candidate of merged.values()) {
-    const peer = await store.getSession(candidate.peerSessionId);
-    const project = peer?.projectId ? projects.get(peer.projectId) : undefined;
-    if (!peer || !project) continue;
-    if (!access.has(project.id)) access.set(project.id, deps.authorized(userId, project.id));
-    if (!(await access.get(project.id))) continue;
-    const latest = (await store.getEventsBeforeSeq(peer.sessionId, 1)).events[0]?.ts ?? 0;
-    const at = Math.max(candidate.at, latest);
-    let state = candidate.state;
-    if (waitingPeers.has(peer.sessionId)) state = 'waitingForYou';
-    else if (deps.busy(peer.sessionId)) state = 'working';
-    const age = now - at;
-    // An answer is news only for a day; after that it is simply done.
-    if (state === 'answer' && age > COLLABORATION_RECENT_MS) state = 'done';
-    if (state === 'done' && age > COLLABORATION_EARLIER_MS) continue;
-    entries.push({
-      sessionId: peer.sessionId,
-      sessionName: peer.name,
-      projectId: project.id,
-      projectName: project.name,
-      direction: candidate.direction,
-      state,
-      updatedAt: new Date(at).toISOString(),
-      section: state === 'done' && age > COLLABORATION_RECENT_MS ? 'earlier' : 'current',
-    });
-  }
+  const allowed = (projectId: string) => {
+    let decision = access.get(projectId);
+    if (!decision) {
+      decision = deps.authorized(userId, projectId);
+      access.set(projectId, decision);
+    }
+    return decision;
+  };
+  // Read peers in parallel: the route is polled while the session screen is open.
+  const resolved = await Promise.all(
+    [...merged.values()].map(async (candidate): Promise<CollaborationEntry | null> => {
+      const peer = await store.getSession(candidate.peerSessionId);
+      const project = peer?.projectId ? projects.get(peer.projectId) : undefined;
+      if (!peer || !project || !(await allowed(project.id))) return null;
+      const latest = (await store.getEventsBeforeSeq(peer.sessionId, 1)).events[0]?.ts ?? 0;
+      const at = Math.max(candidate.at, latest);
+      let state = candidate.state;
+      if (waitingPeers.has(peer.sessionId)) state = 'waitingForYou';
+      else if (deps.busy(peer.sessionId)) state = 'working';
+      const age = now - at;
+      // An answer is news only for a day; after that it is simply done.
+      if (state === 'answer' && age > COLLABORATION_RECENT_MS) state = 'done';
+      if (state === 'done' && age > COLLABORATION_EARLIER_MS) return null;
+      return {
+        sessionId: peer.sessionId,
+        sessionName: peer.name,
+        projectId: project.id,
+        projectName: project.name,
+        direction: candidate.direction,
+        state,
+        updatedAt: new Date(at).toISOString(),
+        section: state === 'done' && age > COLLABORATION_RECENT_MS ? 'earlier' : 'current',
+      };
+    }),
+  );
+  const entries = resolved.filter((entry): entry is CollaborationEntry => entry !== null);
   const waitingFirst = (entry: CollaborationEntry) => (entry.state === 'waitingForYou' ? 0 : 1);
   return entries.sort(
     (left, right) =>

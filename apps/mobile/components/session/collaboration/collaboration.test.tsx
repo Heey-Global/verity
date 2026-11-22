@@ -122,6 +122,19 @@ describe('CollaborationRow', () => {
     announce.mockRestore();
   });
 
+  // The screen renders the row before its first read lands; answers that were
+  // already there must not be announced as news when that read arrives.
+  it('stays quiet when the first read brings answers already there', () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
+    const props = { onOpenEntry: jest.fn(), onOpenList: jest.fn() };
+    const { rerender } = render(<CollaborationRow entries={[]} loaded={false} {...props} />);
+    act(() => {
+      rerender(<CollaborationRow entries={[MOBILE]} loaded {...props} />);
+    });
+    expect(announce).not.toHaveBeenCalled();
+    announce.mockRestore();
+  });
+
   it('keeps the working ring still while Reduce Motion is on', async () => {
     jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
     renderRow([entry({})]);

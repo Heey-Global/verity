@@ -14,16 +14,21 @@ import { rowEntries, rowText } from './model';
  * Android reads on change; iOS and the web need the explicit announcement.
  * Answers already there when the session opens are not news.
  */
-function useAnswerAnnouncement(entries: readonly CollaborationEntry[]) {
+function useAnswerAnnouncement(entries: readonly CollaborationEntry[], loaded: boolean) {
   const known = useRef<Set<string> | null>(null);
   useEffect(() => {
+    // Until a read lands the list is empty, not "no answers yet"; a session switch starts over.
+    if (!loaded) {
+      known.current = null;
+      return;
+    }
     const answers = entries.filter((entry) => entry.state === 'answer');
     const previous = known.current;
     known.current = new Set(answers.map((entry) => entry.sessionId));
     if (previous === null) return;
     const fresh = answers.find((entry) => !previous.has(entry.sessionId));
     if (fresh) AccessibilityInfo.announceForAccessibility(`Answer from ${fresh.projectName}`);
-  }, [entries]);
+  }, [entries, loaded]);
 }
 
 /**
@@ -36,14 +41,17 @@ export function CollaborationRow({
   entries,
   onOpenEntry,
   onOpenList,
+  loaded = true,
 }: {
   entries: readonly CollaborationEntry[];
+  /** False until the first read for this session landed. */
+  loaded?: boolean;
   onOpenEntry: (entry: CollaborationEntry) => void;
   onOpenList: () => void;
 }) {
   const { theme } = useUnistyles();
   const shown = rowEntries(entries);
-  useAnswerAnnouncement(shown);
+  useAnswerAnnouncement(shown, loaded);
   if (shown.length === 0) return null;
   const single = shown.length === 1;
   const urgent = shown.some((entry) => entry.state === 'waitingForYou');

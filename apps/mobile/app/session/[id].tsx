@@ -3931,11 +3931,7 @@ export const SessionChat = memo(function SessionChat({
           ) : null}
         </View>
       </View>
-      <CollaborationRow
-        entries={collaboration.entries}
-        onOpenEntry={openCollaborator}
-        onOpenList={collaboration.openSheet}
-      />
+      <CollaborationRow {...collaboration.row} onOpenEntry={openCollaborator} />
       <CollaborationSheet
         visible={collaboration.sheetOpen}
         entries={collaboration.entries}

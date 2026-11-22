@@ -104,6 +104,7 @@ export class SessionCoordinationStore {
         on (l.session_a = r.source_session_id and l.session_b = r.target_session_id)
         or (l.session_a = r.target_session_id and l.session_b = r.source_session_id)
       where r.source_session_id = ${sessionId} or r.target_session_id = ${sessionId}
+      order by l.created_at desc nulls last
       limit 200`.execute(this.db);
     return rows.map((row) => ({
       sourceSessionId: row.source_session_id,

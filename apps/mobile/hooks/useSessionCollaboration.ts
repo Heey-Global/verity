@@ -10,23 +10,29 @@ import { useFocusedSessionRead } from './useFocusedSessionRead';
  */
 export function useSessionCollaboration(client: VerityClient, sessionId: string, ready: boolean) {
   const [entries, setEntries] = useState<CollaborationEntry[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   useEffect(() => {
     setEntries([]);
+    setLoaded(false);
     setSheetOpen(false);
   }, [client, sessionId]);
   const read = useCallback(
     async (signal: AbortSignal) => {
       const next = await client.sessionCollaboration.read(sessionId, signal);
-      if (!signal.aborted) setEntries(next);
+      if (signal.aborted) return;
+      setEntries(next);
+      setLoaded(true);
     },
     [client, sessionId],
   );
   useFocusedSessionRead(client, sessionId, 'collaboration', ready, read);
+  const openSheet = useCallback(() => setSheetOpen(true), []);
   return {
     entries,
+    /** Spread onto CollaborationRow. */
+    row: { entries, loaded, onOpenList: openSheet },
     sheetOpen,
-    openSheet: useCallback(() => setSheetOpen(true), []),
     closeSheet: useCallback(() => setSheetOpen(false), []),
   };
 }

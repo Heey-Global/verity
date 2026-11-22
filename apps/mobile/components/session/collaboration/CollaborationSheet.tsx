@@ -84,8 +84,8 @@ export function CollaborationSheet({
           </>
         ) : null}
         <Text variant="footnote" tone="muted" style={styles.note}>
-          Sessions appear here when Verity asks, joins or starts them. They can only exchange
-          messages; nothing else is shared.
+          Sessions appear here when Verity asks, joins or starts them. They exchange messages, and a
+          message can carry anything the other session's agent can read.
         </Text>
       </View>
     </Sheet>

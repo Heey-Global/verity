@@ -99,7 +99,9 @@ function severalLine(entries: readonly CollaborationEntry[]): {
       const count = counts.get(state)!;
       const word =
         state === 'waitingForYou'
-          ? 'need approval'
+          ? count === 1
+            ? 'needs approval'
+            : 'need approval'
           : state === 'answer'
             ? count === 1
               ? 'answer'

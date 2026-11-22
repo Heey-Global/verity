@@ -2,7 +2,7 @@
   "apps/mobile/__tests__/static-preview-sheet.test.tsx": 1967,
   "apps/mobile/app/index.tsx": 2720,
   "apps/mobile/app/meeting/[sessionId].tsx": 3392,
-  "apps/mobile/app/session/[id].tsx": 10124,
+  "apps/mobile/app/session/[id].tsx": 10120,
   "apps/mobile/components/project/StaticPreviewSheet.tsx": 2530,
   "apps/mobile/lib/remoteControlTransport.test.ts": 1848,
   "apps/mobile/tests/live-meeting-screen.test.tsx": 2859,

@@ -138,7 +138,7 @@ it('marks a message held on this session’s card as waiting, even while the pee
     pending: [{ targetSessionId: 'peer', approvedAt: null }],
     busy: ['peer'],
   });
-  expect((await read()).body.entries[0].state).toBe('waitingForYou');
+  expect((await read()).body.entries[0]?.state).toBe('waitingForYou');
   await app.close();
 });
 
@@ -201,7 +201,13 @@ it('merges an inquiry and its link into one entry per peer', async () => {
   });
   const { entries } = (await read()).body;
   expect(entries).toHaveLength(1);
-  expect(entries[0].state).toBe('working');
+  expect(entries[0]?.state).toBe('working');
+  await app.close();
+});
+
+it('drops a coordination whose link was revoked, even while the peer works', async () => {
+  const { app, read } = setup({ requests: [request({ linkedAt: null })], busy: ['peer'] });
+  expect((await read()).body.entries).toEqual([]);
   await app.close();
 });
 
