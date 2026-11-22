@@ -409,6 +409,58 @@ it('revalidates restored roles before serving and stops incompatible containers'
   await expect(host.execute(start)).rejects.toThrow();
 });
 
+// The 4.99.3 activation failed on exactly this: a relay removed while the
+// controller was down made every later controller start fail on its binding.
+it('retires a binding whose container Docker reports as removed and keeps serving', async () => {
+  const relay = 'c'.repeat(64);
+  const initial: ProjectEgressHostState = {
+    version: 1,
+    records: [{ binding, retired: false, containers: { sandbox: id, relay } }],
+  };
+  const f = fixture(initial);
+  const containerAbsent = vi.fn(async (container: string) => container === relay);
+  const host = new ProjectEgressHost(initial, { ...f.deps, containerAbsent });
+  await host.restore();
+  f.deps.inspectContainer.mockImplementation(async (_binding, container: string) => {
+    if (container === relay) throw new Error('Host Docker object not found (HTTP 404)');
+  });
+  await host.revalidate();
+  expect(containerAbsent).toHaveBeenCalledWith(relay);
+  expect(f.saved().records[0]).toMatchObject({ retired: true, cleanupContainers: true });
+  expect(f.deps.stopContainer).toHaveBeenCalledWith(id);
+  await expect(host.execute(start)).rejects.toThrow('Retired generation');
+  await host.execute({
+    operation: 'register',
+    binding: {
+      ...binding,
+      generation: 'gen2',
+      networkId: 'd'.repeat(64),
+      networkName: 'project-a-gen2',
+      bridge: 'vep0123456789ac',
+    },
+  });
+});
+it('keeps failing closed when removal is not confirmed by Docker', async () => {
+  for (const containerAbsent of [
+    vi.fn(async () => false),
+    vi.fn(async () => {
+      throw new Error('Host Docker inspection refused (HTTP 403)');
+    }),
+  ]) {
+    const initial: ProjectEgressHostState = {
+      version: 1,
+      records: [{ binding, retired: false, containers: { sandbox: id } }],
+    };
+    const f = fixture(initial);
+    const host = new ProjectEgressHost(initial, { ...f.deps, containerAbsent });
+    await host.restore();
+    f.deps.inspectContainer.mockRejectedValueOnce(new Error('profile changed'));
+    await expect(host.revalidate()).rejects.toThrow('containment attempted');
+    expect(f.saved().records[0]!.retired).toBe(false);
+    await expect(host.execute(start)).rejects.toThrow();
+  }
+});
+
 const transport = {
   sandbox: { address: '172.20.0.2', mac: '02:42:ac:14:00:02', device: 'vethsandbox', index: 10 },
   relay: { address: '172.20.0.3', mac: '02:42:ac:14:00:03', device: 'vethrelay', index: 11 },

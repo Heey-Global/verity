@@ -805,6 +805,52 @@ class ManagedTests(unittest.TestCase):
         self.assertFalse(any('docker.service' in cmd or 'docker.socket' in cmd for cmd in self.calls))
         self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls[failure + 1:]))
 
+    def failed_upgrade_with_serving_controller(self, restart_fails=False):
+        self.provision()
+        previous = (self.root / 'opt/verity-egress').resolve()
+        (self.source / 'node').write_bytes(b'updated node')
+        self.manifest['node'] = managed.base.digest(b'updated node')
+        self.save_manifest()
+        self.calls.clear()
+        rolled_back = []
+
+        def run(*args):
+            self.execute(*args)
+            if '--property=ActiveState' in args:
+                return 'active'
+            if 'is-active' in args:
+                if not rolled_back:
+                    rolled_back.append(True)
+                    raise RuntimeError('private activation detail')
+                if restart_fails:
+                    raise RuntimeError('private restart detail')
+            return 'loaded' if 'show' in args else ''
+
+        with self.assertRaises(RuntimeError) as failed:
+            self.provision(run=run)
+        return previous, failed.exception
+
+    # Without the restart a failed update silently leaves project network
+    # protection without any controller until someone starts it by hand.
+    def test_failed_activation_restarts_and_verifies_the_previous_controller(self):
+        previous, error = self.failed_upgrade_with_serving_controller()
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        deny = max(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
+        restart = self.calls.index(('/usr/bin/systemctl', 'start', managed.SERVICE), deny)
+        self.assertIn(('/usr/bin/systemctl', 'is-active', '--quiet', managed.SERVICE), self.calls[restart + 1:])
+        self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'activation_failed', 'step': 'activation'})
+        status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
+        self.assertEqual(status, {'version': 1, 'state': 'ready', 'reason': 'ready'})
+
+    def test_failed_controller_restart_after_rollback_reports_recovery_failure(self):
+        previous, error = self.failed_upgrade_with_serving_controller(restart_fails=True)
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'recovery_failed', 'step': 'recovery'})
+        status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
+        self.assertEqual(status['reason'], 'controller_failed')
+        self.assertNotIn('private', json.dumps(managed.base.failure_diagnostic(error)))
+
     def crash_upgrade(self):
         self.provision()
         previous = (self.root / 'opt/verity-egress').resolve()

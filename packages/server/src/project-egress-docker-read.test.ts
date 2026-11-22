@@ -19,7 +19,12 @@ vi.mock('node:http', async (importOriginal) => {
     },
   };
 });
-import { readEgressDocker, readEgressDockerObject } from './project-egress-docker-read.js';
+import {
+  egressDockerContainerAbsent,
+  EgressDockerReadError,
+  readEgressDocker,
+  readEgressDockerObject,
+} from './project-egress-docker-read.js';
 const id = 'a'.repeat(64);
 let handler: (response: ServerResponse) => void;
 let directory: string;
@@ -59,13 +64,40 @@ it('rejects substituted IDs, bad JSON, redirects and unsupported API responses',
     handler = (response) => response.end(body);
     await expect(readEgressDockerObject('network', id)).rejects.toThrow();
   }
-  for (const status of [301, 400, 404, 500]) {
+  for (const [status, message] of [
+    [301, 'failed (HTTP 301)'],
+    [400, 'API 1.47 may be unsupported'],
+    [403, 'refused (HTTP 403)'],
+    [404, 'not found (HTTP 404)'],
+    [500, 'failed (HTTP 500)'],
+  ] as const) {
     handler = (response) => {
       response.writeHead(status, { Location: 'http://untrusted.test' });
       response.end();
     };
-    await expect(readEgressDockerObject('network', id)).rejects.toThrow('refused');
+    await expect(readEgressDockerObject('network', id)).rejects.toThrow(
+      expect.objectContaining({ status, message: expect.stringContaining(message) }),
+    );
   }
+});
+// A removed container must not read as an absent one unless Docker said 404;
+// anything else (refusal, daemon error, timeout) has to keep failing closed.
+it('reports a container as absent only for a 404 answer', async () => {
+  expect(await egressDockerContainerAbsent(id)).toBe(false);
+  handler = (response) => {
+    response.writeHead(404);
+    response.end();
+  };
+  expect(await egressDockerContainerAbsent(id)).toBe(true);
+  for (const status of [400, 403, 500]) {
+    handler = (response) => {
+      response.writeHead(status);
+      response.end();
+    };
+    await expect(egressDockerContainerAbsent(id)).rejects.toBeInstanceOf(EgressDockerReadError);
+  }
+  handler = (response) => response.end(JSON.stringify({ Id: 'b'.repeat(64) }));
+  await expect(egressDockerContainerAbsent(id)).rejects.toThrow();
 });
 it('bounds response size and total elapsed time even while bytes arrive', async () => {
   handler = (response) => response.end('x'.repeat(2 * 1024 * 1024 + 1));

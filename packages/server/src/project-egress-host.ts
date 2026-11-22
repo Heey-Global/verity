@@ -176,6 +176,8 @@ interface Dependencies {
   cleanupPendingNetwork?(identity: { projectId: string; generation: string }): Promise<void>;
   startContainer(id: string): Promise<void>;
   stopContainer(id: string): Promise<void>;
+  /** True only when Docker positively reports that this container no longer exists. */
+  containerAbsent?(id: string): Promise<boolean>;
 }
 const key = (binding: { projectId: string; generation: string }): string =>
   `${binding.projectId}:${binding.generation}`;
@@ -370,6 +372,7 @@ export class ProjectEgressHost {
       for (const record of this.state.records) {
         await this.deny(record);
         if (record.retired) continue;
+        let removed = false;
         for (const role of ['sandbox', 'relay'] as const) {
           const id = record.containers[role];
           if (!id) continue;
@@ -377,6 +380,10 @@ export class ProjectEgressHost {
             await this.deps.inspectContainer(record.binding, id, role, true);
             await this.deps.inspectNetwork(record.binding, containerIds(record));
           } catch (error) {
+            if (await this.confirmedAbsent(id)) {
+              removed = true;
+              continue;
+            }
             failures.push(error);
             try {
               await this.deps.stopContainer(id);
@@ -384,6 +391,24 @@ export class ProjectEgressHost {
               failures.push(stopError);
             }
           }
+        }
+        // A container removed while the controller was down leaves a binding that can
+        // never serve again. Retire it as an explicit retire would; it stays denied.
+        if (removed) {
+          record.retired = true;
+          record.cleanupContainers = true;
+          try {
+            await this.save();
+          } catch (error) {
+            failures.push(error);
+          }
+          const stopped = await Promise.allSettled(
+            containerIds(record).map((id) =>
+              Promise.resolve().then(() => this.deps.stopContainer(id)),
+            ),
+          );
+          for (const result of stopped)
+            if (result.status === 'rejected') failures.push(result.reason);
         }
       }
       if (failures.length) {
@@ -820,6 +845,14 @@ export class ProjectEgressHost {
         };
       return { state: 'started-denied', generation: record.binding.generation };
     });
+  }
+  private async confirmedAbsent(id: string): Promise<boolean> {
+    try {
+      return (await this.deps.containerAbsent?.(id)) === true;
+    } catch {
+      // An unanswered check proves nothing; the original mismatch stands.
+      return false;
+    }
   }
   private async deny(record: RecordState): Promise<void> {
     this.transports.delete(key(record.binding));
