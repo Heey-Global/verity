@@ -12,7 +12,7 @@ import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
 
 export default function InviteScreen() {
-  const { id } = useLocalSearchParams<{ id: string | string[] }>();
+  const { id, code } = useLocalSearchParams<{ id: string | string[]; code?: string }>();
   const projectId = projectIdParam(id);
   const client = useMemo(() => createVerityClient(), []);
   if (!client || projectId.length === 0) {
@@ -24,10 +24,19 @@ export default function InviteScreen() {
       />
     );
   }
-  return <InviteView client={client} projectId={projectId} />;
+  return <InviteView client={client} projectId={projectId} code={code === '1'} />;
 }
 
-export function InviteView({ client, projectId }: { client: VerityClient; projectId: string }) {
+export function InviteView({
+  client,
+  projectId,
+  code = false,
+}: {
+  client: VerityClient;
+  projectId: string;
+  /** The server knows the Code right; the team page tells from its members. */
+  code?: boolean;
+}) {
   const { detail } = useProjectDetail(client, projectId);
   const [inviterName, setInviterName] = useState('');
   const [inviteeName, setInviteeName] = useState('');
@@ -89,7 +98,7 @@ export function InviteView({ client, projectId }: { client: VerityClient; projec
       />
       <TextField label="Who are you inviting?" value={inviteeName} onChangeText={setInviteeName} />
       <SectionHeader title={`Rights in “${projectName}”`} variant="eyebrow" />
-      <TeamRightsGroup rights={rights} onChange={setRights} />
+      <TeamRightsGroup rights={rights} onChange={setRights} code={code} />
       <SectionHeader
         title={`${inviteeName.trim() === '' ? 'They' : inviteeName.trim()} see`}
         variant="eyebrow"

@@ -92,6 +92,11 @@ it('lists members and open invitations and changes a member right', async () => 
 
   expect(await screen.findByText('Members · 2')).toBeOnTheScreen();
   expect(screen.getByText('Owner of this project')).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Invite a person'));
+  expect(mockRouter.push).toHaveBeenLastCalledWith({
+    pathname: '/project/[id]/settings/invite',
+    params: { id: 'p1', code: '1' },
+  });
   fireEvent.press(screen.getByText('Invitation for Mia'));
   expect(mockRouter.push).toHaveBeenCalledWith({
     pathname: '/project/[id]/settings/invitation',
@@ -179,8 +184,10 @@ it('creates an invitation with the chosen right and opens it', async () => {
   render(<InviteView client={client} projectId="p1" />);
   fireEvent.changeText(screen.getByLabelText('Your name, as invited people see it'), ' Holger ');
   fireEvent.changeText(screen.getByLabelText('Who are you inviting?'), 'Mia');
-  // Edit is checked by default; unchecking it leaves reading.
+  // Edit is checked by default; unchecking it leaves reading. Without word that
+  // the server knows Code, the page does not offer it.
   expect(screen.queryByText('Can manage')).not.toBeOnTheScreen();
+  expect(screen.queryByText('Can work with code')).not.toBeOnTheScreen();
   fireEvent.press(screen.getByText('Can edit'));
   fireEvent.press(screen.getByText('Create invitation'));
   await waitFor(() =>
@@ -204,7 +211,7 @@ it('invites with Code only when it is chosen, and checks Edit along with it', as
     getProject: jest.fn().mockResolvedValue({ project: { id: 'p1', name: 'verity' } }),
     createProjectInvitation: create,
   } as unknown as VerityClient;
-  render(<InviteView client={client} projectId="p1" />);
+  render(<InviteView client={client} projectId="p1" code />);
   fireEvent.changeText(screen.getByLabelText('Who are you inviting?'), 'Kim');
   expect(screen.getByRole('checkbox', { name: /Can work with code/ })).not.toBeChecked();
   // Uncheck Edit first: checking Code must bring it back.
@@ -266,10 +273,12 @@ it('revokes the invitation after confirming', async () => {
   expect(done).toHaveBeenCalled();
 });
 
+// Against a server that predates Code the invite page must not offer it: that
+// server refuses the field, so the team page passes no word of it along.
 it('offers to invite again where a join did not go through', async () => {
   const client = {
     getProjectTeam: jest.fn().mockResolvedValue({
-      members: [member({})],
+      members: [member({ canCode: undefined })],
       invitations: [{ ...invitation, state: 'failed' }],
     }),
   } as unknown as VerityClient;

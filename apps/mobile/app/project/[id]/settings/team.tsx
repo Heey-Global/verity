@@ -120,6 +120,10 @@ export function ProjectTeamView({
   // Without team sharing an invitation never gets its link: offer none, and
   // say so plainly (only managers see this page).
   const canInvite = !teamSharingUnavailable(team?.teamSharing);
+  // A server that predates Code reports no `canCode` on its members and refuses
+  // it on an invitation, so the invite page offers Code only when it is known.
+  const codeKnown = team?.members.some((member) => member.canCode !== undefined) === true;
+  const inviteParams = { id: projectId, ...(codeKnown ? { code: '1' } : {}) };
   return (
     <SettingsScaffold title="Team" detail state={{ error, saving: busy }} onRetry={load}>
       {team === null ? null : (
@@ -180,7 +184,7 @@ export function ProjectTeamView({
                       invitation.state === 'failed' && canInvite
                         ? router.push({
                             pathname: '/project/[id]/settings/invite',
-                            params: { id: projectId },
+                            params: inviteParams,
                           })
                         : router.push({
                             pathname: '/project/[id]/settings/invitation',
@@ -199,7 +203,7 @@ export function ProjectTeamView({
               onPress={() =>
                 router.push({
                   pathname: '/project/[id]/settings/invite',
-                  params: { id: projectId },
+                  params: inviteParams,
                 })
               }
               fullWidth
