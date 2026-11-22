@@ -61,7 +61,6 @@ import {
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import {
   SWEEP_SHUTDOWN_WAIT_MS,
-  candidateRunnerProjectIds,
   rejectLatestImageRef,
   publishedDevcontainerFeatureRef,
   toolkitFeatureRefIsConfigured,
@@ -205,8 +204,10 @@ import { createTurnCredentials } from './turn-credentials.js';
 import { createGitHubUserAuthorization } from './github-user-authorization.js';
 import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
 
-import { pendingSessionCleanups } from './pending-session-cleanup.js';
-import { createEmbeddedSessionCleanup } from './embedded-session-cleanup.js';
+import {
+  createEmbeddedSessionCleanup,
+  createEmbeddedSessionCleanupBindings,
+} from './embedded-session-cleanup.js';
 
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
 import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
@@ -1351,68 +1352,15 @@ export async function buildEmbeddedServer(
       ? { unlockClientIdentity: config.unlockClientIdentity }
       : {}),
     bus,
-    ...(purgeRunnerArtifacts === undefined
-      ? {}
-      : {
-          scheduleSessionCleanup: () => sessionCleanupWorker?.run(),
-          cleanupDeletedSessionRuntime: async (sessionId: string, projectId: string | null) => {
-            if (
-              config.runnerSupervisor !== true ||
-              (projectId === null && !config.controlPlaneRunner)
-            )
-              return 'not-applicable' as const;
-            const cleanupRoot = join(dataVolumeRoot!, 'pending-session-cleanup');
-            const before = (await pendingSessionCleanups(cleanupRoot)).find(
-              (record) => record.sessionId === sessionId,
-            );
-            const deletion = await eventStore.getSessionDeletion(sessionId);
-            const retained = deletion
-              ? (JSON.parse(deletion.payload) as {
-                  session?: { worktree?: string };
-                  artifactBindings?: { backend: string; backendSessionId: string }[];
-                })
-              : undefined;
-            const captured =
-              retained?.session?.worktree === undefined
-                ? undefined
-                : {
-                    sessionId,
-                    sandboxCwd: sessionSandboxCwd(retained.session.worktree),
-                    runnerProjectIds:
-                      before?.runnerProjectIds ??
-                      candidateRunnerProjectIds({
-                        projectId,
-                        isControlPlaneProject:
-                          projectId !== null &&
-                          (await eventStore.getProject(projectId))?.kind === 'control_plane',
-                        controlPlaneRunner: config.controlPlaneRunner === true,
-                      }),
-                    bindings: retained.artifactBindings ?? [],
-                  };
-            await cleanupProcessor?.runSession(sessionId, captured);
-            const pending = await pendingSessionCleanups(cleanupRoot);
-            if (pending.some((record) => record.sessionId === sessionId))
-              return 'deferred' as const;
-            if (
-              projectId !== null &&
-              (await eventStore.getProject(projectId)) === undefined &&
-              !(before?.runnerProjectIds ?? [projectId]).some((id) =>
-                existsSync(join(dataVolumeRoot!, 'runners', id)),
-              )
-            )
-              return 'absent' as const;
-            return 'clean' as const;
-          },
-          queueSessionArtifacts: async (sessionId: string): Promise<void> => {
-            // Read the bindings HERE rather than in the helper: this is the delete path,
-            // and the rows are about to go with the FK cascade.
-            await purgeRunnerArtifacts(
-              sessionId,
-              await eventStore.getSessionBackendStates(sessionId),
-              'session-delete',
-            );
-          },
-        }),
+    ...createEmbeddedSessionCleanupBindings({
+      dataVolumeRoot,
+      config,
+      eventStore,
+      purgeRunnerArtifacts,
+      sessionSandboxCwd,
+      cleanupProcessor,
+      sessionCleanupWorker,
+    }),
     ...(config.serverUpdateResolver !== undefined
       ? { serverUpdateResolver: config.serverUpdateResolver }
       : {}),
