@@ -6,6 +6,13 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.99.3](https://github.com/Heey-Global/verity/compare/v4.99.2...v4.99.3) (2026-11-22)
+
+
+### Bug Fixes
+
+* **updater:** keep egress staging failures identifiable by installed updaters ([#2799](https://github.com/Heey-Global/verity/issues/2799)) ([f618979](https://github.com/Heey-Global/verity/commit/f618979a9de23e8229da7fbd7d2549403c526596))
+
 ## [4.99.2](https://github.com/Heey-Global/verity/compare/v4.99.1...v4.99.2) (2026-11-22)
 
 
