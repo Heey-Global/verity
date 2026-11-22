@@ -78,6 +78,7 @@ export function CardHead({
   subtitle,
   leading,
   actionable = false,
+  wrapTitle = false,
   trailing,
   onDismiss,
 }: {
@@ -91,6 +92,8 @@ export function CardHead({
   /** The card offers its subject's actions, so its icon takes the action
    *  color the way a tappable row's does. */
   actionable?: boolean;
+  /** Approval subjects must remain readable in full beside an inline decision. */
+  wrapTitle?: boolean;
   trailing?: ReactNode;
   /** Draws an X after the trailing status that dismisses the card. */
   onDismiss?: (() => void) | undefined;
@@ -99,7 +102,11 @@ export function CardHead({
     <View style={styles.head}>
       {leading !== undefined ? <LeadingTile leading={leading} acts={actionable} /> : null}
       <View style={styles.body}>
-        <Text style={styles.title} numberOfLines={2} accessibilityRole="header">
+        <Text
+          style={styles.title}
+          numberOfLines={wrapTitle ? undefined : 2}
+          accessibilityRole="header"
+        >
           {title}
         </Text>
         {subtitle ? (

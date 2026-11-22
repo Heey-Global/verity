@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Button, Group, Row, StepIntro, SystemNotice, TextField } from '../../components/ui';
+import { AiAccountNextStep } from '../../components/AiAccountNextStep';
 import { QrScanner } from '../../components/ui/QrScanner';
 import { OnboardingProgress } from '../../components/OnboardingProgress';
 import { loadTeamJoinProgress } from '../../lib/teamJoinState';
@@ -331,16 +332,12 @@ export function JoinView({
         <StepIntro
           headline="You’ve joined"
           accent={projectName}
-          lead="Set up your own AI account to start working with the team."
+          lead="One more step: connect your own AI account so Verity can work for you."
         />
         <Group>
           <Row leading={{ icon: 'check' }} title="Membership confirmed" />
         </Group>
-        <SystemNotice
-          intent="needsSetup"
-          title="Connect your own AI account"
-          detail="Your teammates’ accounts stay private. GitHub and other connections can be added later."
-        />
+        <AiAccountNextStep />
       </Frame>
     );
   }

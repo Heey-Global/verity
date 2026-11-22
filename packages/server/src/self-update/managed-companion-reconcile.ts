@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import {
   retireCompletedHostPreparationJobs,
   retireCompletedUpdateContainers,
@@ -53,6 +54,7 @@ const REQUIRED_AGENT_SEED_FILES = [
   'bin/verity-memory',
   'bin/verity-dependencies',
   'bin/verity-dependency-storage.mjs',
+  'bin/verity-dependency-storage-preload.mjs',
   'bin/verity-secret-scan',
   'bin/gh',
   'bin/git',
@@ -62,6 +64,7 @@ const REQUIRED_AGENT_SEED_FILES = [
 const EXECUTABLE_AGENT_SEED_FILES = REQUIRED_AGENT_SEED_FILES.filter(
   (path) =>
     path !== 'bin/verity-dependency-storage.mjs' &&
+    path !== 'bin/verity-dependency-storage-preload.mjs' &&
     (path.startsWith('bin/') || path.startsWith('hooks/')),
 );
 
@@ -749,6 +752,36 @@ async function publishAgentSeedUnderLease(
   }
 }
 
+/** Inspect trusted seed imports without executing them or opening blocking FIFOs. */
+async function seedDependencyModule(path: string): Promise<string | null> {
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  ).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!handle) return null;
+  try {
+    const entry = await handle.stat();
+    if (!entry.isFile())
+      throw new Error('agent-seed validation failed: dependency module is not a regular file');
+    const maximum = 256 * 1024;
+    const content = Buffer.alloc(maximum + 1);
+    let bytesRead = 0;
+    while (bytesRead < content.length) {
+      const read = await handle.read(content, bytesRead, content.length - bytesRead, bytesRead);
+      if (read.bytesRead === 0) break;
+      bytesRead += read.bytesRead;
+    }
+    if (bytesRead > maximum)
+      throw new Error('agent-seed validation failed: dependency module exceeds its read bound');
+    return content.toString('utf8', 0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Validate the complete immutable tree before the sole visible pointer moves. */
 export async function validatePublishedAgentSeed(
   directory: string,
@@ -756,43 +789,23 @@ export async function validatePublishedAgentSeed(
   version: string,
   profile: 'current' | 'legacy' = 'current',
 ): Promise<void> {
-  const helper = join(directory, 'bin/verity-dependencies');
-  const helperEntry = await lstat(helper).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  });
-  let importsDependencyStorage = false;
-  if (helperEntry !== null) {
-    if (!helperEntry.isFile() || helperEntry.isSymbolicLink())
-      throw new Error('agent-seed validation failed: dependency helper is not a regular file');
-    const handle = await open(helper, 'r');
-    try {
-      // Only inspect the trusted artifact, without executing its imports. An old
-      // standalone helper remains valid during rollback and flat-seed migration.
-      const maximum = 256 * 1024;
-      const content = Buffer.alloc(maximum + 1);
-      let bytesRead = 0;
-      while (bytesRead < content.length) {
-        const read = await handle.read(content, bytesRead, content.length - bytesRead, bytesRead);
-        if (read.bytesRead === 0) break;
-        bytesRead += read.bytesRead;
-      }
-      if (bytesRead > maximum)
-        throw new Error('agent-seed validation failed: dependency helper exceeds its read bound');
-      importsDependencyStorage =
-        /(?:\bfrom\s*|\bimport\s*)['"]\.\/verity-dependency-storage\.mjs['"]/u.test(
-          content.toString('utf8', 0, bytesRead),
-        );
-    } finally {
-      await handle.close();
-    }
-  }
+  const helperSource = await seedDependencyModule(join(directory, 'bin/verity-dependencies'));
+  const importsDependencyStorage =
+    /(?:\bfrom\s*|\bimport\s*)['"]\.\/verity-dependency-storage\.mjs['"]/u.test(helperSource ?? '');
+  const storageSource = importsDependencyStorage
+    ? await seedDependencyModule(join(directory, 'bin/verity-dependency-storage.mjs'))
+    : null;
+  const importsPreload =
+    /(?:\bfrom\s*|\bimport\s*)['"]\.\/verity-dependency-storage-preload\.mjs['"]/u.test(
+      storageSource ?? '',
+    );
   // Legacy flat seeds may lack a helper. A present helper must be complete,
   // including its imported companion, even when validating a predecessor.
-  const needsHelper = profile !== 'legacy' || helperEntry !== null;
+  const needsHelper = profile !== 'legacy' || helperSource !== null;
   const requiredFiles = REQUIRED_AGENT_SEED_FILES.filter((path) => {
     if (path === 'bin/verity-dependencies') return needsHelper;
     if (path === 'bin/verity-dependency-storage.mjs') return importsDependencyStorage;
+    if (path === 'bin/verity-dependency-storage-preload.mjs') return importsPreload;
     return true;
   });
   for (const path of requiredFiles) {

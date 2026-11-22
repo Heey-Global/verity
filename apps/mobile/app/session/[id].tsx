@@ -1,3 +1,4 @@
+import { PermissionRequestDetails } from '../../components/session/PermissionRequestDetails';
 import { TranscriptPositionCover } from '../../components/TranscriptPositionCover';
 import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
 import { SessionRepositories } from '../../components/project/SessionRepositories';
@@ -7354,11 +7355,9 @@ function PermissionPrompt({
             <Text style={styles.permissionHttpMeta}>{brokeredRequestCaveats}</Text>
           ) : null}
         </View>
-      ) : view.subtitle ? (
-        <Text style={styles.permissionSubtitle} numberOfLines={3}>
-          {view.subtitle}
-        </Text>
-      ) : null}
+      ) : (
+        <PermissionRequestDetails input={pending.input} />
+      )}
       <View style={styles.permissionButtons}>
         <Pressable
           onPress={() =>

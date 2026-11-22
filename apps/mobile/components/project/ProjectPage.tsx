@@ -2,6 +2,7 @@ import { ProjectInquiryCards } from './ProjectInquiryCards';
 import {
   inboxDismissedKeys,
   inboxItems,
+  projectCardState,
   projectTitle,
   type InboxItem,
   type RepositoryPullRequests,
@@ -24,7 +25,6 @@ import {
   type KnowledgeScope,
 } from '../knowledge/knowledgeScope';
 import { Button, Group, IconButton, InlineEdit, Row, SectionHeader, StatusTag, Text } from '../ui';
-import { tint } from '../ui/tint';
 import { useProjectDetail } from '../../lib/useProjectDetail';
 import { ProjectTasksRow } from './ProjectTasksRow';
 import { ProjectRepositoriesRow } from './ProjectRepositoriesRow';
@@ -32,6 +32,7 @@ import { projectLine } from '../../lib/projectRepositories';
 import { useProjectPullRequests } from '../../lib/useProjectPullRequests';
 import { ProjectWork } from './ProjectWork';
 import { ProjectQARole } from './ProjectQARole';
+import { ProjectStateNote, ProjectStateTile } from './ProjectStateTile';
 import { useProjectQA } from '../../lib/useProjectQA';
 import {
   packagesToUpdate,
@@ -344,25 +345,34 @@ function ProjectHero({
   onSave?: ((patch: { name?: string; description?: string | null }) => Promise<void>) | undefined;
 }) {
   const name = projectTitle(project);
+  // The card's state, so a project keeps its colour when it is opened.
+  const state = projectCardState(project);
   return (
     <View style={styles.hero}>
-      <View style={styles.initial}>
-        <Text variant="title" tone="action">
-          {(Array.from(name.trim())[0] ?? '?').toUpperCase()}
-        </Text>
-      </View>
+      <ProjectStateTile
+        title={name}
+        state={state.state}
+        size="hero"
+        spoken
+        testID="project-state-tile"
+      />
       <View style={styles.heroBody}>
-        <InlineEdit
-          value={name}
-          label="Project name"
-          variant="title"
-          header
-          required
-          maxLength={100}
-          numberOfLines={1}
-          onSave={onSave && ((next) => onSave({ name: next }))}
-          testID="project-name"
-        />
+        <View style={styles.nameLine}>
+          <View style={styles.name}>
+            <InlineEdit
+              value={name}
+              label="Project name"
+              variant="title"
+              header
+              required
+              maxLength={100}
+              numberOfLines={1}
+              onSave={onSave && ((next) => onSave({ name: next }))}
+              testID="project-name"
+            />
+          </View>
+          <ProjectStateNote state={state} />
+        </View>
         <InlineEdit
           value={description}
           label="Description"
@@ -478,14 +488,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingBottom: theme.spacing.sm,
   },
   heroBody: { flex: 1, gap: theme.spacing.xxs },
-  initial: {
-    width: 48,
-    height: 48,
-    borderRadius: theme.radius.control,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: tint(theme.colors.action, 'fill'),
-  },
+  nameLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  // The name gives way to the state beside it and truncates.
+  name: { flexShrink: 1, minWidth: 0 },
   content: {
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,

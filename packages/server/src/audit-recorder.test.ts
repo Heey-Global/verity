@@ -46,6 +46,30 @@ function recorder(log: AuditLog) {
 }
 
 describe('audit recorder', () => {
+  it('records an opaque snapshot identity with its build operation and image outcome', async () => {
+    const fake = fakeLog();
+    const snapshotFingerprint = 'a'.repeat(64);
+    const build = await recorder(fake.log).beginBuild({ ...intent, snapshotFingerprint });
+    await build.succeeded({ imageId: 'sha256:actual', sizeBytes: 42, baseImageDigest: null });
+    expect(fake.appended[0]!.payload).toMatchObject({ snapshotFingerprint });
+    expect(fake.appended[1]).toMatchObject({
+      operationId: build.operationId,
+      imageId: 'sha256:actual',
+    });
+  });
+
+  it.each([undefined, 'secret-bearing-invalid-value'])(
+    'omits an unavailable or invalid snapshot identity (%s)',
+    async (snapshotFingerprint) => {
+      const fake = fakeLog();
+      await recorder(fake.log).beginBuild({
+        ...intent,
+        ...(snapshotFingerprint === undefined ? {} : { snapshotFingerprint }),
+      });
+      expect(fake.appended[0]!.payload).not.toHaveProperty('snapshotFingerprint');
+    },
+  );
+
   it('refuses a build whose intent cannot be stored', async () => {
     const fake = fakeLog();
     fake.setFailing(true);

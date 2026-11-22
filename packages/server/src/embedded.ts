@@ -139,6 +139,7 @@ import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import type { BuildStorage } from './build-storage.js';
 import {
   createEmbeddedBuildStorage,
+  databaseStorageBytes,
   installEmbeddedBuildStorage,
 } from './embedded-build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
@@ -178,7 +179,7 @@ import {
   type ProjectRecord,
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
-import { sql, type Kysely } from 'kysely';
+import type { Kysely } from 'kysely';
 import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -671,6 +672,7 @@ export async function buildEmbeddedServer(
   let provisioner: ProvisionerImpl | undefined;
   let stopNativeEvidence: (() => void) | undefined;
   let buildStorage: BuildStorage | undefined;
+  let dependencyCapacity: ReturnType<typeof createEmbeddedBuildStorage>['dependencyCapacity'];
   const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
   let deprovisioner: DeprovisionerImpl | undefined;
   // Claude-egress identity material is wired into the provisioner/deprovisioner
@@ -970,7 +972,10 @@ export async function buildEmbeddedServer(
     if (config.controlPlaneRunner === true && refreshControlPlaneRunnerIdentity === undefined) {
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
-    ({ buildStorage, stopNativeEvidence } = createEmbeddedBuildStorage(config));
+    ({ buildStorage, dependencyCapacity, stopNativeEvidence } = createEmbeddedBuildStorage(
+      config,
+      eventStore,
+    ));
     ({ provisioner, deprovisioner } = createEmbeddedProvisioning({
       config,
       dockerBaseUrl,
@@ -1708,18 +1713,10 @@ export async function buildEmbeddedServer(
       buildStorageReportPath: '/run/verity-host-diagnostics/storage.json',
       buildStorageReservations: () => buildStorage?.unresolvedAttempts() ?? [],
       buildQueue: () => buildStorage?.queueState() ?? { waiting: 0 },
+      dependencyCapacity: () => dependencyCapacity?.diagnostics(),
       storageReclamation: async () => {
         const report = sessionStorage?.lastReport;
-        let databaseBytes: number | null = null;
-        try {
-          const row = await sql<{
-            bytes: string;
-          }>`select pg_database_size(current_database())::text as bytes`.execute(db);
-          const value = Number(row.rows[0]?.bytes);
-          if (Number.isSafeInteger(value) && value >= 0) databaseBytes = value;
-        } catch {
-          /* Database usage is unknown, not zero. */
-        }
+        const databaseBytes = await databaseStorageBytes(db);
         const nativeBuildkit = await readNativeReclamation();
         return {
           accounting:
@@ -1893,6 +1890,7 @@ export async function buildEmbeddedServer(
     githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
+    dependencyCapacity,
     // `verity-repo`: the project's code host executes pull request and issue actions.
     projectRepository: async (project: ProjectRecord) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
@@ -2023,9 +2021,7 @@ export async function buildEmbeddedServer(
           // Git for the GitHub-free merge, run inside the project's own container.
           // Same shape as the backend above on purpose: the merge touches a clone the
           // session owns, so it must execute where the session's own code executes.
-          // Needs the daemon client too — without one there is no way to tell a stopped
-          // sandbox from a failing git, so the route reports merging as unconfigured
-          // rather than running it somewhere else.
+          // The daemon distinguishes stopped sandboxes from failed Git commands.
           ...(projectDocker !== undefined
             ? {
                 sandboxGit: (project: ProjectRecord, clonePath: string) =>
@@ -2033,8 +2029,7 @@ export async function buildEmbeddedServer(
                     containerName: project.containerName,
                     hostRoot: clonePath,
                     dockerBaseUrl: config.dockerBaseUrl,
-                    // Which of the two failed is settled with the daemon, never with the
-                    // failed command's own output — which the repository can write.
+                    // Trust daemon state rather than repository-controlled Git output.
                     inspect: () => projectDocker.inspectContainer(project.containerName),
                   }),
               }
@@ -2396,7 +2391,7 @@ export async function buildEmbeddedServer(
       managedDevServerManager?.hasRunningServersFor(projectId, userId),
     sleepSandbox: () => provisioner?.sleepPersonalSandbox?.bind(provisioner),
   });
-  installEmbeddedBuildStorage(app, { config, buildStorage, provisioner });
+  installEmbeddedBuildStorage(app, { config, buildStorage, provisioner, dependencyCapacity });
   // Fixed-purpose counters exclude command arguments, environment values and identities.
   let previousDockerExecCounts = getDockerExecDiagnostics();
   const dockerExecDiagnosticTimer = setInterval(() => {

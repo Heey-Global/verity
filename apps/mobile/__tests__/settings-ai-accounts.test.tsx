@@ -67,6 +67,22 @@ it('shows the device code and finishes once the sign-in completes', async () => 
   await waitFor(() => expect(done).toHaveBeenCalled());
 });
 
+it('labels the sign-in button with the host, not the whole authorization URL', async () => {
+  const uri =
+    'https://claude.com/cai/oauth/authorize?code=true&client_id=client&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&code_challenge=challenge&state=state';
+  const client = {
+    startProviderConnectionLogin: jest
+      .fn()
+      .mockResolvedValue(
+        login({ provider: 'claude', verificationUri: uri, userCode: null, needsCode: true }),
+      ),
+    getProviderConnectionLogin: jest.fn(),
+  } as unknown as VerityClient;
+  render(<ConnectProviderView client={client} provider="claude" onDone={jest.fn()} />);
+  expect(await screen.findByLabelText('Open claude.com')).toBeOnTheScreen();
+  expect(screen.queryByText(/code_challenge/)).toBeNull();
+});
+
 it('saves OpenCode only through the person’s own connection', async () => {
   const done = jest.fn();
   const client = {

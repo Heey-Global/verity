@@ -1,4 +1,5 @@
 import { assistantHandoffResultsSpec } from './assistant-handoff-results';
+import { permissionOverviewSpec } from './permission-overview';
 import { nativeMcpAppsSpec } from './native-mcp-apps';
 import { teamJoinRecoverySpec } from './team-join-recovery';
 import { sandboxUpdatesSpec } from './sandbox-updates';
@@ -19,6 +20,7 @@ import { planCardSpec } from './plan-card';
 import { projectInquiryApprovalSpec } from './project-inquiry-approval';
 import { projectNamesSpec } from './project-names';
 import { projectQASpec } from './project-qa';
+import { projectStatusSpec } from './project-status';
 import { repositoriesSpec } from './repositories';
 import { sourceActionsSpec } from './source-actions';
 import { teamInvitationsSpec } from './team-invitations';
@@ -28,6 +30,7 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  permissionOverviewSpec,
   assistantHandoffResultsSpec,
   nativeMcpAppsSpec,
   teamJoinRecoverySpec,
@@ -49,6 +52,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   projectInquiryApprovalSpec,
   projectNamesSpec,
   projectQASpec,
+  projectStatusSpec,
   repositoriesSpec,
   sourceActionsSpec,
   teamInvitationsSpec,

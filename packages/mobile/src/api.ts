@@ -128,9 +128,9 @@ export interface TransportRequestInit extends RequestInit {
 
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
-  // A held conversation read must not occupy one of the few background slots.
+  // Conversation reads and model picking must not queue behind slow background reads.
   return pathname === '/assistant/conversation' ||
-    /^\/(?:sessions|projects)$/u.test(pathname) ||
+    /^\/(?:sessions|projects|models)$/u.test(pathname) ||
     /^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/u.test(pathname)
     ? 'interactive'
     : 'background';

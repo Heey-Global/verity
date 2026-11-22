@@ -183,7 +183,7 @@ function workSubtitle(session: SessionSummary, unread: boolean): string | undefi
 /** The item carries its own answers or input, beyond a way into the session. */
 function decidedInPlace(item: InboxItem): boolean {
   return (
-    item.request !== undefined ||
+    (item.kind === 'permission' && item.message !== undefined) ||
     item.lines !== undefined ||
     item.actions.some((action) => action.kind !== 'open_session')
   );

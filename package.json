@@ -60,7 +60,7 @@
     "render:mockups": "node scripts/render-mockups.mjs"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.108.0",
+    "@agentclientprotocol/claude-agent-acp": "0.108.1",
     "@agentclientprotocol/codex-acp": "2.7.0",
     "@devcontainers/cli": "0.90.0",
     "@eslint/js": "10.0.1",
@@ -71,11 +71,11 @@
     "@types/node": "26.6.6",
     "@types/react-dom": "19.3.0",
     "@types/semver": "7.8.0",
-    "@vitest/coverage-v8": "5.1.0",
+    "@vitest/coverage-v8": "5.1.1",
     "esbuild": "0.28.2",
     "eslint": "10.15.0",
     "ignore": "7.0.16",
-    "knip": "6.45.1",
+    "knip": "6.46.1",
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
@@ -92,7 +92,7 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.73.0",
     "uuid": "14.0.3",
-    "vitest": "5.1.0",
+    "vitest": "5.1.1",
     "ws": "8.23.0",
     "xcode": "4.0.0",
     "zod": "4.6.7"

@@ -24,6 +24,7 @@ import {
 import type { SessionProjectGroup } from '../../lib/projectGroups';
 import { moveProjectIdToIndex, projectSortableRange } from '../../lib/projectReorder';
 import { projectInboxItems } from './ProjectPage';
+import { PROJECT_STATE_WORD, ProjectStateTile } from './ProjectStateTile';
 import { isActive, ProjectWork } from './ProjectWork';
 
 /** What a project card says instead of listing its sessions. */
@@ -110,12 +111,6 @@ export function projectCardLine(group: SessionProjectGroup, facts: ProjectCardFa
   const { waiting, rest, note } = projectCardLineParts(group, facts);
   return [waiting, rest, note?.label].filter(Boolean).join(' · ');
 }
-
-const STATE_WORD: Record<ProjectCardState['state'], string> = {
-  running: 'Running',
-  paused: 'Not running',
-  error: 'Error',
-};
 
 /**
  * A project in the new design's project list (Settings › This app): its name,
@@ -223,7 +218,7 @@ export function ProjectCard({
               ? `Move ${group.title}`
               : [
                   group.title,
-                  STATE_WORD[facts.state.state],
+                  PROJECT_STATE_WORD[facts.state.state],
                   facts.mark !== undefined ? AGENT_MARK[facts.mark].label : undefined,
                   projectCardLine(group, facts),
                 ]
@@ -246,19 +241,18 @@ export function ProjectCard({
           accessibilityState={{ disabled: reordering, ...(inPlace ? { expanded } : {}) }}
           style={({ pressed }) => [styles.head, pressed ? styles.pressed : null]}
         >
-          <View
-            style={[styles.initial, styles[facts.state.state]]}
+          <ProjectStateTile
+            title={group.title}
+            state={facts.state.state}
+            size="card"
             testID={`project-card-tile-${group.id}`}
           >
-            <Text variant="row" tone={INITIAL_TONE[facts.state.state]}>
-              {(Array.from(group.title.trim())[0] ?? '?').toUpperCase()}
-            </Text>
             {facts.mark !== undefined ? (
               <View style={styles.mark}>
                 <AgentTileMark mark={facts.mark} testID={`project-card-mark-${group.id}`} />
               </View>
             ) : null}
-          </View>
+          </ProjectStateTile>
           <View style={styles.body}>
             <Text
               variant="row"
@@ -323,9 +317,6 @@ export function ProjectCard({
 
 const CARD_BORDER = 1;
 
-/** The initial's colour role per state: the tile carries the project itself. */
-const INITIAL_TONE = { running: 'action', paused: 'faint', error: 'attention' } as const;
-
 const styles = StyleSheet.create((theme) => ({
   card: {
     borderRadius: theme.radius.card,
@@ -343,17 +334,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm,
   },
   pressed: { backgroundColor: tint(theme.colors.text, 'neutral') },
-  initial: {
-    width: 36,
-    height: 36,
-    borderRadius: theme.radius.control,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   mark: { position: 'absolute', top: -3, right: -3 },
   body: { flex: 1, minWidth: 0 },
-  running: { backgroundColor: tint(theme.colors.action, 'fill') },
-  paused: { backgroundColor: tint(theme.colors.text, 'neutral') },
-  error: { backgroundColor: tint(theme.colors.attention, 'fill') },
   sessions: { padding: theme.spacing.md, paddingTop: 0 },
 }));
