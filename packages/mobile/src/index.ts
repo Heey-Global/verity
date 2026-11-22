@@ -861,6 +861,7 @@ export {
   type SessionWorkEntry,
   type SessionWorkSections,
 } from './ui/sessionWork.js';
+export { teamRightLabel, toggleTeamRight, type TeamRight, type TeamRights } from './teamRights.js';
 export {
   invitationLinkFieldsSchema,
   projectTeamSchema,

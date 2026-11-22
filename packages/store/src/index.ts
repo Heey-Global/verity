@@ -394,8 +394,11 @@ export {
   INVITATION_MAX_TTL_MS,
   ProjectTeamError,
   ProjectTeamStore,
+  rightsAreConsistent,
   type InvitationState,
+  type MemberRights,
   type ProjectInvitation,
   type ProjectMember,
+  type ProjectPermission,
   type TeamOutboxEntry,
 } from './project-team.js';

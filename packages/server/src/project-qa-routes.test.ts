@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import type { ProjectPermission } from '@verity/store';
 import { registerProjectQARoutes } from './project-qa-routes.js';
 import { registerRepairRoutes } from './repair-routes.js';
 
@@ -26,7 +27,7 @@ beforeEach(async () => {
 });
 
 /** An app acting as `user` with the given project permissions. */
-function app(permissions: readonly ('read' | 'execute' | 'manage')[], admin = false) {
+function app(permissions: readonly ProjectPermission[], admin = false) {
   const server = Fastify();
   server.addHook('preHandler', async (request) => {
     request.localUserId = 'user';
