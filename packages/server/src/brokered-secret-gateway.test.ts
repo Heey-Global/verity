@@ -101,7 +101,10 @@ async function exercise(toolName: Tool, drift: Drift, snapshotAvailable = true) 
     eventStore: store,
     bus: new InMemoryEventBus(),
     secretCipher: cipher,
-    conductor: { requestExternalPermission: approvals } as unknown as Conductor,
+    conductor: {
+      requestExternalPermission: approvals,
+      isCoveredByBrokeredGrant: async () => false,
+    } as unknown as Conductor,
     mcpGateway: {
       servedTools: [toolName],
       resolveCaller: async (input) => tokens.resolve(input),
