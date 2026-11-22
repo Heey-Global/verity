@@ -63,55 +63,54 @@ try {
   const registry = await (
     await openProjectEgressHostStore('/var/lib/verity-egress', { preparePrivate: true })
   ).load();
+  const inspectRetainedContainer = async (id: string) => {
+    const listed = (
+      await run(
+        '/usr/local/bin/docker',
+        [
+          '--host=unix:///var/run/docker.sock',
+          'container',
+          'ls',
+          '--all',
+          '--quiet',
+          '--no-trunc',
+          '--filter',
+          `id=${id}`,
+        ],
+        { timeout: 10000, maxBuffer: 65536 },
+      )
+    ).stdout.trim();
+    if (!listed) return undefined;
+    if (listed !== id) throw new Error('Protected container retention identity mismatch');
+    return (
+      await run(
+        '/usr/local/bin/docker',
+        ['--host=unix:///var/run/docker.sock', 'container', 'inspect', id],
+        { timeout: 10000, maxBuffer: 1024 * 1024 },
+      )
+    ).stdout;
+  };
   const activeRelayImages: string[] = [];
   for (const record of registry.records) {
-    if (record.retired || record.containers.relay === undefined) continue;
-    const inspected: unknown = JSON.parse(
-      (
-        await run(
-          '/usr/local/bin/docker',
-          ['--host=unix:///var/run/docker.sock', 'container', 'inspect', record.containers.relay],
-          { timeout: 10000, maxBuffer: 1024 * 1024 },
-        )
-      ).stdout,
-    );
+    const relay = record.containers.relay;
+    if (record.retired || relay === undefined) continue;
+    const inspection = await inspectRetainedContainer(relay);
+    if (inspection === undefined) continue;
+    const inspected = JSON.parse(inspection) as Array<{
+      Id?: unknown;
+      Config?: { Image?: unknown };
+    }>;
+    const container = inspected[0];
     if (
       !Array.isArray(inspected) ||
       inspected.length !== 1 ||
-      typeof (inspected[0] as { Config?: { Image?: unknown } }).Config?.Image !== 'string'
+      container?.Id !== relay ||
+      typeof container.Config?.Image !== 'string'
     )
       throw new Error('Protected relay inspection is incomplete');
-    activeRelayImages.push((inspected[0] as { Config: { Image: string } }).Config.Image);
+    activeRelayImages.push(container.Config.Image);
   }
-  activeRelayImages.push(
-    ...(await protectedBuildRetainedImages(async (id) => {
-      const listed = (
-        await run(
-          '/usr/local/bin/docker',
-          [
-            '--host=unix:///var/run/docker.sock',
-            'container',
-            'ls',
-            '--all',
-            '--quiet',
-            '--no-trunc',
-            '--filter',
-            `id=${id}`,
-          ],
-          { timeout: 10000, maxBuffer: 65536 },
-        )
-      ).stdout.trim();
-      if (!listed) return undefined;
-      if (listed !== id) throw new Error('Protected build retention identity mismatch');
-      return (
-        await run(
-          '/usr/local/bin/docker',
-          ['--host=unix:///var/run/docker.sock', 'container', 'inspect', id],
-          { timeout: 10000, maxBuffer: 1024 * 1024 },
-        )
-      ).stdout;
-    })),
-  );
+  activeRelayImages.push(...(await protectedBuildRetainedImages(inspectRetainedContainer)));
   const configuration = managedEgressConfiguration({
     env: process.env,
     databaseInspection: inspection,

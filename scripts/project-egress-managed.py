@@ -855,6 +855,12 @@ def reconcile_stopped_relay_policy(root, run, target):
             continue
         if not isinstance(relay, str) or not re.fullmatch('[a-f0-9]{64}', relay):
             raise ValueError('Invalid stopped relay identity')
+        found = run('/usr/bin/docker', '--host=unix:///var/run/docker.sock', 'container', 'ls',
+                    '--all', '--quiet', '--no-trunc', '--filter', 'id=' + relay).strip().splitlines()
+        if not found:
+            continue
+        if found != [relay]:
+            raise ValueError('Stopped relay identity mismatch')
         inspected = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
                                    'container', 'inspect', relay))
         if (not isinstance(inspected, list) or len(inspected) != 1

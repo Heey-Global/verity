@@ -485,6 +485,8 @@ class ManagedTests(unittest.TestCase):
                 registry = self.root / 'var/lib/verity-egress/registry.json'
                 managed.base.atomic_file(registry, json.dumps({'version': 1, 'records': [
                     {'retired': False, 'containers': {'relay': relay_id}}]}).encode(), 0o600)
+            if 'container' in args and 'ls' in args and args[-1] == 'id=' + relay_id:
+                return relay_id
             if 'container' in args and 'inspect' in args:
                 self.calls.append(args)
                 return json.dumps([{'Id': relay_id, 'Config': {'Image': old_image}}])
@@ -604,6 +606,27 @@ class ManagedTests(unittest.TestCase):
         self.provision(run=run)
         self.assertEqual(observed, [True])
 
+    def test_stopped_relay_reconciliation_ignores_absence_but_not_docker_failure(self):
+        relay = 'a' * 64
+        registry = self.root / 'var/lib/verity-egress/registry.json'
+        managed.base.atomic_file(registry, json.dumps({
+            'version': 1, 'records': [{'retired': False, 'containers': {'relay': relay}}],
+        }).encode(), 0o600)
+        target = json.dumps({'image': 'sha256:' + 'b' * 64})
+
+        def missing(*args):
+            self.assertEqual(args[-2:], ('--filter', 'id=' + relay))
+            return ''
+
+        self.assertEqual(json.loads(managed.reconcile_stopped_relay_policy(
+            self.root, missing, target)), json.loads(target))
+
+        def unavailable(*args):
+            raise RuntimeError('daemon unavailable')
+
+        with self.assertRaisesRegex(RuntimeError, 'daemon unavailable'):
+            managed.reconcile_stopped_relay_policy(self.root, unavailable, target)
+
     def test_stopped_relay_reconciliation_rejects_unknown_third_or_changed_contract(self):
         old, older, target, foreign = ['sha256:' + c * 64 for c in 'abcd']
         self.relay.write_text(json.dumps({'image': old, 'packetEnforcement': True}))
@@ -617,6 +640,8 @@ class ManagedTests(unittest.TestCase):
             managed.base.atomic_file(self.root / 'var/lib/verity-egress/registry.json',
                 json.dumps({'version': 1, 'records': records}).encode(), 0o600)
             def run(*args):
+                if 'ls' in args:
+                    return args[-1].removeprefix('id=')
                 index = int(args[-1][0]) - 1
                 return json.dumps([{'Id': args[-1], 'Config': {'Image': images[index]}}])
             with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
