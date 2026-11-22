@@ -425,8 +425,9 @@ describe('revalidation of removed bindings', () => {
     const objectAbsent = vi.fn(absent);
     const host = new ProjectEgressHost(restored(), { ...f.deps, objectAbsent });
     await host.restore();
-    f.deps.inspectContainer.mockImplementation(async (_binding, container: string) => {
-      if (failing(container)) throw new Error('Host Docker object not found (HTTP 404)');
+    // The shared fixture types its mocks without parameters; the host passes (binding, id).
+    f.deps.inspectContainer.mockImplementation(async (...args: unknown[]) => {
+      if (failing(String(args[1]))) throw new Error('Host Docker object not found (HTTP 404)');
     });
     return { ...f, host, objectAbsent };
   }
@@ -448,7 +449,7 @@ describe('revalidation of removed bindings', () => {
     const f = await revalidating(c.absent, c.failing);
     await f.host.revalidate();
     expect(f.saved().records[0]).toMatchObject({ retired: true, cleanupContainers: true });
-    expect(f.deps.stopContainer.mock.calls.map(([stopped]) => stopped)).toEqual(c.stopped);
+    expect(f.deps.stopContainer.mock.calls.map((call: unknown[]) => call[0])).toEqual(c.stopped);
     await expect(f.host.execute(start)).rejects.toThrow('Retired generation');
     await f.host.execute({
       operation: 'register',
