@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import type { GmailSessionConnection } from '@verity/mobile';
-import { Linking, Platform } from 'react-native';
+import { AppState, Linking, Platform } from 'react-native';
 
 type Listener = () => void;
 const mockListeners = new Set<Listener>();
@@ -75,9 +75,14 @@ function renderMenu(
 beforeEach(() => {
   jest.clearAllMocks();
   mockListeners.clear();
+  jest.spyOn(AppState, 'addEventListener').mockReturnValue({ remove: jest.fn() });
   mockLibrary.permission = { status: 'granted', accessPrivileges: 'all', canAskAgain: true };
   mockLibrary.screenshots = [image('shot-2'), image('shot-1')];
   mockLibrary.recent = [image('photo-3'), image('shot-2'), image('photo-1')];
+});
+
+afterEach(() => {
+  jest.mocked(AppState.addEventListener).mockRestore();
 });
 
 it('opens with the camera, then screenshots before other recent images', async () => {
@@ -104,6 +109,28 @@ it('shows a screenshot taken while the menu is open without attaching it', async
   fireEvent.press(screen.getAllByLabelText(/^Attach recent image/)[0]);
   expect(onAttachRecent).toHaveBeenCalledTimes(1);
   expect(onAttachRecent).toHaveBeenCalledWith(image('shot-3'));
+});
+
+it('rechecks photo access when returning from Settings without a library event', async () => {
+  mockLibrary.permission.status = 'denied';
+  const appState = jest.mocked(AppState.addEventListener);
+  renderMenu();
+  await screen.findByLabelText('Allow photo access');
+  mockLibrary.permission.status = 'granted';
+  await act(async () => {
+    appState.mock.calls.find(([event]) => event === 'change')?.[1]('active');
+  });
+  expect(screen.getAllByLabelText(/^Attach recent image/)).toHaveLength(4);
+});
+
+it('hides the previous thumbnails while rechecking photo access on reopen', async () => {
+  const view = renderMenu();
+  await screen.findAllByLabelText(/^Attach recent image/);
+  view.rerender(<AttachMenu visible={false} {...view.props} />);
+  mockLibrary.permission.status = 'denied';
+  view.rerender(<AttachMenu visible {...view.props} />);
+  expect(screen.queryAllByLabelText(/^Attach recent image/)).toHaveLength(0);
+  await screen.findByLabelText('Allow photo access');
 });
 
 it('stops listening to the library once the menu closes', async () => {

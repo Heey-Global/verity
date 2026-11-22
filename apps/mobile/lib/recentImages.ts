@@ -3,7 +3,7 @@
 // shows up at the front. Attaching stays a deliberate tap; nothing here attaches.
 import * as MediaLibrary from 'expo-media-library/legacy';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Linking, Platform } from 'react-native';
+import { AppState, Linking, Platform } from 'react-native';
 
 export const RECENT_IMAGE_LIMIT = 10;
 
@@ -99,15 +99,26 @@ export function useRecentImages(active: boolean): {
     if (!active || Platform.OS === 'web') return;
     reload(true);
     const subscription = MediaLibrary.addListener(() => reload(false));
+    const foreground = AppState.addEventListener('change', (status) => {
+      if (status === 'active') {
+        setState({ kind: 'loading' });
+        reload(false);
+      }
+    });
     return () => {
       generation.current += 1;
       subscription.remove();
+      foreground.remove();
+      setState({ kind: 'loading' });
     };
   }, [active, reload]);
   const openSettings = useCallback(() => void Linking.openSettings(), []);
   const manageLimited = useCallback(() => {
+    const current = generation.current;
     void MediaLibrary.presentPermissionsPickerAsync(['photo'])
-      .then(() => reload(false))
+      .then(() => {
+        if (current === generation.current) reload(false);
+      })
       .catch(() => undefined);
   }, [reload]);
   return { state, openSettings, manageLimited };

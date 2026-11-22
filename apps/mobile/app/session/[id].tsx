@@ -3235,19 +3235,18 @@ export const SessionChat = memo(function SessionChat({
           inheriting: status.mode === 'inherit' && status.enabled,
         });
         if (action === 'none') return;
+        const setConnection = {
+          gmail: setGmailConnection,
+          calendar: setCalendarConnection,
+          contacts: setContactsConnection,
+        }[service];
         if (action === 'inherit') {
-          await client.setSessionGoogleAccess(sessionId, service, { mode: 'inherit' });
-          if (!isCurrent()) return;
-          const [gmail, calendar, contacts] = await Promise.all([
-            client.getSessionGmailConnection(sessionId),
-            client.getSessionCalendarConnection(sessionId),
-            client.getSessionContactsConnection(sessionId),
-          ]);
+          const connection = await client.setSessionGoogleAccess(sessionId, service, {
+            mode: 'inherit',
+          });
           if (!isCurrent()) return;
           invalidateGoogleStatus();
-          setGmailConnection(gmail);
-          setCalendarConnection(calendar);
-          setContactsConnection(contacts);
+          setConnection(connection);
           return;
         }
         const result = await connectSessionGoogleService(
@@ -3259,11 +3258,7 @@ export const SessionChat = memo(function SessionChat({
         );
         if (!isCurrent()) return;
         invalidateGoogleStatus();
-        if (result.kind === 'session') {
-          setGmailConnection(result.connections.gmail);
-          setCalendarConnection(result.connections.calendar);
-          setContactsConnection(result.connections.contacts);
-        }
+        if (result.kind === 'session') setConnection(result.connection);
       })().catch((error: unknown) => {
         if (!isCurrent()) return;
         Alert.alert(
@@ -3276,54 +3271,32 @@ export const SessionChat = memo(function SessionChat({
   );
   const disableGoogleService = useCallback(
     (service: GoogleService) => {
-      const isCurrent = invalidateGoogleStatus();
+      const isCurrent = invalidateGoogleStatus('focus');
+      if (!isCurrent()) return;
       void disconnectSessionGoogleService(client, sessionId, projectId, service)
         .then(() => {
           if (!isCurrent()) return;
-          invalidateGoogleStatus();
-          if (service === 'gmail')
-            setGmailConnection((current) =>
-              current === null
-                ? null
-                : {
-                    ...current,
-                    enabled: false,
-                    mode: 'disabled',
-                    source: null,
-                    accountEmail: null,
-                  },
-            );
-          else if (service === 'calendar')
-            setCalendarConnection((current) =>
-              current === null
-                ? null
-                : {
-                    ...current,
-                    enabled: false,
-                    mode: 'disabled',
-                    source: null,
-                    accountEmail: null,
-                  },
-            );
-          else
-            setContactsConnection((current) =>
-              current === null
-                ? null
-                : {
-                    ...current,
-                    enabled: false,
-                    mode: 'disabled',
-                    source: null,
-                    accountEmail: null,
-                  },
-            );
+          invalidateGoogleStatus('focus');
+          const disable = <
+            T extends
+              GmailSessionConnection | CalendarSessionConnection | ContactsSessionConnection,
+          >(
+            current: T | null,
+          ): T | null =>
+            current === null
+              ? null
+              : { ...current, enabled: false, mode: 'disabled', source: null, accountEmail: null };
+          if (service === 'gmail') setGmailConnection(disable);
+          else if (service === 'calendar') setCalendarConnection(disable);
+          else setContactsConnection(disable);
         })
-        .catch((error: unknown) =>
+        .catch((error: unknown) => {
+          if (!isCurrent()) return;
           Alert.alert(
             'Could not disconnect Google service',
             error instanceof Error ? error.message : String(error),
-          ),
-        );
+          );
+        });
     },
     [client, projectId, sessionId, invalidateGoogleStatus],
   );

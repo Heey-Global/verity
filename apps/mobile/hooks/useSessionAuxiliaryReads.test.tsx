@@ -253,3 +253,19 @@ it('does not restart compact status when detail metadata changes and invalidates
   hook.rerender({ id: 's2', detail: summary });
   expect(current()).toBe(false);
 });
+
+it('keeps independent disconnects current until the session changes', () => {
+  const api = client();
+  const hook = renderHook(
+    ({ id }: { id: string }) => useSessionGoogleStatus(api, id, summary, true, true),
+    { initialProps: { id: 's1' } },
+  );
+  const gmail = hook.result.current.invalidate('focus');
+  const calendar = hook.result.current.invalidate('focus');
+  hook.result.current.invalidate('focus');
+  expect(gmail()).toBe(true);
+  expect(calendar()).toBe(true);
+  hook.rerender({ id: 's2' });
+  expect(gmail()).toBe(false);
+  expect(calendar()).toBe(false);
+});
