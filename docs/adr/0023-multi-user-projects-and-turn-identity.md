@@ -111,7 +111,8 @@ holds it. Code is local to the instance: the Uplink invitation contract
 (section 7) still carries only read and execute, and a join takes Code from the
 stored invitation. The routes that add changes to the project's code require
 it: merging, saving to the project, switching or opening repositories, changing
-code files by hand, and acting on QA and vulnerability findings. Reading the
+code files by hand, running vulnerability scans, and acting on QA and
+vulnerability findings. Reading the
 code working copy stays with read, because the agent shows its files in the
 conversation anyway. The agent gateway is held to the same boundary for the
 person behind a turn in a later step; until then, an agent working for a

@@ -17,8 +17,8 @@ type PairedRoutePolicy =
  * permission are declared here. Everything else remains administrator-only,
  * including collections and cross-project actions. Adding a session's changes
  * to the project's code (merging, saving, switching or opening repositories,
- * acting on QA and vulnerability findings) needs the Code permission, not only
- * execute (ADR 0023 §1). */
+ * scanning for and acting on QA and vulnerability findings) needs the Code
+ * permission, not only execute (ADR 0023 §1). */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, ResourceRule>([
   // Deleting a project, or tearing down its sandboxes, ends everyone's work in it:
   // only the person who created it or an administrator may (members with manage
