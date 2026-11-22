@@ -5,17 +5,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 WORKDIR /build
 # Dependencies compile in a layer keyed only by the manifest and lockfile, so a
 # connector source change rebuilds one crate instead of all of matrix-sdk (a cold
-# build ran 21 minutes on ARM64). The placeholder crate's own artifacts are
-# removed so the real build below cannot mistake them for up to date.
-# `-j 3` matches the three CPUs the CI and release builders are capped at.
+# build ran 21 minutes on ARM64). `-j 3` matches the three CPUs the CI and
+# release builders are capped at.
+#
+# The placeholder crate must never reach the image: it starts, prints nothing
+# and exits 0, so a restart policy loops on it silently. `cargo clean -p` lets
+# Cargo remove the placeholder's artifacts wherever its target layout keeps them
+# (hand-written globs into `target/` go stale when that layout changes), the
+# `touch` makes the real sources newer than any fingerprint that survives, and
+# the final `--version` check fails the build if the placeholder ships anyway.
 COPY connectors/matrix/Cargo.toml connectors/matrix/Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
     && cargo build --locked --release -j 3 \
-    && rm -rf src target/release/verity-matrix-connector* \
-        target/release/deps/verity_matrix_connector-* \
-        target/release/.fingerprint/verity-matrix-connector-*
+    && cargo clean --release -p verity-matrix-connector \
+    && rm -rf src
 COPY connectors/matrix/src ./src
-RUN cargo build --locked --release -j 3
+RUN touch src/*.rs \
+    && cargo build --locked --release -j 3 \
+    && version="$(target/release/verity-matrix-connector --version)" \
+    && echo "$version" \
+    && echo "$version" | grep -qx 'verity-matrix-connector [0-9][0-9A-Za-z.+-]*'
 
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
