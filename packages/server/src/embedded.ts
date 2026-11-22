@@ -1,3 +1,4 @@
+import { createEmbeddedSecretUnlock } from './embedded-secret-unlock.js';
 import {
   installEmbeddedLocalPreviewRecovery,
   installEmbeddedPublicPreviewRecovery,
@@ -242,7 +243,7 @@ import {
   type ClaudeEgressIdentityService,
 } from './claude-egress-identity.js';
 import { installEmbeddedProjectRelayRuntime } from './embedded-project-relay-runtime.js';
-import { originalSandbox, type ProjectRelayLifecycle } from './project-relay-lifecycle.js';
+import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
@@ -1447,70 +1448,19 @@ export async function buildEmbeddedServer(
       return identity && installation && { ...identity, ...installation };
     },
     teamSharing: teamSharingStatus(uplinkControl),
-    onSecretUnlocked: async () => {
-      // Restore process-local relay listeners before filtering persisted gateway
-      // certificates. A new Server owns none yet; treating that as identity drift
-      // would recreate a valid retained Sandbox while checking its unlock state.
-      for (const project of await eventStore.listProjects()) {
-        if (project.kind === 'control_plane' || project.state !== 'active') continue;
-        try {
-          await provisioner?.resumeProjectRelay?.(project.id);
-        } catch (error) {
-          app.log.warn(
-            { err: error, projectId: project.id },
-            'Retained relay resume deferred until project recovery',
-          );
-        }
-      }
-      await projectAgentGatewayIdentity();
-      let inspected = 0;
-      let repaired = 0;
-      let deferred = 0;
-      if (docker !== undefined && provisioner?.repairSandboxForTurn !== undefined) {
-        for (const project of await eventStore.listProjects()) {
-          if (project.kind === 'control_plane' || project.state !== 'active') continue;
-          try {
-            const container = await docker.inspectContainer(project.containerName);
-            if (!container.running) continue;
-            inspected += 1;
-            if (await agentGatewayReady(originalSandbox(project.id), container)) continue;
-            const didRepair = await provisioner.repairSandboxForTurn(
-              project.id,
-              `secret-unlock:${project.id}`,
-              undefined,
-              { requireFreshAgentGatewayIdentity: true },
-            );
-            if (didRepair) repaired += 1;
-            else deferred += 1;
-          } catch (error) {
-            deferred += 1;
-            app.log.warn(
-              { err: error, projectId: project.id },
-              'Agent Gateway identity reconciliation deferred for project',
-            );
-          }
-        }
-      }
-      await projectAgentGatewayIdentity(inspected > 0);
-      app.log.info(
-        { inspected, repaired, deferred, projectedBindings: agentGatewayState.bindings.length },
-        'Agent Gateway identity reconciliation completed after secret unlock',
-      );
-      // Publishes what the sealed boot had to skip. Ordered after the gateway
-      // projection because both mint from the same CA and the gateway is what a
-      // Sandbox needs first; the Runner picks its material up by generation file.
-      const runnerIdentityPublished = await publishRunnerIdentity('secret unlock');
-      app.log.info(
-        { published: runnerIdentityPublished },
-        'control-plane Runner identity resume completed after secret unlock',
-      );
-      // The provider settings are readable now. A sealed boot can only have written
-      // the credential-free fallback, and the Runner reads the file through a
-      // directory mount, so replacing it here reaches containers already running.
-      await materializeOpenCodeConfig('secret unlock');
-      await codexModelCatalog?.refresh();
-      uplinkControl?.start();
-    },
+    onSecretUnlocked: createEmbeddedSecretUnlock({
+      eventStore,
+      docker,
+      provisioner,
+      projectAgentGatewayIdentity,
+      agentGatewayReady,
+      agentGatewayState,
+      publishRunnerIdentity,
+      materializeOpenCodeConfig,
+      codexModelCatalog,
+      uplinkControl,
+      log: () => app.log,
+    }),
     authRegistry,
     ...(config.https !== undefined ? { https: config.https } : {}),
     ...(config.devicePairing !== undefined ? { devicePairing: config.devicePairing } : {}),
