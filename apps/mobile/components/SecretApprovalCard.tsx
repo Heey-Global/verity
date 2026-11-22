@@ -196,6 +196,11 @@ export function SecretApprovalCard({
           ) : null}
         </View>
       ) : null}
+      {pending && cli ? (
+        <Text variant="bodySmall" tone="muted">
+          The command can read and share the full secret.
+        </Text>
+      ) : null}
       {actions ? (
         <>
           <View style={styles.actions}>

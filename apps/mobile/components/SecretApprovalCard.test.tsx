@@ -62,4 +62,5 @@ it('shows the full command and injection warning before approval', () => {
   expect(screen.getAllByText('"gh" "api" "rate_limit"')).toHaveLength(2);
   expect(screen.getByText('GITHUB_TOKEN')).toBeTruthy();
   expect(screen.getByText(/Verity injects.*GH_TOKEN/)).toBeTruthy();
+  expect(screen.getByText('The command can read and share the full secret.')).toBeTruthy();
 });
