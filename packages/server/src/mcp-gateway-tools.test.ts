@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer, type Server, type Socket } from 'node:net';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -58,7 +59,7 @@ describe('MCP gateway trusted CLI integration', () => {
           projectId: 'project-1',
           sessionId: 'session-1',
           turnId: 'turn-1',
-          callId: 'call-1',
+          callId: createHash('sha256').update('invocation-1').digest('hex'),
           requestHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
         });
         return true;
@@ -320,3 +321,38 @@ it('forwards trusted approval provenance to the Matrix executor without exposing
     approvedByCard: true,
   });
 });
+
+it.each(['verity_http_request', 'verity_secret_run'] as const)(
+  'keeps the %s consumption identity stable across transport retries',
+  async (toolName) => {
+    const brokeredHttpTool = vi.fn<
+      Parameters<typeof createMcpGatewayToolExecutor>[0]['brokeredHttpTool']
+    >(async () => ({ status: 200, body: null }));
+    const trustedCliTool = vi.fn<
+      Parameters<typeof createMcpGatewayToolExecutor>[0]['trustedCliTool']
+    >(async () => ({ exitCode: 0, stdout: '', stderr: '' }));
+    const invoke = createMcpGatewayToolExecutor({
+      brokeredHttpTool,
+      trustedCliTool,
+      runnerRoot: dir,
+    });
+    const invocationId = 'same-invocation'.repeat(1_000);
+    const consumptionId = createHash('sha256').update(invocationId).digest('hex');
+    for (const callId of ['first-attempt', 'retry']) {
+      await invoke({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        invocationId,
+        callId,
+        toolName,
+        request: {},
+        approvedByCard: false,
+      });
+      const executor = toolName === 'verity_http_request' ? brokeredHttpTool : trustedCliTool;
+      expect(executor.mock.lastCall?.[3]).toEqual(
+        expect.objectContaining({ id: callId, consumptionId }),
+      );
+    }
+  },
+);

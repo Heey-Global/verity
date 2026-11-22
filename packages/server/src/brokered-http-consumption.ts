@@ -1,9 +1,28 @@
+import { createHash } from 'node:crypto';
 import type { Database } from '@verity/store';
 import type { Kysely } from 'kysely';
+
+export function brokeredExecutionClaimId(invocationId: string): string {
+  return createHash('sha256').update(invocationId).digest('hex');
+}
 
 /** Durable at-most-once fence committed before an approved HTTP request reaches the network. */
 export function createBrokeredHttpConsumptionStore(db: Kysely<Database>) {
   return {
+    async has(
+      this: void,
+      input: { projectId: string; sessionId: string; turnId: string; callId: string },
+    ) {
+      const row = await db
+        .selectFrom('brokered_http_consumptions')
+        .select('call_id')
+        .where('project_id', '=', input.projectId)
+        .where('session_id', '=', input.sessionId)
+        .where('turn_id', '=', input.turnId)
+        .where('call_id', '=', input.callId)
+        .executeTakeFirst();
+      return row !== undefined;
+    },
     async consume(input: {
       projectId: string;
       sessionId: string;

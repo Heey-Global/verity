@@ -13,6 +13,7 @@ export type BrokeredHttpProjectBinding = {
 
 export type BrokeredToolCall = {
   id: string;
+  consumptionId?: string;
   name: 'verity_http_request' | 'verity_secret_run';
   input: unknown;
   /** Trusted gateway authority; never read from tool arguments. */
@@ -103,7 +104,7 @@ export function createBrokeredHttpTool(options: {
           projectId,
           sessionId,
           turnId,
-          callId: call.id,
+          callId: call.consumptionId ?? call.id,
           requestHash,
         });
         assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);

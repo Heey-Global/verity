@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { sql, type Kysely, type Selectable } from 'kysely';
+import { sql, type Kysely, type Selectable, type SqlBool } from 'kysely';
 import type { Database } from '@verity/store';
 
 export const APPROVAL_REDEMPTION_TTL_MS = 5 * 60_000;
@@ -59,12 +59,39 @@ const record = (row: ApprovalRow): BrokeredToolApprovalRecord => ({
   decidedAt: row.decided_at?.toISOString() ?? null,
 });
 
+function matchesInvocation(invocationId: string, legacyPrefix?: string) {
+  const column = sql.ref('consumed_invocation_id');
+  if (legacyPrefix === undefined) return sql<SqlBool>`${column} = ${invocationId}`;
+  // The binding digest already verifies the request and provider. Older rows used
+  // a rotating audit MAC after the same JSON-RPC ID, tool, and turn prefix.
+  return sql<SqlBool>`(${column} = ${invocationId} or (
+    starts_with(${column}, ${legacyPrefix})
+    and substring(${column} from char_length(${legacyPrefix}) + 1) ~ '^[0-9a-f]{64}:[0-9a-f]{64}$'
+  ))`;
+}
+
+function findConsumed(
+  db: Kysely<Database>,
+  digest: string,
+  invocationId: string,
+  legacyPrefix?: string,
+) {
+  return db
+    .selectFrom('brokered_tool_approvals')
+    .selectAll()
+    .where('binding_digest', '=', digest)
+    .where('status', '=', 'consumed')
+    .where(matchesInvocation(invocationId, legacyPrefix))
+    .executeTakeFirst();
+}
+
 /** Durable consent only. Callers must revalidate authority and the provider snapshot
  * before dispatch; creating or deciding a record never executes an operation. */
 export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date.now) {
   return {
     async createOrFindPending(
       input: BrokeredToolApprovalInput,
+      legacyPrefix?: string,
     ): Promise<BrokeredToolApprovalRecord> {
       return db.transaction().execute(async (tx) => {
         // Serialize receipt creation with consumption so a transport retry cannot
@@ -76,13 +103,7 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
           .forUpdate()
           .executeTakeFirstOrThrow();
         const digest = bindingDigest(input);
-        const consumed = await tx
-          .selectFrom('brokered_tool_approvals')
-          .selectAll()
-          .where('binding_digest', '=', digest)
-          .where('status', '=', 'consumed')
-          .where('consumed_invocation_id', '=', input.invocationId)
-          .executeTakeFirst();
+        const consumed = await findConsumed(tx, digest, input.invocationId, legacyPrefix);
         if (consumed) return record(consumed);
         // A retry has a new invocation/MAC but must find the original unanswered consent.
         const result = await sql<ApprovalRow>`insert into brokered_tool_approvals (
@@ -98,6 +119,26 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
           do update set binding_digest = excluded.binding_digest returning *`.execute(tx);
         return record(result.rows[0]!);
       });
+    },
+    async findStandingAuthorizationBlock(
+      input: BrokeredToolApprovalBinding,
+      invocationId: string,
+      legacyPrefix?: string,
+    ): Promise<BrokeredToolApprovalRecord | undefined> {
+      const digest = bindingDigest(input);
+      const row = await db
+        .selectFrom('brokered_tool_approvals')
+        .selectAll()
+        .where('binding_digest', '=', digest)
+        .where((eb) =>
+          eb.or([
+            eb('status', 'in', ['pending', 'denied']),
+            eb.and([eb('status', '=', 'consumed'), matchesInvocation(invocationId, legacyPrefix)]),
+          ]),
+        )
+        .orderBy(sql`status = 'consumed'`, 'desc')
+        .executeTakeFirst();
+      return row && record(row);
     },
     async get(id: string, sessionId: string): Promise<BrokeredToolApprovalRecord | undefined> {
       const row = await db
