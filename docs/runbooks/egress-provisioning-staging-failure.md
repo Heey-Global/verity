@@ -63,12 +63,12 @@ df -h /var/lib/verity-egress
 docker info --format '{{.LoggingDriver}}'
 ```
 
-- With a helper that names staging steps, a missing stage directory means the
-  failure happened before the configuration generator ran. A failed attempt
-  removes its new stage only in that case. An uncompacted directory shows how far
-  staging got: `release/`, the two `project-egress-*.py` scripts,
-  `assessment-authorization.json` and `config/` are created in that order.
-  Compaction can remove those files and leave the directory in place.
+- Check the reported step and evidence from earlier attempts of this operation
+  before inferring which changes could have occurred. An uncompacted stage may
+  contain `release/`, the two `project-egress-*.py` scripts,
+  `assessment-authorization.json` and `config/`, created in that order for a
+  staging assessment. Compaction can remove those files and leave the directory
+  in place.
 - Copying the release payload needs a few hundred MiB of free space under
   `/var/lib/verity-egress`.
 - With the `journald` logging driver, the removed helper's error output is still
