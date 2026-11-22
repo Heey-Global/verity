@@ -253,23 +253,25 @@ def staging_identity(root, run, node_path):
     if (not os.access(runtime, os.X_OK)
             or hashlib.sha512(runtime.read_bytes()).hexdigest() != checksum
             or (runtime.parent / '.verity-archive-sha512').read_text().strip() != archive_checksum):
-        raise ValueError('Staging runtime differs from release-owned pins')
+        raise PreflightError('native_identity_changed')
     recorded = set()
     for line in (runtime.parent / '.verity-files.sha512').read_text().splitlines():
         match = re.fullmatch(r'([a-f0-9]{128})  (runsc|gvisor-bin/[A-Za-z0-9_][A-Za-z0-9_.-]*)', line)
         if not match or match[2] in recorded:
-            raise ValueError('Invalid native runtime file manifest')
+            raise PreflightError('native_identity_changed')
         recorded.add(match[2])
         if hashlib.sha512((runtime.parent / match[2]).read_bytes()).hexdigest() != match[1]:
-            raise ValueError('Staging native runtime file changed')
+            raise PreflightError('native_identity_changed')
     actual_files = {str(path.relative_to(runtime.parent)) for path in runtime.parent.rglob('*')
                     if path.is_file() and path.name not in ('.verity-files.sha512', '.verity-archive-sha512')}
     if recorded != actual_files or not {'runsc', 'gvisor-bin/gvisor_sentry'} <= recorded:
-        raise ValueError('Incomplete native runtime file manifest')
+        raise PreflightError('native_identity_changed')
+    # Registrations and runtime files are reported by reason, with the caller's step:
+    # an update that renews the host runtime moves them past an earlier profile.
     project = info.get('Runtimes', {}).get('runsc-project', {})
     if {'path': project.get('path'), 'runtimeArgs': project.get('runtimeArgs', [])} != {
             'path': runtime_path, 'runtimeArgs': PROJECT_RUNTIME_ARGS}:
-        raise ValueError('Staging project runtime registration changed')
+        raise PreflightError('native_identity_changed')
     return {'platform': {'kernel': platform.release(), 'architecture': platform.machine(),
                          'os': os_identity(root), 'docker': info['ServerVersion']},
             'artifacts': artifacts, 'runtime': {'path': runtime_path, 'sha512': checksum,
@@ -594,7 +596,7 @@ def runtime_preflight(root, run=command, node_path='/usr/bin/node', *, assessmen
     relay = {'path': profile['runtime']['path'], 'runtimeArgs': RELAY_RUNTIME_ARGS}
     actual = info.get('Runtimes', {}).get('runsc-relay', {})
     if {'path': actual.get('path'), 'runtimeArgs': actual.get('runtimeArgs', [])} != relay:
-        raise ValueError('Relay runtime does not match accepted native profile')
+        raise PreflightError('relay_runtime_mismatch')
     packages = profile['packages']
     if sorted(run('/usr/bin/dpkg-query', '--show', '--showformat=${Package}=${Version}\n',
                   *sorted(packages)).splitlines()) != [name + '=' + packages[name] for name in sorted(packages)]:

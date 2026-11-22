@@ -1008,6 +1008,12 @@ def activate(root, run, release, files, configs, gid):
                 run('/usr/bin/systemctl', 'start', SERVICE)
                 run('/usr/bin/systemctl', 'is-active', '--quiet', SERVICE)
             except Exception as restart_error:
+                # A controller whose preflight now fails (for example after a renewed
+                # host runtime) would otherwise restart forever; leave it stopped.
+                try:
+                    run('/usr/bin/systemctl', 'stop', SERVICE)
+                except Exception:
+                    pass
                 restart_error.egress_failure = base.failure_diagnostic(
                     restart_error, 'recovery_failed', 'recovery')
                 raise restart_error from error
