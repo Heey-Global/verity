@@ -311,7 +311,6 @@ it('recovers a saved decision with no transcript card and deduplicates concurren
     tool: input.toolName,
     input: JSON.parse(input.canonicalInput) as unknown,
     riskClass: 'ask',
-    secretSource: { project: 'example', config: 'stg' },
   });
   await store.decide(approval.id, input.sessionId, true, 'approver', 'once');
   const restarted = createBrokeredToolApprovalStore(ctx.db, () => now);

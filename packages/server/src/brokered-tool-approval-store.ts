@@ -169,12 +169,15 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
           and exists (
             select 1 from events
             where session_id = approval.session_id and type = 'permission'
-              and payload->>'id' = approval.id and payload ? 'secretSource'
+              and payload->>'id' = approval.id
           )
           and not exists (
             select 1 from events
             where session_id = approval.session_id and type = 'notice'
-              and payload->'secretApproval'->>'id' = approval.id
+              and (
+                payload->'secretApproval'->>'id' = approval.id
+                or starts_with(payload->>'text', 'Secret tool approval ' || approval.id || ' was ')
+              )
           )
         order by approval.decided_at, approval.id
       `.execute(db);

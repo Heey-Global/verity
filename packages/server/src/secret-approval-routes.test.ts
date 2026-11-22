@@ -15,13 +15,14 @@ const record = {
   canonicalInput: 'sensitive request input',
   requestMac: 'private MAC',
 };
-function harness(allowed = true) {
+function harness(allowed = true, unrecorded = false) {
   const app = Fastify();
   const reopen = vi.fn(async () => ({ ...record, status: 'pending' }));
   const refresh = vi.fn(async () => {});
   registerSecretApprovalRoutes(app, {
     approvals: {
       listReopenable: async () => [record],
+      listUnrecordedDecisions: async () => (unrecorded ? [record] : []),
       get: async () => record,
       reopen,
     } as unknown as BrokeredToolApprovalStore,
@@ -66,9 +67,24 @@ it.each([true, false])(
       });
       expect(response.statusCode).toBe(allowed ? 200 : 403);
       expect(reopen).toHaveBeenCalledTimes(allowed ? 1 : 0);
-      expect(refresh).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      expect(refresh).toHaveBeenCalledTimes(allowed ? 2 : 0);
     } finally {
       await app.close();
     }
   },
 );
+
+it('preserves the previous receipt if recovery cannot record its decision before reopening', async () => {
+  const { app, reopen, refresh } = harness(true, true);
+  try {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/sessions/s/secret-approvals/${id}/reopen`,
+    });
+    expect(response.statusCode).toBe(503);
+    expect(refresh).toHaveBeenCalledWith('s');
+    expect(reopen).not.toHaveBeenCalled();
+  } finally {
+    await app.close();
+  }
+});
