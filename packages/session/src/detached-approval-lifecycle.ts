@@ -59,7 +59,8 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
   private async appendDecision(sessionId: string, event: AgentEvent): Promise<void> {
     const deps = this.dependencies();
     const persisted = await deps.store.appendEvent(sessionId, event);
-    deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
+    if (!persisted.existing)
+      deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
   }
 
   private async tryResumeApproved(sessionId: string): Promise<void> {

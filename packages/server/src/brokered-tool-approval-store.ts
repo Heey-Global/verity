@@ -299,7 +299,7 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
     ): Promise<BrokeredToolApprovalRecord | undefined> {
       const row = await db
         .updateTable('brokered_tool_approvals')
-        .set({ status: 'denied', scope: null })
+        .set({ status: 'denied' })
         .where('id', '=', id)
         .where('session_id', '=', sessionId)
         .where('status', '=', 'consumed')

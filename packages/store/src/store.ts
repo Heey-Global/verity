@@ -1,3 +1,4 @@
+import { findRecordedApprovalDecision } from './secret-approval-events.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 import { createStoredSessionLink } from './session-links.js';
@@ -1220,7 +1221,10 @@ export interface RunnerTurnOwnership {
  * caller passes it unchanged.
  */
 export interface EventSink {
-  appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }>;
+  appendEvent(
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing?: true }>;
   createSession(session: SessionInput): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
 }
@@ -4438,23 +4442,17 @@ export class EventStore implements EventSink {
    * milliseconds (`ts`), so the live fan-out can broadcast the real persist time
    * alongside `seq` (#32) — matching what the read paths surface.
    */
-  async appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }> {
+  async appendEvent(
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing?: true }> {
     if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
     const { type, payload } = await this.prepareEventRow(event);
-    // Serialize against other server generations and check deletion after taking the lock.
     const row = await this.withSessionEventAppend(sessionId, () =>
       this.db.transaction().execute(async (tx) => {
         await this.sessionEventAppendLock(tx, sessionId);
-        if (event.t === 'notice' && event.secretApproval) {
-          const existing = await tx
-            .selectFrom('events')
-            .select(['id', 'created_at'])
-            .where('session_id', '=', sessionId)
-            .where('type', '=', 'notice')
-            .where(sql`payload->'secretApproval'->>'id'`, '=', event.secretApproval.id)
-            .executeTakeFirst();
-          if (existing) return existing;
-        }
+        const existing = await findRecordedApprovalDecision(tx, sessionId, event);
+        if (existing) return { ...existing, existing: true as const };
         const result = await sql<{ id: number; created_at: Date }>`
           insert into events (session_id, type, payload)
           select ${sessionId}, ${type}, ${payload}::jsonb
@@ -4467,6 +4465,8 @@ export class EventStore implements EventSink {
         return inserted;
       }),
     );
+    if ('existing' in row)
+      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: true };
     this.enqueuePersistedMessageEvent(
       sessionId,
       Number(row.id),

@@ -42,7 +42,14 @@ export function configureDetachedSecretApprovals(input: {
   conductor.configureDetachedPermissions({
     listUnrecordedDecisions: async (sessionId) =>
       (await approvals.listUnrecordedDecisions(sessionId)).map((record) =>
-        secretApprovalNotice(requestFor(record), record.scope ?? 'denied'),
+        secretApprovalNotice(
+          requestFor(record),
+          record.status === 'denied'
+            ? record.scope === null
+              ? 'denied'
+              : 'save_failed'
+            : (record.scope ?? 'denied'),
+        ),
       ),
     markScopedSaved: async (sessionId, id) => {
       await approvals.markScopedSaved(id, sessionId);

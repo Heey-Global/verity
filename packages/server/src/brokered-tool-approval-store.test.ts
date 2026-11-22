@@ -210,7 +210,7 @@ it('recovers scoped consent before continuation but exposes a failed grant save 
   expect(await store.failScoped(pending.id, 'other-session')).toBeUndefined();
   expect(await store.failScoped(pending.id, 'session')).toMatchObject({
     status: 'denied',
-    scope: null,
+    scope: 'project',
   });
   expect(await store.listApproved('session')).toEqual([]);
   expect((await store.listReopenable('session'))[0]?.id).toBe(pending.id);
@@ -328,7 +328,7 @@ it('recovers a saved decision with no transcript card and deduplicates concurren
     ctx.store.appendEvent(input.sessionId, event),
     ctx.store.appendEvent(input.sessionId, event),
   ]);
-  expect(results[0]).toEqual(results[1]);
+  expect(results[1]).toMatchObject({ ...results[0], existing: true });
   expect(await restarted.listUnrecordedDecisions(input.sessionId)).toEqual([]);
   expect(
     (await ctx.store.getEvents(input.sessionId)).filter(({ t }) => t === 'notice'),
