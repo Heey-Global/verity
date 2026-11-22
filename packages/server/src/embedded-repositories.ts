@@ -265,3 +265,21 @@ export function createEmbeddedProjectRepositoryBindings(ctx: {
     }) => (await forgeRepositoryAccess(project))?.token ?? githubForge.mintProjectToken(project),
   };
 }
+
+export function createEmbeddedRepositoryReadBindings(ctx: {
+  eventStore: EventStore;
+  githubForge: ReturnType<typeof createEmbeddedGitHub>['githubForge'];
+}): Pick<ServerDeps, 'listProjectGitHubIssues' | 'latestRelease' | 'refreshLatestRelease'> {
+  const { eventStore, githubForge } = ctx;
+  return {
+    listProjectGitHubIssues: async (project: ProjectRecord) =>
+      (await projectForgeProvider(eventStore, githubForge, project))?.listIssues(project) ?? {
+        connected: false,
+        viewerLogin: null,
+        issues: [],
+      },
+    latestRelease: (owner: string, repo: string) => githubForge.latestRelease({ owner, repo }),
+    refreshLatestRelease: (owner: string, repo: string) =>
+      githubForge.refreshLatestRelease({ owner, repo }),
+  };
+}
