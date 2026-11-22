@@ -225,8 +225,47 @@ class StagingAssessmentTests(unittest.TestCase):
         self.sidecar.chmod(0o755)
         self.sidecar.write_bytes(b'changed-sidecar')
         self.sidecar.chmod(0o555)
-        with self.assertRaisesRegex(ValueError, 'runtime file changed'):
+        with self.assertRaisesRegex(installer.PreflightError, 'native_identity_changed'):
             self.validate(descriptor)
+
+    # A failed update can leave Docker on a renewed runtime while the previous
+    # release returns. Its controller preflight must name that cause; a generic
+    # runtime_preflight_failed left the stopped host undiagnosable.
+    def test_renewed_runtime_registrations_name_their_preflight_reason(self):
+        descriptor = self.prepare()
+        daemon = self.root / 'etc/docker/daemon.json'
+        assessed = json.loads(daemon.read_text())
+
+        def run(*args):
+            if args[0] == '/usr/bin/systemctl':
+                return 'systemd 259'
+            if args[0] == str(self.release / 'node'):
+                return 'v26.12.1'
+            return self.execute(*args)
+
+        renewed = '/opt/verity/runsc/release-20261116.0/runsc'
+
+        def renew(role):
+            value = copy.deepcopy(assessed)
+            value['runtimes'][role] = {**value['runtimes'].get(role, {}), 'path': renewed,
+                                       'runtimeArgs': installer.RELAY_RUNTIME_ARGS if role == 'runsc-relay'
+                                       else installer.PROJECT_RUNTIME_ARGS}
+            daemon.write_text(json.dumps(value))
+
+        def diagnostic(error):
+            return installer.failure_diagnostic(error, 'runtime_preflight_failed', 'runtime_preflight')
+
+        renew('runsc-project')
+        with self.assertRaises(installer.PreflightError) as failed:
+            self.validate(descriptor)
+        self.assertEqual(diagnostic(failed.exception), {'reason': 'native_identity_changed', 'step': 'runtime_preflight'})
+        renew('runsc-relay')
+        # Ownership checks need the real test user; only the relay comparison is under test.
+        with patch.object(installer.os, 'geteuid', return_value=0), \
+                patch.object(installer, 'validate_staging_assessment', return_value=descriptor['profile']):
+            with self.assertRaises(installer.PreflightError) as failed:
+                installer.runtime_preflight(self.root, run, str(self.release / 'node'), assessment=descriptor)
+        self.assertEqual(diagnostic(failed.exception), {'reason': 'relay_runtime_mismatch', 'step': 'runtime_preflight'})
 
     def test_foreign_relay_collision_precedes_package_metadata_mutations(self):
         daemon = self.root / 'etc/docker/daemon.json'

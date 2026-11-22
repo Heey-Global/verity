@@ -6,6 +6,14 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.99.4](https://github.com/Heey-Global/verity/compare/v4.99.3...v4.99.4) (2026-11-22)
+
+
+### Bug Fixes
+
+* **egress:** name runtime drift in the controller preflight and stop a failing restore ([#2803](https://github.com/Heey-Global/verity/issues/2803)) ([d1311b4](https://github.com/Heey-Global/verity/commit/d1311b4789b16742f8e2b43c4991cb6b6f545c44))
+* **egress:** survive removed bindings at controller start and restore the controller on rollback ([#2801](https://github.com/Heey-Global/verity/issues/2801)) ([10b2a3d](https://github.com/Heey-Global/verity/commit/10b2a3d29ad243e955b410f2ce62460f77a3beb6))
+
 ## [4.99.3](https://github.com/Heey-Global/verity/compare/v4.99.2...v4.99.3) (2026-11-22)
 
 
