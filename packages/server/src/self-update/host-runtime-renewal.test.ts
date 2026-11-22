@@ -427,6 +427,20 @@ describe('project egress helper failure diagnostics', () => {
     });
   });
 
+  // The helper adds these reasons for Updaters that predate step names. A reason
+  // only extends the message; recovery must still follow the staging step.
+  it.each([
+    ['assessment_authorization', 'assessment_authorization_invalid', 'unchanged'],
+    ['config', 'provisioning_failed', 'recovery-required'],
+  ] as const)('classifies step %s with reason %s by its step', async (step, reason, recovery) => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify({ ...staging, step, reason }));
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery,
+      message: expect.stringContaining(`code command_failed, reason ${reason}, step ${step})`),
+    });
+  });
+
   it('preserves a verified staging failure when Docker cannot remove the helper', async () => {
     const h = await egressJobFixture();
     h.docker.containerLogs.mockResolvedValue(JSON.stringify(staging));
@@ -444,6 +458,7 @@ describe('project egress helper failure diagnostics', () => {
     { step: 'activation' },
     { step: 'config' },
     { step: 'launcher' },
+    { step: 'preflight' },
     { step: 'unknown_step' },
     { code: 'host_failed' },
     { code: 'attempt_invalid' },
@@ -466,6 +481,7 @@ describe('project egress helper failure diagnostics', () => {
     'config',
     'assessment_authorization',
     'launcher',
+    'preflight',
   ])('reports the fixed staging step %s', async (step) => {
     const h = await egressJobFixture();
     h.docker.containerLogs.mockResolvedValue(JSON.stringify({ ...staging, step }));

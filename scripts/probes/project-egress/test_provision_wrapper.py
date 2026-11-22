@@ -2,6 +2,7 @@
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -189,6 +190,23 @@ class ProvisionWrapperTests(unittest.TestCase):
         self.assertIn('unsafe host installer lock path', result.stderr)
         self.assertFalse((self.root / 'submitted').exists())
 
+    def test_path_failures_name_preflight_without_claiming_an_unchanged_host(self):
+        (self.root / 'state').mkdir()
+        (self.root / 'elsewhere').mkdir()
+        (self.root / 'state/provision').symlink_to(self.root / 'elsewhere')
+        report = self.diagnostic(self.run_wrapper(), 'command_failed')
+        self.assertEqual(report['phase'], 'staging')
+        self.assertEqual(report['step'], 'preflight')
+        self.assertNotIn('hostUnchanged', report)
+        self.assertNotIn('reason', report)
+        self.assertFalse((self.root / 'submitted').exists())
+
+    def test_staging_reasons_stay_within_the_vocabulary_of_older_updaters(self):
+        # Updaters that predate staging step names drop unknown reasons silently.
+        # Every Updater release since 4.90.0 relays exactly these two, and only as text.
+        emitted = set(re.findall(r'\{reason: "([a-z_]+)"\}', WRAPPER.read_text()))
+        self.assertEqual(emitted, {'assessment_authorization_invalid', 'provisioning_failed'})
+
     def diagnostic(self, result, code):
         self.assertNotEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout.strip().splitlines()[-1])
@@ -213,6 +231,7 @@ class ProvisionWrapperTests(unittest.TestCase):
         report = self.diagnostic(self.run_wrapper(), 'command_failed')
         self.assertEqual(report['phase'], 'staging')
         self.assertEqual(report['step'], 'assessment_authorization')
+        self.assertEqual(report['reason'], 'assessment_authorization_invalid')
         self.assertIs(report['hostUnchanged'], True)
         self.assertNotIn('node ', (self.root / 'calls').read_text())
         self.assertFalse((self.root / 'submitted').exists())
@@ -236,6 +255,7 @@ class ProvisionWrapperTests(unittest.TestCase):
     def test_early_failure_after_configuration_attempt_requires_recovery(self):
         report = self.diagnostic(self.run_wrapper('config-failure'), 'command_failed')
         self.assertEqual(report['step'], 'config')
+        self.assertEqual(report['reason'], 'provisioning_failed')
         self.assertNotIn('hostUnchanged', report)
         # An older maintenance timer retains only the attempt and result.
         for entry in self.stage.iterdir():

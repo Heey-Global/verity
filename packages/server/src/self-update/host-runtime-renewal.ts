@@ -103,6 +103,8 @@ const egressFailureSteps = new Set([
   'prerequisites',
   'runtime_preflight',
   'activation',
+  // Lock and path checks before the job state is observed; never proves an unchanged host.
+  'preflight',
   ...egressStagingSteps,
 ]);
 
