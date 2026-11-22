@@ -1,15 +1,18 @@
 // Project › Settings › Team: who works in the project, open invitations, and
-// each member's right (ADR 0023 §1). Only managers reach it.
+// each member's rights (ADR 0023 §1). Only managers reach it.
 import {
+  teamRightLabel,
   teamSharingUnavailable,
   type ProjectMember,
   type ProjectTeam,
+  type TeamRights,
   type VerityClient,
 } from '@verity/mobile';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 
 import { SettingsMessage, SettingsScaffold } from '../../../../components/settings/SettingsChrome';
+import { TeamRightsGroup } from '../../../../components/settings/TeamRightsGroup';
 import {
   Button,
   Group,
@@ -37,12 +40,6 @@ export default function ProjectTeamScreen() {
     );
   }
   return <ProjectTeamView client={client} projectId={projectId} />;
-}
-
-/** The right a member holds, as the team page names it. */
-export function rightLabel(member: Pick<ProjectMember, 'canExecute' | 'canManage'>): string {
-  if (member.canManage) return 'Manage';
-  return member.canExecute ? 'Can edit' : 'Can read';
 }
 
 function Initials({ name }: { name: string }) {
@@ -98,10 +95,15 @@ export function ProjectTeamView({
       setBusy(false);
     }
   };
-  const setRights = (member: ProjectMember, canExecute: boolean, canManage: boolean) =>
+  // A server that predates Code reports no `canCode` and refuses the field.
+  const setRights = (member: ProjectMember, rights: TeamRights) =>
     act(async () => {
       setOpen(
-        await client.setProjectMemberRights(projectId, member.userId, { canExecute, canManage }),
+        await client.setProjectMemberRights(projectId, member.userId, {
+          canExecute: rights.canExecute,
+          ...(member.canCode === undefined ? {} : { canCode: rights.canCode }),
+          canManage: rights.canManage,
+        }),
       );
     });
   const remove = (member: ProjectMember) =>
@@ -135,7 +137,7 @@ export function ProjectTeamView({
                 trailing={
                   <StatusTag
                     intent={member.canManage ? 'action' : member.canExecute ? 'ready' : 'optional'}
-                    label={rightLabel(member)}
+                    label={teamRightLabel(member)}
                   />
                 }
                 {...(member.creator ? {} : { navigates: true, onPress: () => setOpen(member) })}
@@ -234,24 +236,17 @@ export function ProjectTeamView({
         }
       >
         {open === null ? null : (
-          <Group>
-            <Row
-              selected={!open.canExecute && !open.canManage}
-              title="Can read"
-              onPress={() => void setRights(open, false, false)}
-            />
-            <Row
-              selected={open.canExecute && !open.canManage}
-              title="Can edit"
-              onPress={() => void setRights(open, true, false)}
-            />
-            <Row
-              selected={open.canManage}
-              title="Can manage"
-              subtitle="Also invites people and changes their rights"
-              onPress={() => void setRights(open, true, true)}
-            />
-          </Group>
+          <TeamRightsGroup
+            rights={{
+              canExecute: open.canExecute,
+              canCode: open.canCode ?? false,
+              canManage: open.canManage,
+            }}
+            code={open.canCode !== undefined}
+            manage
+            disabled={busy}
+            onChange={(rights) => void setRights(open, rights)}
+          />
         )}
       </Sheet>
       {confirmSheet}

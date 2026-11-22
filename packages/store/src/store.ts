@@ -1,7 +1,7 @@
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 import { createStoredSessionLink } from './session-links.js';
-import { ProjectTeamStore } from './project-team.js';
+import { ProjectTeamStore, type ProjectPermission } from './project-team.js';
 import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
 import {
   MESSAGE_PROJECTION_VERSION,
@@ -6839,21 +6839,14 @@ export class EventStore implements EventSink {
   async hasProjectPermission(
     userId: string,
     projectId: string,
-    permission: 'read' | 'execute' | 'manage',
+    permission: ProjectPermission,
   ): Promise<boolean> {
     const membership = await this.db
       .selectFrom('project_memberships as m')
       .innerJoin('users as u', 'u.id', 'm.user_id')
       .innerJoin('projects as p', 'p.id', 'm.project_id')
-      .select([
-        'm.can_read',
-        'm.can_execute',
-        'm.can_manage',
-        'u.status',
-        'u.role',
-        'p.kind',
-        'p.created_by_user_id',
-      ])
+      .selectAll('m')
+      .select(['u.status', 'u.role', 'p.kind', 'p.created_by_user_id'])
       .where('m.user_id', '=', userId)
       .where('m.project_id', '=', projectId)
       .executeTakeFirst();

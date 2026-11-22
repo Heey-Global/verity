@@ -19,6 +19,8 @@ interface ProjectMembershipsTable {
   user_id: string;
   can_read: boolean;
   can_execute: boolean;
+  /** "Code": the session's technical side and adding changes to the project's code. Needs `can_execute`. */
+  can_code: ColumnType<boolean, boolean | undefined, boolean>;
   can_manage: boolean;
   created_at: ColumnType<Date, string | undefined, never>;
 }
@@ -59,6 +61,8 @@ interface ProjectInvitationsTable {
   inviter_user_id: string;
   invitee_name: string;
   can_execute: boolean;
+  /** Stays on this server: Uplink's invitation carries only read and execute. */
+  can_code: ColumnType<boolean, boolean | undefined, boolean>;
   /** SHA-256 of the link secret; the secret itself is never stored. */
   secret_hash: string;
   /** The link secret, encrypted, while the invitation can still be shared; cleared

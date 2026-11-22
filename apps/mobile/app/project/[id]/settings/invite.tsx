@@ -1,10 +1,12 @@
 // Inviting a person to one project: the inviter's own name (asked once), who
-// is invited and their right — reading, or reading and sending messages.
-import type { VerityClient } from '@verity/mobile';
+// is invited and their rights: reading always, sending messages and working
+// with code as chosen. Invitations never grant managing.
+import type { TeamRights, VerityClient } from '@verity/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
 
 import { SettingsMessage, SettingsScaffold } from '../../../../components/settings/SettingsChrome';
+import { TeamRightsGroup } from '../../../../components/settings/TeamRightsGroup';
 import { Button, Group, Row, SectionHeader, TextField } from '../../../../components/ui';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
@@ -29,7 +31,13 @@ export function InviteView({ client, projectId }: { client: VerityClient; projec
   const { detail } = useProjectDetail(client, projectId);
   const [inviterName, setInviterName] = useState('');
   const [inviteeName, setInviteeName] = useState('');
-  const [canExecute, setCanExecute] = useState(true);
+  // Edit is offered by default; Code is a deliberate choice.
+  const [rights, setRights] = useState<TeamRights>({
+    canExecute: true,
+    canCode: false,
+    canManage: false,
+  });
+  const { canExecute, canCode } = rights;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const projectName = detail?.project.name ?? 'this project';
@@ -43,6 +51,8 @@ export function InviteView({ client, projectId }: { client: VerityClient; projec
       .createProjectInvitation(projectId, {
         inviteeName: inviteeName.trim(),
         canExecute,
+        // Only when chosen: a server that predates Code refuses the field.
+        ...(canCode ? { canCode } : {}),
         ...(inviterName.trim() === '' ? {} : { inviterName: inviterName.trim() }),
       })
       .then(({ invitation }) =>
@@ -78,16 +88,8 @@ export function InviteView({ client, projectId }: { client: VerityClient; projec
         onChangeText={setInviterName}
       />
       <TextField label="Who are you inviting?" value={inviteeName} onChangeText={setInviteeName} />
-      <SectionHeader title={`Right in “${projectName}”`} variant="eyebrow" />
-      <Group>
-        <Row selected={!canExecute} title="Can read" onPress={() => setCanExecute(false)} />
-        <Row
-          selected={canExecute}
-          title="Can edit"
-          subtitle="Sends messages with their own AI account"
-          onPress={() => setCanExecute(true)}
-        />
-      </Group>
+      <SectionHeader title={`Rights in “${projectName}”`} variant="eyebrow" />
+      <TeamRightsGroup rights={rights} onChange={setRights} />
       <SectionHeader
         title={`${inviteeName.trim() === '' ? 'They' : inviteeName.trim()} see`}
         variant="eyebrow"
