@@ -228,6 +228,26 @@ it('keeps Documents usable in a deployment without project clones', async () => 
   }
 });
 
+it('leaves the Documents view of a local project writable without Code', async () => {
+  const h = await harness({ repository: false, kind: 'local', configured: false });
+  const permission = vi.spyOn(h.ctx.store, 'hasProjectPermission').mockResolvedValue(false);
+  try {
+    h.app.addHook('onRequest', async (request) => {
+      request.localUserId = 'editor';
+    });
+    const result = await h.app.inject({
+      method: 'POST',
+      url: '/sessions/s/files/folders',
+      payload: { root: 'worktree', name: 'notes' },
+    });
+    expect(result.statusCode, result.body).toBe(200);
+    expect(permission).not.toHaveBeenCalledWith('editor', 'p', 'code');
+  } finally {
+    permission.mockRestore();
+    await h.close();
+  }
+});
+
 it('recognizes an existing legacy code workspace without a configured clone root', async () => {
   const h = await harness({ repository: true, configured: false });
   const permission = vi.spyOn(h.ctx.store, 'hasProjectPermission').mockResolvedValue(false);
@@ -415,7 +435,7 @@ it('offers Restore for a local code project with a missing legacy checkout', asy
 });
 
 it('keeps a local Documents-only project in Documents without offering Restore', async () => {
-  const h = await harness({ repository: false, kind: 'local' });
+  const h = await harness({ repository: false, kind: 'local', configured: false });
   try {
     const listing = await h.app.inject({ method: 'GET', url: '/sessions/s/files' });
     expect(listing.json()).toMatchObject({ workspaceKind: 'documents', codeAvailable: false });
