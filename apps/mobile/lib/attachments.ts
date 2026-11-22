@@ -8,6 +8,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File as FsFile } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import { Platform } from 'react-native';
 
 /** An image upload's media type — the 4 types every vision backend accepts. */
@@ -303,6 +304,32 @@ export async function pickImagesFromLibrary(remaining: number): Promise<Attachme
   const picked = await toImageUploads(result.assets);
   if (picked.length === 0) throw new Error('The selected image could not be read.');
   return picked;
+}
+
+/**
+ * Attach an image tapped in the attach menu's recent strip. The library id is
+ * resolved to a local file first (an iCloud-only photo is downloaded); PNG and
+ * JPEG within the limit are sent as they are, so a screenshot keeps sharp text,
+ * everything else is transcoded to JPEG.
+ */
+export async function attachRecentImage(assetId: string): Promise<AttachmentUpload[]> {
+  const info = await MediaLibrary.getAssetInfoAsync(assetId, { shouldDownloadFromNetwork: true });
+  const uri = info.localUri ?? info.uri;
+  const extension = /\.(\w+)$/.exec(info.filename)?.[1]?.toLowerCase();
+  const mediaType =
+    extension === 'png'
+      ? 'image/png'
+      : extension === 'jpg' || extension === 'jpeg'
+        ? 'image/jpeg'
+        : null;
+  if (mediaType !== null) {
+    const data = await attachmentFileBase64(uri);
+    if (data.length > 0 && data.length <= MAX_IMAGE_BASE64_LEN && !base64IsHeif(data))
+      return [{ kind: 'image', mediaType, data }];
+  }
+  return [
+    { kind: 'image', mediaType: 'image/jpeg', data: await jpegWithinImageLimit(uri, 'The image') },
+  ];
 }
 
 /** Capture a photo with the camera (requests permission first). */

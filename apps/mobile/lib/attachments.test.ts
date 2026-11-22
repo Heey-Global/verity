@@ -6,6 +6,7 @@ const mockLaunchImageLibraryAsync = jest.fn();
 const mockLaunchCameraAsync = jest.fn();
 const mockRequestCameraPermissionsAsync = jest.fn();
 const mockGetDocumentAsync = jest.fn();
+const mockGetAssetInfoAsync = jest.fn();
 
 jest.mock('expo-document-picker', () => ({
   getDocumentAsync: (...args: unknown[]) => mockGetDocumentAsync(...args),
@@ -32,10 +33,15 @@ jest.mock('expo-image-picker', () => ({
   requestCameraPermissionsAsync: (...args: unknown[]) => mockRequestCameraPermissionsAsync(...args),
 }));
 
+jest.mock('expo-media-library/legacy', () => ({
+  getAssetInfoAsync: (...args: unknown[]) => mockGetAssetInfoAsync(...args),
+}));
+
 import { File as FsFile } from 'expo-file-system';
 import { Platform } from 'react-native';
 
 import {
+  attachRecentImage,
   base64IsHeif,
   captureImage,
   droppedImageMediaType,
@@ -511,5 +517,58 @@ describe('browser file picker', () => {
     mockGetDocumentAsync.mockResolvedValue({ canceled: true, assets: null });
     await expect(pickFiles(1)).resolves.toEqual([]);
     expect(FsFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('recent strip images', () => {
+  beforeEach(() => {
+    mockFileData.clear();
+    mockManipulateAsync.mockReset();
+    mockGetAssetInfoAsync.mockReset();
+  });
+
+  // A screenshot is mostly text; recompressing it to JPEG would blur what the
+  // agent is asked to read.
+  it('sends a PNG screenshot as it is, from its downloaded local file', async () => {
+    mockGetAssetInfoAsync.mockResolvedValue({
+      uri: 'ph://shot',
+      localUri: 'file:///library/IMG_1.PNG',
+      filename: 'IMG_1.PNG',
+    });
+    mockFileData.set('file:///library/IMG_1.PNG', 'cG5n');
+
+    await expect(attachRecentImage('shot')).resolves.toEqual([
+      { kind: 'image', mediaType: 'image/png', data: 'cG5n' },
+    ]);
+    expect(mockGetAssetInfoAsync).toHaveBeenCalledWith('shot', { shouldDownloadFromNetwork: true });
+    expect(mockManipulateAsync).not.toHaveBeenCalled();
+  });
+
+  it('transcodes an HEIC photo, even one named like a JPEG', async () => {
+    const heic = Buffer.from('\0\0\0\u0018ftypheic\0\0\0\0').toString('base64');
+    mockManipulateAsync.mockResolvedValue({ uri: 'file:///converted.jpg', base64: 'anBlZw==' });
+    mockGetAssetInfoAsync.mockResolvedValue({
+      uri: 'ph://a',
+      localUri: 'file:///library/IMG_2.HEIC',
+      filename: 'IMG_2.HEIC',
+    });
+    await expect(attachRecentImage('a')).resolves.toEqual([
+      { kind: 'image', mediaType: 'image/jpeg', data: 'anBlZw==' },
+    ]);
+
+    mockGetAssetInfoAsync.mockResolvedValue({
+      uri: 'ph://b',
+      localUri: 'file:///library/IMG_3.JPG',
+      filename: 'IMG_3.JPG',
+    });
+    mockFileData.set('file:///library/IMG_3.JPG', heic);
+    await expect(attachRecentImage('b')).resolves.toEqual([
+      { kind: 'image', mediaType: 'image/jpeg', data: 'anBlZw==' },
+    ]);
+    expect(mockManipulateAsync).toHaveBeenCalledWith(
+      'file:///library/IMG_3.JPG',
+      [],
+      expect.objectContaining({ format: 'jpeg' }),
+    );
   });
 });
