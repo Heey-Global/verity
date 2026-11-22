@@ -28,7 +28,9 @@ unit=verity-egress-provision-$identifier.service
 phase=staging
 failure=command_failed
 # Fixed name of the staging command group, reported instead of its output.
-step=''
+# `preflight` covers the path checks between installing the trap below and
+# observing the job state; earlier lock failures exit without a diagnostic.
+step=preflight
 # Conservative until staging establishes that this operation left no earlier work.
 prior_work=1
 # Only fixed diagnostic values may cross the host/helper trust boundary.
@@ -58,9 +60,14 @@ report_failure() {
           prior_work=1
         fi
       fi
+      # Updaters that predate named staging steps relay only their own reason
+      # vocabulary; these two reasons keep the leading causes visible to them.
       diagnostics=$(jq -cn --arg step "$step" --argjson prior "$prior_work" \
-        '{step:$step} + (if $prior == 0 and $step != "config" and $step != "launcher"
-                         then {hostUnchanged:true} else {} end)')
+        '{step:$step}
+         + ({assessment_authorization: {reason: "assessment_authorization_invalid"},
+             config: {reason: "provisioning_failed"}}[$step] // {})
+         + (if $prior == 0 and $step != "config" and $step != "launcher"
+            and $step != "preflight" then {hostUnchanged:true} else {} end)')
     fi
     jq -cn --arg id "$identifier" --arg phase "$phase" --arg code "$failure" --argjson status "$status" \
       --argjson diagnostics "$diagnostics" \
