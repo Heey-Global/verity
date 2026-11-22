@@ -60,7 +60,6 @@ import {
 } from './embedded-control-plane-runner-identity.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import {
-  CONTROL_PLANE_RUNNER_PROJECT_ID,
   SWEEP_SHUTDOWN_WAIT_MS,
   candidateRunnerProjectIds,
   rejectLatestImageRef,
@@ -220,16 +219,11 @@ import { createTurnCredentials } from './turn-credentials.js';
 import { createGitHubUserAuthorization } from './github-user-authorization.js';
 import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
 
-import {
-  pendingSessionCleanups,
-  createSessionCleanupProcessor,
-  deleteRunnerSessionHome,
-  createSessionCleanupWorker,
-} from './pending-session-cleanup.js';
+import { pendingSessionCleanups } from './pending-session-cleanup.js';
+import { createEmbeddedSessionCleanup } from './embedded-session-cleanup.js';
 
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
 import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
-import { purgeSessionArtifacts as purgeSessionArtifactFiles } from './session-artifacts.js';
 import {
   validateGitHubAppCreds,
   resolveGitHubAppIdentity,
@@ -1339,92 +1333,8 @@ export async function buildEmbeddedServer(
     dataVolumeRoot,
     readProjectStatus,
   });
-  const cleanupAbort = new AbortController();
-  const cleanupProcessor =
-    dataVolumeRoot === undefined
-      ? undefined
-      : createSessionCleanupProcessor({
-          root: join(dataVolumeRoot, 'pending-session-cleanup'),
-          sessionExists: async (sessionId) =>
-            (await eventStore.getSession(sessionId)) !== undefined,
-          refreshBindings: async (sessionId) => {
-            const deletion = await eventStore.getSessionDeletion(sessionId);
-            return deletion
-              ? ((
-                  JSON.parse(deletion.payload) as {
-                    artifactBindings?: { backend: string; backendSessionId: string }[];
-                  }
-                ).artifactBindings ?? [])
-              : [];
-          },
-          runtimeState: async (projectId) => {
-            const runtimeExists = existsSync(join(dataVolumeRoot, 'runners', projectId));
-            if (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID && config.controlPlaneRunner)
-              return runtimeExists ? 'ready' : 'unavailable';
-            // A person's own runtime (`u<tag>/<project>`) follows their sandbox.
-            const [tag, ownProjectId] = projectId.split('/');
-            if (ownProjectId !== undefined && tag !== undefined) {
-              const sandbox = (await eventStore.projectSandboxes.list(ownProjectId)).find(
-                (candidate) => sandboxPersonTag(candidate.userId) === tag,
-              );
-              const state =
-                sandbox === undefined
-                  ? undefined
-                  : (await eventStore.projectSandboxes.state(ownProjectId, sandbox.userId))?.state;
-              if (!runtimeExists) return state === undefined ? 'absent' : 'unavailable';
-              if (state === 'active') return 'ready';
-              if (state?.startsWith('sleeping')) return 'sleeping';
-              return state === undefined ? 'absent' : 'unavailable';
-            }
-            const project = await eventStore.getProject(projectId);
-            if (!runtimeExists)
-              return project === undefined
-                ? 'absent'
-                : project.state === 'sleeping'
-                  ? 'sleeping'
-                  : 'unavailable';
-            if (project?.state === 'active') return 'ready';
-            if (project?.state === 'sleeping') return 'sleeping';
-            return 'unavailable';
-          },
-          deleteHome: (projectId, pending) =>
-            deleteRunnerSessionHome(
-              join(dataVolumeRoot, 'runners', projectId, 'supervisor.sock'),
-              pending.sessionId,
-              config.sessionHomeDeleteTimeoutMs,
-            ),
-          purgeArtifacts: async (projectId, pending) => {
-            const result = await purgeSessionArtifactFiles({
-              runtimeDir: join(dataVolumeRoot, 'runners', projectId),
-              sandboxCwd: pending.sandboxCwd,
-              sessionId: pending.sessionId,
-              bindings: pending.bindings,
-              scope: 'session-delete',
-            });
-            if (result.outsideRuntime.length > 0 || result.unknownBackends.length > 0)
-              return 'unsafe';
-            return result.failed.length === 0 && !result.unresolved ? 'clean' : 'retry';
-          },
-          report: (projectId, pending, reason, error) =>
-            app.log.warn(
-              { err: error, sessionId: pending.sessionId, projectId, reason },
-              reason === 'unsafe'
-                ? 'verity: session artifact cleanup requires attention'
-                : 'verity: runner session cleanup deferred with backoff',
-            ),
-          stopped: () => cleanupAbort.signal.aborted,
-        });
-  const runPendingCleanup =
-    cleanupProcessor === undefined
-      ? undefined
-      : (projectId: string) => cleanupProcessor.run(projectId);
-  const sessionCleanupWorker =
-    cleanupProcessor === undefined
-      ? undefined
-      : createSessionCleanupWorker(
-          () => cleanupProcessor.run(),
-          (error) => app.log.warn({ err: error }, 'verity: pending cleanup scan failed'),
-        );
+  const { cleanupAbort, cleanupProcessor, runPendingCleanup, sessionCleanupWorker } =
+    createEmbeddedSessionCleanup({ dataVolumeRoot, config, eventStore, log: () => app.log });
   const app = buildControlPlane({
     onConductorReady: (conductor) => {
       projectTurnReconciler = (projectId) => conductor.reconcileProjectTurns(projectId);
