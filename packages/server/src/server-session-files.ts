@@ -66,6 +66,7 @@ import {
 } from './session-file-routes.js';
 import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import type { SessionFileRootName } from './session-files.js';
+import { viewerId } from './view-state-routes.js';
 import {
   assertSessionRealPath,
   attachmentDisposition,
@@ -1161,7 +1162,18 @@ export function registerServerSessionFiles(
       }
     },
   };
-  registerSessionFileRoutes(app, fileDeps);
+  registerSessionFileRoutes(app, {
+    ...fileDeps,
+    // As the route policy has it: administrators keep every route.
+    mayChangeCode: async (request, sessionId) => {
+      const viewer = viewerId(request);
+      if (await deps.eventStore.isActiveAdministrator(viewer)) return true;
+      const projectId = (await deps.eventStore.getSession(sessionId))?.projectId;
+      return (
+        projectId != null && (await deps.eventStore.hasProjectPermission(viewer, projectId, 'code'))
+      );
+    },
+  });
   registerKnowledgeFileRoutes(app, fileDeps);
 
   /** The project's Wiki as the explorer writes it: `path` is relative to `insights/`. */

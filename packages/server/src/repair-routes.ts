@@ -1,5 +1,5 @@
 import { hasFreshRepairEvidence } from './qa-coordinator.js';
-import type { EventStore } from '@verity/store';
+import type { EventStore, ProjectPermission } from '@verity/store';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
@@ -8,7 +8,7 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
   const allowed = async (
     request: FastifyRequest,
     projectId: string,
-    permission: 'read' | 'execute' | 'manage',
+    permission: ProjectPermission,
   ) => {
     const userId = request.localUserId;
     return (
@@ -46,8 +46,8 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
   });
   app.post('/projects/:id/repairs/approval', async (request, reply) => {
     const { id } = params.parse(request.params);
-    if (!(await allowed(request, id, 'execute')))
-      return reply.code(403).send({ error: 'Project execution permission required' });
+    if (!(await allowed(request, id, 'code')))
+      return reply.code(403).send({ error: 'Permission to work with code required' });
     const { proposalId, allow } = z
       .object({ proposalId: z.string(), allow: z.boolean() })
       .strict()
@@ -66,8 +66,8 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
     const { id } = params.parse(request.params);
     const role = await store.repairs.projectQA.roleForSession(id);
     if (!role) return { proposals: [] };
-    if (!(await allowed(request, role.project_id, 'execute')))
-      return reply.code(403).send({ error: 'Project execution permission required' });
+    if (!(await allowed(request, role.project_id, 'code')))
+      return reply.code(403).send({ error: 'Permission to work with code required' });
     return {
       proposals: (await store.repairs.qaProposals()).filter(
         (p) => p.project_id === role.project_id,
@@ -76,8 +76,8 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
   });
   app.post('/projects/:id/repairs/retry', async (request, reply) => {
     const { id } = params.parse(request.params);
-    if (!(await allowed(request, id, 'execute')))
-      return reply.code(403).send({ error: 'Project execution permission required' });
+    if (!(await allowed(request, id, 'code')))
+      return reply.code(403).send({ error: 'Permission to work with code required' });
     const { incidentId } = z.object({ incidentId: z.string() }).strict().parse(request.body);
     const incident = (await store.repairs.incidents(id)).find((row) => row.id === incidentId);
     if (

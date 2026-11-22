@@ -21,6 +21,16 @@ export const agentLoginSchema = z.object({
 export type AgentLogin = z.infer<typeof agentLoginSchema>;
 export const agentLoginResponseSchema = z.object({ login: agentLoginSchema });
 
+/** What the requesting person may do in a project (ADR 0023 §1). The whole
+ *  object is absent from servers that left every change to administrators;
+ *  `canExecute` and `canCode` from servers that predate the Code permission. */
+export const projectViewerSchema = z.object({
+  canExecute: z.boolean().optional(),
+  canCode: z.boolean().optional(),
+  canManage: z.boolean(),
+});
+export type ProjectViewer = z.infer<typeof projectViewerSchema>;
+
 /** A project's team (ADR 0023 §1): members and open invitations. */
 const projectMemberSchema = z.object({
   userId: z.string(),

@@ -109,9 +109,13 @@ an upgrade keeps memberships consistent. Every member and invitation that could
 execute when Code was introduced receives it, and a project's creator always
 holds it. Code is local to the instance: the Uplink invitation contract
 (section 7) still carries only read and execute, and a join takes Code from the
-stored invitation. The permission and its management are introduced before the
-routes and the agent gateway require it; until they do, execute still allows
-merging and saving to the project.
+stored invitation. The routes that add changes to the project's code require
+it: merging, saving to the project, switching or opening repositories, changing
+code files by hand, and acting on QA and vulnerability findings. Reading the
+code working copy stays with read, because the agent shows its files in the
+conversation anyway. The agent gateway is held to the same boundary for the
+person behind a turn in a later step; until then, an agent working for a
+member without Code can still push.
 
 **Project creation is build authority.** Creating a project provisions a
 sandbox and may build a repository-supplied `devcontainer.json` on the host's

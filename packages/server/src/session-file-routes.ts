@@ -119,6 +119,10 @@ export interface SessionFileRouteDeps {
   codeAvailable?: ((sessionId: string) => Promise<boolean>) | undefined;
   workspaceKind?: ((sessionId: string) => Promise<'documents' | 'code'>) | undefined;
   resolveRoot: (sessionId: string, root: SessionFileRootName) => Promise<string | undefined>;
+  /** Whether the requester may change the code working copy by hand, which is
+   *  part of the Code permission (ADR 0023 §1). Reading it stays with read: the
+   *  agent shows its files in the conversation anyway. Absent → no restriction. */
+  mayChangeCode?: ((request: FastifyRequest, sessionId: string) => Promise<boolean>) | undefined;
   list: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   upload: (
     request: FastifyRequest,
@@ -196,6 +200,19 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     return { root, dir };
   };
 
+  /** False after refusing: changing the worktree by hand needs the Code permission. */
+  const codeWritable = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    id: string,
+    ...roots: SessionFileRootName[]
+  ) => {
+    if (!roots.includes('worktree') || deps.mayChangeCode === undefined) return true;
+    if (await deps.mayChangeCode(request, id)) return true;
+    reply.code(403).send({ error: 'Changing code files needs permission to work with code.' });
+    return false;
+  };
+
   /** Between the knowledge folders a move is a scope change; inside the worktree
    *  it can only be a rename or a reshuffle. Crossing between the worktree and a
    *  knowledge folder is neither — that is an import, with its own route. */
@@ -257,6 +274,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       return reply
         .code(403)
         .send({ error: 'Session drafts are read-only here; edit them in their session.' });
+    if (!(await codeWritable(request, reply, id, query.root))) return reply;
     const value = await target(id, query.root, reply);
     if (value === undefined) return reply;
     return deps.upload(request, reply, value, query);
@@ -277,6 +295,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
         return reply
           .code(403)
           .send({ error: 'Shared knowledge is managed in Settings › Shared knowledge.' });
+      if (!(await codeWritable(request, reply, id, body.root))) return reply;
       const value = await target(id, body.root, reply);
       if (value === undefined) return reply;
       return createFolder(reply, value, body.path, body.name);
@@ -313,6 +332,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       const body = sessionFileWriteBody.parse(request.body);
       if (body.root === 'drafts' || body.root === 'sources')
         return reply.code(403).send({ error: 'This area is read-only.' });
+      if (!(await codeWritable(request, reply, id, body.root))) return reply;
       const value = await target(id, body.root, reply);
       if (value === undefined) return reply;
       return deps.write(reply, value, body);
@@ -334,6 +354,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       return reply
         .code(403)
         .send({ error: 'Session drafts are retained until explicitly resolved.' });
+    if (!(await codeWritable(request, reply, id, root))) return reply;
     const value = await target(id, root, reply);
     if (value === undefined) return reply;
     return deps.remove(reply, value, path);
@@ -345,6 +366,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     if (body.root === 'drafts' || body.toRoot === 'drafts')
       return reply.code(403).send({ error: 'Session drafts are read-only here.' });
     if (!sameKind(body.root, body.toRoot, reply)) return reply;
+    if (!(await codeWritable(request, reply, id, body.root, body.toRoot))) return reply;
     const from = await target(id, body.root, reply);
     if (from === undefined) return reply;
     const to = await target(id, body.toRoot, reply);

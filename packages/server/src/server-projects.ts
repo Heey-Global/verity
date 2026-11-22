@@ -345,6 +345,19 @@ export function installProjects(
   };
   // Fold state and dismissed Home items belong to the person asking, never to the
   // project row, so one member folding a group leaves everyone else's open.
+  // What this person may do in a project, so the app offers only that. The
+  // routes check again; this only spares an action the server would refuse.
+  // Without accounts the one operator may do everything.
+  const viewerRights = async (viewer: string, projectId: string) => {
+    if (deps.authRegistry?.isEnabled() !== true)
+      return { canExecute: true, canCode: true, canManage: true };
+    const [canExecute, canCode, canManage] = await Promise.all(
+      (['execute', 'code', 'manage'] as const).map((permission) =>
+        deps.eventStore.hasProjectPermission(viewer, projectId, permission),
+      ),
+    );
+    return { canExecute: canExecute!, canCode: canCode!, canManage: canManage! };
+  };
   const projectsAsSeenBy = async (
     viewer: string,
     projects: PublicProjectRecord[],
@@ -519,11 +532,7 @@ export function installProjects(
         sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
         // What this person may change here, so the app offers only that. The
         // routes check again; this only spares an edit the server would refuse.
-        viewer: {
-          canManage:
-            deps.authRegistry?.isEnabled() !== true ||
-            (await deps.eventStore.hasProjectPermission(viewer, id, 'manage')),
-        },
+        viewer: await viewerRights(viewer, id),
       };
     },
     projectExists: async (id) => (await deps.eventStore.getProject(id)) !== undefined,
