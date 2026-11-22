@@ -1,3 +1,4 @@
+import { createEmbeddedProjectRuntimeBindings } from './embedded-project-runtime.js';
 import { createEmbeddedSecretUnlock } from './embedded-secret-unlock.js';
 import {
   installEmbeddedLocalPreviewRecovery,
@@ -231,9 +232,7 @@ import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 
-import { containerPathFor, DockerExecBackend } from './project-backend.js';
-import { createSandboxGit } from './sandbox-git.js';
-import { projectSettingsEnv } from './project-settings-env.js';
+import { containerPathFor } from './project-backend.js';
 import {
   createClaudeEgressIdentityService,
   type ClaudeEgressIdentityService,
@@ -246,7 +245,6 @@ import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
 import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
-import { createSandboxUpdateChecker } from './sandbox-updates.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
@@ -1490,69 +1488,15 @@ export async function buildEmbeddedServer(
       secretCipher,
       refreshProjectToken,
     }),
-    ...(projectDocker !== undefined
-      ? {
-          sandboxUpdates: createSandboxUpdateChecker({
-            docker: projectDocker,
-            defaultProjectImage,
-            defaultProjectImageVersion: config.defaultProjectImageVersion,
-            toolkitFeatureRef:
-              devcontainerFeature === undefined
-                ? undefined
-                : async () => (await devcontainerFeature())?.ref,
-          }),
-        }
-      : {}),
-    // Repo root reserved for the human/main session — the server's delete path
-    // never removes it (#105 safety guard); sessions always run in their own worktree.
-    ...(config.repoDir !== undefined ? { workspaceDir: config.repoDir } : {}),
-    // Multi-repo fleet-registry provisioner + deprovisioner (§19.3/#19.8). Absent →
-    // the `project` field on POST /sessions and POST /projects/:id/deprovision
-    // both return 503 (the mobile picker hides the fleet-registry UI).
-    ...(provisioner !== undefined ? { provisioner } : {}),
-    ...(provisioner !== undefined ? { projectSandboxLifecycleTelemetry } : {}),
-    ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
-      ? { projectCloneRoot: config.hostCloneRoot }
-      : {}),
-    ...(!config.repoDir && config.hostCloneRoot !== undefined
-      ? { projectWorktreeBranchesOnly: true }
-      : {}),
-    ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
-      ? {
-          projectBackend: (project: ProjectRecord, selected, settings) =>
-            new DockerExecBackend({
-              containerName: project.containerName,
-              hostProjectRoot: projectClonePath(config.hostCloneRoot as string, project),
-              dockerBaseUrl: config.dockerBaseUrl,
-              backend: selected,
-              containerEnv: projectSettingsEnv(settings),
-            }),
-          // Git for the GitHub-free merge, run inside the project's own container.
-          // Same shape as the backend above on purpose: the merge touches a clone the
-          // session owns, so it must execute where the session's own code executes.
-          // The daemon distinguishes stopped sandboxes from failed Git commands.
-          ...(projectDocker !== undefined
-            ? {
-                sandboxGit: (project: ProjectRecord, clonePath: string) =>
-                  createSandboxGit({
-                    containerName: project.containerName,
-                    hostRoot: clonePath,
-                    dockerBaseUrl: config.dockerBaseUrl,
-                    // Trust daemon state rather than repository-controlled Git output.
-                    inspect: () => projectDocker.inspectContainer(project.containerName),
-                  }),
-              }
-            : {}),
-          ...(config.enableProjectRuntime === true
-            ? {
-                projectRuntime: new DockerProjectRuntime({
-                  resolveUser: resolvePreviewUser,
-                  dockerBaseUrl: config.dockerBaseUrl,
-                }),
-              }
-            : {}),
-        }
-      : {}),
+    ...createEmbeddedProjectRuntimeBindings({
+      config,
+      projectDocker,
+      defaultProjectImage,
+      devcontainerFeature,
+      provisioner,
+      projectSandboxLifecycleTelemetry,
+      resolvePreviewUser,
+    }),
     audit: {
       recorder: auditRecorder,
       log: auditLog,
