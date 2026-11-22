@@ -13,7 +13,7 @@ export function liveResourceInterval(path: string): number | undefined {
     return undefined;
   if (/^\/projects(?:\/[^/]+(?:\/(?:public-shares|local-shares))?)?$/u.test(p)) return 15_000;
   if (
-    /^\/sessions\/[^/]+\/(?:google-status|branches|links|linked-message-approvals|dev-servers|managed-dev-servers(?:\/[^/]+\/logs)?|local-shares|public-static-entries|public-static-directories)$/u.test(
+    /^\/sessions\/[^/]+\/(?:google-status|branches|links|collaboration|linked-message-approvals|dev-servers|managed-dev-servers(?:\/[^/]+\/logs)?|local-shares|public-static-entries|public-static-directories)$/u.test(
       p,
     )
   )

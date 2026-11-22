@@ -7,6 +7,7 @@ import { aiAccountsSpec } from './ai-accounts';
 import { codeWorkspaceSpec } from './code-workspace';
 import { connectionStatusSpec } from './connection-status';
 import { sessionStabilitySpec } from './session-stability';
+import { sessionCollaborationSpec } from './session-collaboration';
 import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
 import { homeAnswersSpec } from './home-answers';
@@ -39,6 +40,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   codeWorkspaceSpec,
   sessionStabilitySpec,
   connectionStatusSpec,
+  sessionCollaborationSpec,
   sessionGroupsSpec,
   factorySpec,
   homeAnswersSpec,
