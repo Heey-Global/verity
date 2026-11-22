@@ -117,8 +117,13 @@ export interface SessionFileRouteDeps {
    *  session does not exist — or, for a knowledge root, when the session has no
    *  project or the deployment has no knowledge folder configured. */
   codeAvailable?: ((sessionId: string) => Promise<boolean>) | undefined;
-  workspaceKind?: ((sessionId: string) => Promise<'documents' | 'code'>) | undefined;
+  workspaceKind?:
+    ((sessionId: string, resolvedWorktree?: string) => Promise<'documents' | 'code'>) | undefined;
   resolveRoot: (sessionId: string, root: SessionFileRootName) => Promise<string | undefined>;
+  /** Whether the requester may change the code working copy by hand, which is
+   *  part of the Code permission (ADR 0023 §1). Reading it stays with read: the
+   *  agent shows its files in the conversation anyway. Absent → no restriction. */
+  mayChangeCode?: ((request: FastifyRequest, sessionId: string) => Promise<boolean>) | undefined;
   list: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   upload: (
     request: FastifyRequest,
@@ -196,6 +201,21 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     return { root, dir };
   };
 
+  /** False after refusing: changing a code worktree by hand needs the Code permission. */
+  const codeWritable = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    id: string,
+    target: SessionFileTarget,
+  ) => {
+    if (target.root !== 'worktree' || deps.mayChangeCode === undefined) return true;
+    // A Documents session keeps its documents in the worktree: that is no code.
+    if ((await deps.workspaceKind?.(id, target.dir)) === 'documents') return true;
+    if (await deps.mayChangeCode(request, id)) return true;
+    reply.code(403).send({ error: 'Changing code files needs permission to work with code.' });
+    return false;
+  };
+
   /** Between the knowledge folders a move is a scope change; inside the worktree
    *  it can only be a rename or a reshuffle. Crossing between the worktree and a
    *  knowledge folder is neither — that is an import, with its own route. */
@@ -259,6 +279,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
         .send({ error: 'Session drafts are read-only here; edit them in their session.' });
     const value = await target(id, query.root, reply);
     if (value === undefined) return reply;
+    if (!(await codeWritable(request, reply, id, value))) return reply;
     return deps.upload(request, reply, value, query);
   });
 
@@ -279,6 +300,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
           .send({ error: 'Shared knowledge is managed in Settings › Shared knowledge.' });
       const value = await target(id, body.root, reply);
       if (value === undefined) return reply;
+      if (!(await codeWritable(request, reply, id, value))) return reply;
       return createFolder(reply, value, body.path, body.name);
     });
 
@@ -315,6 +337,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
         return reply.code(403).send({ error: 'This area is read-only.' });
       const value = await target(id, body.root, reply);
       if (value === undefined) return reply;
+      if (!(await codeWritable(request, reply, id, value))) return reply;
       return deps.write(reply, value, body);
     },
   );
@@ -336,6 +359,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
         .send({ error: 'Session drafts are retained until explicitly resolved.' });
     const value = await target(id, root, reply);
     if (value === undefined) return reply;
+    if (!(await codeWritable(request, reply, id, value))) return reply;
     return deps.remove(reply, value, path);
   });
 
@@ -349,6 +373,8 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     if (from === undefined) return reply;
     const to = await target(id, body.toRoot, reply);
     if (to === undefined) return reply;
+    if (!(await codeWritable(request, reply, id, from))) return reply;
+    if (from.dir !== to.dir && !(await codeWritable(request, reply, id, to))) return reply;
     return deps.move(reply, from, to, body);
   });
 }

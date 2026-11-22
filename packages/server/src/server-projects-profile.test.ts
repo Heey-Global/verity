@@ -87,7 +87,7 @@ describe('PATCH /projects/:id/profile', () => {
     // Without the auth gate there is one implicit administrator.
     expect(res.json()).toMatchObject({
       project: { name: 'verity' },
-      viewer: { canManage: true },
+      viewer: { canExecute: true, canCode: true, canManage: true },
     });
   });
 
