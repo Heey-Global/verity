@@ -855,14 +855,23 @@ def reconcile_stopped_relay_policy(root, run, target):
             continue
         if not isinstance(relay, str) or not re.fullmatch('[a-f0-9]{64}', relay):
             raise ValueError('Invalid stopped relay identity')
-        found = run('/usr/bin/docker', '--host=unix:///var/run/docker.sock', 'container', 'ls',
-                    '--all', '--quiet', '--no-trunc', '--filter', 'id=' + relay).strip().splitlines()
-        if not found:
+        def relay_exists():
+            found = run('/usr/bin/docker', '--host=unix:///var/run/docker.sock', 'container', 'ls',
+                        '--all', '--quiet', '--no-trunc', '--filter', 'id=' + relay).strip().splitlines()
+            if found and found != [relay]:
+                raise ValueError('Stopped relay identity mismatch')
+            return bool(found)
+
+        if not relay_exists():
             continue
-        if found != [relay]:
-            raise ValueError('Stopped relay identity mismatch')
-        inspected = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
-                                   'container', 'inspect', relay))
+        try:
+            inspection = run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
+                             'container', 'inspect', relay)
+        except subprocess.CalledProcessError:
+            if not relay_exists():
+                continue
+            raise
+        inspected = json.loads(inspection)
         if (not isinstance(inspected, list) or len(inspected) != 1
                 or inspected[0].get('Id') != relay):
             raise ValueError('Stopped relay inspection mismatch')

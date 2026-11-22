@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import subprocess
 import os
 from pathlib import Path
 import tempfile
@@ -620,6 +621,21 @@ class ManagedTests(unittest.TestCase):
 
         self.assertEqual(json.loads(managed.reconcile_stopped_relay_policy(
             self.root, missing, target)), json.loads(target))
+
+        for still_present in (False, True):
+            listings = iter([relay, relay if still_present else ''])
+
+            def removed_during_inspect(*args):
+                if 'ls' in args:
+                    return next(listings)
+                raise subprocess.CalledProcessError(1, args)
+
+            if still_present:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    managed.reconcile_stopped_relay_policy(self.root, removed_during_inspect, target)
+            else:
+                self.assertEqual(json.loads(managed.reconcile_stopped_relay_policy(
+                    self.root, removed_during_inspect, target)), json.loads(target))
 
         def unavailable(*args):
             raise RuntimeError('daemon unavailable')
