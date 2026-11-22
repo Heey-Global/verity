@@ -1164,13 +1164,17 @@ export function registerServerSessionFiles(
   };
   registerSessionFileRoutes(app, {
     ...fileDeps,
-    // As the route policy has it: administrators keep every route.
+    // As the route policy has it: without accounts there is one operator, and
+    // administrators keep every route. An unknown session is answered as one.
     mayChangeCode: async (request, sessionId) => {
+      if (request.localUserId == null) return true;
       const viewer = viewerId(request);
       if (await deps.eventStore.isActiveAdministrator(viewer)) return true;
-      const projectId = (await deps.eventStore.getSession(sessionId))?.projectId;
+      const session = await deps.eventStore.getSession(sessionId);
+      if (session === undefined) return true;
       return (
-        projectId != null && (await deps.eventStore.hasProjectPermission(viewer, projectId, 'code'))
+        session.projectId != null &&
+        (await deps.eventStore.hasProjectPermission(viewer, session.projectId, 'code'))
       );
     },
   });

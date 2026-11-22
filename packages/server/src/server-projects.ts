@@ -343,8 +343,6 @@ export function installProjects(
       };
     });
   };
-  // Fold state and dismissed Home items belong to the person asking, never to the
-  // project row, so one member folding a group leaves everyone else's open.
   // What this person may do in a project, so the app offers only that. The
   // routes check again; this only spares an action the server would refuse.
   // Without accounts the one operator may do everything.
@@ -358,6 +356,8 @@ export function installProjects(
     );
     return { canExecute: canExecute!, canCode: canCode!, canManage: canManage! };
   };
+  // Fold state and dismissed Home items belong to the person asking, never to the
+  // project row, so one member folding a group leaves everyone else's open.
   const projectsAsSeenBy = async (
     viewer: string,
     projects: PublicProjectRecord[],

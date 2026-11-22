@@ -66,8 +66,8 @@ export function registerRepairRoutes(app: FastifyInstance, store: EventStore): v
     const { id } = params.parse(request.params);
     const role = await store.repairs.projectQA.roleForSession(id);
     if (!role) return { proposals: [] };
-    if (!(await allowed(request, role.project_id, 'code')))
-      return reply.code(403).send({ error: 'Permission to work with code required' });
+    if (!(await allowed(request, role.project_id, 'execute')))
+      return reply.code(403).send({ error: 'Project execution permission required' });
     return {
       proposals: (await store.repairs.qaProposals()).filter(
         (p) => p.project_id === role.project_id,
