@@ -63,7 +63,7 @@ try {
   const registry = await (
     await openProjectEgressHostStore('/var/lib/verity-egress', { preparePrivate: true })
   ).load();
-  const inspectRetainedContainer = async (id: string) => {
+  const retainedContainerExists = async (id: string) => {
     const listed = (
       await run(
         '/usr/local/bin/docker',
@@ -80,15 +80,25 @@ try {
         { timeout: 10000, maxBuffer: 65536 },
       )
     ).stdout.trim();
-    if (!listed) return undefined;
+    if (!listed) return false;
     if (listed !== id) throw new Error('Protected container retention identity mismatch');
-    return (
-      await run(
-        '/usr/local/bin/docker',
-        ['--host=unix:///var/run/docker.sock', 'container', 'inspect', id],
-        { timeout: 10000, maxBuffer: 1024 * 1024 },
-      )
-    ).stdout;
+    return true;
+  };
+  const inspectRetainedContainer = async (id: string) => {
+    if (!(await retainedContainerExists(id))) return undefined;
+    try {
+      return (
+        await run(
+          '/usr/local/bin/docker',
+          ['--host=unix:///var/run/docker.sock', 'container', 'inspect', id],
+          { timeout: 10000, maxBuffer: 1024 * 1024 },
+        )
+      ).stdout;
+    } catch (error) {
+      // Relay cleanup can remove the container while staging is taking its snapshot.
+      if (!(await retainedContainerExists(id))) return undefined;
+      throw error;
+    }
   };
   const activeRelayImages: string[] = [];
   for (const record of registry.records) {

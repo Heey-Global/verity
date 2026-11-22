@@ -94,11 +94,12 @@ stat -c '%F %a %u:%g %s' "$channel" && cat "$channel"
   to a signed target that contains the correction through the app. No host
   action is needed first.
 - **Cause in host state** (free space, a stale stage, the channel record):
-  correct that state, then update through the app again.
+  correct that state, then update through the app again. If recovery is still
+  required for the failed operation, choose a newer target offered by the app.
 - **Cause in the installed Updater's orchestration:** a newer target cannot
-  change it. Replace only the Updater as described in
-  [Direct update recovery](direct-update-recovery.md#upgrade-only-the-updater),
-  then update through the app.
+  change it. Follow [Direct update recovery](direct-update-recovery.md#verify-the-target-before-replacing-anything)
+  to verify the signed target, then replace only the Updater using the exact
+  image digest returned by that check and continue with the runbook.
 
 The official installer in Repair mode stays pinned to the installed release. It
 provisions network protection directly, without the provisioning helper or the
