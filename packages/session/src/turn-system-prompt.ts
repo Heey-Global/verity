@@ -75,7 +75,7 @@ export const APPROVAL_WAITING_SYSTEM_PROMPT =
 
 /** The forge gateway refuses code writes for a person without Code (ADR 0023 §1). */
 const FORGE_CODE_PERMISSION_SYSTEM_PROMPT =
-  'A push or pull-request change refused with 403 can mean the person you work for lacks the Code permission; the forge API response then says so. Do not retry or work around that refusal: tell them their changes stay in this session for a project member with Code permission to add.';
+  'A push or pull-request change refused with 403 can mean the person you work for lacks the Code permission: gh and API responses name it, while git push shows only the 403. Do not retry or work around that refusal: tell them their changes stay in this session for a project member with Code permission to add.';
 
 function assembleTurnSystemPrompt(codeHost: TurnCodeHost): string {
   return `${TERMINOLOGY_SYSTEM_PROMPT}
