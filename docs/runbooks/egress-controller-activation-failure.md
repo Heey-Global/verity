@@ -64,6 +64,44 @@ jq -r '.records[] | select(.retired == false) | .containers[]?' \
 Only `missing` lines identify stale records. A `Docker query failed` line proves
 nothing; fix Docker access first.
 
+## The previous controller fails its preflight
+
+The update renews the host runtime before network protection activates. The
+gVisor `runsc` binaries and the Docker registrations `runsc`, `runsc-project` and
+`runsc-relay` move to the target's gVisor release. A failed activation rolls back
+only the network protection release, units and configuration, not the host
+runtime. The previous controller's preflight binds to the gVisor release it was
+assessed with, so it then refuses to start. The host stays fail-closed: project
+egress is denied.
+
+Releases before this correction report that as `runtime_preflight_failed` and,
+when started by hand, restart every second. With the correction:
+
+- The preflight reports `native_identity_changed` when the project runtime
+  registration or runtime files differ, and `relay_runtime_mismatch` when the relay
+  registration differs.
+- A failed restart during rollback leaves the unit stopped and reports
+  `reason recovery_failed, step recovery`.
+
+Confirm this cause with read-only commands:
+
+```sh
+grep RUNSC_RELEASE /opt/verity-egress/native-runtime-pins.env
+jq -c '.profile.runtime.path' /etc/verity-egress/assessment.json
+jq -c '.runtime.path' /etc/verity-egress/relay-runtime.json
+jq -c '.runtimes | with_entries(.value |= .path)' /etc/docker/daemon.json
+ls -d /opt/verity/runsc/release-*
+```
+
+The cause is confirmed when the first two name an older gVisor release than the
+Docker registrations and `relay-runtime.json`.
+
+The previous controller cannot serve on this host again without reverting the host
+runtime, and a later update would renew it again. Recover by updating through the
+app to a signed target that contains these corrections. The target's staging
+assessment binds to the renewed runtime, and its controller retires stale
+bindings. Do not edit `daemon.json` by hand.
+
 ## Recover
 
 Never run the installer with `--reinstall`; it deletes all data.
@@ -73,15 +111,19 @@ correction. The target's controller retires the stale records itself. No host
 change is needed first. Until that target is offered, do not retry older targets:
 they fail the same way.
 
-**When network protection must return before that target is available**, retire
-the stale records by hand. The controller must be stopped while the file
-changes; the edit does the same as the corrected controller.
+**When network protection must return before that target is available** and
+the previous controller passes its preflight, retire the stale records by hand.
+The controller must be stopped while the file changes; the edit does the same as
+the corrected controller.
 
 ```sh
 (
   set -euo pipefail
-  systemctl is-active --quiet verity-egress-host.service && {
-    echo 'Controller is running; stop here.'; exit 1; }
+  state=$(systemctl show --property=ActiveState --value verity-egress-host.service)
+  case $state in inactive | failed) ;; *)
+    echo "Controller is $state; run systemctl stop verity-egress-host.service first."; exit 1 ;; esac
+  /usr/bin/python3 /usr/local/libexec/verity/project-egress-managed.py verify-runtime || {
+    echo 'Controller preflight fails; see the preflight section.'; exit 1; }
   cd /var/lib/verity-egress
   cp -p registry.json "registry.json.bak-$(date -u +%Y%m%dT%H%M%SZ)"
   missing=$(jq -r '.records[] | select(.retired == false) | .containers[]?' registry.json |

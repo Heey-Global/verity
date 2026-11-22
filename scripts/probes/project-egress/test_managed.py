@@ -869,6 +869,9 @@ class ManagedTests(unittest.TestCase):
     def test_failed_controller_restart_after_rollback_reports_recovery_failure(self):
         previous, error = self.failed_upgrade_with_serving_controller(restart_fails=True)
         self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        # Restart=on-failure would otherwise retry a failing preflight forever.
+        restart = max(i for i, cmd in enumerate(self.calls) if cmd == ('/usr/bin/systemctl', 'start', managed.SERVICE))
+        self.assertIn(('/usr/bin/systemctl', 'stop', managed.SERVICE), self.calls[restart + 1:])
         self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'recovery_failed', 'step': 'recovery'})
         status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
         self.assertEqual(status['reason'], 'controller_failed')
