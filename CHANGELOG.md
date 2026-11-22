@@ -6,6 +6,22 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.99.1](https://github.com/Heey-Global/verity/compare/v4.99.0...v4.99.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **build:** handle resolver symlinks in protected builds ([#2776](https://github.com/Heey-Global/verity/issues/2776)) ([c0e6581](https://github.com/Heey-Global/verity/commit/c0e65815df80dbc51eb2d8fb38ac7d5c37a114e5))
+* **deps:** update agent clis ([#2783](https://github.com/Heey-Global/verity/issues/2783)) ([0cbde2b](https://github.com/Heey-Global/verity/commit/0cbde2ba4ad3506cffa2e50a4e5f6ea7b7de0476))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.8.0 ([#2787](https://github.com/Heey-Global/verity/issues/2787)) ([0682b91](https://github.com/Heey-Global/verity/commit/0682b917110fd4aaa2dd10fe07c21ac7cd9ce81c))
+* **deps:** update gvisor runtime to v20261116 ([#2753](https://github.com/Heey-Global/verity/issues/2753)) ([7be0df0](https://github.com/Heey-Global/verity/commit/7be0df0e557fc18517bffe16ec96ca858929abbf))
+* **mobile:** keep permission overviews readable and complete ([#2778](https://github.com/Heey-Global/verity/issues/2778)) ([6a8c2bc](https://github.com/Heey-Global/verity/commit/6a8c2bc655afd03e10789cbec03a2682d98115dd))
+* **relay:** drain queued forge responses before closing tunnels ([#2777](https://github.com/Heey-Global/verity/issues/2777)) ([e028933](https://github.com/Heey-Global/verity/commit/e028933bf43557d481630e8920bf8a969289272d))
+* **server:** read Claude's sign-in URL once from its terminal hyperlink ([#2770](https://github.com/Heey-Global/verity/issues/2770)) ([9c222bd](https://github.com/Heey-Global/verity/commit/9c222bdeae5a3732ff7a63363e8e64bf5b4401fe))
+* **server:** verify rebuild snapshot inputs before sandbox setup ([#2772](https://github.com/Heey-Global/verity/issues/2772)) ([644e219](https://github.com/Heey-Global/verity/commit/644e2191d8bd66c4016895e45d46be704feb9a27))
+* **storage:** coordinate durable dependency capacity reservations ([#2779](https://github.com/Heey-Global/verity/issues/2779)) ([3d2be3e](https://github.com/Heey-Global/verity/commit/3d2be3eaef01e05772c29b2a68775b00293dbeb4))
+* **storage:** protect recovery data and bound dependency copies ([#2765](https://github.com/Heey-Global/verity/issues/2765)) ([f4b0d28](https://github.com/Heey-Global/verity/commit/f4b0d2811d289275284f1151ea813c18a7e73231))
+
 ## [4.99.0](https://github.com/Heey-Global/verity/compare/v4.98.0...v4.99.0) (2026-11-21)
 
 
