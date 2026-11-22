@@ -66,6 +66,7 @@ import {
 } from './session-file-routes.js';
 import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import type { SessionFileRootName } from './session-files.js';
+import { viewerId } from './view-state-routes.js';
 import {
   assertSessionRealPath,
   attachmentDisposition,
@@ -392,7 +393,7 @@ export function registerServerSessionFiles(
             (await isDirectory(code))
         : false;
     },
-    workspaceKind: async (id) => {
+    workspaceKind: async (id, resolvedWorktree) => {
       const session = await deps.eventStore.getSession(id);
       const project = session?.projectId
         ? await deps.eventStore.getProject(session.projectId)
@@ -401,9 +402,15 @@ export function registerServerSessionFiles(
         ? legacySessionCodePath(session.worktree, session.sessionId)
         : undefined;
       if (!legacy || !session) return 'code';
-      if (project?.kind === 'control_plane' || !deps.projectCloneRoot) return 'documents';
+      if (project?.kind === 'control_plane') return 'documents';
       // In a repository project the session is a code session even while its checkout is missing.
-      if (project && project.kind !== 'local') return 'code';
+      if (deps.projectCloneRoot && project && project.kind !== 'local') return 'code';
+      // `legacy` exists only for a worktree inside `.verity-document-sessions`, and it
+      // always points into `.verity-sessions`: resolveRoot hands back that code path or
+      // `session.worktree` itself, the Documents view, so identity decides the kind.
+      if (resolvedWorktree !== undefined)
+        return resolvedWorktree === session.worktree ? 'documents' : 'code';
+      if (!deps.projectCloneRoot) return 'documents';
       return (await isDirectory(legacy)) ||
         (project &&
           ((await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))) ||
@@ -1161,7 +1168,22 @@ export function registerServerSessionFiles(
       }
     },
   };
-  registerSessionFileRoutes(app, fileDeps);
+  registerSessionFileRoutes(app, {
+    ...fileDeps,
+    // As the route policy has it: without accounts there is one operator, and
+    // administrators keep every route. An unknown session is answered as one.
+    mayChangeCode: async (request, sessionId) => {
+      if (request.localUserId == null) return true;
+      const viewer = viewerId(request);
+      if (await deps.eventStore.isActiveAdministrator(viewer)) return true;
+      const session = await deps.eventStore.getSession(sessionId);
+      if (session === undefined) return true;
+      return (
+        session.projectId != null &&
+        (await deps.eventStore.hasProjectPermission(viewer, session.projectId, 'code'))
+      );
+    },
+  });
   registerKnowledgeFileRoutes(app, fileDeps);
 
   /** The project's Wiki as the explorer writes it: `path` is relative to `insights/`. */

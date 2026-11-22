@@ -386,3 +386,52 @@ it.each([
   expect(await decide('removed-creator')).toBe('forbidden');
   expect(await decide('disabled-creator')).toBe('forbidden');
 });
+
+// Edit lets a member work with the agent; adding the session's changes to the
+// project's code needs Code (ADR 0023 §1). A route left on execute would let an
+// Edit-only member merge while the team settings say they cannot.
+it('requires Code, not only execute, to add changes to the project code', async () => {
+  const integrating = [
+    ['POST', '/sessions/:id/merge'],
+    ['POST', '/sessions/:id/pull-request/merge'],
+    ['POST', '/sessions/:id/save-to-project'],
+    ['POST', '/sessions/:id/branch'],
+    ['POST', '/sessions/:id/code-workspace/restore'],
+    ['POST', '/sessions/:id/repositories/:repositoryId/open'],
+    ['POST', '/projects/:id/pull-requests/:repositoryId/:number/merge'],
+    ['POST', '/projects/:id/pull-requests/:repositoryId/:number/fix'],
+    ['POST', '/projects/:id/qa/issues/:issueId/decision'],
+    ['POST', '/projects/:id/repairs/approval'],
+    ['POST', '/projects/:id/repairs/retry'],
+    ['POST', '/projects/:id/vulnerability-fix'],
+    ['POST', '/projects/:id/vulnerability-scan'],
+  ] as const;
+  const store = (permissions: string[]): PairedRoutePolicyStore => ({
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (_user, projectId, permission) =>
+      projectId === 'p' && permissions.includes(permission),
+    getSession: async (id) => (id === 's' ? { projectId: 'p' } : undefined),
+  });
+  const editor = store(['read', 'execute']);
+  const developer = store(['read', 'execute', 'code']);
+  for (const [method, url] of integrating) {
+    const params = url.startsWith('/sessions/') ? { id: 's' } : { id: 'p' };
+    expect(pairedRoutePolicy(method, url)).toMatchObject({ permission: 'code' });
+    expect(await authorizePairedRoute(editor, 'mara', method, url, params)).toBe('forbidden');
+    expect(await authorizePairedRoute(developer, 'alex', method, url, params)).toBe('allow');
+  }
+  // Working with the agent and the preview stays with execute.
+  expect(
+    await authorizePairedRoute(editor, 'mara', 'POST', '/sessions/:id/turns', { id: 's' }),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(
+      editor,
+      'mara',
+      'POST',
+      '/sessions/:sessionId/managed-dev-servers/:serverId/start',
+      { sessionId: 's', serverId: 'web' },
+    ),
+  ).toBe('allow');
+});

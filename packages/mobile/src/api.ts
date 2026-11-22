@@ -3,6 +3,7 @@ import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } fro
 import {
   agentLoginResponseSchema,
   peopleClient,
+  projectViewerSchema,
   type AgentLogin,
   type AgentLoginProvider,
 } from './people-api.js';
@@ -1809,9 +1810,8 @@ export const projectDetailSchema = z.object({
   project: projectRecordSchema,
   settings: projectSettingsSchema.nullable(),
   sessions: z.array(sessionSummarySchema),
-  // What the requesting person may change. Absent from older servers, which
-  // left every change to administrators and refused the rest.
-  viewer: z.object({ canManage: z.boolean() }).optional(),
+  // What the requesting person may do; absent from older servers (see the schema).
+  viewer: projectViewerSchema.optional(),
 });
 export type ProjectDetail = z.infer<typeof projectDetailSchema>;
 
