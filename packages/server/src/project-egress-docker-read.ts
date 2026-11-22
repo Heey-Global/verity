@@ -22,16 +22,20 @@ export class EgressDockerReadError extends Error {
   }
 }
 
-/** True only when Docker answers that this exact container does not exist. */
-export async function egressDockerContainerAbsent(id: string): Promise<boolean> {
+/** True only when Docker answers that this exact container or network does not exist. */
+export async function egressDockerObjectAbsent(
+  kind: 'container' | 'network',
+  id: string,
+): Promise<boolean> {
   try {
-    await readEgressDockerObject('container', id);
+    await readEgressDockerObject(kind, id);
     return false;
   } catch (error) {
     if (error instanceof EgressDockerReadError && error.status === 404) return true;
     throw error;
   }
 }
+
 /** No caller-selected method, socket, query, redirect or arbitrary API path. */
 export async function readEgressDockerObject(
   kind: 'container' | 'network' | 'image' | 'volume' | 'info' | 'networks',

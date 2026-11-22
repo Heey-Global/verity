@@ -1,4 +1,4 @@
-import { egressDockerContainerAbsent } from './project-egress-docker-read.js';
+import { egressDockerObjectAbsent } from './project-egress-docker-read.js';
 import { createDockerClient, DockerError } from './docker.js';
 import { createHostProjectNetworks } from './project-egress-network-cleanup.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
@@ -301,7 +301,7 @@ const controller = new ProjectEgressHost(await store.load(), {
   startContainer: async (id) => {
     await projectEgressHostDocker('container', 'start', id);
   },
-  containerAbsent: egressDockerContainerAbsent,
+  objectAbsent: egressDockerObjectAbsent,
   stopContainer: async (id) => {
     try {
       await projectEgressHostDocker('container', 'stop', '--time', '1', id);

@@ -20,7 +20,7 @@ vi.mock('node:http', async (importOriginal) => {
   };
 });
 import {
-  egressDockerContainerAbsent,
+  egressDockerObjectAbsent,
   EgressDockerReadError,
   readEgressDocker,
   readEgressDockerObject,
@@ -82,22 +82,25 @@ it('rejects substituted IDs, bad JSON, redirects and unsupported API responses',
 });
 // A removed container must not read as an absent one unless Docker said 404;
 // anything else (refusal, daemon error, timeout) has to keep failing closed.
-it('reports a container as absent only for a 404 answer', async () => {
-  expect(await egressDockerContainerAbsent(id)).toBe(false);
+it('reports a container or network as absent only for a 404 answer', async () => {
+  expect(await egressDockerObjectAbsent('container', id)).toBe(false);
   handler = (response) => {
     response.writeHead(404);
     response.end();
   };
-  expect(await egressDockerContainerAbsent(id)).toBe(true);
+  expect(await egressDockerObjectAbsent('container', id)).toBe(true);
+  expect(await egressDockerObjectAbsent('network', id)).toBe(true);
   for (const status of [400, 403, 500]) {
     handler = (response) => {
       response.writeHead(status);
       response.end();
     };
-    await expect(egressDockerContainerAbsent(id)).rejects.toBeInstanceOf(EgressDockerReadError);
+    await expect(egressDockerObjectAbsent('container', id)).rejects.toBeInstanceOf(
+      EgressDockerReadError,
+    );
   }
   handler = (response) => response.end(JSON.stringify({ Id: 'b'.repeat(64) }));
-  await expect(egressDockerContainerAbsent(id)).rejects.toThrow();
+  await expect(egressDockerObjectAbsent('container', id)).rejects.toThrow();
 });
 it('bounds response size and total elapsed time even while bytes arrive', async () => {
   handler = (response) => response.end('x'.repeat(2 * 1024 * 1024 + 1));

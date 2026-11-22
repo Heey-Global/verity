@@ -25,14 +25,16 @@ fails the same way while the stale record remains.
 
 With the correction:
 
-- The controller retires a binding whose container Docker reports as absent (404).
-  The binding stays denied, and its remaining container is stopped. Any other
-  Docker answer still prevents serving.
+- When a binding fails its check, the controller asks Docker about all of its
+  containers and its network. If Docker reports any of them as absent (404), the
+  binding is retired: it stays denied and its remaining containers are stopped.
+  Any other Docker answer still prevents serving.
 - Docker errors name the status: not found (404), refused (403), rejected request
   with possibly unsupported API (400), or the other status code.
 - A failed activation restarts a previously running controller after rollback
   and checks that it is active. If that restart fails, the update reports
-  `reason recovery_failed, step recovery`.
+  `reason recovery_failed, step recovery`. A controller that was already stopped
+  before the update stays stopped after a failed one.
 
 The activation code runs from the target release, so the correction takes effect
 through a normal update from an installed release that lacks it.
@@ -76,29 +78,33 @@ the stale records by hand. The controller must be stopped while the file
 changes; the edit does the same as the corrected controller.
 
 ```sh
-set -euo pipefail
-systemctl is-active --quiet verity-egress-host.service && {
-  echo 'Controller is running; stop here.'; exit 1; }
-cd /var/lib/verity-egress
-cp -p registry.json "registry.json.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-missing=$(jq -r '.records[] | select(.retired == false) | .containers[]?' registry.json |
-  sort -u | while IFS= read -r id; do
-    found=$(docker container ls --all --quiet --no-trunc --filter "id=$id") || exit 1
-    if [ -z "$found" ]; then printf '%s\n' "$id"; fi
-  done | jq -R . | jq -s .)
-jq -c --argjson missing "$missing" '.records |= map(
-    if .retired == false and ([.containers[]?] | any(. as $c | $missing | index($c)))
-    then .retired = true | .cleanupContainers = true else . end)' \
-  registry.json > .registry-manual
-chown --reference=registry.json .registry-manual
-chmod --reference=registry.json .registry-manual
-mv .registry-manual registry.json
-sync -f registry.json
-systemctl start verity-egress-host.service
-systemctl is-active verity-egress-host.service
+(
+  set -euo pipefail
+  systemctl is-active --quiet verity-egress-host.service && {
+    echo 'Controller is running; stop here.'; exit 1; }
+  cd /var/lib/verity-egress
+  cp -p registry.json "registry.json.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+  missing=$(jq -r '.records[] | select(.retired == false) | .containers[]?' registry.json |
+    sort -u | while IFS= read -r id; do
+      found=$(docker container ls --all --quiet --no-trunc --filter "id=$id") || exit 1
+      if [ -z "$found" ]; then printf '%s\n' "$id"; fi
+    done | jq -R . | jq -s .)
+  jq -c --argjson missing "$missing" '.records |= map(
+      if .retired == false and ([.containers[]?] | any(. as $c | $missing | index($c)))
+      then .retired = true | .cleanupContainers = true else . end)' \
+    registry.json > .registry-manual
+  chown --reference=registry.json .registry-manual
+  chmod --reference=registry.json .registry-manual
+  mv .registry-manual registry.json
+  sync -f registry.json
+  systemctl start verity-egress-host.service
+  systemctl is-active verity-egress-host.service
+)
 ```
 
-If any Docker query fails, `set -e` stops before the file changes. If the
+The parentheses keep `exit` and `set -e` from closing your shell. If any Docker
+query fails, the block stops before the file changes. It handles removed
+containers only; the corrected controller also handles a removed network. If the
 controller still fails to start, restore the backup copy and keep the journal
 output for diagnosis. The controller removes networks of retired records and
 stops their remaining containers during its periodic cleanup. Affected projects

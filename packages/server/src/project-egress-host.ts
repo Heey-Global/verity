@@ -176,8 +176,8 @@ interface Dependencies {
   cleanupPendingNetwork?(identity: { projectId: string; generation: string }): Promise<void>;
   startContainer(id: string): Promise<void>;
   stopContainer(id: string): Promise<void>;
-  /** True only when Docker positively reports that this container no longer exists. */
-  containerAbsent?(id: string): Promise<boolean>;
+  /** True only when Docker positively reports that this object no longer exists. */
+  objectAbsent?(kind: 'container' | 'network', id: string): Promise<boolean>;
 }
 const key = (binding: { projectId: string; generation: string }): string =>
   `${binding.projectId}:${binding.generation}`;
@@ -372,7 +372,7 @@ export class ProjectEgressHost {
       for (const record of this.state.records) {
         await this.deny(record);
         if (record.retired) continue;
-        let removed = false;
+        const mismatched: Array<{ id: string; error: unknown }> = [];
         for (const role of ['sandbox', 'relay'] as const) {
           const id = record.containers[role];
           if (!id) continue;
@@ -380,21 +380,17 @@ export class ProjectEgressHost {
             await this.deps.inspectContainer(record.binding, id, role, true);
             await this.deps.inspectNetwork(record.binding, containerIds(record));
           } catch (error) {
-            if (await this.confirmedAbsent(id)) {
-              removed = true;
-              continue;
-            }
-            failures.push(error);
-            try {
-              await this.deps.stopContainer(id);
-            } catch (stopError) {
-              failures.push(stopError);
-            }
+            mismatched.push({ id, error });
           }
         }
-        // A container removed while the controller was down leaves a binding that can
-        // never serve again. Retire it as an explicit retire would; it stays denied.
-        if (removed) {
+        if (!mismatched.length) continue;
+        // A container or network removed while the controller was down leaves a
+        // binding that can never serve again. Any failing role can be the first to
+        // notice (a missing network fails the surviving container's check), so the
+        // whole binding is probed. Retire it as an explicit retire would; it stays
+        // denied and its remaining containers are stopped.
+        const absent = await this.removedParts(record);
+        if (absent) {
           record.retired = true;
           record.cleanupContainers = true;
           try {
@@ -403,12 +399,21 @@ export class ProjectEgressHost {
             failures.push(error);
           }
           const stopped = await Promise.allSettled(
-            containerIds(record).map((id) =>
-              Promise.resolve().then(() => this.deps.stopContainer(id)),
-            ),
+            containerIds(record)
+              .filter((id) => !absent.has(id))
+              .map((id) => Promise.resolve().then(() => this.deps.stopContainer(id))),
           );
           for (const result of stopped)
             if (result.status === 'rejected') failures.push(result.reason);
+          continue;
+        }
+        for (const { id, error } of mismatched) {
+          failures.push(error);
+          try {
+            await this.deps.stopContainer(id);
+          } catch (stopError) {
+            failures.push(stopError);
+          }
         }
       }
       if (failures.length) {
@@ -846,13 +851,23 @@ export class ProjectEgressHost {
       return { state: 'started-denied', generation: record.binding.generation };
     });
   }
-  private async confirmedAbsent(id: string): Promise<boolean> {
+  /** Container IDs Docker reports absent, or undefined when nothing is confirmed removed. */
+  private async removedParts(record: RecordState): Promise<Set<string> | undefined> {
+    const absent = new Set<string>();
+    let removed = false;
     try {
-      return (await this.deps.containerAbsent?.(id)) === true;
+      for (const id of containerIds(record))
+        if ((await this.deps.objectAbsent?.('container', id)) === true) {
+          absent.add(id);
+          removed = true;
+        }
+      if ((await this.deps.objectAbsent?.('network', record.binding.networkId)) === true)
+        removed = true;
     } catch {
       // An unanswered check proves nothing; the original mismatch stands.
-      return false;
+      return undefined;
     }
+    return removed ? absent : undefined;
   }
   private async deny(record: RecordState): Promise<void> {
     this.transports.delete(key(record.binding));
