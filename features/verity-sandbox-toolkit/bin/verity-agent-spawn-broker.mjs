@@ -1,84 +1,264 @@
 #!/usr/bin/env node
 
+// features/verity-sandbox-toolkit/src/spawn-broker/capacity-leases.mjs
+import { spawn } from "node:child_process";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+var ROOT = "/run/verity-capacity-leases";
+var UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+function validateCapacityLeaseRequest(request) {
+  if (request?.protocolVersion !== 1 || request.kind !== "capacity-lease" || !["create", "status", "retire"].includes(request.action) || typeof request.operationId !== "string" || !UUID.test(request.operationId) || typeof request.generation !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(request.generation))
+    throw new Error("invalid capacity lease request");
+}
+function safeFile(info, uid, mode) {
+  return info.isFile() && info.uid === BigInt(uid) && info.nlink === 1n && (info.mode & 0o777n) === BigInt(mode);
+}
+function identity(info) {
+  return { device: String(info.dev), inode: String(info.ino) };
+}
+function same(a, b) {
+  return a?.device === b?.device && a?.inode === b?.inode;
+}
+async function flock(handle, wait = false) {
+  return await new Promise((resolve5, reject) => {
+    const child = spawn(
+      "/usr/bin/flock",
+      ["--exclusive", ...wait ? ["--wait", "5"] : ["--nonblock"], "3"],
+      { stdio: ["ignore", "ignore", "ignore", handle.fd] }
+    );
+    child.once("error", reject);
+    child.once(
+      "exit",
+      (code) => code === 0 ? resolve5(true) : code === 1 ? resolve5(false) : reject(new Error("capacity flock failed"))
+    );
+  });
+}
+async function rootDirectory(root, uid) {
+  await mkdir(root, { mode: 493 }).catch((error) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  const info = await lstat(root);
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== uid || (info.mode & 18) !== 0 || await realpath(root) !== root)
+    throw new Error("unsafe capacity lease directory");
+  const directory = await open(
+    root,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+  );
+  try {
+    const opened = await directory.stat();
+    if (opened.dev !== info.dev || opened.ino !== info.ino)
+      throw new Error("capacity directory changed");
+    await directory.chmod(493);
+  } finally {
+    await directory.close();
+  }
+}
+async function syncDirectory(root) {
+  const handle = await open(
+    root,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+  );
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+async function metadata(path, uid) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = await handle.stat({ bigint: true });
+    if (!safeFile(info, uid, 384) || info.size > 2048n) throw new Error("unsafe lease metadata");
+    const value = JSON.parse(await handle.readFile("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("invalid lease metadata");
+    return value;
+  } finally {
+    await handle.close();
+  }
+}
+async function persist(root, path, value) {
+  const temporary = join(root, `.metadata-${randomUUID()}`);
+  const handle = await open(
+    temporary,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    384
+  );
+  try {
+    await handle.chmod(384);
+    await handle.writeFile(JSON.stringify(value));
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await rename(temporary, path);
+    await syncDirectory(root);
+  } finally {
+    await unlink(temporary).catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+  }
+}
+async function capacityLeaseRequest(request, options = {}) {
+  validateCapacityLeaseRequest(request);
+  const root = options.capacityLeaseRoot ?? ROOT;
+  const uid = options.enforceRoot === false ? process.getuid() : 0;
+  const path = join(root, `${request.operationId}.lock`);
+  const reply = (state, extra = {}) => ({
+    ok: true,
+    capacityLeaseVersion: 1,
+    operationId: request.operationId,
+    generation: request.generation,
+    state,
+    path,
+    ...extra
+  });
+  let registry;
+  let lease;
+  try {
+    await rootDirectory(root, uid);
+    registry = await open(
+      join(root, ".registry.lock"),
+      constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW,
+      384
+    );
+    if (!safeFile(await registry.stat({ bigint: true }), uid, 384) || !await flock(registry, true))
+      return reply("unknown");
+    const recordPath = join(root, `${request.operationId}.json`);
+    let record;
+    try {
+      record = await metadata(recordPath, uid);
+    } catch (error) {
+      if (error.code !== "ENOENT" || request.action !== "create") return reply("unknown");
+    }
+    if (record) {
+      if (record.operationId !== request.operationId || record.generation !== request.generation || !/^[0-9]+$/.test(record.identity?.device) || !/^[0-9]+$/.test(record.identity?.inode))
+        return reply("unknown");
+      if (record.state === "retired") return reply("retired", { identity: record.identity });
+      if (record.state !== "live") return reply("unknown");
+    } else {
+      lease = await open(
+        path,
+        constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        420
+      );
+      await lease.chmod(420);
+      const info2 = await lease.stat({ bigint: true });
+      if (!safeFile(info2, uid, 420)) return reply("unknown");
+      record = {
+        operationId: request.operationId,
+        generation: request.generation,
+        state: "live",
+        identity: identity(info2)
+      };
+      await lease.sync();
+      await persist(root, recordPath, record);
+    }
+    lease ??= await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const info = await lease.stat({ bigint: true });
+    if (!safeFile(info, uid, 420) || !same(identity(info), record.identity))
+      return reply("unknown");
+    if (!await flock(lease)) return reply("held", { identity: record.identity });
+    const current = await lstat(path, { bigint: true });
+    if (!safeFile(current, uid, 420) || !same(identity(current), record.identity))
+      return reply("unknown");
+    if (request.action === "retire") {
+      await persist(root, recordPath, { ...record, state: "retired" });
+      await unlink(path);
+      await syncDirectory(root);
+      return reply("retired", { identity: record.identity });
+    }
+    return reply("idle", { identity: record.identity });
+  } catch {
+    return reply("unknown");
+  } finally {
+    await lease?.close();
+    await registry?.close();
+  }
+}
+
 // features/verity-sandbox-toolkit/src/spawn-broker/main.mjs
 import { statSync } from "node:fs";
 import { resolve as resolve4 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // features/verity-sandbox-toolkit/src/spawn-broker/request.mjs
-import { spawn as spawn4 } from "node:child_process";
+import { spawn as spawn5 } from "node:child_process";
 import {
   probeMemoryGuard,
   readMemoryCeiling,
   runsUnderGvisor
 } from "./verity-memory-guard.mjs";
 import { stopTaggedManagedPids } from "./verity-managed-secret-servers.mjs";
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
 import { createConnection as createConnection2 } from "node:net";
 import {
   chmod as chmod4,
   chown as chown4,
-  lstat as lstat4,
-  mkdir as mkdir3,
-  open as open2,
+  lstat as lstat5,
+  mkdir as mkdir4,
+  open as open3,
   readdir as readdir2,
-  rename,
-  realpath as realpath3,
+  rename as rename2,
+  realpath as realpath4,
   rm as rm4,
   writeFile as writeFile2
 } from "node:fs/promises";
-import { constants as constants2, readFileSync as readFileSync2 } from "node:fs";
-import { isAbsolute as isAbsolute2, join as join4, resolve as resolve3 } from "node:path";
+import { constants as constants3, readFileSync as readFileSync2 } from "node:fs";
+import { isAbsolute as isAbsolute2, join as join5, resolve as resolve3 } from "node:path";
 import { URL as URL2 } from "node:url";
 
 // features/verity-sandbox-toolkit/src/spawn-broker/launch.mjs
-import { spawn as spawn3 } from "node:child_process";
+import { spawn as spawn4 } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmod as chmod3,
   chown as chown3,
-  lstat as lstat3,
-  mkdir as mkdir2,
+  lstat as lstat4,
+  mkdir as mkdir3,
   mkdtemp as mkdtemp2,
   readdir,
   readFile as readFile3,
-  realpath as realpath2,
+  realpath as realpath3,
   rm as rm3,
   symlink as symlink2,
   truncate,
   writeFile
 } from "node:fs/promises";
 import { lstatSync as lstatSync2, readFileSync, realpathSync } from "node:fs";
-import { join as join3, resolve as resolve2 } from "node:path";
+import { join as join4, resolve as resolve2 } from "node:path";
 
 // features/verity-sandbox-toolkit/src/spawn-broker/session-home.mjs
-import { spawn as spawn2 } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { spawn as spawn3 } from "node:child_process";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import {
   chmod as chmod2,
   chown as chown2,
-  lstat as lstat2,
-  mkdir,
+  lstat as lstat3,
+  mkdir as mkdir2,
   mkdtemp,
-  open,
+  open as open2,
   opendir,
   readFile as readFile2,
-  realpath,
+  realpath as realpath2,
   rm as rm2,
   rmdir,
   symlink
 } from "node:fs/promises";
-import { constants, lstatSync } from "node:fs";
-import { isAbsolute, join as join2 } from "node:path";
+import { constants as constants2, lstatSync } from "node:fs";
+import { isAbsolute, join as join3 } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
 // features/verity-sandbox-toolkit/src/spawn-broker/process.mjs
-import { spawn } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 import { createManagedSecretServers } from "./verity-managed-secret-servers.mjs";
 import { createConnection, createServer } from "node:net";
-import { chmod, chown, lstat, readFile, rm } from "node:fs/promises";
+import { chmod, chown, lstat as lstat2, readFile, rm } from "node:fs/promises";
 import { readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join as join2, resolve } from "node:path";
 function collectEscapedProcessTree(root, readProc = readProcFile) {
   const rootGroup = String(root);
   const descendants = /* @__PURE__ */ new Map();
@@ -248,7 +428,7 @@ function brokerSocketOwnership(options) {
 }
 async function readConnectorUrl(path, expectedUid) {
   try {
-    const stats = await lstat(path);
+    const stats = await lstat2(path);
     if (!stats.isFile() || stats.isSymbolicLink() || stats.uid !== expectedUid || (stats.mode & 63) !== 0 || stats.size > 128) {
       throw new Error("invalid Claude connector routing file");
     }
@@ -286,12 +466,12 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
   await validateSharedSessionRoot(options);
   const runtimeDir = resolve(options.runtimeDir ?? DEFAULT_RUNTIME_DIR);
   if (options.enforceRoot === false && options.secretDir === void 0) {
-    options = { ...options, secretDir: join(runtimeDir, "secrets") };
+    options = { ...options, secretDir: join2(runtimeDir, "secrets") };
   }
   const controlDir = resolve(
     options.controlDir ?? (options.enforceRoot === false ? runtimeDir : DEFAULT_CONTROL_DIR)
   );
-  const stats = await lstat(runtimeDir);
+  const stats = await lstat2(runtimeDir);
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("invalid runner runtime");
   if (options.runnerUid === void 0 !== (options.runnerGid === void 0)) {
     throw new Error("runner uid and gid must be configured together");
@@ -310,23 +490,23 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
 `
     );
   }
-  const identity = validateIdentity(options);
+  const identity2 = validateIdentity(options);
   const managedRoots = await resolveAgentWorktreeRoots(options);
-  const lock = await acquireLock(join(controlDir, "agent-spawn-broker.lock"));
+  const lock = await acquireLock(join2(controlDir, "agent-spawn-broker.lock"));
   onLock(lock);
   await removeLegacyTrustedCliSecretFiles(options);
-  const socketPath = join(controlDir, "agent-spawn-broker.sock");
+  const socketPath = join2(controlDir, "agent-spawn-broker.sock");
   await rm(socketPath, { force: true });
   const children = /* @__PURE__ */ new Map();
   const sockets = /* @__PURE__ */ new Set();
   const maxFrameBytes = options.maxFrameBytes ?? MAX_FRAME_BYTES;
-  const connectorConfigPath = options.connectorConfigPath ?? join(controlDir, "egress-connector.url");
+  const connectorConfigPath = options.connectorConfigPath ?? join2(controlDir, "egress-connector.url");
   const connectorConfigOwner = options.enforceRoot === false ? process.getuid?.() ?? 0 : 0;
   let closing = false;
   const spawnChild = (command, args, spawnOptions) => {
     const stdio = Array.isArray(spawnOptions.stdio) ? [...spawnOptions.stdio] : Array(3).fill(spawnOptions.stdio ?? "pipe");
     stdio.push(admissionLease.fd);
-    return (options.spawnChild ?? spawn)(command, args, { ...spawnOptions, stdio });
+    return (options.spawnChild ?? spawn2)(command, args, { ...spawnOptions, stdio });
   };
   let codexStartupTail = Promise.resolve();
   const acquireCodexStartup = async () => {
@@ -343,8 +523,8 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
     };
   };
   const managedSecrets = createManagedSecretServers({
-    uid: identity.uid,
-    gid: identity.gid,
+    uid: identity2.uid,
+    gid: identity2.gid,
     privilegeDropFlags: privilegeDropFlags(options.dockerGid, options.runnerGid),
     setprivPath: options.setprivPath,
     env: options.env,
@@ -398,6 +578,7 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
             persistentSessionHomes: true,
             cacheMaintenanceVersion: 2,
             runtimeAdmissionFenceVersion: 1,
+            capacityLeaseVersion: 1,
             planningIsolation: scriptIsolation.available,
             knowledgeIsolation: scriptIsolation.available,
             scriptIsolation: scriptIsolation.available
@@ -421,6 +602,12 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
           return;
         }
         if (closing) throw new Error("agent spawn broker is shutting down");
+        if (isObject(raw) && raw.kind === "capacity-lease") {
+          protocolFailed = true;
+          send(socket, await capacityLeaseRequest(raw, options));
+          socket.end();
+          return;
+        }
         if (isObject(raw) && raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION && raw.kind === "reclaim-package-caches") {
           send(socket, { ok: true, report: await reclaimPackageCaches(raw, options) });
           socket.end();
@@ -430,7 +617,7 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
           const home = sessionHomePath(options.runtimeDir, raw.sessionId);
           if (raw.kind === "delete-session-home") {
             await managedDirectory(
-              join(options.runtimeDir, "session-homes"),
+              join2(options.runtimeDir, "session-homes"),
               process.getuid(),
               process.getgid()
             );
@@ -443,7 +630,7 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
             if (activeSessionHomes.has(home)) throw new Error("session storage is still in use");
             const lease = await lockSessionHome(home, options);
             try {
-              const manifest = await readFile(join(home, ".legacy-opencode.json"), "utf8").catch(
+              const manifest = await readFile(join2(home, ".legacy-opencode.json"), "utf8").catch(
                 (error) => {
                   if (error.code === "ENOENT") return void 0;
                   throw error;
@@ -451,7 +638,7 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
               );
               if (manifest)
                 await nativeStateRequest({ operation: "purge", ...JSON.parse(manifest) }, options);
-              await removeKnowledgeIsolation(home, identity.uid, identity.gid, options.setprivPath);
+              await removeKnowledgeIsolation(home, identity2.uid, identity2.gid, options.setprivPath);
             } finally {
               await lease.close();
             }
@@ -734,7 +921,7 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
   };
 }
 async function probeAgentSpawnBroker(controlDir = DEFAULT_CONTROL_DIR, timeoutMs = 1e3) {
-  const socketPath = join(resolve(controlDir), "agent-spawn-broker.sock");
+  const socketPath = join2(resolve(controlDir), "agent-spawn-broker.sock");
   return await new Promise((resolveProbe) => {
     const socket = createConnection(socketPath);
     let response = "";
@@ -771,45 +958,45 @@ async function probeAgentSpawnBroker(controlDir = DEFAULT_CONTROL_DIR, timeoutMs
 // features/verity-sandbox-toolkit/src/spawn-broker/session-home.mjs
 async function packageCacheDirectory(options) {
   const { uid, gid } = validateIdentity(options);
-  const root = join2(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, "package-cache");
+  const root = join3(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, "package-cache");
   try {
-    await mkdir(root, { mode: 493 });
+    await mkdir2(root, { mode: 493 });
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
   }
-  const rootMetadata = await lstat2(root);
-  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink() || rootMetadata.uid !== process.getuid() || (rootMetadata.mode & 18) !== 0 || await realpath(root) !== root)
+  const rootMetadata = await lstat3(root);
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink() || rootMetadata.uid !== process.getuid() || (rootMetadata.mode & 18) !== 0 || await realpath2(root) !== root)
     throw new Error("invalid package cache root");
   await chmod2(root, 493);
   const cache = npmCachePath(options);
   try {
-    await mkdir(cache, { mode: 448 });
+    await mkdir2(cache, { mode: 448 });
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
   }
-  const metadata = await lstat2(cache);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== uid && metadata.uid !== process.getuid() || (metadata.mode & 511) !== 448)
+  const metadata2 = await lstat3(cache);
+  if (!metadata2.isDirectory() || metadata2.isSymbolicLink() || metadata2.uid !== uid && metadata2.uid !== process.getuid() || (metadata2.mode & 511) !== 448)
     throw new Error("invalid package cache");
-  if (metadata.uid !== uid || metadata.gid !== gid) await chown2(cache, uid, gid);
+  if (metadata2.uid !== uid || metadata2.gid !== gid) await chown2(cache, uid, gid);
   return cache;
 }
 async function acquireRuntimeAdmissionLease(options, exclusive = false) {
   const runtime = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
-  const root = await lstat2(runtime);
-  if (!root.isDirectory() || root.isSymbolicLink() || options.runnerUid === void 0 && root.uid !== process.getuid() || (root.mode & 2) !== 0 || await realpath(runtime) !== runtime)
+  const root = await lstat3(runtime);
+  if (!root.isDirectory() || root.isSymbolicLink() || options.runnerUid === void 0 && root.uid !== process.getuid() || (root.mode & 2) !== 0 || await realpath2(runtime) !== runtime)
     throw new Error("unsafe runner runtime");
   validateRunnerRuntimeStats(root, options);
-  const handle = await open(
-    join2(runtime, "admission.lock"),
-    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+  const handle = await open2(
+    join3(runtime, "admission.lock"),
+    constants2.O_CREAT | constants2.O_RDWR | constants2.O_NOFOLLOW,
     384
   );
   try {
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || metadata.uid !== process.getuid() || metadata.nlink !== 1 || (metadata.mode & 63) !== 0)
+    const metadata2 = await handle.stat();
+    if (!metadata2.isFile() || metadata2.uid !== process.getuid() || metadata2.nlink !== 1 || (metadata2.mode & 63) !== 0)
       throw new Error("invalid runtime admission lease");
     await new Promise((resolveLock, rejectLock) => {
-      const child = spawn2(
+      const child = spawn3(
         "/usr/bin/flock",
         [...exclusive ? ["--exclusive", "--nonblock"] : ["--shared", "--wait", "30"], "3"],
         { stdio: ["ignore", "ignore", "ignore", handle.fd] }
@@ -866,17 +1053,17 @@ async function packageCacheMaintenanceMain(runtimeDir) {
 }
 async function acquirePackageCacheLease(options, exclusive = false) {
   await packageCacheDirectory(options);
-  const handle = await open(
-    join2(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, "package-cache", "npm.lock"),
-    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+  const handle = await open2(
+    join3(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, "package-cache", "npm.lock"),
+    constants2.O_CREAT | constants2.O_RDWR | constants2.O_NOFOLLOW,
     384
   );
   try {
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || metadata.uid !== process.getuid() || metadata.nlink !== 1)
+    const metadata2 = await handle.stat();
+    if (!metadata2.isFile() || metadata2.uid !== process.getuid() || metadata2.nlink !== 1)
       throw new Error("invalid package cache lease");
     await new Promise((resolveLock, rejectLock) => {
-      const child = spawn2(
+      const child = spawn3(
         "/usr/bin/flock",
         [...exclusive ? ["--exclusive", "--nonblock"] : ["--shared", "--wait", "30"], "3"],
         { stdio: ["ignore", "ignore", "ignore", handle.fd] }
@@ -896,33 +1083,33 @@ async function acquirePackageCacheLease(options, exclusive = false) {
 async function cacheTreeBytes(path, budget, owner) {
   if (++budget.entries > 1e5 || Date.now() > budget.deadline)
     throw new Error("package cache inventory limit");
-  const metadata = await lstat2(path);
-  if (metadata.isSymbolicLink() || !metadata.isDirectory() && !metadata.isFile() || metadata.uid !== owner || metadata.isFile() && metadata.nlink !== 1)
+  const metadata2 = await lstat3(path);
+  if (metadata2.isSymbolicLink() || !metadata2.isDirectory() && !metadata2.isFile() || metadata2.uid !== owner || metadata2.isFile() && metadata2.nlink !== 1)
     throw new Error("unsafe package cache entry");
-  let bytes = metadata.blocks * 512;
-  if (metadata.isDirectory()) {
+  let bytes = metadata2.blocks * 512;
+  if (metadata2.isDirectory()) {
     const directory = await opendir(path);
     for await (const entry of directory)
-      bytes += await cacheTreeBytes(join2(path, entry.name), budget, owner);
+      bytes += await cacheTreeBytes(join3(path, entry.name), budget, owner);
   }
   return bytes;
 }
 async function validatedCacache(parent, options, budget) {
   const { uid } = validateIdentity(options);
-  const parentMetadata = await lstat2(parent).catch((error) => {
+  const parentMetadata = await lstat3(parent).catch((error) => {
     if (error.code === "ENOENT") return void 0;
     throw error;
   });
-  if (!parentMetadata) return { path: join2(parent, "_cacache"), bytes: 0 };
-  if (!parentMetadata.isDirectory() || parentMetadata.isSymbolicLink() || parentMetadata.uid !== uid || await realpath(parent) !== parent)
+  if (!parentMetadata) return { path: join3(parent, "_cacache"), bytes: 0 };
+  if (!parentMetadata.isDirectory() || parentMetadata.isSymbolicLink() || parentMetadata.uid !== uid || await realpath2(parent) !== parent)
     throw new Error("unsafe package cache root");
-  const path = join2(parent, "_cacache");
-  const metadata = await lstat2(path).catch((error) => {
+  const path = join3(parent, "_cacache");
+  const metadata2 = await lstat3(path).catch((error) => {
     if (error.code === "ENOENT") return void 0;
     throw error;
   });
-  if (!metadata) return { path, bytes: 0 };
-  if (!metadata.isDirectory() || metadata.isSymbolicLink())
+  if (!metadata2) return { path, bytes: 0 };
+  if (!metadata2.isDirectory() || metadata2.isSymbolicLink())
     throw new Error("unsafe package cache root");
   return { path, bytes: await cacheTreeBytes(path, budget, uid) };
 }
@@ -931,7 +1118,7 @@ async function maintainPackageCache(parent, options, budget, maxBytes, shared = 
   if (uid === process.getuid() && gid === process.getgid())
     return await collectPackageCacheLeaf(parent, options, budget, maxBytes, shared);
   const result = await new Promise((resolveResult, rejectResult) => {
-    const child = spawn2(
+    const child = spawn3(
       options.setprivPath ?? "/usr/bin/setpriv",
       [
         `--reuid=${uid}`,
@@ -1055,20 +1242,20 @@ async function reclaimPackageCaches(request, options) {
   const budget = { entries: 0, deadline: Date.now() + 15e3 };
   let safeHomes = true;
   try {
-    const directory = join2(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, "session-homes");
-    const metadata = await lstat2(directory).catch((error) => {
+    const directory = join3(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, "session-homes");
+    const metadata2 = await lstat3(directory).catch((error) => {
       if (error.code === "ENOENT") return void 0;
       throw error;
     });
-    if (metadata) {
-      if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== process.getuid() || (metadata.mode & 18) !== 0 || await realpath(directory) !== directory)
+    if (metadata2) {
+      if (!metadata2.isDirectory() || metadata2.isSymbolicLink() || metadata2.uid !== process.getuid() || (metadata2.mode & 18) !== 0 || await realpath2(directory) !== directory)
         throw new Error("unsafe session homes root");
       const owned = new Set(homes);
       const entries = await opendir(directory);
       for await (const entry of entries) {
         if (++budget.entries > 1e5 || Date.now() > budget.deadline)
           throw new Error("package cache inventory limit");
-        if (/^[a-f0-9]{64}$/u.test(entry.name) && !owned.has(join2(directory, entry.name))) {
+        if (/^[a-f0-9]{64}$/u.test(entry.name) && !owned.has(join3(directory, entry.name))) {
           report.legacyBytes = null;
           block("session home ownership is unknown");
         }
@@ -1084,16 +1271,16 @@ async function reclaimPackageCaches(request, options) {
     try {
       if (Date.now() > budget.deadline) throw new Error("package cache inventory limit");
       if (activeSessionHomes.has(home)) throw new Error("session home is in use");
-      const metadata = await lstat2(home).catch((error) => {
+      const metadata2 = await lstat3(home).catch((error) => {
         if (error.code === "ENOENT") return void 0;
         throw error;
       });
-      if (!metadata) continue;
-      if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== process.getuid() && metadata.uid !== validateIdentity(options).uid || await realpath(home) !== home)
+      if (!metadata2) continue;
+      if (!metadata2.isDirectory() || metadata2.isSymbolicLink() || metadata2.uid !== process.getuid() && metadata2.uid !== validateIdentity(options).uid || await realpath2(home) !== home)
         throw new Error("unsafe session home");
       lease2 = await lockSessionHome(home, options, true);
       if (activeSessionHomes.has(home)) throw new Error("session home is in use");
-      const cache = await maintainPackageCache(join2(home, "cache"), options, budget, 0);
+      const cache = await maintainPackageCache(join3(home, "cache"), options, budget, 0);
       report.removedBytes += cache.removedBytes;
       if (cache.pruned) report.legacyCachesRemoved++;
     } catch (error) {
@@ -1151,7 +1338,7 @@ async function nativeStateRequest(request, options) {
     const sameIdentity = process.getuid() === uid && process.getgid() === gid;
     const helper = options.enforceRoot === false ? fileURLToPath(new URL("./verity-session-state.mjs", import.meta.url)) : "/usr/local/bin/verity-session-state.mjs";
     const args = [process.execPath, helper];
-    const child = spawn2(
+    const child = spawn3(
       sameIdentity ? args[0] : options.setprivPath ?? "/usr/bin/setpriv",
       sameIdentity ? args.slice(1) : [`--reuid=${uid}`, `--regid=${gid}`, "--clear-groups", ...args],
       { stdio: ["pipe", "pipe", "ignore"], env: { PATH: "/usr/local/bin:/usr/bin:/bin" } }
@@ -1185,7 +1372,7 @@ async function prepareSessionHome(sessionId, options, migration) {
   const marker = `${home}.deleted`;
   const lease = sessionHomeLocks.has(home) ? void 0 : await lockSessionHome(home, options);
   try {
-    if (await lstat2(marker).then(
+    if (await lstat3(marker).then(
       () => true,
       (error) => {
         if (error.code === "ENOENT") return false;
@@ -1195,13 +1382,13 @@ async function prepareSessionHome(sessionId, options, migration) {
       throw new Error("session home has been deleted");
     const { uid, gid } = validateIdentity(options);
     await managedDirectory(
-      join2(options.runtimeDir, "session-homes"),
+      join3(options.runtimeDir, "session-homes"),
       process.getuid(),
       process.getgid()
     );
     await managedDirectory(home, process.getuid(), process.getgid());
     for (const name of ["claude", "codex", "config"])
-      await managedDirectory(join2(home, name), process.getuid(), process.getgid());
+      await managedDirectory(join3(home, name), process.getuid(), process.getgid());
     for (const relative of [
       "claude/projects",
       "codex/sessions",
@@ -1212,22 +1399,22 @@ async function prepareSessionHome(sessionId, options, migration) {
       "cache",
       "tmp"
     ]) {
-      const path = join2(home, relative);
+      const path = join3(home, relative);
       try {
-        await mkdir(path, { mode: 448 });
+        await mkdir2(path, { mode: 448 });
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
       }
-      const metadata = await lstat2(path);
-      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+      const metadata2 = await lstat3(path);
+      if (!metadata2.isDirectory() || metadata2.isSymbolicLink())
         throw new Error("invalid session storage");
       await chown2(path, uid, gid);
     }
     if (migration?.backend === "opencode-acp" && migration.sessionId !== void 0) {
       if (typeof migration.sessionId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(migration.sessionId))
         throw new Error("invalid legacy native session id");
-      const source = join2(
-        options.enforceRoot === false ? join2(options.runtimeDir, "opencode-state") : OPENCODE_STATE_DIR,
+      const source = join3(
+        options.enforceRoot === false ? join3(options.runtimeDir, "opencode-state") : OPENCODE_STATE_DIR,
         "data",
         "opencode",
         "opencode.db"
@@ -1235,7 +1422,7 @@ async function prepareSessionHome(sessionId, options, migration) {
       const result = await nativeStateRequest(
         {
           source,
-          target: join2(home, "data", "opencode", "opencode.db"),
+          target: join3(home, "data", "opencode", "opencode.db"),
           rootId: migration.sessionId
         },
         options
@@ -1246,7 +1433,7 @@ async function prepareSessionHome(sessionId, options, migration) {
         ))
           throw new Error("Invalid migrated native session identity");
         await policyWrite(
-          join2(home, ".legacy-opencode.json"),
+          join3(home, ".legacy-opencode.json"),
           JSON.stringify({ source, sessionIds: result.sessionIds })
         );
       }
@@ -1260,16 +1447,16 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
   if (!isLocalConnectorUrl(connectorUrl))
     throw new Error("Wiki isolation requires the local model gateway");
   const { uid, gid } = validateIdentity(options);
-  const parent = options.enforceRoot === false ? join2(options.runtimeDir, "wiki-homes") : "/run/verity-knowledge";
-  await mkdir(parent, { recursive: true, mode: 493 });
+  const parent = options.enforceRoot === false ? join3(options.runtimeDir, "wiki-homes") : "/run/verity-knowledge";
+  await mkdir2(parent, { recursive: true, mode: 493 });
   if (options.enforceRoot !== false) await validateImmutablePath(parent);
   await chmod2(parent, 457);
-  const home = await claimSessionHome(request, options) ?? await mkdtemp(join2(parent, "job-"));
+  const home = await claimSessionHome(request, options) ?? await mkdtemp(join3(parent, "job-"));
   try {
     await chmod2(home, 448);
     const directories = [];
     for (const relative of ["claude", "codex", "config", "data", "state", "cache", "tmp"]) {
-      const directory = join2(home, relative);
+      const directory = join3(home, relative);
       await managedDirectory(directory, process.getuid(), process.getgid());
       directories.push(directory);
     }
@@ -1280,7 +1467,7 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
     };
     const gateway = new URL(connectorUrl);
     await writeConfig(
-      join2(home, "codex", "config.toml"),
+      join3(home, "codex", "config.toml"),
       [
         'model_provider = "verity_gateway"',
         "[model_providers.verity_gateway]",
@@ -1301,7 +1488,7 @@ async function prepareKnowledgeIsolation(request, options, connectorUrl) {
       if (!models || typeof models !== "object" || Array.isArray(models))
         throw new Error("Invalid OpenCode model gateway configuration");
       await writeConfig(
-        join2(home, "config", "opencode.json"),
+        join3(home, "config", "opencode.json"),
         JSON.stringify({
           autoupdate: false,
           provider: {
@@ -1346,10 +1533,10 @@ async function removeKnowledgeIsolation(home, uid, gid, setprivPath = "/usr/bin/
     return;
   } catch {
     for (const name of ["config/opencode", "config", "codex", "claude", "."]) {
-      const path = join2(home, name);
+      const path = join3(home, name);
       try {
-        const metadata = await lstat2(path);
-        if (metadata.isDirectory() && metadata.uid === process.getuid()) {
+        const metadata2 = await lstat3(path);
+        if (metadata2.isDirectory() && metadata2.uid === process.getuid()) {
           await chmod2(path, 448);
           await chown2(path, uid, gid);
         }
@@ -1360,7 +1547,7 @@ async function removeKnowledgeIsolation(home, uid, gid, setprivPath = "/usr/bin/
     const asAgent = async (args) => {
       await new Promise((resolveCleanup, rejectCleanup) => {
         const sameIdentity = process.getuid() === uid && process.getgid() === gid;
-        const child = spawn2(
+        const child = spawn3(
           sameIdentity ? "/usr/bin/find" : setprivPath,
           sameIdentity ? args : [
             `--reuid=${String(uid)}`,
@@ -1396,7 +1583,7 @@ async function materializeKnowledgeIsolation(request, options, connectorUrl) {
       cleaned = true;
       if (persistent) {
         try {
-          await removeKnowledgeIsolation(join2(home, "tmp"), uid, gid, options.setprivPath);
+          await removeKnowledgeIsolation(join3(home, "tmp"), uid, gid, options.setprivPath);
         } finally {
           activeSessionHomes.delete(home);
           await sessionHomeLocks.get(home)?.close();
@@ -1410,12 +1597,12 @@ function planningRuntimeRoots(request, options) {
   if (!request.planning || request.knowledgeIsolation || request.sessionEnv?.VERITY_SESSION_ID)
     return [];
   if (request.command === "codex-acp" && options.runtimeDir)
-    return [join2(options.runtimeDir, "codex-sessions"), join2(options.runtimeDir, "codex-state")];
+    return [join3(options.runtimeDir, "codex-sessions"), join3(options.runtimeDir, "codex-state")];
   if (request.command === "claude-agent-acp" && options.env?.CLAUDE_CONFIG_DIR)
-    return [join2(options.env.CLAUDE_CONFIG_DIR, "projects")];
+    return [join3(options.env.CLAUDE_CONFIG_DIR, "projects")];
   if (request.command === "opencode-acp")
     return [
-      options.enforceRoot === false ? join2(options.runtimeDir, "opencode-state") : OPENCODE_STATE_DIR
+      options.enforceRoot === false ? join3(options.runtimeDir, "opencode-state") : OPENCODE_STATE_DIR
     ];
   return [];
 }
@@ -1479,19 +1666,19 @@ async function materializeManagedAgentHome(request, options, connectorUrl) {
     await chown2(home, process.getuid(), process.getgid());
     await chmod2(home, 493);
     for (const name of ["claude", "codex", "config"]) {
-      const directory = join2(home, name);
+      const directory = join3(home, name);
       await chown2(directory, process.getuid(), process.getgid());
       await chmod2(directory, 493);
     }
     let gitPolicy = "";
     try {
-      const template = await open(
+      const template = await open2(
         "/etc/verity-agent.gitconfig",
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+        constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK
       );
       try {
-        const metadata = await template.stat();
-        if (!metadata.isFile() || metadata.uid !== 0 || (metadata.mode & 18) !== 0 || metadata.size > 65536)
+        const metadata2 = await template.stat();
+        if (!metadata2.isFile() || metadata2.uid !== 0 || (metadata2.mode & 18) !== 0 || metadata2.size > 65536)
           throw new Error("Untrusted managed Git configuration");
         gitPolicy = await template.readFile("utf8");
       } finally {
@@ -1501,7 +1688,7 @@ async function materializeManagedAgentHome(request, options, connectorUrl) {
       if (error.code !== "ENOENT" || options.enforceRoot !== false) throw error;
     }
     const gitValue = (value) => JSON.stringify(value);
-    const gitIgnore = join2(home, "config", "git-ignore");
+    const gitIgnore = join3(home, "config", "git-ignore");
     await policyWrite(
       gitIgnore,
       ".gh-token\n.env\n.agents/.last-code-review-sha\n.agents/.last-code-review-run\n.agents/.local-checks-skip\n",
@@ -1509,7 +1696,7 @@ async function materializeManagedAgentHome(request, options, connectorUrl) {
     );
     const gitIdentity = options.env ?? {};
     await policyWrite(
-      join2(home, ".gitconfig"),
+      join3(home, ".gitconfig"),
       [
         gitPolicy,
         "[core]",
@@ -1520,20 +1707,20 @@ async function materializeManagedAgentHome(request, options, connectorUrl) {
       ].join("\n"),
       { mode: 420 }
     );
-    const configFile = join2(home, "codex", "config.toml");
+    const configFile = join3(home, "codex", "config.toml");
     await chown2(configFile, process.getuid(), process.getgid());
     const codexConfig = await readFile2(configFile, "utf8");
     await policyWrite(
       configFile,
       [
-        `sqlite_home = ${JSON.stringify(join2(home, "codex-state"))}`,
-        `log_dir = ${JSON.stringify(join2(home, "state"))}`,
+        `sqlite_home = ${JSON.stringify(join3(home, "codex-state"))}`,
+        `log_dir = ${JSON.stringify(join3(home, "state"))}`,
         "skills.include_instructions = false",
         ...request.gatewayToolsOnly === true ? [
           'web_search = "disabled"',
           ...request.command === "codex-acp" ? [
             `model = ${JSON.stringify(request.gatewayToolsModel.slice("codex/".length))}`,
-            `model_catalog_json = ${JSON.stringify(join2(home, "codex", "restricted-models.json"))}`
+            `model_catalog_json = ${JSON.stringify(join3(home, "codex", "restricted-models.json"))}`
           ] : []
         ] : [],
         codexConfig,
@@ -1576,30 +1763,30 @@ async function materializeManagedAgentHome(request, options, connectorUrl) {
     await chmod2(configFile, 420);
     if (request.gatewayToolsOnly === true && request.command === "codex-acp") {
       await policyWrite(
-        join2(home, "codex", "restricted-models.json"),
+        join3(home, "codex", "restricted-models.json"),
         JSON.stringify(restrictedCodexModelCatalog(request.gatewayToolsModel)),
         { mode: 420 }
       );
     }
     const writable = async (path) => {
       try {
-        await mkdir(path, { mode: 448 });
+        await mkdir2(path, { mode: 448 });
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
       }
-      const metadata = await lstat2(path);
-      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+      const metadata2 = await lstat3(path);
+      if (!metadata2.isDirectory() || metadata2.isSymbolicLink())
         throw new Error("invalid writable session directory");
       await chown2(path, uid, gid);
     };
     try {
-      const installationId = await open(
-        join2(home, "codex", "installation_id"),
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      const installationId = await open2(
+        join3(home, "codex", "installation_id"),
+        constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW,
         384
       );
       try {
-        await installationId.writeFile(randomUUID());
+        await installationId.writeFile(randomUUID2());
         await installationId.chown(uid, gid);
       } finally {
         await installationId.close();
@@ -1607,9 +1794,9 @@ async function materializeManagedAgentHome(request, options, connectorUrl) {
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
     }
-    await writable(join2(home, "codex-state"));
+    await writable(join3(home, "codex-state"));
     for (const name of ["tmp", ".tmp", "skills", "log", "shell_snapshots"])
-      await writable(join2(home, "codex", name));
+      await writable(join3(home, "codex", name));
     for (const name of [
       "todos",
       "tasks",
@@ -1619,41 +1806,41 @@ async function materializeManagedAgentHome(request, options, connectorUrl) {
       "plans",
       "telemetry"
     ])
-      await writable(join2(home, "claude", name));
+      await writable(join3(home, "claude", name));
     if (activeSessionHomes.has(home)) {
-      await writable(join2(home, "claude", "projects"));
-      await writable(join2(home, "codex", "sessions"));
-      await writable(join2(home, "codex", "thread-writer-locks"));
+      await writable(join3(home, "claude", "projects"));
+      await writable(join3(home, "codex", "sessions"));
+      await writable(join3(home, "codex", "thread-writer-locks"));
     } else {
       if (options.env?.CLAUDE_CONFIG_DIR)
         await symlink(
-          join2(options.env.CLAUDE_CONFIG_DIR, "projects"),
-          join2(home, "claude", "projects")
+          join3(options.env.CLAUDE_CONFIG_DIR, "projects"),
+          join3(home, "claude", "projects")
         );
-      else await writable(join2(home, "claude", "projects"));
+      else await writable(join3(home, "claude", "projects"));
       if (options.runtimeDir) {
         await symlink(
-          join2(options.runtimeDir, "codex-state", "thread-writer-locks"),
-          join2(home, "codex", "thread-writer-locks")
+          join3(options.runtimeDir, "codex-state", "thread-writer-locks"),
+          join3(home, "codex", "thread-writer-locks")
         );
-        await symlink(join2(options.runtimeDir, "codex-sessions"), join2(home, "codex", "sessions"));
+        await symlink(join3(options.runtimeDir, "codex-sessions"), join3(home, "codex", "sessions"));
       } else {
-        await writable(join2(home, "codex", "sessions"));
-        await writable(join2(home, "codex", "thread-writer-locks"));
+        await writable(join3(home, "codex", "sessions"));
+        await writable(join3(home, "codex", "thread-writer-locks"));
       }
     }
     await policyWrite(
-      join2(home, ".claude.json"),
+      join3(home, ".claude.json"),
       JSON.stringify({ hasCompletedOnboarding: true }),
       {
         mode: 420
       }
     );
-    const openCodeDir = join2(home, "config", "opencode");
+    const openCodeDir = join3(home, "config", "opencode");
     await managedDirectory(openCodeDir, process.getuid(), process.getgid());
-    await policyWrite(join2(openCodeDir, ".gitignore"), "*\n", { mode: 420 });
+    await policyWrite(join3(openCodeDir, ".gitignore"), "*\n", { mode: 420 });
     if (request.command === "opencode-acp") {
-      const path = join2(home, "config", "opencode.json");
+      const path = join3(home, "config", "opencode.json");
       await chown2(path, process.getuid(), process.getgid());
       if (request.gatewayToolsOnly === true) {
         const config = JSON.parse(await readFile2(path, "utf8"));
@@ -1664,10 +1851,10 @@ async function materializeManagedAgentHome(request, options, connectorUrl) {
       await chmod2(path, 420);
     }
     for (const path of [
-      join2(home, ".gitconfig"),
+      join3(home, ".gitconfig"),
       gitIgnore,
-      join2(home, ".claude.json"),
-      join2(openCodeDir, ".gitignore")
+      join3(home, ".claude.json"),
+      join3(openCodeDir, ".gitignore")
     ])
       await chmod2(path, 420);
     await chmod2(openCodeDir, 493);
@@ -1682,9 +1869,9 @@ async function agentSignalTraceSeconds(controlDir, request, now = Date.now()) {
     return void 0;
   let handle;
   try {
-    handle = await open(
-      join2(controlDir, "signal-trace.json"),
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    handle = await open2(
+      join3(controlDir, "signal-trace.json"),
+      constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK
     );
     const stat = await handle.stat();
     if (!stat.isFile() || stat.uid !== 0 || (stat.mode & 18) !== 0 || stat.size > 4096)
@@ -1724,9 +1911,9 @@ function nodeRuntimeRoots() {
 function claudePolicyRoots(command) {
   if (command !== "claude-agent-acp") return [];
   const path = "/etc/claude-code";
-  const metadata = lstatSync2(path, { throwIfNoEntry: false });
-  if (!metadata) return [];
-  if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== 0 || (metadata.mode & 18) !== 0)
+  const metadata2 = lstatSync2(path, { throwIfNoEntry: false });
+  if (!metadata2) return [];
+  if (!metadata2.isDirectory() || metadata2.isSymbolicLink() || metadata2.uid !== 0 || (metadata2.mode & 18) !== 0)
     throw new Error("Invalid Claude managed policy directory");
   return ["--read-root", path];
 }
@@ -1740,8 +1927,8 @@ function normalSessionRoots(options, agentPath) {
     ["--write-root", "/knowledge/insights"]
   ]) {
     try {
-      const metadata = lstatSync2(path);
-      if (!metadata.isDirectory() || metadata.isSymbolicLink())
+      const metadata2 = lstatSync2(path);
+      if (!metadata2.isDirectory() || metadata2.isSymbolicLink())
         throw new Error("Invalid session access root");
       roots.push(flag, path);
     } catch (error) {
@@ -1870,7 +2057,7 @@ function agentLaunchSpec(request, options) {
         // deliberately receive no project instructions.
         ...request.command === "opencode-acp" ? {
           OPENCODE_CONFIG_CONTENT: JSON.stringify({
-            instructions: request.knowledgeIsolation || request.gatewayToolsOnly ? [] : [join3(request.cwd, "AGENTS.md")],
+            instructions: request.knowledgeIsolation || request.gatewayToolsOnly ? [] : [join4(request.cwd, "AGENTS.md")],
             websearch: { provider: "exa" },
             policies: request.gatewayToolsOnly ? restrictedOpenCodePolicies() : [
               { action: "integration.use", resource: "plugin:*", effect: "deny" },
@@ -1885,34 +2072,34 @@ function agentLaunchSpec(request, options) {
         } : {},
         ...request.managedHome ? {
           HOME: request.managedHome,
-          ...request.command === "claude-agent-acp" ? { CLAUDE_CONFIG_DIR: join3(request.managedHome, "claude") } : {},
-          ...request.command === "codex-acp" ? { CODEX_HOME: join3(request.managedHome, "codex") } : {},
-          XDG_CONFIG_HOME: join3(request.managedHome, "config"),
-          OPENCODE_CONFIG: join3(request.managedHome, "config", "opencode.json"),
-          XDG_DATA_HOME: join3(request.managedHome, "data"),
-          XDG_STATE_HOME: join3(request.managedHome, "state"),
-          XDG_CACHE_HOME: join3(request.managedHome, "cache"),
-          npm_config_logs_dir: join3(request.managedHome, "cache", "_logs"),
-          TMPDIR: join3(request.managedHome, "tmp")
+          ...request.command === "claude-agent-acp" ? { CLAUDE_CONFIG_DIR: join4(request.managedHome, "claude") } : {},
+          ...request.command === "codex-acp" ? { CODEX_HOME: join4(request.managedHome, "codex") } : {},
+          XDG_CONFIG_HOME: join4(request.managedHome, "config"),
+          OPENCODE_CONFIG: join4(request.managedHome, "config", "opencode.json"),
+          XDG_DATA_HOME: join4(request.managedHome, "data"),
+          XDG_STATE_HOME: join4(request.managedHome, "state"),
+          XDG_CACHE_HOME: join4(request.managedHome, "cache"),
+          npm_config_logs_dir: join4(request.managedHome, "cache", "_logs"),
+          TMPDIR: join4(request.managedHome, "tmp")
         } : {},
         ...request.knowledgeIsolation || request.planning ? {
           HOME: request.knowledgeHome,
-          CLAUDE_CONFIG_DIR: join3(request.knowledgeHome, "claude"),
-          CODEX_HOME: join3(request.knowledgeHome, "codex"),
-          XDG_CONFIG_HOME: join3(request.knowledgeHome, "config"),
-          OPENCODE_CONFIG: join3(request.knowledgeHome, "config", "opencode.json"),
+          CLAUDE_CONFIG_DIR: join4(request.knowledgeHome, "claude"),
+          CODEX_HOME: join4(request.knowledgeHome, "codex"),
+          XDG_CONFIG_HOME: join4(request.knowledgeHome, "config"),
+          OPENCODE_CONFIG: join4(request.knowledgeHome, "config", "opencode.json"),
           ...request.command === "opencode-acp" && request.planning && !request.knowledgeIsolation && !request.sessionEnv?.VERITY_SESSION_ID ? Object.fromEntries(
             ["data", "state", "cache"].map((name) => [
               `XDG_${name.toUpperCase()}_HOME`,
-              join3(planningRuntimeRoots(request, options)[0], name)
+              join4(planningRuntimeRoots(request, options)[0], name)
             ])
           ) : {
-            XDG_DATA_HOME: join3(request.knowledgeHome, "data"),
-            XDG_STATE_HOME: join3(request.knowledgeHome, "state"),
-            XDG_CACHE_HOME: join3(request.knowledgeHome, "cache")
+            XDG_DATA_HOME: join4(request.knowledgeHome, "data"),
+            XDG_STATE_HOME: join4(request.knowledgeHome, "state"),
+            XDG_CACHE_HOME: join4(request.knowledgeHome, "cache")
           },
-          npm_config_logs_dir: join3(request.knowledgeHome, "cache", "_logs"),
-          TMPDIR: join3(request.knowledgeHome, "tmp")
+          npm_config_logs_dir: join4(request.knowledgeHome, "cache", "_logs"),
+          TMPDIR: join4(request.knowledgeHome, "tmp")
         } : {},
         npm_config_cache: npmCachePath(options)
       },
@@ -1993,7 +2180,7 @@ function matchesTrustedCliArgvPolicy(policy, args) {
   );
 }
 async function loadTrustedCliArgvPolicy(resolvedCommand, options = {}) {
-  const inspect = options.lstat ?? lstat3;
+  const inspect = options.lstat ?? lstat4;
   const validatePath = options.validateImmutablePath ?? validateImmutablePath;
   const read = options.readFile ?? readFile3;
   let path;
@@ -2045,9 +2232,9 @@ var TRUSTED_CLI_CODE_LOADING_ENV = /* @__PURE__ */ new Set([
   "RUBYLIB"
 ]);
 async function validateTrustedCliArguments(command, args, cwd, executablePath = "/usr/local/bin:/usr/bin:/bin", mutableDataPaths = [], approvedEntryScript, options = {}) {
-  const workspaceRealpath = approvedEntryScript === void 0 || options.agentUid === void 0 ? realpath2 : (path) => agentWorkspaceRead("realpath", path, options);
-  const workspaceLstat = approvedEntryScript === void 0 || options.agentUid === void 0 ? lstat3 : (path) => agentWorkspaceRead("lstat", path, options);
-  const resolvedCommand = await realpath2(command).catch(() => command);
+  const workspaceRealpath = approvedEntryScript === void 0 || options.agentUid === void 0 ? realpath3 : (path) => agentWorkspaceRead("realpath", path, options);
+  const workspaceLstat = approvedEntryScript === void 0 || options.agentUid === void 0 ? lstat4 : (path) => agentWorkspaceRead("lstat", path, options);
+  const resolvedCommand = await realpath3(command).catch(() => command);
   const commandName = resolvedCommand.slice(resolvedCommand.lastIndexOf("/") + 1);
   let interpreterName = trustedCliInterpreterName(resolvedCommand) ?? "";
   let interpreter = interpreterName.length > 0;
@@ -2072,8 +2259,8 @@ async function validateTrustedCliArguments(command, args, cwd, executablePath = 
     while (current.length > 1 && current.endsWith("/")) current = current.slice(0, -1);
     const missing = [];
     for (; ; ) {
-      const real = await realpath2(current).catch(() => void 0);
-      if (real !== void 0) return missing.length === 0 ? real : join3(real, ...missing);
+      const real = await realpath3(current).catch(() => void 0);
+      if (real !== void 0) return missing.length === 0 ? real : join4(real, ...missing);
       const slash = current.lastIndexOf("/");
       if (slash < 0) return resolve2(cwd, path);
       missing.unshift(current.slice(slash + 1));
@@ -2274,7 +2461,7 @@ async function probeScriptSandbox(helperPath = DEFAULT_SCRIPT_SANDBOX_PATH, time
         },
         launchOptions
       );
-      child = spawn3(spec.command, spec.args, {
+      child = spawn4(spec.command, spec.args, {
         ...spec.spawnOptions,
         detached: false,
         stdio: ["ignore", "ignore", "pipe"],
@@ -2427,12 +2614,12 @@ async function materializeTrustedCliSecrets(request, options) {
   const cleanup = () => running ??= contain();
   try {
     const root = options?.secretDir ?? TRUSTED_CLI_SECRET_DIR;
-    await mkdir2(root, { recursive: true, mode: 457 });
+    await mkdir3(root, { recursive: true, mode: 457 });
     await chmod3(root, 457);
     for (const secret of fileSecrets) {
       const path = trustedCliSecretPath(secret.name, options, request.correlationId);
       const dir = path.slice(0, path.lastIndexOf("/"));
-      await mkdir2(dir, { recursive: true, mode: 457 });
+      await mkdir3(dir, { recursive: true, mode: 457 });
       await chmod3(dir, 457);
       const bytes = secret.encoding === "base64" ? Buffer.from(secret.value, "base64") : secret.value;
       await writeFile(path, bytes, { mode: 384, flag: "wx" });
@@ -2454,28 +2641,28 @@ async function materializeTrustedCliEntryScript(request, options) {
     throw new Error("trusted CLI entry script content hash changed after approval");
   }
   const base = resolve2(
-    options.trustedCliEntryScriptDir ?? join3(options.secretDir ?? TRUSTED_CLI_SECRET_DIR, "..", "entry-scripts")
+    options.trustedCliEntryScriptDir ?? join4(options.secretDir ?? TRUSTED_CLI_SECRET_DIR, "..", "entry-scripts")
   );
-  await mkdir2(base, { recursive: true, mode: 457 });
+  await mkdir3(base, { recursive: true, mode: 457 });
   await chmod3(base, 457);
-  const directory = await mkdtemp2(join3(base, `${digest.slice(0, 16)}-`));
+  const directory = await mkdtemp2(join4(base, `${digest.slice(0, 16)}-`));
   try {
     await chmod3(directory, 457);
-    const snapshotRoot = join3(directory, "root");
+    const snapshotRoot = join4(directory, "root");
     const relativeScript = request.entryScript.path.slice(
       request.entryScript.worktreeRoot.length + 1
     );
-    const snapshot = join3(snapshotRoot, relativeScript);
+    const snapshot = join4(snapshotRoot, relativeScript);
     const snapshotScriptDir = snapshot.slice(0, snapshot.lastIndexOf("/"));
     const makeSnapshotDirectory = async (path) => {
-      await mkdir2(snapshotRoot, { mode: 493 }).catch((error) => {
+      await mkdir3(snapshotRoot, { mode: 493 }).catch((error) => {
         if (error.code !== "EEXIST") throw error;
       });
       await chmod3(snapshotRoot, 493);
       let current = snapshotRoot;
       for (const component of path.slice(snapshotRoot.length + 1).split("/").filter(Boolean)) {
-        current = join3(current, component);
-        await mkdir2(current, { mode: 493 }).catch((error) => {
+        current = join4(current, component);
+        await mkdir3(current, { mode: 493 }).catch((error) => {
           if (error.code !== "EEXIST") throw error;
         });
         await chmod3(current, 493);
@@ -2483,7 +2670,7 @@ async function materializeTrustedCliEntryScript(request, options) {
     };
     await makeSnapshotDirectory(snapshotScriptDir);
     const relativeCwd = request.cwd.slice(request.entryScript.worktreeRoot.length + 1);
-    const snapshotCwd = join3(snapshotRoot, relativeCwd);
+    const snapshotCwd = join4(snapshotRoot, relativeCwd);
     if (request.entryScript.loading === "isolated") {
       await makeSnapshotDirectory(snapshotCwd);
     }
@@ -2496,10 +2683,10 @@ async function materializeTrustedCliEntryScript(request, options) {
       for (const component of components) {
         for (const entry of await agentWorkspaceRead("readdir", sourceDir, options)) {
           if (entry === component) continue;
-          await symlink2(join3(sourceDir, entry), join3(targetDir, entry));
+          await symlink2(join4(sourceDir, entry), join4(targetDir, entry));
         }
-        sourceDir = join3(sourceDir, component);
-        targetDir = join3(targetDir, component);
+        sourceDir = join4(sourceDir, component);
+        targetDir = join4(targetDir, component);
       }
     }
     const cleanup = async () => {
@@ -2617,7 +2804,7 @@ async function runnerStackHealth(options = {}) {
     try {
       const port = Number(env.VERITY_CLAUDE_CONNECTOR_PORT);
       if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid port");
-      const record = read(join4(controlDir, "egress-connector.pid")).trim().split(/\s+/u);
+      const record = read(join5(controlDir, "egress-connector.pid")).trim().split(/\s+/u);
       const [pid, startTime, fingerprint] = record;
       if (!/^[1-9][0-9]*$/u.test(pid ?? "") || !startTime) throw new Error("missing identity");
       const stat = read(`/proc/${pid}/stat`);
@@ -2817,9 +3004,9 @@ function send(socket, value) {
 `);
 }
 async function acquireLock(path) {
-  const handle = await open2(path, "a+", 384);
+  const handle = await open3(path, "a+", 384);
   const code = await new Promise((resolveCode, rejectCode) => {
-    const child = spawn4("flock", ["--exclusive", "--nonblock", "3"], {
+    const child = spawn5("flock", ["--exclusive", "--nonblock", "3"], {
       stdio: ["ignore", "ignore", "ignore", handle.fd]
     });
     child.once("error", rejectCode);
@@ -2885,7 +3072,7 @@ async function agentWorkspaceRead(operation, path, options) {
       return await stopTaggedManagedPids(id, signal);
     }
     if (operation === "readEntry") {
-      const handle = await open2(path, constants2.O_RDONLY | constants2.O_NOFOLLOW);
+      const handle = await open3(path, constants3.O_RDONLY | constants3.O_NOFOLLOW);
       try {
         if (!(await handle.stat()).isFile())
           throw new Error("trusted CLI entry script must be a regular file");
@@ -2894,12 +3081,12 @@ async function agentWorkspaceRead(operation, path, options) {
         await handle.close();
       }
     }
-    if (operation === "realpath") return await realpath3(path);
+    if (operation === "realpath") return await realpath4(path);
     if (operation === "readdir") return await readdir2(path);
-    return await lstat4(path);
+    return await lstat5(path);
   }
   const response = await new Promise((resolveResponse, reject) => {
-    const child = spawn4(
+    const child = spawn5(
       options.setprivPath ?? "/usr/bin/setpriv",
       [
         `--reuid=${uid}`,
@@ -2981,8 +3168,8 @@ async function validateImmutablePath(path, endpoint = false) {
   const segments = path.split("/").filter(Boolean);
   let current = "/";
   for (const [index, segment] of segments.entries()) {
-    current = join4(current, segment);
-    const entry = await lstat4(current);
+    current = join5(current, segment);
+    const entry = await lstat5(current);
     const connectable = endpoint && index === segments.length - 1 && entry.isSocket();
     if (entry.uid !== 0 || !entry.isSymbolicLink() && !connectable && (entry.mode & 18) !== 0) {
       throw new Error("trusted CLI executable must be root-owned and immutable");
@@ -2990,17 +3177,17 @@ async function validateImmutablePath(path, endpoint = false) {
   }
 }
 async function validateTrustedCliExecutable(command) {
-  const resolved = await realpath3(command);
+  const resolved = await realpath4(command);
   await validateImmutablePath(command);
   if (resolved !== command) await validateImmutablePath(resolved);
-  const executable = await lstat4(resolved);
+  const executable = await lstat5(resolved);
   if (!executable.isFile() || (executable.mode & 73) === 0) {
     throw new Error("trusted CLI command is not an executable file");
   }
 }
 async function validateTrustedCliFileIntegrity(path) {
-  const resolved = await realpath3(path);
-  const entry = await lstat4(resolved);
+  const resolved = await realpath4(path);
+  const entry = await lstat5(resolved);
   const endpoint = entry.isSocket();
   await validateImmutablePath(path, endpoint);
   if (resolved !== path) await validateImmutablePath(resolved, endpoint);
@@ -3009,10 +3196,10 @@ async function validateTrustedCliFileIntegrity(path) {
   }
 }
 async function validateTrustedCliExecutableDirectory(path) {
-  const resolved = await realpath3(path);
+  const resolved = await realpath4(path);
   await validateImmutablePath(path);
   if (resolved !== path) await validateImmutablePath(resolved);
-  const entry = await lstat4(resolved);
+  const entry = await lstat5(resolved);
   if (!entry.isDirectory()) {
     throw new Error("trusted CLI PATH entry must be an immutable directory");
   }
@@ -3020,7 +3207,7 @@ async function validateTrustedCliExecutableDirectory(path) {
 async function resolveAgentWorktreeRoots(options = {}) {
   const configured = [resolve3(options.worktreeRoot ?? DEFAULT_WORKTREE_ROOT)];
   if (options.sharedSessionRoot !== void 0) configured.push(resolve3(options.sharedSessionRoot));
-  return await Promise.all(configured.map(async (root) => await realpath3(root)));
+  return await Promise.all(configured.map(async (root) => await realpath4(root)));
 }
 function withinAgentWorktreeRoots(cwd, roots) {
   return roots.some((root) => cwd === root || cwd.startsWith(`${root}/`));
@@ -3029,8 +3216,8 @@ async function validateSharedSessionRoot(options) {
   if (options.sharedSessionRoot === void 0) return;
   const configured = resolve3(options.sharedSessionRoot);
   if (configured === "/") throw new Error("shared session root must not be the filesystem root");
-  const resolved = await realpath3(configured).catch(() => void 0);
-  if (resolved === void 0 || resolved === "/" || !(await lstat4(resolved)).isDirectory()) {
+  const resolved = await realpath4(configured).catch(() => void 0);
+  if (resolved === void 0 || resolved === "/" || !(await lstat5(resolved)).isDirectory()) {
     throw new Error(`shared session root is not a mounted directory: ${configured}`);
   }
 }
@@ -3047,7 +3234,7 @@ async function validateSpawnRequest(raw, options) {
     }
     await validateTrustedCliExecutable(raw.command);
     if (raw.entryScript?.loading === "isolated") {
-      const executable = await realpath3(raw.command);
+      const executable = await realpath4(raw.command);
       if (executable !== "/bin" && !executable.startsWith("/bin/") && executable !== "/usr" && !executable.startsWith("/usr/")) {
         throw new Error("isolated trusted CLI interpreter must be installed under /bin or /usr");
       }
@@ -3130,7 +3317,7 @@ async function validateSpawnRequest(raw, options) {
   }
   const [worktreeRoots, cwd] = await Promise.all([
     resolveAgentWorktreeRoots(options),
-    realpath3(resolve3(raw.cwd))
+    realpath4(resolve3(raw.cwd))
   ]);
   if (!withinAgentWorktreeRoots(cwd, worktreeRoots)) {
     throw new Error("agent cwd escaped the worktree root");
@@ -3346,43 +3533,43 @@ async function waitForSessionHome(home) {
 function sessionHomePath(runtimeDir, sessionId) {
   if (typeof sessionId !== "string" || !sessionId || sessionId.length > 256 || hasControlCharacter(sessionId))
     throw new Error("invalid session id");
-  return join4(runtimeDir, "session-homes", createHash2("sha256").update(sessionId).digest("hex"));
+  return join5(runtimeDir, "session-homes", createHash2("sha256").update(sessionId).digest("hex"));
 }
 async function policyWrite(path, content, options = {}) {
-  const temporary = `${path}.${randomUUID2()}.tmp`;
+  const temporary = `${path}.${randomUUID3()}.tmp`;
   try {
     await writeFile2(temporary, content, { mode: options.mode ?? 420, flag: "wx" });
-    await rename(temporary, path);
+    await rename2(temporary, path);
   } finally {
     await rm4(temporary, { force: true });
   }
 }
 async function managedDirectory(path, owner, group) {
   try {
-    await mkdir3(path, { mode: 493 });
+    await mkdir4(path, { mode: 493 });
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
   }
-  const metadata = await lstat4(path);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink())
+  const metadata2 = await lstat5(path);
+  if (!metadata2.isDirectory() || metadata2.isSymbolicLink())
     throw new Error("invalid session home directory");
   await chown4(path, owner, group);
   await chmod4(path, 493);
 }
 async function lockSessionHome(home, options, nonblocking = false) {
   await managedDirectory(
-    join4(options.runtimeDir, "session-homes"),
+    join5(options.runtimeDir, "session-homes"),
     process.getuid(),
     process.getgid()
   );
-  const handle = await open2(
+  const handle = await open3(
     `${home}.lock`,
-    constants2.O_CREAT | constants2.O_RDWR | constants2.O_NOFOLLOW,
+    constants3.O_CREAT | constants3.O_RDWR | constants3.O_NOFOLLOW,
     384
   );
   try {
     await new Promise((resolveLock, rejectLock) => {
-      const child = spawn4(
+      const child = spawn5(
         "/usr/bin/flock",
         [...nonblocking ? ["--nonblock"] : ["--wait", String(SESSION_HOME_WAIT_MS / 1e3)], "3"],
         {
@@ -3402,7 +3589,7 @@ async function lockSessionHome(home, options, nonblocking = false) {
   }
 }
 function npmCachePath(options) {
-  return join4(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, "package-cache", "npm");
+  return join5(options.runtimeDir ?? DEFAULT_RUNTIME_DIR, "package-cache", "npm");
 }
 
 // features/verity-sandbox-toolkit/src/spawn-broker/main.mjs
@@ -3480,6 +3667,7 @@ export {
   agentLaunchSpec,
   agentSignalTraceSeconds,
   brokerSocketOwnership,
+  capacityLeaseRequest,
   collectEscapedProcessTree,
   killExitedTrustedCliProcessGroup,
   loadTrustedCliArgvPolicy,

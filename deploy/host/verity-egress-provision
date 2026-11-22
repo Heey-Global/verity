@@ -27,6 +27,12 @@ stage=/var/lib/verity-egress/provision/$identifier
 unit=verity-egress-provision-$identifier.service
 phase=staging
 failure=command_failed
+# Fixed name of the staging command group, reported instead of its output.
+# `preflight` covers the path checks between installing the trap below and
+# observing the job state; earlier lock failures exit without a diagnostic.
+step=preflight
+# Conservative until staging establishes that this operation left no earlier work.
+prior_work=1
 # Only fixed diagnostic values may cross the host/helper trust boundary.
 # Slurping requires exactly one object, rejecting mixed or repeated output.
 diagnostic_filter='
@@ -46,6 +52,23 @@ report_failure() {
   local status=$?
   trap - EXIT
   if (( status != 0 )); then
+    if [[ $phase = staging && -n $step ]]; then
+      # Discard only a new stage that failed before it could change the database.
+      # Leaving it behind would make a later retry indistinguishable from legacy work.
+      if (( ! prior_work )) && [[ $step != config && $step != launcher && -e $stage ]]; then
+        if ! (rm -rf -- "$stage" && sync -f "${stage%/*}") 2>/dev/null; then
+          prior_work=1
+        fi
+      fi
+      # Updaters that predate named staging steps relay only their own reason
+      # vocabulary; these two reasons keep the leading causes visible to them.
+      diagnostics=$(jq -cn --arg step "$step" --argjson prior "$prior_work" \
+        '{step:$step}
+         + ({assessment_authorization: {reason: "assessment_authorization_invalid"},
+             config: {reason: "provisioning_failed"}}[$step] // {})
+         + (if $prior == 0 and $step != "config" and $step != "launcher"
+            and $step != "preflight" then {hostUnchanged:true} else {} end)')
+    fi
     jq -cn --arg id "$identifier" --arg phase "$phase" --arg code "$failure" --argjson status "$status" \
       --argjson diagnostics "$diagnostics" \
       '{version:1,kind:"egress-provisioning",operationId:$id,phase:$phase,code:$code,exitCode:$status} + $diagnostics'
@@ -153,7 +176,13 @@ if [[ $state = active || $state = activating || $state = deactivating || $state 
   compact_stage "$stage"
   exit
 fi
+# Older helpers could change the database before writing an attempt, and
+# maintenance could later leave only the empty stage directory.
+if [[ $load = not-found || $state = inactive ]] && [[ ! -e $stage ]]; then
+  prior_work=0
+fi
 phase=staging
+step=stage_prepare
 install -d -m 0700 /var/lib/verity-egress/provision
 compact_stopped_stages
 if [[ -f $stage/attempt && ! -L $stage/attempt ]]; then
@@ -165,15 +194,17 @@ if [[ -f $stage/attempt && ! -L $stage/attempt ]]; then
   fi
 fi
 if [[ ! -f $stage/ready ]]; then
-  [[ ! -e $stage ]] || rm -rf -- "$stage"
   install -d -m 0700 "$stage"
+  # Preserve the directory and launch records while replacing the payload.
+  find "$stage" -mindepth 1 -maxdepth 1 ! -name attempt ! -name result.json \
+    -exec rm -rf -- {} +
+  step=release_copy
   cp -a /opt/verity-install/egress-release "$stage/release"
+  step=scripts
   install -m 0600 /opt/verity-install/scripts/project-egress-install.py "$stage/project-egress-install.py"
   install -m 0600 /opt/verity-install/scripts/project-egress-managed.py "$stage/project-egress-managed.py"
-  export VERITY_EGRESS_EXISTING_AUTHORITY=/etc/verity-egress/authority.json
-  export VERITY_EGRESS_EXISTING_RELAY=/etc/verity-egress/relay.json
-  node /app/packages/server/dist/project-egress-managed-config-main.js "$stage/config"
   if [[ -n ${VERITY_EGRESS_ASSESSMENT_CHANNEL_PATH:-} ]]; then
+    step=assessment_authorization
     # Only the installed updater supplies this read-only authority; image identity
     # alone cannot distinguish stable and staging (they share a signed digest).
     /usr/bin/python3 - "$stage/assessment-authorization.json" <<'ASSESSMENT'
@@ -197,9 +228,17 @@ with open(sys.argv[1], 'x') as output:
     json.dump(value, output)
 ASSESSMENT
   fi
+  export VERITY_EGRESS_EXISTING_AUTHORITY=/etc/verity-egress/authority.json
+  export VERITY_EGRESS_EXISTING_RELAY=/etc/verity-egress/relay.json
+  step=config
+  # Persist the stage itself before the configuration helper can change the database.
+  sync -f "$stage"
+  node /app/packages/server/dist/project-egress-managed-config-main.js "$stage/config"
+  step=launcher
   touch "$stage/ready"
   sync -f "$stage"
 fi
+step=launcher
 # Refresh only a stopped job's launcher, including staging left by older releases.
 # Bind completion to this launch so a stale success cannot satisfy a retry.
 attempt_file=$(mktemp "$stage/.attempt.XXXXXXXXXXXX")

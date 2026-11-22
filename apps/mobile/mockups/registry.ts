@@ -1,4 +1,5 @@
 import { assistantHandoffResultsSpec } from './assistant-handoff-results';
+import { permissionOverviewSpec } from './permission-overview';
 import { nativeMcpAppsSpec } from './native-mcp-apps';
 import { teamJoinRecoverySpec } from './team-join-recovery';
 import { sandboxUpdatesSpec } from './sandbox-updates';
@@ -6,6 +7,7 @@ import { aiAccountsSpec } from './ai-accounts';
 import { codeWorkspaceSpec } from './code-workspace';
 import { connectionStatusSpec } from './connection-status';
 import { sessionStabilitySpec } from './session-stability';
+import { sessionCollaborationSpec } from './session-collaboration';
 import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
 import { homeAnswersSpec } from './home-answers';
@@ -29,6 +31,7 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  permissionOverviewSpec,
   assistantHandoffResultsSpec,
   nativeMcpAppsSpec,
   teamJoinRecoverySpec,
@@ -37,6 +40,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   codeWorkspaceSpec,
   sessionStabilitySpec,
   connectionStatusSpec,
+  sessionCollaborationSpec,
   sessionGroupsSpec,
   factorySpec,
   homeAnswersSpec,

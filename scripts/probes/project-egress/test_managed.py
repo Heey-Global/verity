@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import subprocess
 import os
 from pathlib import Path
 import tempfile
@@ -485,6 +486,8 @@ class ManagedTests(unittest.TestCase):
                 registry = self.root / 'var/lib/verity-egress/registry.json'
                 managed.base.atomic_file(registry, json.dumps({'version': 1, 'records': [
                     {'retired': False, 'containers': {'relay': relay_id}}]}).encode(), 0o600)
+            if 'container' in args and 'ls' in args and args[-1] == 'id=' + relay_id:
+                return relay_id
             if 'container' in args and 'inspect' in args:
                 self.calls.append(args)
                 return json.dumps([{'Id': relay_id, 'Config': {'Image': old_image}}])
@@ -604,6 +607,42 @@ class ManagedTests(unittest.TestCase):
         self.provision(run=run)
         self.assertEqual(observed, [True])
 
+    def test_stopped_relay_reconciliation_ignores_absence_but_not_docker_failure(self):
+        relay = 'a' * 64
+        registry = self.root / 'var/lib/verity-egress/registry.json'
+        managed.base.atomic_file(registry, json.dumps({
+            'version': 1, 'records': [{'retired': False, 'containers': {'relay': relay}}],
+        }).encode(), 0o600)
+        target = json.dumps({'image': 'sha256:' + 'b' * 64})
+
+        def missing(*args):
+            self.assertEqual(args[-2:], ('--filter', 'id=' + relay))
+            return ''
+
+        self.assertEqual(json.loads(managed.reconcile_stopped_relay_policy(
+            self.root, missing, target)), json.loads(target))
+
+        for still_present in (False, True):
+            listings = iter([relay, relay if still_present else ''])
+
+            def removed_during_inspect(*args):
+                if 'ls' in args:
+                    return next(listings)
+                raise subprocess.CalledProcessError(1, args)
+
+            if still_present:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    managed.reconcile_stopped_relay_policy(self.root, removed_during_inspect, target)
+            else:
+                self.assertEqual(json.loads(managed.reconcile_stopped_relay_policy(
+                    self.root, removed_during_inspect, target)), json.loads(target))
+
+        def unavailable(*args):
+            raise RuntimeError('daemon unavailable')
+
+        with self.assertRaisesRegex(RuntimeError, 'daemon unavailable'):
+            managed.reconcile_stopped_relay_policy(self.root, unavailable, target)
+
     def test_stopped_relay_reconciliation_rejects_unknown_third_or_changed_contract(self):
         old, older, target, foreign = ['sha256:' + c * 64 for c in 'abcd']
         self.relay.write_text(json.dumps({'image': old, 'packetEnforcement': True}))
@@ -617,6 +656,8 @@ class ManagedTests(unittest.TestCase):
             managed.base.atomic_file(self.root / 'var/lib/verity-egress/registry.json',
                 json.dumps({'version': 1, 'records': records}).encode(), 0o600)
             def run(*args):
+                if 'ls' in args:
+                    return args[-1].removeprefix('id=')
                 index = int(args[-1][0]) - 1
                 return json.dumps([{'Id': args[-1], 'Config': {'Image': images[index]}}])
             with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
@@ -763,6 +804,95 @@ class ManagedTests(unittest.TestCase):
         self.assertFalse(any('start' in cmd for cmd in self.calls[failure + 1:]))
         self.assertFalse(any('docker.service' in cmd or 'docker.socket' in cmd for cmd in self.calls))
         self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls[failure + 1:]))
+
+    def failed_upgrade_with_serving_controller(self, restart_fails=False, expected=RuntimeError):
+        self.provision()
+        previous = (self.root / 'opt/verity-egress').resolve()
+        (self.source / 'node').write_bytes(b'updated node')
+        self.manifest['node'] = managed.base.digest(b'updated node')
+        self.save_manifest()
+        self.calls.clear()
+        rolled_back = []
+
+        def run(*args):
+            self.execute(*args)
+            if '--property=ActiveState' in args:
+                return 'active'
+            if 'is-active' in args:
+                if not rolled_back:
+                    rolled_back.append(True)
+                    raise RuntimeError('private activation detail')
+                if restart_fails:
+                    raise RuntimeError('private restart detail')
+            return 'loaded' if 'show' in args else ''
+
+        with self.assertRaises(expected) as failed:
+            self.provision(run=run)
+        return previous, failed.exception
+
+    # Without the restart a failed update silently leaves project network
+    # protection without any controller until someone starts it by hand.
+    def test_failed_activation_restarts_and_verifies_the_previous_controller(self):
+        previous, error = self.failed_upgrade_with_serving_controller()
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        self.assertFalse((self.root / managed.JOURNAL).exists())
+        deny = max(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
+        bootstrap = self.calls.index(('/usr/bin/systemctl', 'start', 'verity-egress-bootstrap.service'), deny)
+        restart = self.calls.index(('/usr/bin/systemctl', 'start', managed.SERVICE), bootstrap)
+        self.assertIn(('/usr/bin/systemctl', 'is-active', '--quiet', managed.SERVICE), self.calls[restart + 1:])
+        self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'activation_failed', 'step': 'activation'})
+        status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
+        self.assertEqual(status, {'version': 1, 'state': 'ready', 'reason': 'ready'})
+
+    def test_rollback_restores_assessed_runtimes_before_restarting_the_controller(self):
+        order = []
+        with patch.object(managed, 'restore_previous_runtime',
+                          side_effect=lambda root, run, previous: order.append(('restore', previous))):
+            previous, _ = self.failed_upgrade_with_serving_controller()
+        self.assertEqual(order, [('restore', str(previous))])
+        reset = self.calls.index(('/usr/bin/systemctl', 'reset-failed', 'verity-egress-bootstrap.service', managed.SERVICE))
+        self.assertLess(reset, self.calls.index(('/usr/bin/systemctl', 'start', managed.SERVICE), reset))
+
+    def test_unrestorable_runtime_reports_recovery_failure_without_starting(self):
+        with patch.object(managed, 'restore_previous_runtime', side_effect=ValueError('private detail')):
+            _, error = self.failed_upgrade_with_serving_controller(expected=ValueError)
+        self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'recovery_failed', 'step': 'recovery'})
+        deny = max(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
+        self.assertNotIn(('/usr/bin/systemctl', 'start', managed.SERVICE), self.calls[deny:])
+        self.assertIn(('/usr/bin/systemctl', 'stop', managed.SERVICE), self.calls[deny:])
+
+    def test_unknown_controller_state_keeps_it_stopped_after_rollback(self):
+        self.provision()
+        previous = (self.root / 'opt/verity-egress').resolve()
+        (self.source / 'node').write_bytes(b'updated node')
+        self.manifest['node'] = managed.base.digest(b'updated node')
+        self.save_manifest()
+        self.calls.clear()
+
+        def run(*args):
+            self.execute(*args)
+            if '--property=ActiveState' in args:
+                raise RuntimeError('private probe detail')
+            if 'is-active' in args:
+                raise RuntimeError('private activation detail')
+            return 'loaded' if 'show' in args else ''
+
+        with self.assertRaisesRegex(RuntimeError, 'activation detail'):
+            self.provision(run=run)
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        deny = max(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
+        self.assertFalse(any('start' in cmd for cmd in self.calls[deny + 1:]))
+
+    def test_failed_controller_restart_after_rollback_reports_recovery_failure(self):
+        previous, error = self.failed_upgrade_with_serving_controller(restart_fails=True)
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        # Restart=on-failure would otherwise retry a failing preflight forever.
+        restart = max(i for i, cmd in enumerate(self.calls) if cmd == ('/usr/bin/systemctl', 'start', managed.SERVICE))
+        self.assertIn(('/usr/bin/systemctl', 'stop', managed.SERVICE), self.calls[restart + 1:])
+        self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'recovery_failed', 'step': 'recovery'})
+        status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
+        self.assertEqual(status['reason'], 'controller_failed')
+        self.assertNotIn('private', json.dumps(managed.base.failure_diagnostic(error)))
 
     def crash_upgrade(self):
         self.provision()

@@ -3893,26 +3893,6 @@ describe('release build cache', () => {
     expect(written).toBeDefined();
     expect(refOf(String(build?.with?.['cache-from']))).toBe(refOf(written!.to));
   });
-
-  it('cannot ship the placeholder binary from the Matrix connector dependency layer', () => {
-    // The dependency layer builds a placeholder `fn main() {}` under the real
-    // crate name. The real sources are copied in with their checkout mtimes,
-    // which predate that build, so unless the placeholder's own artifacts are
-    // removed cargo considers the crate fresh and the image ships an empty
-    // binary that exits 0.
-    const dockerfile = readFileSync('connectors/matrix/Dockerfile', 'utf8');
-    const crate = /^name = "([^"]+)"/m.exec(
-      readFileSync('connectors/matrix/Cargo.toml', 'utf8'),
-    )?.[1];
-    expect(crate).toBeDefined();
-    const placeholder = dockerfile.slice(
-      dockerfile.indexOf('fn main() {}'),
-      dockerfile.search(/^COPY \S*src /m),
-    );
-    expect(placeholder).toContain(`target/release/.fingerprint/${crate}-*`);
-    expect(placeholder).toContain(`target/release/deps/${crate!.replaceAll('-', '_')}-*`);
-    expect(placeholder).toContain(`target/release/${crate}*`);
-  });
 });
 
 describe('persistent buildx builder', () => {

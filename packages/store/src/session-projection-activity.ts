@@ -1,7 +1,7 @@
 import { sql, type Transaction } from 'kysely';
 import type { Database } from './schema.js';
 
-import { sessionMessageEvent0235 } from './session-message-recency-migration.js';
+import { sessionMessageEvent0236 } from './session-message-recency-migration.js';
 
 interface ActivityFacts {
   eventCount: number;
@@ -34,7 +34,7 @@ export async function readSessionProjectionActivity(
     from unnest(${ids}::text[]) as requested(session_id)
     left join lateral (
       select created_at from events
-      where session_id = requested.session_id and ${sessionMessageEvent0235}
+      where session_id = requested.session_id and ${sessionMessageEvent0236}
       order by id desc limit 1
     ) latest on true
   `.execute(tx);

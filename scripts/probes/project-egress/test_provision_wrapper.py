@@ -2,6 +2,7 @@
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -29,10 +30,21 @@ elif command == 'stat':
     else:
         sys.exit(subprocess.call(['/usr/bin/stat', *args]))
 elif command == 'node':
+    if mode == 'config-failure':
+        sys.exit(1)
     config = Path(args[-1])
     config.mkdir()
     for name in ['relay.json', 'authority.json', 'database.json']:
         (config / name).write_text('{}')
+elif command == 'host-python' and args[0] == '-':
+    from types import SimpleNamespace
+    actual_fstat = os.fstat
+    def root_owned(fd):
+        info = actual_fstat(fd)
+        return SimpleNamespace(st_uid=0, st_mode=info.st_mode, st_size=info.st_size)
+    os.fstat = root_owned
+    sys.argv = args
+    exec(compile(sys.stdin.read(), '<assessment>', 'exec'))
 elif command == 'host-python':
     status = root / 'runtime/status.json'
     status.parent.mkdir(exist_ok=True)
@@ -178,6 +190,23 @@ class ProvisionWrapperTests(unittest.TestCase):
         self.assertIn('unsafe host installer lock path', result.stderr)
         self.assertFalse((self.root / 'submitted').exists())
 
+    def test_path_failures_name_preflight_without_claiming_an_unchanged_host(self):
+        (self.root / 'state').mkdir()
+        (self.root / 'elsewhere').mkdir()
+        (self.root / 'state/provision').symlink_to(self.root / 'elsewhere')
+        report = self.diagnostic(self.run_wrapper(), 'command_failed')
+        self.assertEqual(report['phase'], 'staging')
+        self.assertEqual(report['step'], 'preflight')
+        self.assertNotIn('hostUnchanged', report)
+        self.assertNotIn('reason', report)
+        self.assertFalse((self.root / 'submitted').exists())
+
+    def test_staging_reasons_stay_within_the_vocabulary_of_older_updaters(self):
+        # Updaters that predate staging step names drop unknown reasons silently.
+        # Every Updater release since 4.90.0 relays exactly these two, and only as text.
+        emitted = set(re.findall(r'\{reason: "([a-z_]+)"\}', WRAPPER.read_text()))
+        self.assertEqual(emitted, {'assessment_authorization_invalid', 'provisioning_failed'})
+
     def diagnostic(self, result, code):
         self.assertNotEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout.strip().splitlines()[-1])
@@ -187,6 +216,72 @@ class ProvisionWrapperTests(unittest.TestCase):
         self.assertEqual(report['exitCode'], result.returncode)
         self.assertNotIn('secret', result.stdout + result.stderr)
         return report
+
+    def test_assessment_checks_channel_before_preparing_database_role(self):
+        channel = self.root / 'runtime-updater-state/update-channel.json'
+        channel.parent.mkdir()
+        channel.touch(mode=0o600)
+        self.env.update({'VERITY_EGRESS_ASSESSMENT_' + key: value for key, value in {
+            'CHANNEL_PATH': str(channel), 'CHANNEL_OWNER_UID': '0',
+            'DEPLOYMENT_ID': 'deployment-1', 'OPERATION_ID': IDENTIFIER,
+            'INSTALLED_DIGEST': 'sha256:' + 'a' * 64,
+            'TARGET_DIGEST': 'sha256:' + 'b' * 64,
+        }.items()})
+        channel.write_text(json.dumps('stable'))
+        report = self.diagnostic(self.run_wrapper(), 'command_failed')
+        self.assertEqual(report['phase'], 'staging')
+        self.assertEqual(report['step'], 'assessment_authorization')
+        self.assertEqual(report['reason'], 'assessment_authorization_invalid')
+        self.assertIs(report['hostUnchanged'], True)
+        self.assertNotIn('node ', (self.root / 'calls').read_text())
+        self.assertFalse((self.root / 'submitted').exists())
+        self.assertFalse(self.stage.exists())
+        report = self.diagnostic(self.run_wrapper(), 'command_failed')
+        self.assertIs(report['hostUnchanged'], True)
+
+        channel.write_text(json.dumps('staging'))
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('--assessment-authorization ' + str(self.stage / 'assessment-authorization.json'),
+                      (self.root / 'calls').read_text())
+
+    def test_an_empty_legacy_stage_cannot_prove_the_host_is_unchanged(self):
+        self.stage.mkdir(parents=True)
+        (self.root / 'payload/egress-release').rmdir()
+        report = self.diagnostic(self.run_wrapper(), 'command_failed')
+        self.assertEqual(report['step'], 'release_copy')
+        self.assertNotIn('hostUnchanged', report)
+
+    def test_early_failure_after_configuration_attempt_requires_recovery(self):
+        report = self.diagnostic(self.run_wrapper('config-failure'), 'command_failed')
+        self.assertEqual(report['step'], 'config')
+        self.assertEqual(report['reason'], 'provisioning_failed')
+        self.assertNotIn('hostUnchanged', report)
+        # An older maintenance timer retains only the attempt and result.
+        for entry in self.stage.iterdir():
+            if entry.name not in ('attempt', 'result.json'):
+                if entry.is_dir():
+                    entry.rmdir()
+                else:
+                    entry.unlink()
+        (self.root / 'payload/egress-release').rmdir()
+        report = self.diagnostic(self.run_wrapper(), 'command_failed')
+        self.assertEqual(report['step'], 'release_copy')
+        self.assertNotIn('hostUnchanged', report)
+
+    def test_staging_failure_after_a_previous_submission_requires_recovery(self):
+        self.assertEqual(self.run_wrapper('unavailable').returncode, 0)
+        # The first retry discards the old payload. A later failure before
+        # configuration must still account for the previously submitted unit.
+        report = self.diagnostic(self.run_wrapper('config-failure'), 'command_failed')
+        self.assertEqual(report['step'], 'config')
+        self.assertNotIn('hostUnchanged', report)
+        (self.root / 'payload/egress-release').rmdir()
+        report = self.diagnostic(self.run_wrapper(), 'command_failed')
+        self.assertEqual(report['phase'], 'staging')
+        self.assertEqual(report['step'], 'release_copy')
+        self.assertNotIn('hostUnchanged', report)
+        self.assertTrue((self.stage / 'attempt').exists())
 
     def test_direct_only_manager_completes_and_reuses_bound_ready_result(self):
         result = self.run_wrapper()

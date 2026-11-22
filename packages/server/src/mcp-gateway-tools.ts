@@ -1,3 +1,4 @@
+import { brokeredExecutionClaimId } from './brokered-http-consumption.js';
 import { parseBrokeredDopplerBinding } from './brokered-doppler-binding.js';
 import { requestRunnerSupervisor, runSupervisorTrustedCli } from '@verity/session';
 import { join } from 'node:path';
@@ -128,6 +129,7 @@ export function createMcpGatewayToolExecutor(options: {
         turnId,
         {
           id: callId,
+          consumptionId: brokeredExecutionClaimId(invocationId),
           name: 'verity_secret_run',
           input: request,
           ...(authorizationSnapshot === undefined
@@ -140,6 +142,7 @@ export function createMcpGatewayToolExecutor(options: {
     if (toolName === 'verity_http_request') {
       return await options.brokeredHttpTool(projectId, sessionId, turnId, {
         id: callId,
+        consumptionId: brokeredExecutionClaimId(invocationId),
         name: 'verity_http_request',
         input: request,
         ...(authorizationSnapshot === undefined

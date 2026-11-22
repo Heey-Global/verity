@@ -1,3 +1,4 @@
+import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 import { createStoredSessionLink } from './session-links.js';
 import { ProjectTeamStore } from './project-team.js';
@@ -1576,17 +1577,15 @@ export class EventStore implements EventSink {
     });
   }
 
-  /**
-   * @param cipher Encrypts/decrypts secret columns at the DB boundary (ADR 0002
-   *   D3). Defaults to a passthrough (plaintext) cipher so tests and un-keyed
-   *   deployments behave exactly as before; production passes a real
-   *   {@link SecretCipher} whose key is derived from the master password.
-   */
+  /** @param cipher Encrypts secret columns at the DB boundary (ADR 0002 D3).
+   * Defaults to plaintext for tests and un-keyed deployments; production passes
+   * a cipher whose key is derived from the master password. */
   constructor(
     private readonly rootDb: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
     const db = rootDb;
+    this.capacityLeases = new CapacityLeaseStore(db);
     this.userContext = new UserContextStore(db);
     this.userProfiles = new UserProfileStore(db);
     this.viewState = new ViewStateStore(db);
@@ -1611,6 +1610,7 @@ export class EventStore implements EventSink {
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
+  readonly capacityLeases: CapacityLeaseStore;
   readonly userContext: UserContextStore;
   readonly userProfiles: UserProfileStore;
   /** Per-person overview state: folded projects, read sessions, dismissed Home items. */

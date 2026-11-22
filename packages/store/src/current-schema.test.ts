@@ -11,6 +11,7 @@ it('creates exactly the tables and columns the runtime store declares', async ()
   // Literal URLs, not built in a loop: tools that trace file use read them.
   const sources = [
     new URL('./schema.ts', import.meta.url),
+    new URL('./schema-capacity-leases.ts', import.meta.url),
     new URL('./schema-assistant.ts', import.meta.url),
     new URL('./schema-brokered-approvals.ts', import.meta.url),
     new URL('./schema-people.ts', import.meta.url),

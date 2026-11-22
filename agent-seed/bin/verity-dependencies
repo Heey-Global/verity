@@ -35,7 +35,10 @@ import {
   filesKey,
   measureTrees,
   admitCopy,
+  admitCopyDestinations,
   recoveryBudget,
+  beginCapacityLease,
+  capacityChildOptions,
 } from './verity-dependency-storage.mjs';
 
 function git(...args) {
@@ -804,10 +807,11 @@ async function packagePolicy(root, rootLockFd, prepare = false) {
   if (!process.env.VERITY_SESSION_ID) return;
   if (
     !existsSync(join(directory, 'verity-npm-preflight.mjs')) ||
+    !existsSync(join(directory, 'verity-dependency-storage-preload.mjs')) ||
     !existsSync(join(directory, 'verity-package-install.mjs'))
   ) {
     throw new Error(
-      'Dependency reuse requires the updated package-age verifier; rebuild the project sandbox before running checks.',
+      'Dependency reuse requires updated package and capacity tooling; rebuild the project sandbox before running checks.',
     );
   }
   const child = spawn(
@@ -952,6 +956,7 @@ async function main() {
   rootLockFd = unlockRoot.fd;
   let unlockIdentity;
   let capacity;
+  let storageLease;
   let stage;
   let centralAttempt = false;
   let child;
@@ -1059,13 +1064,24 @@ async function main() {
         'verity-dependencies-copy-' + randomUUID(),
       );
       let recovery;
+      let copyLease;
       const workspaceCopies = [];
       try {
         // Root ignores permission bits, so its writes would reach every session;
         // an inventory this process cannot seal is copied as before.
         checkRecovery(ownTrees(cache));
         const footprint = measureTrees(ownTrees(cache));
-        const admission = admitCopy(gitDir, footprint);
+        const admission = admitCopyDestinations(
+          [
+            gitDir,
+            root,
+            ...workspaceModuleTrees(cache).map((tree) =>
+              dirname(join(root, relative(cache, tree))),
+            ),
+          ],
+          footprint,
+        );
+        copyLease = await beginCapacityLease('dependency-copy', footprint);
         const share = process.getuid?.() !== 0 && sealInventory(cache);
         const drifted = read(join(cache, 'sealed')) === 'v1' ? () => withdraw(cache) : undefined;
         const copied = { files: 0, bytes: 0 };
@@ -1133,6 +1149,7 @@ async function main() {
       } finally {
         for (const { copy } of workspaceCopies) rmSync(copy, { recursive: true, force: true });
         rmSync(candidate, { recursive: true, force: true });
+        await copyLease?.release();
       }
     };
     // Only the requested inventory establishes its allowance; the current tree
@@ -1155,7 +1172,8 @@ async function main() {
       // Only this identity owns this staging path. A native npm child inherits the
       // preparation lock, so a killed supervisor cannot race its surviving child.
       rmSync(stage, { recursive: true, force: true });
-      admitCopy(gitDir, { bytes: 0, inodes: 0 });
+      admitCopy(cacheRoot, { bytes: 0, inodes: 0 });
+      storageLease = await beginCapacityLease('dependency-prepare', { bytes: 0, inodes: 0 });
       stageInputs(root, stage);
       if (identity(root, stage) !== currentIdentity)
         throw new Error(
@@ -1210,8 +1228,10 @@ async function main() {
       const result = await new Promise((done, reject) => {
         child = spawn('npm', ['ci', '--ignore-scripts'], {
           cwd: stage,
-          stdio: ['inherit', 'inherit', 'inherit', capacity.fd],
-          env: { ...stageEnvironment, VERITY_NPM_LOCK_FD: '3' },
+          ...capacityChildOptions(capacity.fd, storageLease, {
+            ...stageEnvironment,
+            VERITY_NPM_LOCK_FD: '3',
+          }),
         });
         child.on('error', reject);
         child.on('close', (code, signal) => done({ code, signal }));
@@ -1267,6 +1287,8 @@ async function main() {
         publication.release();
       }
     }
+    await storageLease?.release();
+    storageLease = undefined;
     await activate();
   } catch (error) {
     if (unlockIdentity && centralAttempt)
@@ -1279,6 +1301,7 @@ async function main() {
     handlers.forEach(([signal, handler]) => process.removeListener(signal, handler));
     // SIGKILL leaves staging for the next owner of the identity/preparation locks.
     if (stage) rmSync(stage, { recursive: true, force: true });
+    await storageLease?.release();
     capacity?.release();
     unlockIdentity?.release();
     unlockRoot.release();
@@ -1414,11 +1437,16 @@ async function privateCopy() {
     : common;
   const rootLock = await lock(join(gitDir, 'verity-npm.lock'));
   let capacity;
+  let storageLease;
   try {
     capacity = await lock(join(inventory, 'verity-dependencies', 'preparation.lock'));
-    admitCopy(gitDir, measureTrees(ownTrees(root)));
+    const trees = ownTrees(root);
+    const footprint = measureTrees(trees);
+    admitCopyDestinations(trees.length ? trees : [root], footprint);
+    storageLease = await beginCapacityLease('dependency-private', footprint);
     privatize(root);
   } finally {
+    await storageLease?.release();
     capacity?.release();
     rootLock.release();
   }

@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.94.7](https://github.com/Heey-Global/verity/compare/mobile-v1.94.6...mobile-v1.94.7) (2026-11-22)
+
+
+### Features
+
+* **mobile:** explain the AI account as the next step after joining ([#2771](https://github.com/Heey-Global/verity/issues/2771)) ([c2f07c0](https://github.com/Heey-Global/verity/commit/c2f07c0f99c3c28eb016c2d22c5f6dff48172343))
+* **mobile:** show the project's state on its page as on its card ([#2774](https://github.com/Heey-Global/verity/issues/2774)) ([f2c6bf1](https://github.com/Heey-Global/verity/commit/f2c6bf13e32585d341bc396fdbf69ac6e66a709c))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2783](https://github.com/Heey-Global/verity/issues/2783)) ([0cbde2b](https://github.com/Heey-Global/verity/commit/0cbde2ba4ad3506cffa2e50a4e5f6ea7b7de0476))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.8.0 ([#2787](https://github.com/Heey-Global/verity/issues/2787)) ([0682b91](https://github.com/Heey-Global/verity/commit/0682b917110fd4aaa2dd10fe07c21ac7cd9ce81c))
+* **mobile:** align server update check with app card ([#2768](https://github.com/Heey-Global/verity/issues/2768)) ([21ae0e6](https://github.com/Heey-Global/verity/commit/21ae0e6d122c1b458f14bd38803a1742e4fb476b))
+* **mobile:** keep permission overviews readable and complete ([#2778](https://github.com/Heey-Global/verity/issues/2778)) ([6a8c2bc](https://github.com/Heey-Global/verity/commit/6a8c2bc655afd03e10789cbec03a2682d98115dd))
+* **mobile:** prioritize model picker catalog requests ([#2775](https://github.com/Heey-Global/verity/issues/2775)) ([1317119](https://github.com/Heey-Global/verity/commit/13171199a3f80a267006760d3710a87dfc8e6945))
+* **server:** read Claude's sign-in URL once from its terminal hyperlink ([#2770](https://github.com/Heey-Global/verity/issues/2770)) ([9c222bd](https://github.com/Heey-Global/verity/commit/9c222bdeae5a3732ff7a63363e8e64bf5b4401fe))
+
 ## [1.94.6](https://github.com/Heey-Global/verity/compare/mobile-v1.94.5...mobile-v1.94.6) (2026-11-21)
 
 

@@ -21,6 +21,7 @@ import { resumeUpdatePreparation } from './update-preparation.js';
 import type { UpdateJournal } from './update-journal.js';
 import { advanceUpdate, beginUpdate, readUpdateJournal } from './update-journal.js';
 import { UPDATE_PULL_RETRY_DELAYS_MS } from './pull-retry.js';
+import { ProjectEgressProvisioningError } from './host-runtime-renewal.js';
 
 /** The two candidate builders share every refusal below, so the cases that apply
  *  to both are written once and run against each. */
@@ -420,28 +421,25 @@ describe('Docker update preparation', () => {
     );
   });
 
-  it('marks recovery as required when the injected provisioning refuses', async () => {
+  it.each([
+    ['unchanged', new ProjectEgressProvisioningError('unchanged', 'none')],
+    ['recovery-required', new Error('Project egress provisioning requires installer authority')],
+  ] as const)('records %s on provisioning failure', async (stage, error) => {
     const { root } = await setup();
     const docker = fakeDocker();
-    const log = vi.fn();
     const actions = await dockerUpdatePreparation({
       managedRoot: root,
       docker,
       environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
       verifyImage: async () => undefined,
       provisionProjectEgressHost: async () => {
-        throw new Error('Project egress provisioning requires installer state authority');
+        throw error;
       },
-      log,
+      log: vi.fn(),
     });
-    await expect(resumeUpdatePreparation(root, actions)).rejects.toThrow(
-      'Project egress provisioning requires installer state authority',
-    );
-    expect(log).toHaveBeenCalledWith(
-      'Network protection: automatic host provisioning failed; recovery is required.',
-    );
+    await expect(resumeUpdatePreparation(root, actions)).rejects.toBe(error);
     expect(JSON.parse(await readFile(join(root, 'host-preparation.json'), 'utf8')).stage).toBe(
-      'recovery-required',
+      stage,
     );
     expect(docker.createContainer.mock.calls.map((call) => call[0].name)).not.toContain(
       'verity-managed-server-g1',

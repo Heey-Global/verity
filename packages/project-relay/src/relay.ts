@@ -31,6 +31,7 @@ export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/project/memory',
   'POST /internal/project/repo',
   'POST /internal/package-install',
+  'POST /internal/dependency-storage',
   'GET /internal/package-artifacts/*',
   'HEAD /internal/package-artifacts/*',
   'HEAD /internal/package-artifacts/authority',
@@ -307,7 +308,11 @@ export function createBrokerRelayServer(options: BrokerRelayOptions = {}): HttpS
       trackSocket(connections, tunnel, 60_000);
       if (socket instanceof Socket) socket.setTimeout(60_000);
       socket.once('close', () => tunnel.destroy());
-      tunnel.once('close', () => socket.destroy());
+      tunnel.once('close', () => {
+        // A clean EOF already ends the pipe. Destroying its destination here
+        // discards queued TLS records before a slow client can receive them.
+        if (!tunnel.readableEnded) socket.destroy();
+      });
       tunnel.once('error', () => socket.destroy());
       socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (upstreamHead.length) socket.write(upstreamHead);

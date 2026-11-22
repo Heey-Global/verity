@@ -31,6 +31,53 @@ const lock = (version: string) =>
   JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/private': { version } } });
 
 describe('dependency copy capacity admission', () => {
+  it('checks the reserve on every actual destination and reports the lowest measurements', () => {
+    expect(
+      probe(`
+      const reserve=10*1024**3;
+      const disks={git:{bavail:reserve+100000,bsize:1,ffree:2000000},tree:{bavail:reserve+8191,bsize:1,ffree:1000003}};
+      try { s.admitCopyDestinations(['git','tree'],{bytes:8192,inodes:3},{},path=>disks[path]); }
+      catch(error) { console.log(error.message.split(':')[0]); }
+      disks.tree.bavail++;
+      const result=s.admitCopyDestinations(['git','tree'],{bytes:8192,inodes:3},{},path=>disks[path]);
+      console.log(result.availableBytes===reserve+8192 && result.freeInodes===1000003);
+      try { s.admitCopyDestinations([],{bytes:0,inodes:0}); }
+      catch(error) { console.log(error.message); }
+    `)
+        .trim()
+        .split('\n'),
+    ).toEqual([
+      'Dependency capacity admission rejected',
+      'true',
+      'Dependency copy destinations are unknown; no additional copy admitted.',
+    ]);
+  });
+
+  it('checks a private tree filesystem before marking or copying its packages', () => {
+    const f = fixture();
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock('2.0.0'));
+    const installed = f.run('install');
+    expect(installed.status, installed.stderr).toBe(0);
+    const modules = join(f.worktree, 'node_modules');
+    const preload = join(f.root, 'capacity-probe.mjs');
+    writeFileSync(
+      preload,
+      `
+      import fs from 'node:fs';
+      import {syncBuiltinESMExports} from 'node:module';
+      const original=fs.statfsSync;
+      fs.statfsSync=(path,...args)=>path===${JSON.stringify(modules)}
+        ? {...original(path,...args),ffree:0} : original(path,...args);
+      syncBuiltinESMExports();
+    `,
+    );
+    const refused = f.run('install', { NODE_OPTIONS: `--import=${preload}` }, '--private');
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain('Dependency capacity admission rejected');
+    expect(existsSync(join(modules, '.verity-private'))).toBe(false);
+    expect(readFileSync(join(modules, 'private', 'package.json'), 'utf8')).toContain('2.0.0');
+  });
+
   it('protects the byte and inode reserves and fails closed for unknown capacity', () => {
     expect(
       probe(`

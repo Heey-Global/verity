@@ -98,7 +98,7 @@ export function createTrustedCliTool(options: {
         projectId,
         sessionId,
         turnId,
-        callId: call.id,
+        callId: call.consumptionId ?? call.id,
         requestHash,
       }))
     ) {

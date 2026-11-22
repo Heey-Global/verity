@@ -216,7 +216,11 @@ export function createSessionCoordination(deps: SessionCoordinationDeps) {
           await validateSource();
           await target(sourceSessionId, userId, request.targetProjectId, targetSessionId);
           if (receipt.phase === 'reserved')
-            await deps.requests.update(sourceSessionId, request.requestId, { phase: 'created' });
+            await deps.requests.update(sourceSessionId, request.requestId, {
+              phase: 'created',
+              // Kept through later phases, so the header can tell a handover from a question.
+              result: { created: true },
+            });
         }
         await validateSource();
         await target(sourceSessionId, userId, request.targetProjectId, targetSessionId);

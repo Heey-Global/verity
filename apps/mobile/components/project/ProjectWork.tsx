@@ -55,7 +55,6 @@ import {
 } from '../ui';
 import type { Leading, TileMarkGlyph, TileMarkTone } from '../ui';
 import type { StatusIntent } from '../ui/Status';
-import { isLinkableSession } from '../../lib/sessionLinks';
 import { useSessionPreviews } from '../../lib/sessionPreviews';
 import { useUnread } from '../../hooks/useUnread';
 
@@ -183,7 +182,7 @@ function workSubtitle(session: SessionSummary, unread: boolean): string | undefi
 /** The item carries its own answers or input, beyond a way into the session. */
 function decidedInPlace(item: InboxItem): boolean {
   return (
-    item.request !== undefined ||
+    (item.kind === 'permission' && item.message !== undefined) ||
     item.lines !== undefined ||
     item.actions.some((action) => action.kind !== 'open_session')
   );
@@ -451,19 +450,17 @@ export function ProjectWork({
   ];
   const [settings, setSettings] = useState<{
     session: SessionSummary;
-    links: boolean;
-    // Linking reaches sessions in other projects, which this page does not hold.
+    // Moving reaches other projects, which this page does not hold.
     projects: ProjectRecord[];
-    everySession: SessionSummary[];
   }>();
 
   const failed = (title: string) => (caught: unknown) =>
     Alert.alert(title, caught instanceof Error ? caught.message : 'Please try again.');
-  const openSettings = (session: SessionSummary, links = false) => {
-    void Promise.all([
-      client.listProjects().catch(() => [] as ProjectRecord[]),
-      client.listSessions().catch(() => [...sessions]),
-    ]).then(([projects, everySession]) => setSettings({ session, links, projects, everySession }));
+  const openSettings = (session: SessionSummary) => {
+    void client
+      .listProjects()
+      .catch(() => [] as ProjectRecord[])
+      .then((projects) => setSettings({ session, projects }));
   };
   const toggleFavorite = (session: SessionSummary) =>
     void client
@@ -689,7 +686,6 @@ export function ProjectWork({
                 <SessionMarkerColumn
                   markers={markers}
                   previewUrl={previews.urls.get(session.sessionId) ?? null}
-                  onOpenLinks={() => openSettings(session, true)}
                 />
               </View>
             ) : undefined
@@ -927,7 +923,6 @@ export function ProjectWork({
       {settings ? (
         <SessionSettingsDialog
           key={settings.session.sessionId}
-          initialSection={settings.links ? 'links' : undefined}
           sessionId={settings.session.sessionId}
           sessionName={settings.session.name ?? null}
           displayName={sessionLabel(settings.session)}
@@ -952,21 +947,6 @@ export function ProjectWork({
           projects={settings.projects
             .filter((project) => project.kind === 'local')
             .map((project) => ({ id: project.id, name: projectTitle(project) }))}
-          // The same rule as the session list's dialog, so both offer the same partners.
-          linkableSessions={settings.everySession
-            .filter((candidate) =>
-              isLinkableSession(candidate, settings.session.sessionId, settings.projects),
-            )
-            .map((candidate) => ({
-              id: candidate.sessionId,
-              name: sessionLabel(candidate),
-              projectId: candidate.projectId!,
-              projectName:
-                projectTitle(
-                  settings.projects.find((project) => project.id === candidate.projectId),
-                ) ?? candidate.projectId!,
-              detail: modelDisplayName(candidate.model),
-            }))}
           onClose={() => setSettings(undefined)}
           onDelete={() => {
             // One sheet at a time: the confirmation replaces the settings.

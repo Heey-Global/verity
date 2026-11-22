@@ -1,3 +1,4 @@
+import { createEmbeddedSecretUnlock } from './embedded-secret-unlock.js';
 import {
   installEmbeddedLocalPreviewRecovery,
   installEmbeddedPublicPreviewRecovery,
@@ -25,7 +26,11 @@ import {
 import { createEmbeddedAgentGatewayCredentials } from './embedded-agent-gateway-credentials.js';
 import { createEmbeddedAgentGateway } from './embedded-agent-gateway.js';
 import { createEmbeddedSecretJobs, installEmbeddedSecretJobs } from './embedded-secret-jobs.js';
-import { createEmbeddedUplink } from './embedded-uplink.js';
+import {
+  createEmbeddedUplink,
+  createEmbeddedUplinkBindings,
+  createEmbeddedTeamSharingBindings,
+} from './embedded-uplink.js';
 import { createEmbeddedDocker } from './embedded-docker.js';
 import { createEmbeddedForgeProxy } from './embedded-forge-proxy.js';
 import { createEmbeddedBranches } from './embedded-branches.js';
@@ -49,7 +54,7 @@ import { validateEmbeddedConfig } from './embedded-config.js';
 import { createEmbeddedPreviewMutations } from './embedded-preview-mutations.js';
 import { createEmbeddedProvisioning } from './embedded-provisioning.js';
 import type { DeprovisionerImpl } from './deprovisioner.js';
-import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { MaintenanceImages } from './maintenance-image.js';
 import { installPersonalSandboxSleep } from './personal-sandbox-sleep.js';
 import { resolveTurnSandbox } from './turn-sandbox.js';
 import { personForCredential } from './personless-credential.js';
@@ -60,9 +65,7 @@ import {
 } from './embedded-control-plane-runner-identity.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import {
-  CONTROL_PLANE_RUNNER_PROJECT_ID,
   SWEEP_SHUTDOWN_WAIT_MS,
-  candidateRunnerProjectIds,
   rejectLatestImageRef,
   publishedDevcontainerFeatureRef,
   toolkitFeatureRefIsConfigured,
@@ -118,25 +121,8 @@ export {
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
 import { resolveAgentContext } from './agent-context.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
-import {
-  StorageReclamation,
-  requestNativeReclamation,
-  readNativeReclamation,
-} from './storage-reclamation.js';
-import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
-import { SessionStorage, sessionStorageDiagnostics } from './session-storage.js';
-import { sessionStorageAccess } from './session-storage-access.js';
-import { RunnerCacheStorage } from './runner-cache-storage.js';
-import {
-  RunnerCacheMaintenance,
-  reclaimSleepingRunnerCaches,
-  cacheMaintenanceFailure,
-} from './runner-cache-maintenance.js';
-import {
-  retireStoppedContainers,
-  boundedContainerRetirement,
-  retireCompletedUpdateContainers,
-} from './stopped-container-gc.js';
+import { installEmbeddedDockerGc } from './embedded-docker-gc.js';
+import { createEmbeddedSessionStorage } from './embedded-session-storage.js';
 import type { DockerGcReport } from './docker-gc.js';
 import { createServerLogSource } from './server-log-source.js';
 import { selectBranchStatus } from './forge-status-cache.js';
@@ -151,7 +137,6 @@ import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { ensureStarterProject } from './welcome-session.js';
-import { previewSharingCapability } from './preview-capability.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
@@ -184,7 +169,7 @@ import {
   type ProjectRecord,
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
-import { sql, type Kysely } from 'kysely';
+import type { Kysely } from 'kysely';
 import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -194,7 +179,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
 import { buildControlPlane } from './app.js';
-import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
+import { createEmbeddedRuntimeDiagnostics } from './embedded-runtime-diagnostics.js';
 import { createProjectListCache } from './project-list-cache.js';
 
 import { createAuthTokenRegistry } from './auth.js';
@@ -205,18 +190,9 @@ import { startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import type { DockerClient } from './docker.js';
-import {
-  describeBuildCapacityReclamation,
-  dockerGcDiagnostics,
-  startDockerGcScheduler,
-  runDockerGc,
-} from './docker-gc.js';
+import { runDockerGc } from './docker-gc.js';
 import { DataVolumeUsage } from './data-volume-usage.js';
 import { PreviewShareConflictError, PreviewShareManager } from './preview-share-manager.js';
-import { premiumFeatureSwitches } from './uplink-control-client.js';
-import { teamSharingStatus } from './uplink-feature-state.js';
-import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
-import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
 import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
 import { createAuditRecorder } from './audit-recorder.js';
@@ -227,15 +203,12 @@ import { createGitHubUserAuthorization } from './github-user-authorization.js';
 import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
 
 import {
-  pendingSessionCleanups,
-  createSessionCleanupProcessor,
-  deleteRunnerSessionHome,
-  createSessionCleanupWorker,
-} from './pending-session-cleanup.js';
+  createEmbeddedSessionCleanup,
+  createEmbeddedSessionCleanupBindings,
+} from './embedded-session-cleanup.js';
 
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
 import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
-import { purgeSessionArtifacts as purgeSessionArtifactFiles } from './session-artifacts.js';
 import {
   validateGitHubAppCreds,
   resolveGitHubAppIdentity,
@@ -270,7 +243,7 @@ import {
   type ClaudeEgressIdentityService,
 } from './claude-egress-identity.js';
 import { installEmbeddedProjectRelayRuntime } from './embedded-project-relay-runtime.js';
-import { originalSandbox, type ProjectRelayLifecycle } from './project-relay-lifecycle.js';
+import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
@@ -281,9 +254,7 @@ import { createSandboxUpdateChecker } from './sandbox-updates.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
-import { openBackupRuntime } from './backup/runtime.js';
-
-import type { VeritySettingsRecord } from '@verity/store';
+import { createEmbeddedBackup } from './embedded-backup.js';
 
 /**
  * Compose the control-plane server for a single-host deployment: a real Postgres
@@ -678,6 +649,7 @@ export async function buildEmbeddedServer(
   let provisioner: ProvisionerImpl | undefined;
   let stopNativeEvidence: (() => void) | undefined;
   let buildStorage: BuildStorage | undefined;
+  let dependencyCapacity: ReturnType<typeof createEmbeddedBuildStorage>['dependencyCapacity'];
   const projectSandboxLifecycleTelemetry = new ProjectSandboxLifecycleTelemetry();
   let deprovisioner: DeprovisionerImpl | undefined;
   // Claude-egress identity material is wired into the provisioner/deprovisioner
@@ -977,7 +949,10 @@ export async function buildEmbeddedServer(
     if (config.controlPlaneRunner === true && refreshControlPlaneRunnerIdentity === undefined) {
       throw new Error('Claude control-plane Runner requires complete egress identity wiring.');
     }
-    ({ buildStorage, stopNativeEvidence } = createEmbeddedBuildStorage(config));
+    ({ buildStorage, dependencyCapacity, stopNativeEvidence } = createEmbeddedBuildStorage(
+      config,
+      eventStore,
+    ));
     ({ provisioner, deprovisioner } = createEmbeddedProvisioning({
       config,
       dockerBaseUrl,
@@ -1322,259 +1297,27 @@ export async function buildEmbeddedServer(
     matrixActivationDone = await notifyManagedMatrixConfigured();
   };
 
-  const backupArchitecture =
-    process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : undefined;
-  const backup =
-    config.databaseUrl && config.dataVolumeRoot && projectDocker && backupArchitecture
-      ? await openBackupRuntime({
-          probe: {
-            docker: projectDocker,
-            network: 'verity-net',
-            tufCachePath: join(config.dataVolumeRoot, 'backup-state', 'tuf-cache'),
-          },
-          root: config.dataVolumeRoot,
-          databaseUrl: config.databaseUrl,
-          currentImage: async () => (await projectDocker.inspectContainer(hostname())).image,
-          architecture: backupArchitecture,
-          release: SERVER_COMPAT.serverVersion,
-          schema: SERVER_COMPAT.schema.current,
-          store: eventStore,
-          onError: () => {
-            console.warn('verity: backup operation unavailable; queued revocations remain durable');
-          },
-        })
-      : undefined;
+  const backup = await createEmbeddedBackup({ config, projectDocker, eventStore });
   let lastDockerGcReport: DockerGcReport | undefined;
   const volumeUsage = dataVolumeRoot ? new DataVolumeUsage({ root: dataVolumeRoot }) : undefined;
-  const sessionStorage =
-    config.hostCloneRoot && projectDocker && provisioner?.withProjectExclusiveMutation
-      ? new SessionStorage({
-          gitRoot: '/work',
-          log: (summary) => app.log.info(summary, 'session storage pass complete'),
-          listProjects: () => eventStore.listProjects(),
-          listSessions: () => eventStore.listSessions(),
-          activity: async (id) =>
-            (await eventStore.listSessionProjectionFacts([id], 0)).get(id)?.lastActivityAt ?? null,
-          root: (project) => projectClonePath(config.hostCloneRoot!, project),
-          ...sessionStorageAccess({
-            store: eventStore,
-            docker: projectDocker,
-            provisioner,
-            withStorageProjectMutation,
-            devServers: () => managedDevServerManager,
-            localPreviews: localPreviewManager,
-            preparedWorktreeImages,
-            defaultProjectImage,
-            maintenanceImages,
-            projectTokenMint: cachedProjectTokenMint,
-            hostCloneRoot: config.hostCloneRoot,
-            dockerBaseUrl: config.dockerBaseUrl!,
-            dataVolume: config.dataVolume,
-            dataVolumeRoot,
-          }),
-          wake: async (project, sessionId) => {
-            if (project.state === 'sleeping')
-              await provisioner.ensureProjectSandboxAwake?.(project.id, new Set([sessionId]));
-          },
-          pr: (project, branch) => readProjectStatus(project, branch),
-        })
-      : undefined;
-  const runnerCacheMaintenance = new RunnerCacheMaintenance({
-    request: (projectId, request) =>
-      requestRunnerSupervisor(
-        join(dataVolumeRoot!, 'runners', projectId, 'supervisor.sock'),
-        request,
-        30_000,
-      ),
-    resolveOwners: (input) => eventStore.resolveRunnerTurnOwnership(input),
-    offline: async (projectId, sessionIds, maxBytes) => {
-      if (
-        !projectDocker ||
-        !dataVolumeRoot ||
-        !provisioner?.withProjectExclusiveMutation ||
-        config.runnerSupervisor !== true ||
-        config.runnerSupervisorTrustedDefaultImage !== true ||
-        projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
-      )
-        throw cacheMaintenanceFailure('runtime-not-idle');
-      const project = await eventStore.getProject(projectId);
-      if (project?.state !== 'sleeping' || project.imageOverrideRef)
-        throw cacheMaintenanceFailure('runtime-not-idle');
-      const selected =
-        typeof defaultProjectImage === 'function'
-          ? await defaultProjectImage()
-          : defaultProjectImage;
-      if (!selected || !maintenanceImages) throw new MaintenanceImageError('image-unavailable');
-      return maintenanceImages.withImage(selected, (image, recheck) =>
-        provisioner.withProjectExclusiveMutation(projectId, () =>
-          withStorageProjectMutation(projectId, async () => {
-            const assertIdle = async () => {
-              const project = await eventStore.getProject(projectId);
-              if (
-                project?.state !== 'sleeping' ||
-                project.imageOverrideRef ||
-                managedDevServerManager?.hasRunningServers(projectId) ||
-                managedDevServerManager?.hasUnverifiedServers(projectId) ||
-                (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
-                (await eventStore.listPublicPreviewShares(projectId)).some((share) =>
-                  ['creating', 'active', 'revoking'].includes(share.state),
-                )
-              )
-                throw cacheMaintenanceFailure('runtime-not-idle');
-              const sessions = new Set(
-                (await eventStore.listSessions())
-                  .filter((session) => session.projectId === projectId)
-                  .map((session) => session.sessionId),
-              );
-              if (sessions.size !== sessionIds.length || sessionIds.some((id) => !sessions.has(id)))
-                throw cacheMaintenanceFailure('runtime-not-idle');
-              if (
-                (await eventStore.listRunningTurns()).some((turn) => sessions.has(turn.sessionId))
-              )
-                throw cacheMaintenanceFailure('runtime-not-idle');
-            };
-            await assertIdle();
-            await recheck();
-            const self = await projectDocker.inspectContainer(hostname());
-            return reclaimSleepingRunnerCaches({
-              docker: projectDocker,
-              projectId,
-              runtimeRoot: join(dataVolumeRoot, 'runners', projectId),
-              image: image.id,
-              runtime: PROJECT_RUNSC_RUNTIME,
-              serverContainerId: self.id,
-              runtimeGid: config.runnerRuntimeGid ?? 1101,
-              ...(config.dataVolume
-                ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
-                : {}),
-              sessionIds,
-              maxBytes,
-              assertIdle,
-            });
-          }),
-        ),
-      );
-    },
+  const { sessionStorage, runnerCacheStorage } = createEmbeddedSessionStorage({
+    log: () => app.log,
+    config,
+    eventStore,
+    projectDocker,
+    provisioner,
+    withStorageProjectMutation,
+    devServers: () => managedDevServerManager,
+    localPreviewManager,
+    preparedWorktreeImages,
+    defaultProjectImage,
+    maintenanceImages,
+    cachedProjectTokenMint,
+    dataVolumeRoot,
+    readProjectStatus,
   });
-  const runnerCacheStorage =
-    dataVolumeRoot === undefined
-      ? undefined
-      : new RunnerCacheStorage({
-          onFailure: (failure) =>
-            app.log.warn(failure, 'Runner cache maintenance failed; unverified caches retained'),
-          ...(config.runnerCacheMaxBytes !== undefined
-            ? { maxBytes: config.runnerCacheMaxBytes }
-            : {}),
-          listRuntimes: async () => {
-            const projects = await eventStore.listProjects();
-            const sessions = await eventStore.listSessions();
-            const runtimes = new Map<string, Set<string>>();
-            for (const project of projects) runtimes.set(project.id, new Set());
-            if (config.controlPlaneRunner) runtimes.set(CONTROL_PLANE_RUNNER_PROJECT_ID, new Set());
-            for (const session of sessions) {
-              for (const id of candidateRunnerProjectIds({
-                projectId: session.projectId,
-                isControlPlaneProject: projects.some(
-                  (p) => p.id === session.projectId && p.kind === 'control_plane',
-                ),
-                controlPlaneRunner: config.controlPlaneRunner === true,
-              }))
-                runtimes.get(id)?.add(session.sessionId);
-            }
-            // Do not wake sleeping sandboxes or infer deleted sessions from directory names.
-            return [...runtimes]
-              .filter(([id]) => existsSync(join(dataVolumeRoot, 'runners', id)))
-              .map(([projectId, ids]) => ({ projectId, sessionIds: [...ids] }));
-          },
-          request: (projectId, sessionIds, maxBytes) =>
-            runnerCacheMaintenance.request(projectId, sessionIds, maxBytes),
-        });
-  const cleanupAbort = new AbortController();
-  const cleanupProcessor =
-    dataVolumeRoot === undefined
-      ? undefined
-      : createSessionCleanupProcessor({
-          root: join(dataVolumeRoot, 'pending-session-cleanup'),
-          sessionExists: async (sessionId) =>
-            (await eventStore.getSession(sessionId)) !== undefined,
-          refreshBindings: async (sessionId) => {
-            const deletion = await eventStore.getSessionDeletion(sessionId);
-            return deletion
-              ? ((
-                  JSON.parse(deletion.payload) as {
-                    artifactBindings?: { backend: string; backendSessionId: string }[];
-                  }
-                ).artifactBindings ?? [])
-              : [];
-          },
-          runtimeState: async (projectId) => {
-            const runtimeExists = existsSync(join(dataVolumeRoot, 'runners', projectId));
-            if (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID && config.controlPlaneRunner)
-              return runtimeExists ? 'ready' : 'unavailable';
-            // A person's own runtime (`u<tag>/<project>`) follows their sandbox.
-            const [tag, ownProjectId] = projectId.split('/');
-            if (ownProjectId !== undefined && tag !== undefined) {
-              const sandbox = (await eventStore.projectSandboxes.list(ownProjectId)).find(
-                (candidate) => sandboxPersonTag(candidate.userId) === tag,
-              );
-              const state =
-                sandbox === undefined
-                  ? undefined
-                  : (await eventStore.projectSandboxes.state(ownProjectId, sandbox.userId))?.state;
-              if (!runtimeExists) return state === undefined ? 'absent' : 'unavailable';
-              if (state === 'active') return 'ready';
-              if (state?.startsWith('sleeping')) return 'sleeping';
-              return state === undefined ? 'absent' : 'unavailable';
-            }
-            const project = await eventStore.getProject(projectId);
-            if (!runtimeExists)
-              return project === undefined
-                ? 'absent'
-                : project.state === 'sleeping'
-                  ? 'sleeping'
-                  : 'unavailable';
-            if (project?.state === 'active') return 'ready';
-            if (project?.state === 'sleeping') return 'sleeping';
-            return 'unavailable';
-          },
-          deleteHome: (projectId, pending) =>
-            deleteRunnerSessionHome(
-              join(dataVolumeRoot, 'runners', projectId, 'supervisor.sock'),
-              pending.sessionId,
-              config.sessionHomeDeleteTimeoutMs,
-            ),
-          purgeArtifacts: async (projectId, pending) => {
-            const result = await purgeSessionArtifactFiles({
-              runtimeDir: join(dataVolumeRoot, 'runners', projectId),
-              sandboxCwd: pending.sandboxCwd,
-              sessionId: pending.sessionId,
-              bindings: pending.bindings,
-              scope: 'session-delete',
-            });
-            if (result.outsideRuntime.length > 0 || result.unknownBackends.length > 0)
-              return 'unsafe';
-            return result.failed.length === 0 && !result.unresolved ? 'clean' : 'retry';
-          },
-          report: (projectId, pending, reason, error) =>
-            app.log.warn(
-              { err: error, sessionId: pending.sessionId, projectId, reason },
-              reason === 'unsafe'
-                ? 'verity: session artifact cleanup requires attention'
-                : 'verity: runner session cleanup deferred with backoff',
-            ),
-          stopped: () => cleanupAbort.signal.aborted,
-        });
-  const runPendingCleanup =
-    cleanupProcessor === undefined
-      ? undefined
-      : (projectId: string) => cleanupProcessor.run(projectId);
-  const sessionCleanupWorker =
-    cleanupProcessor === undefined
-      ? undefined
-      : createSessionCleanupWorker(
-          () => cleanupProcessor.run(),
-          (error) => app.log.warn({ err: error }, 'verity: pending cleanup scan failed'),
-        );
+  const { cleanupAbort, cleanupProcessor, runPendingCleanup, sessionCleanupWorker } =
+    createEmbeddedSessionCleanup({ dataVolumeRoot, config, eventStore, log: () => app.log });
   const app = buildControlPlane({
     onConductorReady: (conductor) => {
       projectTurnReconciler = (projectId) => conductor.reconcileProjectTurns(projectId);
@@ -1605,68 +1348,15 @@ export async function buildEmbeddedServer(
       ? { unlockClientIdentity: config.unlockClientIdentity }
       : {}),
     bus,
-    ...(purgeRunnerArtifacts === undefined
-      ? {}
-      : {
-          scheduleSessionCleanup: () => sessionCleanupWorker?.run(),
-          cleanupDeletedSessionRuntime: async (sessionId: string, projectId: string | null) => {
-            if (
-              config.runnerSupervisor !== true ||
-              (projectId === null && !config.controlPlaneRunner)
-            )
-              return 'not-applicable' as const;
-            const cleanupRoot = join(dataVolumeRoot!, 'pending-session-cleanup');
-            const before = (await pendingSessionCleanups(cleanupRoot)).find(
-              (record) => record.sessionId === sessionId,
-            );
-            const deletion = await eventStore.getSessionDeletion(sessionId);
-            const retained = deletion
-              ? (JSON.parse(deletion.payload) as {
-                  session?: { worktree?: string };
-                  artifactBindings?: { backend: string; backendSessionId: string }[];
-                })
-              : undefined;
-            const captured =
-              retained?.session?.worktree === undefined
-                ? undefined
-                : {
-                    sessionId,
-                    sandboxCwd: sessionSandboxCwd(retained.session.worktree),
-                    runnerProjectIds:
-                      before?.runnerProjectIds ??
-                      candidateRunnerProjectIds({
-                        projectId,
-                        isControlPlaneProject:
-                          projectId !== null &&
-                          (await eventStore.getProject(projectId))?.kind === 'control_plane',
-                        controlPlaneRunner: config.controlPlaneRunner === true,
-                      }),
-                    bindings: retained.artifactBindings ?? [],
-                  };
-            await cleanupProcessor?.runSession(sessionId, captured);
-            const pending = await pendingSessionCleanups(cleanupRoot);
-            if (pending.some((record) => record.sessionId === sessionId))
-              return 'deferred' as const;
-            if (
-              projectId !== null &&
-              (await eventStore.getProject(projectId)) === undefined &&
-              !(before?.runnerProjectIds ?? [projectId]).some((id) =>
-                existsSync(join(dataVolumeRoot!, 'runners', id)),
-              )
-            )
-              return 'absent' as const;
-            return 'clean' as const;
-          },
-          queueSessionArtifacts: async (sessionId: string): Promise<void> => {
-            // Read the bindings HERE rather than in the helper: this is the delete path,
-            // and the rows are about to go with the FK cascade.
-            await purgeRunnerArtifacts(
-              sessionId,
-              await eventStore.getSessionBackendStates(sessionId),
-              'session-delete',
-            );
-          },
-        }),
+    ...createEmbeddedSessionCleanupBindings({
+      dataVolumeRoot,
+      config,
+      eventStore,
+      purgeRunnerArtifacts,
+      sessionSandboxCwd,
+      cleanupProcessor,
+      sessionCleanupWorker,
+    }),
     ...(config.serverUpdateResolver !== undefined
       ? { serverUpdateResolver: config.serverUpdateResolver }
       : {}),
@@ -1689,45 +1379,14 @@ export async function buildEmbeddedServer(
       : {}),
     projectEgressAvailable: async (fresh) => (await projectEgressHealth(fresh)).available,
     projectEgressStatus: projectEgressHealth,
-    previewSharingCapability: async () => {
-      const settings = await eventStore.getVeritySettings();
-      return previewSharingCapability(
-        uplinkControl?.canStartSharing() === true,
-        Boolean(settings?.uplinkSubscriptionKey?.trim()),
-        uplinkControl?.diagnostics(),
-        settings === undefined || premiumFeatureSwitches(settings).sharing,
-      );
-    },
-    ...(previewShareManager !== undefined ? { previewShareManager } : {}),
-    returnPathActivation: returnPath,
-    ...(coordinatedRecording ? { coordinatedRecording } : {}),
-    returnPathConnectorCount: () => remoteConnector?.diagnosticConnectorCount() ?? 0,
-    ...(uplinkControl !== undefined
-      ? { remoteControlDescriptor: () => uplinkControl.remoteControlDescriptor() }
-      : {}),
-    ...(uplinkControl !== undefined
-      ? {
-          uplinkDiagnostics: () => ({
-            ...uplinkControl.diagnostics(),
-            ...(remoteConnector === undefined
-              ? {}
-              : { remoteStreams: remoteConnector.recentStreams() }),
-          }),
-        }
-      : {}),
-    ...(uplinkControl !== undefined
-      ? {
-          onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials(),
-          recheckUplink: () => uplinkControl.checkEntitlements(),
-        }
-      : {}),
-    ...(uplinkControl !== undefined
-      ? {
-          onPremiumFeatureSwitchesChanged: (settings: VeritySettingsRecord) =>
-            applyPremiumFeatureSwitches(settings, uplinkControl, previewShareManager),
-        }
-      : {}),
-    ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
+    ...createEmbeddedUplinkBindings({
+      eventStore,
+      uplinkControl,
+      remoteConnector,
+      returnPath,
+      coordinatedRecording,
+      previewShareManager,
+    }),
     googleAccessToken,
     ...createEmbeddedProviderCredentialBindings({
       secretRoot,
@@ -1750,76 +1409,20 @@ export async function buildEmbeddedServer(
     ) => googleDriveTool.canReadDocumentWithoutApproval(input),
     onGoogleCredentialsChanged: () => googleAccessToken.invalidate(),
     secretCipher,
-    teamLinkIdentity: () => {
-      const identity = config.devicePairing?.identity();
-      const installation = uplinkControl?.teamInstallation();
-      return identity && installation && { ...identity, ...installation };
-    },
-    teamSharing: teamSharingStatus(uplinkControl),
-    onSecretUnlocked: async () => {
-      // Restore process-local relay listeners before filtering persisted gateway
-      // certificates. A new Server owns none yet; treating that as identity drift
-      // would recreate a valid retained Sandbox while checking its unlock state.
-      for (const project of await eventStore.listProjects()) {
-        if (project.kind === 'control_plane' || project.state !== 'active') continue;
-        try {
-          await provisioner?.resumeProjectRelay?.(project.id);
-        } catch (error) {
-          app.log.warn(
-            { err: error, projectId: project.id },
-            'Retained relay resume deferred until project recovery',
-          );
-        }
-      }
-      await projectAgentGatewayIdentity();
-      let inspected = 0;
-      let repaired = 0;
-      let deferred = 0;
-      if (docker !== undefined && provisioner?.repairSandboxForTurn !== undefined) {
-        for (const project of await eventStore.listProjects()) {
-          if (project.kind === 'control_plane' || project.state !== 'active') continue;
-          try {
-            const container = await docker.inspectContainer(project.containerName);
-            if (!container.running) continue;
-            inspected += 1;
-            if (await agentGatewayReady(originalSandbox(project.id), container)) continue;
-            const didRepair = await provisioner.repairSandboxForTurn(
-              project.id,
-              `secret-unlock:${project.id}`,
-              undefined,
-              { requireFreshAgentGatewayIdentity: true },
-            );
-            if (didRepair) repaired += 1;
-            else deferred += 1;
-          } catch (error) {
-            deferred += 1;
-            app.log.warn(
-              { err: error, projectId: project.id },
-              'Agent Gateway identity reconciliation deferred for project',
-            );
-          }
-        }
-      }
-      await projectAgentGatewayIdentity(inspected > 0);
-      app.log.info(
-        { inspected, repaired, deferred, projectedBindings: agentGatewayState.bindings.length },
-        'Agent Gateway identity reconciliation completed after secret unlock',
-      );
-      // Publishes what the sealed boot had to skip. Ordered after the gateway
-      // projection because both mint from the same CA and the gateway is what a
-      // Sandbox needs first; the Runner picks its material up by generation file.
-      const runnerIdentityPublished = await publishRunnerIdentity('secret unlock');
-      app.log.info(
-        { published: runnerIdentityPublished },
-        'control-plane Runner identity resume completed after secret unlock',
-      );
-      // The provider settings are readable now. A sealed boot can only have written
-      // the credential-free fallback, and the Runner reads the file through a
-      // directory mount, so replacing it here reaches containers already running.
-      await materializeOpenCodeConfig('secret unlock');
-      await codexModelCatalog?.refresh();
-      uplinkControl?.start();
-    },
+    ...createEmbeddedTeamSharingBindings({ config, uplinkControl }),
+    onSecretUnlocked: createEmbeddedSecretUnlock({
+      eventStore,
+      docker,
+      provisioner,
+      projectAgentGatewayIdentity,
+      agentGatewayReady,
+      agentGatewayState,
+      publishRunnerIdentity,
+      materializeOpenCodeConfig,
+      codexModelCatalog,
+      uplinkControl,
+      log: () => app.log,
+    }),
     authRegistry,
     ...(config.https !== undefined ? { https: config.https } : {}),
     ...(config.devicePairing !== undefined ? { devicePairing: config.devicePairing } : {}),
@@ -1832,45 +1435,16 @@ export async function buildEmbeddedServer(
     listBrokeredGrants: async (projectId) =>
       brokeredHttpGrants.list(projectId, (await brokeredGrantBindingId(projectId)) ?? null),
     revokeBrokeredGrant: (projectId, grantId) => brokeredHttpGrants.revoke(projectId, grantId),
-    runtimeDiagnostics: createRuntimeDiagnostics({
-      dockerBaseUrl: config.dockerBaseUrl,
-      dataRoot: config.dataVolumeRoot,
-      serverContainerId: config.diagnosticServerContainerId?.trim() || hostname(),
-      hostSnapshotPath: config.hostDiagnosticSnapshotPath,
-      builderMigrationPath: '/run/verity-buildkit/migration-status.json',
-      builderAdmissionDirectory: '/run/verity-buildkit',
-      buildStorageReportPath: '/run/verity-host-diagnostics/storage.json',
-      buildStorageReservations: () => buildStorage?.unresolvedAttempts() ?? [],
-      buildQueue: () => buildStorage?.queueState() ?? { waiting: 0 },
-      storageReclamation: async () => {
-        const report = sessionStorage?.lastReport;
-        let databaseBytes: number | null = null;
-        try {
-          const row = await sql<{
-            bytes: string;
-          }>`select pg_database_size(current_database())::text as bytes`.execute(db);
-          const value = Number(row.rows[0]?.bytes);
-          if (Number.isSafeInteger(value) && value >= 0) databaseBytes = value;
-        } catch {
-          /* Database usage is unknown, not zero. */
-        }
-        const nativeBuildkit = await readNativeReclamation();
-        return {
-          accounting:
-            'Image and dependency sizes are estimates with shared layers/reflinks; do not sum categories. Unknown measurements are null. No freed-byte claim is inferred from apparent sizes.',
-          lastGc: lastDockerGcReport ? dockerGcDiagnostics(lastDockerGcReport) : null,
-          dataVolume: volumeUsage?.diagnostics() ?? null,
-          worktrees: report ? sessionStorageDiagnostics(report) : null,
-          runnerCaches: runnerCacheStorage?.lastReport ?? null,
-          databaseBytes,
-          nativeBuildkit,
-          activeBuildkitBytes:
-            typeof nativeBuildkit?.overlayAllocatedBytes === 'number'
-              ? nativeBuildkit.overlayAllocatedBytes
-              : null,
-        };
-      },
-      projectBuildFailure: (projectId) => provisioner?.lastBuildFailure(projectId),
+    runtimeDiagnostics: createEmbeddedRuntimeDiagnostics({
+      config,
+      db,
+      buildStorage,
+      dependencyCapacity,
+      sessionStorage,
+      runnerCacheStorage,
+      volumeUsage,
+      provisioner,
+      getLastDockerGcReport: () => lastDockerGcReport,
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true
@@ -2027,6 +1601,7 @@ export async function buildEmbeddedServer(
     githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
+    dependencyCapacity,
     // `verity-repo`: the project's code host executes pull request and issue actions.
     projectRepository: async (project: ProjectRecord) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
@@ -2157,9 +1732,7 @@ export async function buildEmbeddedServer(
           // Git for the GitHub-free merge, run inside the project's own container.
           // Same shape as the backend above on purpose: the merge touches a clone the
           // session owns, so it must execute where the session's own code executes.
-          // Needs the daemon client too — without one there is no way to tell a stopped
-          // sandbox from a failing git, so the route reports merging as unconfigured
-          // rather than running it somewhere else.
+          // The daemon distinguishes stopped sandboxes from failed Git commands.
           ...(projectDocker !== undefined
             ? {
                 sandboxGit: (project: ProjectRecord, clonePath: string) =>
@@ -2167,8 +1740,7 @@ export async function buildEmbeddedServer(
                     containerName: project.containerName,
                     hostRoot: clonePath,
                     dockerBaseUrl: config.dockerBaseUrl,
-                    // Which of the two failed is settled with the daemon, never with the
-                    // failed command's own output — which the repository can write.
+                    // Trust daemon state rather than repository-controlled Git output.
                     inspect: () => projectDocker.inspectContainer(project.containerName),
                   }),
               }
@@ -2530,7 +2102,7 @@ export async function buildEmbeddedServer(
       managedDevServerManager?.hasRunningServersFor(projectId, userId),
     sleepSandbox: () => provisioner?.sleepPersonalSandbox?.bind(provisioner),
   });
-  installEmbeddedBuildStorage(app, { config, buildStorage, provisioner });
+  installEmbeddedBuildStorage(app, { config, buildStorage, provisioner, dependencyCapacity });
   // Fixed-purpose counters exclude command arguments, environment values and identities.
   let previousDockerExecCounts = getDockerExecDiagnostics();
   const dockerExecDiagnosticTimer = setInterval(() => {
@@ -2593,111 +2165,25 @@ export async function buildEmbeddedServer(
 
   app.addHook('onClose', () => stopNativeEvidence?.());
 
-  let storageReclamation: StorageReclamation | undefined;
-
-  // Host-disk GC (docker-gc.ts). Wired off `projectDocker` because that is the
-  // client that CREATES the resources it collects — the devcontainer image cache
-  // in `resolveOrBuildImage` and the sandbox containers whose anonymous volumes
-  // can outlive them. Without this the runner's two append-only caches grow until
-  // the disk is full; `docker system prune` does not reach either (the image tags
-  // are tagged, not dangling, and prune skips volumes entirely).
-  if (projectDocker !== undefined && config.dockerGc !== false) {
-    let nativeMaintenanceRequested: string | null = null;
-    let cacheHelperProjectOffset = 0;
-    const retireProjectContainers = async (cacheHelpersOnly: boolean, capacityOnly = false) => {
-      const removed =
-        cacheHelpersOnly || capacityOnly
-          ? []
-          : await retireCompletedUpdateContainers(projectDocker);
-      if (!provisioner?.withProjectExclusiveMutation) return { removed, errors: [] };
-      const result = await retireStoppedContainers({
-        docker: projectDocker,
-        ...(cacheHelpersOnly || capacityOnly
-          ? boundedContainerRetirement(cacheHelpersOnly, cacheHelperProjectOffset)
-          : {}),
-        listProjects: () => eventStore.listProjects(),
-        withProjectMutation: (id, run) =>
-          provisioner.withProjectExclusiveMutation(id, () =>
-            withStorageProjectMutation(
-              id,
-              async () => {
-                if (
-                  managedDevServerManager?.hasRunningServers(id) ||
-                  managedDevServerManager?.hasUnverifiedServers(id)
-                )
-                  throw new Error('Managed dev server is active');
-                if (
-                  (localPreviewManager?.listProject(id).length ?? 0) > 0 ||
-                  (await eventStore.listPublicPreviewShares(id)).some((s) =>
-                    ['creating', 'active', 'revoking'].includes(s.state),
-                  )
-                )
-                  throw new Error('Preview is active');
-                await run();
-              },
-              { waitForIdle: !cacheHelpersOnly && !capacityOnly },
-            ),
-          ),
-      });
-      if (cacheHelpersOnly || capacityOnly) cacheHelperProjectOffset += 8;
-      return {
-        removed: [...removed, ...result.removed],
-        errors: result.errors,
-        retained: result.retained,
-      };
-    };
-    const dockerGc = startDockerGcScheduler({
-      docker: projectDocker,
-      log: app.log,
-      ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
-      ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
-      // Read through the `let` on every pass, not captured once: the lifecycle is
-      // constructed below this block, and its held set changes with every
-      // provision. This is what keeps the sweep off a relay whose sandbox has not
-      // been created yet — neither the listing nor elapsed time can see that.
-      heldRelays: () => projectRelayLifecycle?.heldRelays() ?? [],
-      beforeSweep: async () => {
-        nativeMaintenanceRequested = null;
-        await requestNativeReclamation()
-          .then((requestedAt) => {
-            nativeMaintenanceRequested = requestedAt;
-          })
-          .catch(() => undefined);
-        await runnerCacheStorage?.runOnce();
-        await sessionStorage?.runOnce();
-        await volumeUsage?.runOnce();
-      },
-      describeCapacity: () => volumeUsage?.describe() ?? '',
-      onReport: (report) => {
-        report.nativeRequestedAt = nativeMaintenanceRequested;
-        lastDockerGcReport = report;
-      },
-      retireContainers: () => retireProjectContainers(false),
-      retireCacheHelpers: () => retireProjectContainers(true),
-      retireCapacityContainers: () => retireProjectContainers(false, true),
-      imageReferences,
-      onProjectImageRemoved: (image) =>
-        auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
-    });
-    storageReclamation = new StorageReclamation({
-      collect: () => dockerGc.runOnce(),
-      worktrees: () => sessionStorage?.lastReport,
-      runnerCaches: () => runnerCacheStorage?.lastReport,
-      dataRoot: config.dataVolumeRoot,
-    });
-    // A waiting build runs only the capacity steps, never the full maintenance
-    // pass: that pass first works through runner caches and session worktrees,
-    // which alone outlasted the build's reclamation deadline.
-    buildStorage?.setReclaimer(async () =>
-      describeBuildCapacityReclamation(await dockerGc.reclaimBuildCapacity()),
-    );
-    buildStorage?.setCapacityDescriber((short) => volumeUsage?.describe(short) ?? '');
-    app.addHook('onClose', async () => {
-      dockerGc.stop();
-      await volumeUsage?.stop();
-    });
-  }
-  registerStorageReclamationRoutes(app, eventStore, storageReclamation);
+  installEmbeddedDockerGc(app, {
+    config,
+    projectDocker,
+    eventStore,
+    provisioner,
+    withStorageProjectMutation,
+    managedDevServerManager,
+    localPreviewManager,
+    getProjectRelayLifecycle: () => projectRelayLifecycle,
+    runnerCacheStorage,
+    sessionStorage,
+    volumeUsage,
+    imageReferences,
+    auditRecorder,
+    buildStorage,
+    onReport: (report) => {
+      lastDockerGcReport = report;
+    },
+  });
   if (codexModelCatalog !== undefined) {
     app.addHook('onClose', () => codexModelCatalog.close());
   }
