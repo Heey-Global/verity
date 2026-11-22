@@ -29,7 +29,6 @@ export const projectViewerSchema = z.object({
   canCode: z.boolean().optional(),
   canManage: z.boolean(),
 });
-export type ProjectViewer = z.infer<typeof projectViewerSchema>;
 
 /** A project's team (ADR 0023 §1): members and open invitations. */
 const projectMemberSchema = z.object({
