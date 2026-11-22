@@ -22,9 +22,7 @@ import {
   waitForPendingMessageProjections,
 } from './store.js';
 import { createIsolatedTestDb, createTestDb, truncateAll, type TestDb } from './testing.js';
-
 let ctx: TestDb;
-
 beforeAll(async () => {
   ctx = await createTestDb();
 });
@@ -2239,6 +2237,7 @@ describe('EventStore — session projection facts', () => {
         eventCount: 0,
         lastEventSeq: 0,
         lastActivityAt: null,
+        lastMessageAt: null,
         events: [],
         eventsTruncated: false,
         rateLimitEvents: [],
@@ -2321,6 +2320,7 @@ describe('EventStore — session projection facts', () => {
       eventCount: 0,
       lastEventSeq: 0,
       lastActivityAt: null,
+      lastMessageAt: null,
       events: [],
       eventsTruncated: false,
       rateLimitEvents: [],

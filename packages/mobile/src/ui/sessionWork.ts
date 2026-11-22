@@ -117,21 +117,20 @@ export const RECENT_SESSION_LIMIT = 10;
 /**
  * The most recently used sessions not already shown in another section, newest
  * first, so a session that leaves "In progress" or "Results" stays one tap away.
- * Last use is the session's last activity, the timestamp the work order reads;
- * sessions without one sort last.
+ * Only user and agent messages count; technical events must not revive old work.
+ * Older servers fall back to event activity; known message-less sessions sort last.
  */
 export function recentSessions(
   sessions: readonly SessionSummary[],
   shown: ReadonlySet<string>,
   limit: number = RECENT_SESSION_LIMIT,
 ): SessionSummary[] {
+  const activity = (session: SessionSummary) =>
+    (session.lastMessageAt === undefined ? session.lastActivityAt : session.lastMessageAt) ?? 0;
   return sessions
     .filter((session) => !shown.has(session.sessionId))
     .map((session, index) => ({ session, index }))
-    .sort(
-      (a, b) =>
-        (b.session.lastActivityAt ?? 0) - (a.session.lastActivityAt ?? 0) || a.index - b.index,
-    )
+    .sort((a, b) => activity(b.session) - activity(a.session) || a.index - b.index)
     .slice(0, Math.max(0, limit))
     .map(({ session }) => session);
 }

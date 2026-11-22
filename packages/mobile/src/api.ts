@@ -120,13 +120,11 @@ import {
   usageSchema,
 } from '@verity/events';
 import { z } from 'zod';
-
 /** Local transport scheduling metadata; fetch implementations may ignore it. */
 export type TransportLane = 'interactive' | 'background';
 export interface TransportRequestInit extends RequestInit {
   transportLane?: TransportLane;
 }
-
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
   // Conversation reads and model picking must not queue behind slow background reads.
@@ -136,7 +134,6 @@ function readTransportLane(path: string): TransportLane {
     ? 'interactive'
     : 'background';
 }
-
 const projectGitHubIssuesSchema = z.object({
   connected: z.boolean(),
   viewerLogin: z.string().nullable(),
@@ -395,6 +392,8 @@ export const sessionSummarySchema = z
     /** Epoch ms of the newest event, for ordering Home's items. Absent on older
      * servers and null for an empty log; both sort as oldest. */
     lastActivityAt: z.number().nullable().optional().catch(undefined),
+    /** Latest user or agent message; absent on older servers. */
+    lastMessageAt: z.number().nullable().optional().catch(undefined),
     /** Version associated with this count; forward it unchanged when marking seen. */
     eventCountVersion: z.string().optional(),
     agentTextCounterVersion: z.literal('agent-text-v2').optional(),
