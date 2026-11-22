@@ -74,7 +74,6 @@ import {
   toolkitFeatureRefIsConfigured,
   resolveToolkitFeatureRef,
   branchRenameAppliesToSession,
-  syncProjectsFromInstallation,
   readBundledDevcontainerFeature,
   refreshProjectGitHubToken,
   createProjectWorktreeFactory,
@@ -182,7 +181,10 @@ import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-c
 
 import { buildControlPlane } from './app.js';
 import { createEmbeddedRuntimeDiagnostics } from './embedded-runtime-diagnostics.js';
-import { createProjectListCache } from './project-list-cache.js';
+import {
+  createEmbeddedProjectList,
+  createEmbeddedProjectFleetBindings,
+} from './embedded-project-fleet.js';
 
 import { createAuthTokenRegistry } from './auth.js';
 import { ensureControlPlaneProject } from './control-plane-project.js';
@@ -239,7 +241,6 @@ import { requestArrivedInternally } from './internal-listener.js';
 import { containerPathFor, DockerExecBackend } from './project-backend.js';
 import { createSandboxGit } from './sandbox-git.js';
 import { projectSettingsEnv } from './project-settings-env.js';
-import { reconcileProjectContainerStates } from './project-state.js';
 import {
   createClaudeEgressIdentityService,
   type ClaudeEgressIdentityService,
@@ -1257,39 +1258,12 @@ export async function buildEmbeddedServer(
           sessionSandboxCwd,
         });
 
-  // Memoised fleet listing. The routes that write an operator-owned project
-  // field (fold state, order, setup status) invalidate it through
-  // `invalidateProjectList`, or the write would stay invisible to the overview
-  // for the whole window.
-  const projectList =
-    installationService === undefined
-      ? undefined
-      : createProjectListCache(
-          async () => {
-            const projects = await syncProjectsFromInstallation(eventStore, installationService);
-            const reconciled =
-              docker !== undefined
-                ? reconcileProjectContainerStates(
-                    projects,
-                    docker,
-                    (id, state, provisionError, provisionWarning) =>
-                      eventStore.updateProjectState(id, state, provisionError, provisionWarning),
-                    (id) => provisioner?.isProjectProvisioning(id) === true,
-                    // A list poll can land after wake persisted `waking` but before
-                    // Docker starts the retained container. Give reconciliation the
-                    // same recovery hooks as the detail route: an in-process wake
-                    // owns the mutation barrier, so recovery declines and the
-                    // reconciler preserves `waking` instead of publishing a
-                    // momentary, operator-actionable `failed` state.
-                    provisioner?.recoverInterruptedSleep?.bind(provisioner),
-                    provisioner?.recoverInterruptedWake?.bind(provisioner),
-                  )
-                : projects;
-            const result = await reconciled;
-            return result;
-          },
-          { ttlMs: 3_000 },
-        );
+  const projectList = createEmbeddedProjectList({
+    eventStore,
+    installationService,
+    docker,
+    provisioner,
+  });
 
   const managedMatrixControl = existsSync('/run/verity-updater/control');
   let matrixActivationDone = false;
@@ -1535,50 +1509,16 @@ export async function buildEmbeddedServer(
     latestRelease: (owner: string, repo: string) => githubForge.latestRelease({ owner, repo }),
     refreshLatestRelease: (owner: string, repo: string) =>
       githubForge.refreshLatestRelease({ owner, repo }),
-    // Multi-repo fleet-registry listing (concept §19, #174). The provider syncs
-    // the live GitHub-App-installation repos into the durable `projects` cache
-    // (upsert preserves worker-owned state — cloning/container_starting/active/
-    // failed survives a list-refresh that runs mid-provisioning) and returns the
-    // cache. New repos land as `state='absent'`; Verity-self's row appears after
-    // the first `GET /projects` because Verity is itself a normal installation
-    // repo (§19.1).
-    ...(installationService !== undefined && projectList !== undefined
-      ? {
-          ...(refreshProjectToken !== undefined ? { refreshProjectToken } : {}),
-          listProjects: async () => {
-            if (hasMasterPassword && secretCipher.isSealed()) throw new SealedError();
-            return projectList.list();
-          },
-          invalidateProjectList: () => projectList.invalidate(),
-          listAvailableRepositories: async () => {
-            if (hasMasterPassword && secretCipher.isSealed()) throw new SealedError();
-            return syncProjectsFromInstallation(eventStore, installationService, {
-              includeHidden: true,
-            });
-          },
-        }
-      : {}),
-    // Single-project freshness for `GET /projects/:id` (the screen that owns
-    // Repair). Deliberately independent of `listProjects`: no GitHub-installation
-    // sync and no list cache, just one container inspect — so detail stays correct
-    // while the installation sync is degraded, and a sandbox that died is visible
-    // the moment the screen loads instead of after the next overview poll.
-    ...(docker !== undefined
-      ? {
-          reconcileProjectState: async (project: ProjectRecord) => {
-            const [reconciled] = await reconcileProjectContainerStates(
-              [project],
-              docker,
-              (id, state, provisionError, provisionWarning) =>
-                eventStore.updateProjectState(id, state, provisionError, provisionWarning),
-              (id) => provisioner?.isProjectProvisioning(id) === true,
-              provisioner?.recoverInterruptedSleep?.bind(provisioner),
-              provisioner?.recoverInterruptedWake?.bind(provisioner),
-            );
-            return reconciled ?? project;
-          },
-        }
-      : {}),
+    ...createEmbeddedProjectFleetBindings({
+      eventStore,
+      installationService,
+      docker,
+      provisioner,
+      projectList,
+      hasMasterPassword,
+      secretCipher,
+      refreshProjectToken,
+    }),
     ...(projectDocker !== undefined
       ? {
           sandboxUpdates: createSandboxUpdateChecker({
