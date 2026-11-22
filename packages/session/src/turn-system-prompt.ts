@@ -168,7 +168,7 @@ export const COMPACT_RESUME_SYSTEM_PROMPT =
 
 export function turnSystemPrompt(codeHost: TurnCodeHost = 'github', compact = false): string {
   if (compact)
-    return `${AGENT_CORE_PROMPT}\n\n${APPROVAL_WAITING_SYSTEM_PROMPT}\n\n# Built-in Skills\n${AGENT_SKILL_CATALOG}\n\n${codeHost === 'documents' ? '' : PROJECT_REPOSITORIES_SYSTEM_PROMPT}\n\nCode host: ${codeHost}. ${codeHost === 'documents' ? 'This Documents working copy publishes automatically; do not offer Git, push or PR actions. Use the code working directory for code and package installs.' : codeHost === 'local' ? 'No remote publishing is configured; do not offer push/PR actions.' : 'Use the session checkout branch for the target repository for remote work.'}`;
+    return `${AGENT_CORE_PROMPT}\n\n${APPROVAL_WAITING_SYSTEM_PROMPT}\n\n# Built-in Skills\n${AGENT_SKILL_CATALOG}\n\n${codeHost === 'documents' ? '' : PROJECT_REPOSITORIES_SYSTEM_PROMPT}\n\nCode host: ${codeHost}. ${codeHost === 'documents' ? 'This Documents working copy publishes automatically; do not offer Git, push or PR actions. Use the code working directory for code and package installs.' : codeHost === 'local' ? 'No remote publishing is configured; do not offer push/PR actions.' : 'Use the session checkout branch for the target repository for remote work. If the forge refuses a push or pull-request change with 403 because the person you work for lacks the Code permission, do not retry or work around it: tell them their changes stay in this session for a project member with Code permission to add.'}`;
   return TURN_SYSTEM_PROMPTS[codeHost];
 }
 

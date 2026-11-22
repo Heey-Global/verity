@@ -51,6 +51,13 @@ const ALL_ACTIONS: ReadonlySet<ForgeAction> = new Set([
   'repository-rules-read',
   'packages-read',
 ]);
+// What adds changes to the project's code: pushing, pull-request writes (merging
+// included) and releases. The person a turn acts for needs Code for these (ADR 0023 §1).
+const CODE_WRITE_ACTIONS: ReadonlySet<ForgeAction> = new Set([
+  'git-write',
+  'pulls-write',
+  'releases-write',
+]);
 export const FORGE_PROXY_CA_FILE = '/run/verity/forge-proxy/ca.crt';
 // Never log upstream messages, URLs, headers or error objects: they can contain credentials.
 const SAFE_TRANSPORT_CODES = new Set([
@@ -159,6 +166,9 @@ export function createBrokeredForgeProxy(options: {
     path: string,
   ) => Promise<RepositoryBinding | RepositoryBinding[] | undefined>;
   adapter: BrokeredForgeAdapter;
+  /** Whether the person a request acts for may add changes to the project's code.
+   *  Without it, pushes and pull-request or release writes are refused. */
+  mayWriteCode?: ((projectId: string, userId: string) => Promise<boolean>) | undefined;
   enabled(projectId: string): boolean;
   actions?(projectId: string): ReadonlySet<ForgeAction>;
   transport?: BrokeredHttpStreamTransport;
@@ -413,6 +423,13 @@ export function createBrokeredForgeProxy(options: {
             }
             let auth: Awaited<ReturnType<BrokeredForgeAdapter['authorize']>> | undefined;
             let rejected: unknown;
+            // Every candidate acts for the same person; a turn without one keeps the
+            // project default, which no member's rights narrow.
+            const actingUserId = binding.actingUserId;
+            const codeWritesRefused =
+              typeof actingUserId === 'string' &&
+              options.mayWriteCode !== undefined &&
+              !(await options.mayWriteCode(identity.projectId, actingUserId));
             for (const candidate of candidates) {
               try {
                 auth = await options.adapter.authorize(
@@ -423,7 +440,10 @@ export function createBrokeredForgeProxy(options: {
                     ...(Buffer.isBuffer(body) ? { body } : {}),
                   },
                   candidate,
-                  options.actions?.(candidate.projectId) ?? ALL_ACTIONS,
+                  withoutCodeWrites(
+                    options.actions?.(candidate.projectId) ?? ALL_ACTIONS,
+                    codeWritesRefused,
+                  ),
                   abort.signal,
                 );
                 chosen = candidate;
@@ -598,4 +618,13 @@ export function createBrokeredForgeProxy(options: {
       });
     },
   };
+}
+
+function withoutCodeWrites(
+  actions: ReadonlySet<ForgeAction>,
+  refused: boolean,
+): ReadonlySet<ForgeAction> {
+  return refused
+    ? new Set([...actions].filter((action) => !CODE_WRITE_ACTIONS.has(action)))
+    : actions;
 }

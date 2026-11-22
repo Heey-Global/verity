@@ -1,3 +1,4 @@
+import { requesterMayCode } from './permission-decision-authority.js';
 import { hasCodeContent, hasSavedCodeWorkspace, legacySessionCodePath } from './project-code.js';
 import type { Conductor } from '@verity/session';
 import { PROJECT_MEMORY_MAX_CHARS } from '@verity/store';
@@ -66,7 +67,6 @@ import {
 } from './session-file-routes.js';
 import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import type { SessionFileRootName } from './session-files.js';
-import { viewerId } from './view-state-routes.js';
 import {
   assertSessionRealPath,
   attachmentDisposition,
@@ -1170,19 +1170,7 @@ export function registerServerSessionFiles(
   };
   registerSessionFileRoutes(app, {
     ...fileDeps,
-    // As the route policy has it: without accounts there is one operator, and
-    // administrators keep every route. An unknown session is answered as one.
-    mayChangeCode: async (request, sessionId) => {
-      if (request.localUserId == null) return true;
-      const viewer = viewerId(request);
-      if (await deps.eventStore.isActiveAdministrator(viewer)) return true;
-      const session = await deps.eventStore.getSession(sessionId);
-      if (session === undefined) return true;
-      return (
-        session.projectId != null &&
-        (await deps.eventStore.hasProjectPermission(viewer, session.projectId, 'code'))
-      );
-    },
+    mayChangeCode: (request, sessionId) => requesterMayCode(deps.eventStore, request, sessionId),
   });
   registerKnowledgeFileRoutes(app, fileDeps);
 
