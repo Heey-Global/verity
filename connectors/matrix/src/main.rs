@@ -35,6 +35,12 @@ use sha2::{Digest, Sha256};
 use tokio::{fs, sync::RwLock, time::sleep};
 use tracing::{error, info, warn};
 
+/// The image build runs `--version` and rejects any binary that does not answer
+/// with this line, so a placeholder build that exits silently cannot ship.
+const VERSION_LINE: &str = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
+/// Without `RUST_LOG`, `info` lines from the connector itself stay visible in
+/// the container log; dependencies only report warnings.
+const DEFAULT_LOG_FILTER: &str = "warn,verity_matrix_connector=info";
 const MAX_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
 const MAX_IMPORT_DIAGNOSTICS: usize = 20;
 
@@ -681,7 +687,16 @@ async fn connect(config: &Config, credentials: &MatrixCredentials) -> Result<Cli
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    if env::args().nth(1).as_deref() == Some("--version") {
+        println!("{VERSION_LINE}");
+        return Ok(());
+    }
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+    info!(version = env!("CARGO_PKG_VERSION"), "Matrix connector starting");
+    // An invalid configuration ends `main` with an error: Rust prints it and
+    // exits non-zero, so it never looks like a clean exit to the supervisor.
     let config = Config::from_env()?;
     let mut http_builder = reqwest::Client::builder().timeout(Duration::from_secs(15));
     if let Some(path) = &config.verity_ca_cert_path {
