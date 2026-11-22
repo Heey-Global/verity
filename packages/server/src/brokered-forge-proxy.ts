@@ -423,8 +423,9 @@ export function createBrokeredForgeProxy(options: {
             }
             let auth: Awaited<ReturnType<BrokeredForgeAdapter['authorize']>> | undefined;
             let rejected: unknown;
-            // Every candidate acts for the same person; a turn without one keeps the
-            // project default, which no member's rights narrow.
+            // Every candidate belongs to the sandbox's project (filtered above) and acts
+            // for the same person; a turn without one keeps the project default, which
+            // no member's rights narrow. A failing check throws and fails the request.
             const actingUserId = binding.actingUserId;
             const codeWritesRefused =
               typeof actingUserId === 'string' &&
