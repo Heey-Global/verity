@@ -5,13 +5,13 @@ import type { GmailSessionConnection } from '@verity/mobile';
 // tested without rendering the whole session screen.
 import type { IconName } from '../components/Icon';
 import { MEETING_AUDIO_ENABLED } from './featureFlags';
+import type { GoogleService } from './sessionGoogleAccess';
 
 export type AttachAnchor = { x: number; y: number; width: number; height: number };
 
 export type AttachMenuRow =
-  | { section: string }
   | { divider: true }
-  | { icon: IconName; label: string; detail?: string; onPress: () => void };
+  | { icon: IconName; label: string; detail?: string; navigates?: boolean; onPress: () => void };
 
 export interface AttachMenuHandlers {
   onCapturePhoto: () => void;
@@ -19,35 +19,70 @@ export interface AttachMenuHandlers {
   onPickFiles: () => void;
   onPickMeetingAudio: () => void;
   onLiveMeeting: () => void;
-  onConnectGmail: () => void;
-  onConnectCalendar: () => void;
-  onConnectContacts: () => void;
+  onOpenConnectors: () => void;
 }
 
-export type GoogleMenuAccess = Partial<
-  Record<'gmail' | 'calendar' | 'contacts', GmailSessionConnection | null>
->;
-function googleDetail(connection: GmailSessionConnection | null | undefined, fallback: string) {
-  if (connection?.enabled)
-    return `${connection.source === 'project' ? 'Project access' : 'This chat'} · ${connection.accountEmail ?? ''}`;
-  return connection?.mode === 'disabled' ? 'Disabled for this chat' : fallback;
+export type { GoogleService };
+export type GoogleMenuAccess = Partial<Record<GoogleService, GmailSessionConnection | null>>;
+
+export const CONNECTORS: readonly { service: GoogleService; label: string; icon: IconName }[] = [
+  { service: 'gmail', label: 'Gmail', icon: 'mail' },
+  { service: 'calendar', label: 'Google Calendar', icon: 'calendar' },
+  { service: 'contacts', label: 'Google Contacts', icon: 'users' },
+];
+
+/** How one connector stands in this chat, as its row in the Connectors list shows it. */
+export function connectorState(connection: GmailSessionConnection | null | undefined): {
+  on: boolean;
+  /** Granted for the whole project: switched in Project settings, not here. */
+  locked: boolean;
+  detail: string;
+} {
+  if (connection?.enabled) {
+    const project = connection.source === 'project';
+    const scope = project ? 'Project access' : 'This chat';
+    return {
+      on: true,
+      locked: project,
+      detail: connection.accountEmail ? `${scope} · ${connection.accountEmail}` : scope,
+    };
+  }
+  return { on: false, locked: false, detail: 'Off' };
 }
 
-/** Google shortcuts require a centrally connected account. */
+/** The Connectors row's one-line summary: which connectors this chat may use. */
+export function connectorsSummary(access: GoogleMenuAccess): string {
+  const on = CONNECTORS.filter(({ service }) => access[service]?.enabled === true);
+  if (on.length === 0) return 'None for this chat';
+  if (on.length > 1) return on.map(({ label }) => label.replace(/^Google /, '')).join(' · ');
+  const [only] = on;
+  const project = access[only.service]?.source === 'project';
+  return `${only.label} · ${project ? 'Project access' : 'This chat'}`;
+}
+
+/**
+ * The rows under the recent-image strip. Where the strip shows (native), its
+ * camera tile replaces "Take photo"; Connectors require a centrally connected
+ * Google account.
+ */
 export function attachMenuRows(
   handlers: AttachMenuHandlers,
   {
     meetingAudioEnabled = MEETING_AUDIO_ENABLED,
+    recentStrip = false,
     googleConnected = false,
     googleAccess = {},
   }: {
     meetingAudioEnabled?: boolean;
+    recentStrip?: boolean;
     googleConnected?: boolean;
     googleAccess?: GoogleMenuAccess;
   } = {},
 ): AttachMenuRow[] {
   return [
-    { icon: 'camera', label: 'Take photo', onPress: handlers.onCapturePhoto },
+    ...(recentStrip
+      ? []
+      : [{ icon: 'camera' as IconName, label: 'Take photo', onPress: handlers.onCapturePhoto }]),
     { icon: 'image', label: 'Choose photo', onPress: handlers.onPickPhotos },
     { icon: 'file', label: 'Choose file', onPress: handlers.onPickFiles },
     ...(meetingAudioEnabled
@@ -64,24 +99,12 @@ export function attachMenuRows(
     ...(googleConnected
       ? [
           { divider: true } as const,
-          { section: 'Connect' },
           {
-            icon: 'mail' as IconName,
-            label: 'Gmail',
-            detail: googleDetail(googleAccess.gmail, 'Read & draft'),
-            onPress: handlers.onConnectGmail,
-          },
-          {
-            icon: 'calendar' as IconName,
-            label: 'Google Calendar',
-            detail: googleDetail(googleAccess.calendar, 'Read & approve changes'),
-            onPress: handlers.onConnectCalendar,
-          },
-          {
-            icon: 'users' as IconName,
-            label: 'Google Contacts',
-            detail: googleDetail(googleAccess.contacts, 'Read names & emails'),
-            onPress: handlers.onConnectContacts,
+            icon: 'link' as IconName,
+            label: 'Connectors',
+            detail: connectorsSummary(googleAccess),
+            navigates: true,
+            onPress: handlers.onOpenConnectors,
           },
         ]
       : []),

@@ -32,7 +32,6 @@ import {
 } from '../../components/vulnerability/VulnerabilityStarterCard';
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
 import { sessionLayout } from '../../lib/sessionLayout';
-import type { GoogleMenuAccess } from '../../lib/attachMenu';
 import type { PackageFindings } from '../../components/vulnerability/PackageFindings';
 import {
   useGoogleAccountPicker,
@@ -291,8 +290,11 @@ import { isProjectSessionModel } from '../../lib/projectSessionModels';
 import { isSameAutomation } from '../../lib/automationText';
 import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
-import { type AttachAnchor, attachMenuRows } from '../../lib/attachMenu';
+import type { AttachAnchor } from '../../lib/attachMenu';
+import type { RecentImage } from '../../lib/recentImages';
+import { AttachMenu } from '../../components/AttachMenu';
 import {
+  attachRecentImage,
   captureImage,
   pickMeetingAudioAsset,
   readMeetingAudioUpload,
@@ -3200,7 +3202,7 @@ export const SessionChat = memo(function SessionChat({
   }, [sessionId, voice, featureHint.confirm]);
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
-      const isCurrent = invalidateGoogleStatus();
+      const isCurrent = invalidateGoogleStatus(service);
       if (!isCurrent()) return;
       setAttachMenuOpen(false);
       void (async () => {
@@ -3233,19 +3235,18 @@ export const SessionChat = memo(function SessionChat({
           inheriting: status.mode === 'inherit' && status.enabled,
         });
         if (action === 'none') return;
+        const setConnection = {
+          gmail: setGmailConnection,
+          calendar: setCalendarConnection,
+          contacts: setContactsConnection,
+        }[service];
         if (action === 'inherit') {
-          await client.setSessionGoogleAccess(sessionId, service, { mode: 'inherit' });
+          const connection = await client.setSessionGoogleAccess(sessionId, service, {
+            mode: 'inherit',
+          });
           if (!isCurrent()) return;
-          const [gmail, calendar, contacts] = await Promise.all([
-            client.getSessionGmailConnection(sessionId),
-            client.getSessionCalendarConnection(sessionId),
-            client.getSessionContactsConnection(sessionId),
-          ]);
-          if (!isCurrent()) return;
-          invalidateGoogleStatus();
-          setGmailConnection(gmail);
-          setCalendarConnection(calendar);
-          setContactsConnection(contacts);
+          invalidateGoogleStatus('refresh');
+          setConnection(connection);
           return;
         }
         const result = await connectSessionGoogleService(
@@ -3256,12 +3257,8 @@ export const SessionChat = memo(function SessionChat({
           isCurrent,
         );
         if (!isCurrent()) return;
-        invalidateGoogleStatus();
-        if (result.kind === 'session') {
-          setGmailConnection(result.connections.gmail);
-          setCalendarConnection(result.connections.calendar);
-          setContactsConnection(result.connections.contacts);
-        }
+        invalidateGoogleStatus('refresh');
+        if (result.kind === 'session') setConnection(result.connection);
       })().catch((error: unknown) => {
         if (!isCurrent()) return;
         Alert.alert(
@@ -3272,68 +3269,34 @@ export const SessionChat = memo(function SessionChat({
     },
     [client, projectId, sessionId, chooseGoogleAccount, invalidateGoogleStatus],
   );
-  const onConnectGmail = useCallback(
-    () => onConnectGoogleService('gmail'),
-    [onConnectGoogleService],
-  );
-  const onConnectCalendar = useCallback(
-    () => onConnectGoogleService('calendar'),
-    [onConnectGoogleService],
-  );
-  const onConnectContacts = useCallback(
-    () => onConnectGoogleService('contacts'),
-    [onConnectGoogleService],
-  );
   const disableGoogleService = useCallback(
     (service: GoogleService) => {
-      const isCurrent = invalidateGoogleStatus();
+      const isCurrent = invalidateGoogleStatus(service);
+      if (!isCurrent()) return;
       void disconnectSessionGoogleService(client, sessionId, projectId, service)
         .then(() => {
           if (!isCurrent()) return;
-          invalidateGoogleStatus();
-          if (service === 'gmail')
-            setGmailConnection((current) =>
-              current === null
-                ? null
-                : {
-                    ...current,
-                    enabled: false,
-                    mode: 'disabled',
-                    source: null,
-                    accountEmail: null,
-                  },
-            );
-          else if (service === 'calendar')
-            setCalendarConnection((current) =>
-              current === null
-                ? null
-                : {
-                    ...current,
-                    enabled: false,
-                    mode: 'disabled',
-                    source: null,
-                    accountEmail: null,
-                  },
-            );
-          else
-            setContactsConnection((current) =>
-              current === null
-                ? null
-                : {
-                    ...current,
-                    enabled: false,
-                    mode: 'disabled',
-                    source: null,
-                    accountEmail: null,
-                  },
-            );
+          invalidateGoogleStatus('refresh');
+          const disable = <
+            T extends
+              GmailSessionConnection | CalendarSessionConnection | ContactsSessionConnection,
+          >(
+            current: T | null,
+          ): T | null =>
+            current === null
+              ? null
+              : { ...current, enabled: false, mode: 'disabled', source: null, accountEmail: null };
+          if (service === 'gmail') setGmailConnection(disable);
+          else if (service === 'calendar') setCalendarConnection(disable);
+          else setContactsConnection(disable);
         })
-        .catch((error: unknown) =>
+        .catch((error: unknown) => {
+          if (!isCurrent()) return;
           Alert.alert(
             'Could not disconnect Google service',
             error instanceof Error ? error.message : String(error),
-          ),
-        );
+          );
+        });
     },
     [client, projectId, sessionId, invalidateGoogleStatus],
   );
@@ -3377,6 +3340,18 @@ export const SessionChat = memo(function SessionChat({
       ],
     );
   }, [client, sessionId, workspaceFile, invalidateGoogleStatus]);
+  const onAttachRecent = useCallback(
+    (image: RecentImage) => {
+      setAttachMenuOpen(false);
+      performPick(() => attachRecentImage(image.id));
+    },
+    [performPick],
+  );
+  const onToggleConnector = useCallback(
+    (service: GoogleService, on: boolean) =>
+      on ? onConnectGoogleService(service) : disableGoogleService(service),
+    [onConnectGoogleService, disableGoogleService],
+  );
   const onAttach = useCallback((anchor: AttachAnchor) => {
     setAttachAnchor(anchor);
     setAttachMenuOpen(true);
@@ -4844,22 +4819,25 @@ export const SessionChat = memo(function SessionChat({
       <AttachMenu
         visible={attachMenuOpen}
         anchor={attachAnchor}
-        onCapturePhoto={onCapturePhoto}
-        onPickPhotos={onPickPhotos}
-        onPickFiles={onPickFiles}
-        onPickMeetingAudio={onPickMeetingAudio}
-        onLiveMeeting={onLiveMeeting}
-        googleCatalogLoading={googleCatalogLoading}
-        googleCatalogError={googleCatalogError}
-        googleConnected={googleConnected}
-        googleAccess={{
-          gmail: gmailConnection,
-          calendar: calendarConnection,
-          contacts: contactsConnection,
+        handlers={{
+          onCapturePhoto,
+          onPickPhotos,
+          onPickFiles,
+          onPickMeetingAudio,
+          onLiveMeeting,
         }}
-        onConnectGmail={onConnectGmail}
-        onConnectCalendar={onConnectCalendar}
-        onConnectContacts={onConnectContacts}
+        onAttachRecent={onAttachRecent}
+        google={{
+          connected: googleConnected,
+          loading: googleCatalogLoading,
+          error: googleCatalogError,
+          access: {
+            gmail: gmailConnection,
+            calendar: calendarConnection,
+            contacts: contactsConnection,
+          },
+          onToggle: onToggleConnector,
+        }}
         onClose={() => setAttachMenuOpen(false)}
         onDismiss={runPendingPick}
       />
@@ -8149,135 +8127,6 @@ the Claude app — it sits with the composer instead of the nav bar). */}
   );
 }
 
-// The add menu: the composer's plus button opens this small
-// popover docked to it — a source per row (camera, photo library, or an arbitrary
-// file) — instead of a full-width bottom sheet.
-function AttachMenu({
-  googleCatalogLoading,
-  googleCatalogError,
-  googleConnected,
-  googleAccess,
-  visible,
-  anchor,
-  onCapturePhoto,
-  onPickPhotos,
-  onPickFiles,
-  onPickMeetingAudio,
-  onLiveMeeting,
-  onConnectGmail,
-  onConnectCalendar,
-  onConnectContacts,
-  onClose,
-  onDismiss,
-}: {
-  googleCatalogLoading: boolean;
-  googleCatalogError: string | null;
-  googleConnected: boolean;
-  googleAccess: GoogleMenuAccess;
-  visible: boolean;
-  anchor: AttachAnchor | null;
-  onCapturePhoto: () => void;
-  onPickPhotos: () => void;
-  onPickFiles: () => void;
-  onPickMeetingAudio: () => void;
-  onLiveMeeting: () => void;
-  onConnectGmail: () => void;
-  onConnectCalendar: () => void;
-  onConnectContacts: () => void;
-  onClose: () => void;
-  onDismiss: () => void;
-}) {
-  const { theme } = useUnistyles();
-  const { width: winW, height: winH } = useWindowDimensions();
-  const rows = attachMenuRows(
-    {
-      onCapturePhoto,
-      onPickPhotos,
-      onPickFiles,
-      onPickMeetingAudio,
-      onLiveMeeting,
-      onConnectGmail,
-      onConnectCalendar,
-      onConnectContacts,
-    },
-    { googleConnected, googleAccess },
-  );
-  // Dock to the button: left-aligned and clamped on-screen; placed above the button
-  // (the composer sits at the bottom, so the menu opens upward).
-  const MENU_WIDTH = 220;
-  const GAP = 8;
-  const ax = anchor?.x ?? 12;
-  const ay = anchor?.y ?? winH - 120;
-  const ah = anchor?.height ?? 0;
-  const left = Math.max(8, Math.min(ax, winW - MENU_WIDTH - 8));
-  const cardPos = ay > winH / 2 ? { bottom: winH - ay + GAP, left } : { top: ay + ah + GAP, left };
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-      onDismiss={onDismiss}
-    >
-      <Pressable
-        style={styles.menuBackdrop}
-        onPress={onClose}
-        accessibilityRole="button"
-        accessibilityLabel="Close attachment menu"
-      />
-      <View style={[styles.menuCard, { width: MENU_WIDTH }, cardPos]}>
-        {rows.map((row, index) =>
-          'section' in row ? (
-            <Text key={row.section} style={styles.menuSectionLabel}>
-              {row.section}
-            </Text>
-          ) : 'divider' in row ? (
-            <View key={`divider-${String(index)}`} style={styles.menuDivider} />
-          ) : (
-            <Pressable
-              key={row.label}
-              style={({ pressed }) => [styles.menuRow, pressed ? styles.menuRowPressed : null]}
-              onPress={row.onPress}
-              accessibilityRole="button"
-              accessibilityLabel={row.detail ? `${row.label}, ${row.detail}` : row.label}
-            >
-              <Icon name={row.icon} size={20} color={theme.colors.textMuted} />
-              <View style={styles.menuRowText}>
-                <Text style={styles.menuRowLabel}>{row.label}</Text>
-                {row.detail ? <Text style={styles.menuRowDetail}>{row.detail}</Text> : null}
-              </View>
-            </Pressable>
-          ),
-        )}
-        {/* Where the Connect section appears, so the menu does not jump when it
-            arrives: a first read in progress, or one that failed. */}
-        {!googleConnected && (googleCatalogLoading || googleCatalogError) ? (
-          <>
-            <View style={styles.menuDivider} />
-            <View
-              style={styles.menuRow}
-              accessible
-              accessibilityRole={googleCatalogError ? 'alert' : undefined}
-              accessibilityLabel={googleCatalogError ?? 'Checking Google accounts'}
-            >
-              {googleCatalogError ? (
-                <Icon name="alert-circle" size={20} color={theme.colors.textMuted} />
-              ) : (
-                <ActivityIndicator size="small" color={theme.colors.textMuted} />
-              )}
-              <View style={styles.menuRowText}>
-                <Text style={styles.menuRowDetail}>
-                  {googleCatalogError ?? 'Checking Google accounts…'}
-                </Text>
-              </View>
-            </View>
-          </>
-        ) : null}
-      </View>
-    </Modal>
-  );
-}
-
 // A non-image attachment shown as a chip: a file glyph over its (truncated) name.
 function FilePreview({ name }: { name: string }) {
   const { theme } = useUnistyles();
@@ -9969,58 +9818,6 @@ const styles = StyleSheet.create((theme) => ({
     fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
     textAlign: 'center',
-  },
-  // Compact add popover docked to the plus button, not a bottom sheet.
-  // A light dim in both themes; a popover does not take the full scrim.
-  menuBackdrop: { flex: 1, backgroundColor: tint(theme.elevation.floating.shadowColor, 'ring') },
-  menuCard: {
-    position: 'absolute',
-    backgroundColor: theme.colors.surface,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    paddingVertical: theme.spacing.xs,
-    shadowColor: theme.elevation.floating.shadowColor,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-  menuRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.md,
-  },
-  menuRowPressed: { backgroundColor: theme.colors.surfaceAlt },
-  menuRowText: { flex: 1 },
-  menuRowLabel: {
-    color: theme.colors.text,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.row.fontSize,
-  },
-  menuRowDetail: {
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-    marginTop: 1,
-  },
-  menuSectionLabel: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-    paddingTop: theme.spacing.xs,
-    paddingBottom: 2,
-    paddingHorizontal: theme.spacing.md,
-  },
-  menuDivider: {
-    height: 1,
-    backgroundColor: theme.colors.border,
-    marginVertical: theme.spacing.xs,
-    marginHorizontal: theme.spacing.sm,
   },
   // The round × badge pinned to a thumbnail's top-right corner.
   previewRemove: {
