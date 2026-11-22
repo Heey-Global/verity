@@ -44,12 +44,11 @@ describe('preview recovery lifecycle wiring', () => {
     expect(embedded.indexOf(bootStart)).toBeGreaterThan(
       embedded.indexOf('await adoptHandedOffSecretKey('),
     );
-    const unlock = embedded.slice(
-      embedded.indexOf('onSecretUnlocked: async () => {'),
-      embedded.indexOf('    authRegistry,', embedded.indexOf('onSecretUnlocked: async () => {')),
-    );
-    expect(unlock).toContain('uplinkControl?.start();');
-    expect(embedded.match(/uplinkControl\?\.start\(\);/g)).toHaveLength(2);
+    expect(embedded).toMatch(/onSecretUnlocked: createEmbeddedSecretUnlock\(\{[^]*?uplinkControl,/);
+    const unlock = await source('./embedded-secret-unlock.ts');
+    expect(unlock).toMatch(/return async \(\) => \{[^]*?uplinkControl\?\.start\(\);/);
+    expect(embedded.match(/uplinkControl\?\.start\(\);/g)).toHaveLength(1);
+    expect(unlock.match(/uplinkControl\?\.start\(\);/g)).toHaveLength(1);
   });
 
   // Closing edges or stopping Uplink while a watchdog still restores resources
