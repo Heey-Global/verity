@@ -97,6 +97,10 @@ describe('the Code right', () => {
     const userId = await join({ canExecute: true });
     expect(await ctx.store.hasProjectPermission(userId, 'p1', 'execute')).toBe(true);
     expect(await ctx.store.hasProjectPermission(userId, 'p1', 'code')).toBe(false);
+    // Promoted to manager the same way, the member receives Code with it.
+    await sql`update project_memberships set can_execute = true, can_manage = true
+      where user_id = ${userId}`.execute(ctx.db);
+    expect(await ctx.store.hasProjectPermission(userId, 'p1', 'code')).toBe(true);
     await expect(
       team().createInvitation({
         projectId: 'p1',
@@ -138,11 +142,15 @@ describe('the Code right', () => {
 
   // An older server still running during the upgrade demotes a member by
   // clearing `can_execute` alone. That must neither fail nor leave Code behind.
-  it('drops Code in the database itself when Edit goes', async () => {
+  it('keeps Code consistent in the database itself when an older server writes', async () => {
     const userId = await join({ canExecute: true, canCode: true });
     await sql`update project_memberships set can_execute = false
       where user_id = ${userId}`.execute(ctx.db);
     expect(await ctx.store.hasProjectPermission(userId, 'p1', 'code')).toBe(false);
+    // Promoted to manager the same way, the member receives Code with it.
+    await sql`update project_memberships set can_execute = true, can_manage = true
+      where user_id = ${userId}`.execute(ctx.db);
+    expect(await ctx.store.hasProjectPermission(userId, 'p1', 'code')).toBe(true);
     await expect(
       sql`insert into project_invitations
         (id, project_id, inviter_user_id, invitee_name, can_execute, can_code, secret_hash, state, expires_at)

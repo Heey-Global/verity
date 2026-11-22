@@ -7,7 +7,8 @@ import type { Migration } from 'kysely/migration';
  * invitation a check constraint holds that. A membership instead loses Code
  * whenever Edit goes: an older server still running during the upgrade demotes
  * a member by clearing `can_execute` alone, and must neither fail on a
- * constraint nor leave Code behind.
+ * constraint nor leave Code behind. Managing includes Code, so a member such a
+ * server makes a manager receives it too.
  *
  * Everyone who could edit until now could already merge and save to the
  * project, so every member and invitation with Edit receives Code and nobody
@@ -23,6 +24,8 @@ export const projectCodePermissionMigration: Migration = {
         begin
           if not new.can_execute then
             new.can_code := false;
+          elsif new.can_manage then
+            new.can_code := true;
           end if;
           return new;
         end
