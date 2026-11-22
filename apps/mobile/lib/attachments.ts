@@ -8,6 +8,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File as FsFile } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import { Platform } from 'react-native';
 
 /** An image upload's media type — the 4 types every vision backend accepts. */
@@ -303,6 +304,25 @@ export async function pickImagesFromLibrary(remaining: number): Promise<Attachme
   const picked = await toImageUploads(result.assets);
   if (picked.length === 0) throw new Error('The selected image could not be read.');
   return picked;
+}
+
+/** Resolve a recent library image to a local file and encode its pixels without
+ * carrying over source metadata. Keep PNG lossless while it fits the limit. */
+export async function attachRecentImage(assetId: string): Promise<AttachmentUpload[]> {
+  const info = await MediaLibrary.getAssetInfoAsync(assetId, { shouldDownloadFromNetwork: true });
+  const uri = info.localUri;
+  if (!uri) throw new Error('This photo is not available on this device right now.');
+  if (/\.png$/i.test(info.filename)) {
+    const { base64 } = await manipulateAsync(uri, [], {
+      base64: true,
+      format: SaveFormat.PNG,
+    });
+    if (base64 && base64.length <= MAX_IMAGE_BASE64_LEN)
+      return [{ kind: 'image', mediaType: 'image/png', data: base64 }];
+  }
+  return [
+    { kind: 'image', mediaType: 'image/jpeg', data: await jpegWithinImageLimit(uri, 'The image') },
+  ];
 }
 
 /** Capture a photo with the camera (requests permission first). */

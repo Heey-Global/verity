@@ -1,3 +1,4 @@
+import type { ServerDeps } from './server-deps.js';
 import type { FastifyInstance } from 'fastify';
 import type { EventStore } from '@verity/store';
 import type { EmbeddedServerConfig } from './embedded-types.js';
@@ -22,6 +23,7 @@ import {
 import {
   describeBuildCapacityReclamation,
   startDockerGcScheduler,
+  runDockerGc,
   type DockerGcReport,
 } from './docker-gc.js';
 
@@ -171,4 +173,31 @@ export function installEmbeddedDockerGc(
     });
   }
   registerStorageReclamationRoutes(app, eventStore, storageReclamation);
+}
+
+export function createEmbeddedProjectHiddenGcBindings(ctx: {
+  config: Pick<EmbeddedServerConfig, 'dockerGcPolicy'>;
+  projectDocker: DockerClient | undefined;
+  imageReferences: ReturnType<typeof createProjectImageReferences>;
+  auditRecorder: Pick<ReturnType<typeof createAuditRecorder>, 'imageRemoved'>;
+  log: () => FastifyInstance['log'];
+}): Pick<ServerDeps, 'onProjectHidden'> {
+  const { config, projectDocker, imageReferences, auditRecorder, log } = ctx;
+  return {
+    ...(projectDocker === undefined
+      ? {}
+      : {
+          onProjectHidden: async () => {
+            await runDockerGc({
+              docker: projectDocker,
+              log: log(),
+              imageReferences,
+              ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
+              imagesOnly: true,
+              onProjectImageRemoved: (image) =>
+                auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
+            });
+          },
+        }),
+  };
 }

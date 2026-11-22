@@ -1,3 +1,5 @@
+import { createEmbeddedAudit, createEmbeddedAuditBindings } from './embedded-audit.js';
+import { createEmbeddedProjectRuntimeBindings } from './embedded-project-runtime.js';
 import { createEmbeddedSecretUnlock } from './embedded-secret-unlock.js';
 import {
   installEmbeddedLocalPreviewRecovery,
@@ -43,10 +45,11 @@ import {
 import {
   createEmbeddedRepositoryAnalysisBindings,
   createEmbeddedProjectRepositoryBindings,
+  createEmbeddedRepositoryReadBindings,
   createEmbeddedRepositoryAccess,
   createEmbeddedRepositoryPullRequests,
 } from './embedded-repositories.js';
-import { createEmbeddedGitHub } from './embedded-github.js';
+import { createEmbeddedGitHub, createEmbeddedGitHubOnboardingBindings } from './embedded-github.js';
 import { createEmbeddedDoppler } from './embedded-doppler.js';
 import { createEmbeddedMcpGateway } from './embedded-mcp-gateway.js';
 import { createEmbeddedTrustedCli, installEmbeddedTrustedCli } from './embedded-trusted-cli.js';
@@ -123,11 +126,12 @@ export {
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
 import { resolveAgentContext } from './agent-context.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
-import { installEmbeddedDockerGc } from './embedded-docker-gc.js';
+import {
+  installEmbeddedDockerGc,
+  createEmbeddedProjectHiddenGcBindings,
+} from './embedded-docker-gc.js';
 import { createEmbeddedSessionStorage } from './embedded-session-storage.js';
 import type { DockerGcReport } from './docker-gc.js';
-import { createServerLogSource } from './server-log-source.js';
-import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import type { BuildStorage } from './build-storage.js';
 import {
@@ -192,15 +196,10 @@ import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import { healAdminGitdirsAtStartup } from './worktree.js';
 import { startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
-import { projectForgeProvider } from './project-forge-provider.js';
 import type { DockerClient } from './docker.js';
-import { runDockerGc } from './docker-gc.js';
 import { DataVolumeUsage } from './data-volume-usage.js';
 import { PreviewShareConflictError, PreviewShareManager } from './preview-share-manager.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
-import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
-import { createAuditRecorder } from './audit-recorder.js';
-import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring } from './gateway-request-mac.js';
 import { createTurnCredentials } from './turn-credentials.js';
 import { createGitHubUserAuthorization } from './github-user-authorization.js';
@@ -213,13 +212,6 @@ import {
 
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
 import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
-import {
-  validateGitHubAppCreds,
-  resolveGitHubAppIdentity,
-  type GitHubAppCreds,
-  type GitHubAppIdentityResult,
-} from './github-app-token.js';
-import { defaultManifestConvert } from './github-manifest.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createSigningCapabilityRegistry } from './signing-capability.js';
 import { readOrMigrateProjectOverview } from './project-overview-file.js';
@@ -238,9 +230,7 @@ import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 
-import { containerPathFor, DockerExecBackend } from './project-backend.js';
-import { createSandboxGit } from './sandbox-git.js';
-import { projectSettingsEnv } from './project-settings-env.js';
+import { containerPathFor } from './project-backend.js';
 import {
   createClaudeEgressIdentityService,
   type ClaudeEgressIdentityService,
@@ -253,7 +243,6 @@ import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
 import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
-import { createSandboxUpdateChecker } from './sandbox-updates.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
@@ -787,39 +776,10 @@ export async function buildEmbeddedServer(
     ? new MaintenanceImages(projectDocker, imageReferences)
     : undefined;
   const preparedWorktreeImages = new Map<string, string>();
-  // Durable audit trail for project image builds (ADR 0028). The Server generation is
-  // read from this container's own label once; outside a managed deployment it is null.
-  let auditServer: AuditServerIdentity | undefined;
-  const buildDiagnostics = createBuildDiagnosticStore(
-    join(
-      config.dataDir ?? config.dataVolumeRoot ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
-      'build-diagnostics',
-    ),
-  );
-  const auditLog = createPostgresAuditLog(db);
-  const auditRecorder = createAuditRecorder(auditLog, {
-    server: async () => {
-      if (auditServer !== undefined) return auditServer;
-      let generation: number | null = null;
-      let settled = true;
-      try {
-        const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
-          'verity.generation'
-        ];
-        const parsed = label === undefined ? Number.NaN : Number(label);
-        generation = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
-      } catch {
-        // Recorded as unknown this time, and asked again next time: a transient
-        // failure must neither block a build nor stick for the life of the process.
-        settled = false;
-      }
-      const identity = { release: runtimeServerVersion(), generation };
-      if (settled) auditServer = identity;
-      return identity;
-    },
-    onError: (error, kind) => {
-      console.warn(`verity: audit event ${kind} could not be recorded`, error);
-    },
+  const { auditRecorder, auditLog, buildDiagnostics } = createEmbeddedAudit({
+    config,
+    db,
+    projectDocker,
   });
   const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
     typeof configuredDevcontainerFeatureRef === 'function'
@@ -1470,10 +1430,7 @@ export async function buildEmbeddedServer(
       readProjectStatus,
       projectPullRequests,
     }),
-    // Live GitHub-App credential validation for the onboarding wizard (#320). The
-    // route reads + decrypts the stored creds itself (unsealed-only) and hands them
-    // here; this just performs the redaction-safe test-mint against GitHub.
-    githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
+    ...createEmbeddedGitHubOnboardingBindings(resolveGithubAppCreds),
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
     dependencyCapacity,
@@ -1482,33 +1439,14 @@ export async function buildEmbeddedServer(
     // deliberately absent here and bound inside buildServer to its own conductor.
     mcpGateway,
     mcpProxyResolveCaller: (input) => Promise.resolve(mcpProxyTokens.resolve(input)),
-    // Derive the git committer identity from the App installation for the
-    // signing-key onboarding step. Resolves the (decrypted) creds from settings;
-    // undefined when no App is configured yet (nothing to derive).
-    resolveGitHubAppIdentity: async (): Promise<GitHubAppIdentityResult | undefined> => {
-      const creds = await resolveGithubAppCreds();
-      return creds === undefined ? undefined : resolveGitHubAppIdentity(creds);
-    },
     ...dopplerServerDeps,
-    // Real code→App conversion for the manifest one-click onboarding routes
-    // (#320). Redaction-safe by contract: never logs the PEM / GitHub body. The
-    // callback route persists the returned app id + PEM via the sealed store.
-    manifestConvert: defaultManifestConvert(),
     // Real server-side ssh-keygen for the onboarding signing-key step (#320).
     // Needs `openssh-client` in the Server image (deploy/Dockerfile). Injectable
     // so tests never shell out.
     sshKeygen: defaultSshKeygenSpawner,
     // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
-    listProjectGitHubIssues: async (project: ProjectRecord) =>
-      (await projectForgeProvider(eventStore, githubForge, project))?.listIssues(project) ?? {
-        connected: false,
-        viewerLogin: null,
-        issues: [],
-      },
-    latestRelease: (owner: string, repo: string) => githubForge.latestRelease({ owner, repo }),
-    refreshLatestRelease: (owner: string, repo: string) =>
-      githubForge.refreshLatestRelease({ owner, repo }),
+    ...createEmbeddedRepositoryReadBindings({ eventStore, githubForge }),
     ...createEmbeddedProjectFleetBindings({
       eventStore,
       installationService,
@@ -1519,90 +1457,29 @@ export async function buildEmbeddedServer(
       secretCipher,
       refreshProjectToken,
     }),
-    ...(projectDocker !== undefined
-      ? {
-          sandboxUpdates: createSandboxUpdateChecker({
-            docker: projectDocker,
-            defaultProjectImage,
-            defaultProjectImageVersion: config.defaultProjectImageVersion,
-            toolkitFeatureRef:
-              devcontainerFeature === undefined
-                ? undefined
-                : async () => (await devcontainerFeature())?.ref,
-          }),
-        }
-      : {}),
-    // Repo root reserved for the human/main session — the server's delete path
-    // never removes it (#105 safety guard); sessions always run in their own worktree.
-    ...(config.repoDir !== undefined ? { workspaceDir: config.repoDir } : {}),
-    // Multi-repo fleet-registry provisioner + deprovisioner (§19.3/#19.8). Absent →
-    // the `project` field on POST /sessions and POST /projects/:id/deprovision
-    // both return 503 (the mobile picker hides the fleet-registry UI).
-    ...(provisioner !== undefined ? { provisioner } : {}),
-    ...(provisioner !== undefined ? { projectSandboxLifecycleTelemetry } : {}),
-    ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
-      ? { projectCloneRoot: config.hostCloneRoot }
-      : {}),
-    ...(!config.repoDir && config.hostCloneRoot !== undefined
-      ? { projectWorktreeBranchesOnly: true }
-      : {}),
-    ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
-      ? {
-          projectBackend: (project: ProjectRecord, selected, settings) =>
-            new DockerExecBackend({
-              containerName: project.containerName,
-              hostProjectRoot: projectClonePath(config.hostCloneRoot as string, project),
-              dockerBaseUrl: config.dockerBaseUrl,
-              backend: selected,
-              containerEnv: projectSettingsEnv(settings),
-            }),
-          // Git for the GitHub-free merge, run inside the project's own container.
-          // Same shape as the backend above on purpose: the merge touches a clone the
-          // session owns, so it must execute where the session's own code executes.
-          // The daemon distinguishes stopped sandboxes from failed Git commands.
-          ...(projectDocker !== undefined
-            ? {
-                sandboxGit: (project: ProjectRecord, clonePath: string) =>
-                  createSandboxGit({
-                    containerName: project.containerName,
-                    hostRoot: clonePath,
-                    dockerBaseUrl: config.dockerBaseUrl,
-                    // Trust daemon state rather than repository-controlled Git output.
-                    inspect: () => projectDocker.inspectContainer(project.containerName),
-                  }),
-              }
-            : {}),
-          ...(config.enableProjectRuntime === true
-            ? {
-                projectRuntime: new DockerProjectRuntime({
-                  resolveUser: resolvePreviewUser,
-                  dockerBaseUrl: config.dockerBaseUrl,
-                }),
-              }
-            : {}),
-        }
-      : {}),
-    audit: {
-      recorder: auditRecorder,
-      log: auditLog,
+    ...createEmbeddedProjectRuntimeBindings({
+      config,
+      projectDocker,
+      defaultProjectImage,
+      devcontainerFeature,
+      provisioner,
+      projectSandboxLifecycleTelemetry,
+      resolvePreviewUser,
+    }),
+    ...createEmbeddedAuditBindings({
+      config,
+      auditRecorder,
+      auditLog,
       buildDiagnostics,
-      serverLogs: createServerLogSource(runtimeDocker, config.diagnosticServerContainerId),
-    },
-    ...(projectDocker === undefined
-      ? {}
-      : {
-          onProjectHidden: async () => {
-            await runDockerGc({
-              docker: projectDocker,
-              log: app.log,
-              imageReferences,
-              ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
-              imagesOnly: true,
-              onProjectImageRemoved: (image) =>
-                auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
-            });
-          },
-        }),
+      runtimeDocker,
+    }),
+    ...createEmbeddedProjectHiddenGcBindings({
+      config,
+      projectDocker,
+      imageReferences,
+      auditRecorder,
+      log: () => app.log,
+    }),
     ...(deprovisioner !== undefined ? { deprovisioner } : {}),
     // Per-project session worktree factory whose `refreshBase` fetch carries the
     // project-scoped token (only wired when the App-token mint + docker/clone-root

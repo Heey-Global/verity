@@ -314,6 +314,24 @@ describe('Row', () => {
     expect(glyphs('chevron-right')).toHaveLength(0);
   });
 
+  // Several rights can hold at once: announced as radios, a screen reader would
+  // promise that checking one clears the others.
+  it('announces an option of a multiple-choice list as a checkbox', () => {
+    render(
+      <>
+        <Row title="Can edit" selected multiple onPress={jest.fn()} />
+        <Row title="Can manage" selected={false} multiple onPress={jest.fn()} />
+      </>,
+    );
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(
+      screen.getByRole('checkbox', { name: 'Can edit' }).props.accessibilityState,
+    ).toMatchObject({ checked: true });
+    expect(
+      screen.getByRole('checkbox', { name: 'Can manage' }).props.accessibilityState,
+    ).toMatchObject({ checked: false });
+  });
+
   // Cyan marks what can be tapped (docs/design-system.md § 2): a row icon in
   // the action color on a row that does nothing would promise an action.
   it('colors the icon of a tappable row and leaves an inert row grey', () => {

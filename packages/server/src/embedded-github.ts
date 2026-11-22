@@ -1,3 +1,5 @@
+import type { ServerDeps } from './server-deps.js';
+import { defaultManifestConvert } from './github-manifest.js';
 import { createHash } from 'node:crypto';
 import type { EventStore } from '@verity/store';
 import { SealedError } from '@verity/store';
@@ -12,6 +14,9 @@ import {
   createCachedProjectTokenMint,
   PROJECT_GITHUB_TOKEN_PERMISSIONS,
   type GitHubAppCreds,
+  type GitHubAppIdentityResult,
+  validateGitHubAppCreds,
+  resolveGitHubAppIdentity,
 } from './github-app-token.js';
 
 export function createEmbeddedGitHub(
@@ -198,5 +203,27 @@ export function createEmbeddedGitHub(
     cachedProjectTokenMint,
     githubQAAnalysis,
     githubForge,
+  };
+}
+
+export function createEmbeddedGitHubOnboardingBindings(
+  resolveGithubAppCreds: ReturnType<typeof createEmbeddedGitHub>['resolveGithubAppCreds'],
+): Pick<ServerDeps, 'githubAppValidate' | 'resolveGitHubAppIdentity' | 'manifestConvert'> {
+  return {
+    // Live GitHub-App credential validation for the onboarding wizard (#320). The
+    // route reads + decrypts the stored creds itself (unsealed-only) and hands them
+    // here; this just performs the redaction-safe test-mint against GitHub.
+    githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
+    // Derive the git committer identity from the App installation for the
+    // signing-key onboarding step. Resolves the (decrypted) creds from settings;
+    // undefined when no App is configured yet (nothing to derive).
+    resolveGitHubAppIdentity: async (): Promise<GitHubAppIdentityResult | undefined> => {
+      const creds = await resolveGithubAppCreds();
+      return creds === undefined ? undefined : resolveGitHubAppIdentity(creds);
+    },
+    // Real code→App conversion for the manifest one-click onboarding routes
+    // (#320). Redaction-safe by contract: never logs the PEM / GitHub body. The
+    // callback route persists the returned app id + PEM via the sealed store.
+    manifestConvert: defaultManifestConvert(),
   };
 }
