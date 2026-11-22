@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import type { VerityClient, SessionGoogleStatus } from '@verity/mobile';
+import type { GoogleService } from '../lib/attachMenu';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 
 /** Seed visible grants from detail; compatibility reads never fetch the account catalog. */
@@ -16,13 +17,13 @@ export function useSessionGoogleStatus(
   const generation = useRef(0);
   const focused = useRef(false);
   const focusGeneration = useRef(0);
-  const actionGeneration = useRef(0);
+  const actions = useRef(new Map<GoogleService | 'workspace' | 'refresh', number>());
   const owner = useRef({ client, sessionId });
   owner.current = { client, sessionId };
   const seeded = useRef(summary !== undefined);
   if (identity.client !== client || identity.sessionId !== sessionId) {
     generation.current++;
-    actionGeneration.current++;
+    actions.current.clear();
     seeded.current = summary !== undefined;
     setIdentity({ client, sessionId });
     setStatus(summary);
@@ -88,7 +89,7 @@ export function useSessionGoogleStatus(
     }, [client, sessionId, detailLoaded, ready, Boolean(summary), read]),
   );
   const invalidate = useCallback(
-    (scope: 'status' | 'focus' = 'status') => {
+    (scope: GoogleService | 'workspace' | 'refresh' = 'workspace') => {
       if (
         !focused.current ||
         owner.current.client !== client ||
@@ -98,14 +99,15 @@ export function useSessionGoogleStatus(
       generation.current++;
       // Local mutation results must win over the initial detail arriving late.
       seeded.current = true;
-      const version = scope === 'status' ? ++actionGeneration.current : actionGeneration.current;
+      const version = (actions.current.get(scope) ?? 0) + 1;
+      actions.current.set(scope, version);
       const focusVersion = focusGeneration.current;
       return () =>
         focused.current &&
         focusVersion === focusGeneration.current &&
         owner.current.client === client &&
         owner.current.sessionId === sessionId &&
-        (scope === 'focus' || version === actionGeneration.current);
+        version === actions.current.get(scope);
     },
     [client, sessionId],
   );

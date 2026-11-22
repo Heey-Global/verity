@@ -3202,7 +3202,7 @@ export const SessionChat = memo(function SessionChat({
   }, [sessionId, voice, featureHint.confirm]);
   const onConnectGoogleService = useCallback(
     (service: GoogleService) => {
-      const isCurrent = invalidateGoogleStatus();
+      const isCurrent = invalidateGoogleStatus(service);
       if (!isCurrent()) return;
       setAttachMenuOpen(false);
       void (async () => {
@@ -3245,7 +3245,7 @@ export const SessionChat = memo(function SessionChat({
             mode: 'inherit',
           });
           if (!isCurrent()) return;
-          invalidateGoogleStatus();
+          invalidateGoogleStatus('refresh');
           setConnection(connection);
           return;
         }
@@ -3257,7 +3257,7 @@ export const SessionChat = memo(function SessionChat({
           isCurrent,
         );
         if (!isCurrent()) return;
-        invalidateGoogleStatus();
+        invalidateGoogleStatus('refresh');
         if (result.kind === 'session') setConnection(result.connection);
       })().catch((error: unknown) => {
         if (!isCurrent()) return;
@@ -3271,12 +3271,12 @@ export const SessionChat = memo(function SessionChat({
   );
   const disableGoogleService = useCallback(
     (service: GoogleService) => {
-      const isCurrent = invalidateGoogleStatus('focus');
+      const isCurrent = invalidateGoogleStatus(service);
       if (!isCurrent()) return;
       void disconnectSessionGoogleService(client, sessionId, projectId, service)
         .then(() => {
           if (!isCurrent()) return;
-          invalidateGoogleStatus('focus');
+          invalidateGoogleStatus('refresh');
           const disable = <
             T extends
               GmailSessionConnection | CalendarSessionConnection | ContactsSessionConnection,

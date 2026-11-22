@@ -74,13 +74,15 @@ export function AttachMenu({
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward). The strip needs
   // room for a few thumbnails; without it the card stays as narrow as before.
-  const width = strip || view === 'connectors' ? Math.min(340, winW - 16) : 220;
+  const width = Math.min(strip || view === 'connectors' ? 340 : 220, winW - 16);
   const GAP = 8;
   const ax = anchor?.x ?? 12;
   const ay = anchor?.y ?? winH - 120;
   const ah = anchor?.height ?? 0;
   const left = Math.max(8, Math.min(ax, winW - width - 8));
-  const cardPos = ay > winH / 2 ? { bottom: winH - ay + GAP, left } : { top: ay + ah + GAP, left };
+  const above = ay > winH / 2;
+  const offset = Math.max(GAP, Math.min(above ? winH - ay + GAP : ay + ah + GAP, winH / 2));
+  const cardPos = above ? { bottom: offset, left } : { top: offset, left };
   return (
     <Modal
       visible={visible}
@@ -95,35 +97,37 @@ export function AttachMenu({
         accessibilityRole="button"
         accessibilityLabel="Close attachment menu"
       />
-      <View style={[styles.card, { width }, cardPos]}>
-        {view === 'connectors' ? (
-          <ConnectorsView google={google} onBack={() => setView('main')} />
-        ) : (
-          <>
-            {strip ? (
-              <RecentStrip
-                recent={recent}
-                onCapture={handlers.onCapturePhoto}
-                onAttach={onAttachRecent}
-              />
-            ) : null}
-            {rows.map((row, index) =>
-              'divider' in row ? (
-                <View key={`divider-${String(index)}`} style={styles.divider} />
-              ) : (
-                <MenuRow key={row.label} {...row} />
-              ),
-            )}
-            {/* Where the Connectors row appears, so the menu does not jump when it
+      <View style={[styles.card, { width, maxHeight: winH - offset - GAP }, cardPos]}>
+        <ScrollView nestedScrollEnabled>
+          {view === 'connectors' ? (
+            <ConnectorsView google={google} onBack={() => setView('main')} />
+          ) : (
+            <>
+              {strip ? (
+                <RecentStrip
+                  recent={recent}
+                  onCapture={handlers.onCapturePhoto}
+                  onAttach={onAttachRecent}
+                />
+              ) : null}
+              {rows.map((row, index) =>
+                'divider' in row ? (
+                  <View key={`divider-${String(index)}`} style={styles.divider} />
+                ) : (
+                  <MenuRow key={row.label} {...row} />
+                ),
+              )}
+              {/* Where the Connectors row appears, so the menu does not jump when it
                 arrives: a first read in progress, or one that failed. */}
-            {!google.connected && (google.loading || google.error) ? (
-              <>
-                <View style={styles.divider} />
-                <CatalogStatus error={google.error} />
-              </>
-            ) : null}
-          </>
-        )}
+              {!google.connected && (google.loading || google.error) ? (
+                <>
+                  <View style={styles.divider} />
+                  <CatalogStatus error={google.error} />
+                </>
+              ) : null}
+            </>
+          )}
+        </ScrollView>
       </View>
     </Modal>
   );
