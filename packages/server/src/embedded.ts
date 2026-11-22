@@ -43,10 +43,11 @@ import {
 import {
   createEmbeddedRepositoryAnalysisBindings,
   createEmbeddedProjectRepositoryBindings,
+  createEmbeddedRepositoryReadBindings,
   createEmbeddedRepositoryAccess,
   createEmbeddedRepositoryPullRequests,
 } from './embedded-repositories.js';
-import { createEmbeddedGitHub } from './embedded-github.js';
+import { createEmbeddedGitHub, createEmbeddedGitHubOnboardingBindings } from './embedded-github.js';
 import { createEmbeddedDoppler } from './embedded-doppler.js';
 import { createEmbeddedMcpGateway } from './embedded-mcp-gateway.js';
 import { createEmbeddedTrustedCli, installEmbeddedTrustedCli } from './embedded-trusted-cli.js';
@@ -192,7 +193,6 @@ import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import { healAdminGitdirsAtStartup } from './worktree.js';
 import { startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
-import { projectForgeProvider } from './project-forge-provider.js';
 import type { DockerClient } from './docker.js';
 import { runDockerGc } from './docker-gc.js';
 import { DataVolumeUsage } from './data-volume-usage.js';
@@ -213,13 +213,6 @@ import {
 
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
 import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
-import {
-  validateGitHubAppCreds,
-  resolveGitHubAppIdentity,
-  type GitHubAppCreds,
-  type GitHubAppIdentityResult,
-} from './github-app-token.js';
-import { defaultManifestConvert } from './github-manifest.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createSigningCapabilityRegistry } from './signing-capability.js';
 import { readOrMigrateProjectOverview } from './project-overview-file.js';
@@ -1470,10 +1463,7 @@ export async function buildEmbeddedServer(
       readProjectStatus,
       projectPullRequests,
     }),
-    // Live GitHub-App credential validation for the onboarding wizard (#320). The
-    // route reads + decrypts the stored creds itself (unsealed-only) and hands them
-    // here; this just performs the redaction-safe test-mint against GitHub.
-    githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
+    ...createEmbeddedGitHubOnboardingBindings(resolveGithubAppCreds),
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
     dependencyCapacity,
@@ -1482,33 +1472,14 @@ export async function buildEmbeddedServer(
     // deliberately absent here and bound inside buildServer to its own conductor.
     mcpGateway,
     mcpProxyResolveCaller: (input) => Promise.resolve(mcpProxyTokens.resolve(input)),
-    // Derive the git committer identity from the App installation for the
-    // signing-key onboarding step. Resolves the (decrypted) creds from settings;
-    // undefined when no App is configured yet (nothing to derive).
-    resolveGitHubAppIdentity: async (): Promise<GitHubAppIdentityResult | undefined> => {
-      const creds = await resolveGithubAppCreds();
-      return creds === undefined ? undefined : resolveGitHubAppIdentity(creds);
-    },
     ...dopplerServerDeps,
-    // Real code→App conversion for the manifest one-click onboarding routes
-    // (#320). Redaction-safe by contract: never logs the PEM / GitHub body. The
-    // callback route persists the returned app id + PEM via the sealed store.
-    manifestConvert: defaultManifestConvert(),
     // Real server-side ssh-keygen for the onboarding signing-key step (#320).
     // Needs `openssh-client` in the Server image (deploy/Dockerfile). Injectable
     // so tests never shell out.
     sshKeygen: defaultSshKeygenSpawner,
     // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
-    listProjectGitHubIssues: async (project: ProjectRecord) =>
-      (await projectForgeProvider(eventStore, githubForge, project))?.listIssues(project) ?? {
-        connected: false,
-        viewerLogin: null,
-        issues: [],
-      },
-    latestRelease: (owner: string, repo: string) => githubForge.latestRelease({ owner, repo }),
-    refreshLatestRelease: (owner: string, repo: string) =>
-      githubForge.refreshLatestRelease({ owner, repo }),
+    ...createEmbeddedRepositoryReadBindings({ eventStore, githubForge }),
     ...createEmbeddedProjectFleetBindings({
       eventStore,
       installationService,
