@@ -968,6 +968,12 @@ def activate(root, run, release, files, configs, gid):
     journal = root / JOURNAL
     if journal.exists() or journal.is_symlink():
         raise ValueError('Managed transaction requires recovery')
+    # An unknown state keeps the earlier behavior: rollback leaves the controller stopped.
+    try:
+        restore_controller = old_target is not None and run(
+            '/usr/bin/systemctl', 'show', '--property=ActiveState', '--value', SERVICE).strip() == 'active'
+    except Exception:
+        restore_controller = False
     install_boot_recovery(root, run)
     transaction = {'version': 1, 'previous': old_target, 'target': str(release),
                    'snapshots': {name: None if data is None else data.hex()
@@ -992,8 +998,20 @@ def activate(root, run, release, files, configs, gid):
         run('/usr/bin/systemctl', 'start', 'verity-egress-bootstrap.service')
         run('/usr/bin/systemctl', 'start', SERVICE)
         run('/usr/bin/systemctl', 'is-active', '--quiet', SERVICE)
-    except Exception:
+    except Exception as error:
         recover_transaction(root, run)
+        if restore_controller:
+            # A failed update must not leave a previously serving host without its
+            # controller. Rollback restored the old release, units and configuration.
+            try:
+                run('/usr/bin/systemctl', 'start', 'verity-egress-bootstrap.service')
+                run('/usr/bin/systemctl', 'start', SERVICE)
+                run('/usr/bin/systemctl', 'is-active', '--quiet', SERVICE)
+            except Exception as restart_error:
+                restart_error.egress_failure = base.failure_diagnostic(
+                    restart_error, 'recovery_failed', 'recovery')
+                raise restart_error from error
+            error.egress_controller_restored = True
         raise
     clear_transaction(root)
 
@@ -1129,7 +1147,12 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
                             b'{"scope":"staging-assessment","productionAccepted":false}\n', gid)
             activate(root, run, release, files, configs, gid)
         except Exception as error:
-            write_status(root, gid, 'controller_failed')
+            if getattr(error, 'egress_controller_restored', False):
+                # The previous controller is serving again with its own configuration.
+                write_status(root, gid, 'ready', True)
+            else:
+                write_status(root, gid, 'controller_failed')
+            # Keeps a recovery_failed diagnostic from a failed controller restart.
             error.egress_failure = base.failure_diagnostic(error, 'activation_failed', 'activation')
             raise
         if assessment is None:

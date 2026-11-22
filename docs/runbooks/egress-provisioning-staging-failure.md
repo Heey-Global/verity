@@ -11,6 +11,10 @@ The current version keeps serving. The app may report that host runtime recovery
 needs attention. Updaters that recognize proof of an unchanged host can report
 the failed attempt as retryable instead.
 
+A failure in `phase observe` with `step activation` happened later, after the
+host service started. See
+[Network protection controller stops after a failed activation](egress-controller-activation-failure.md).
+
 ## What the diagnostic means
 
 Two images take part in network protection provisioning:
