@@ -87,6 +87,9 @@ export async function createEmbeddedForgeProxy({
           capabilities: ghTokenCapabilities,
           turnCredentials,
           personlessAllowed: (projectId) => personlessWorkAllowed(eventStore, projectId),
+          mayWriteCode: async (projectId, userId) =>
+            (await eventStore.isActiveAdministrator(userId)) ||
+            (await eventStore.hasProjectPermission(userId, projectId, 'code')),
           resolveRepository: (binding, hostname, path) =>
             resolveForgeRepositoryBinding(eventStore, binding, hostname, path),
           allowsHost: async (authority) =>
