@@ -345,9 +345,13 @@ export function installProjects(
   };
   // What this person may do in a project, so the app offers only that. The
   // routes check again; this only spares an action the server would refuse.
-  // Without accounts the one operator may do everything.
+  // Without accounts the one operator may do everything, and the route policy
+  // lets an administrator use every route.
   const viewerRights = async (viewer: string, projectId: string) => {
-    if (deps.authRegistry?.isEnabled() !== true)
+    if (
+      deps.authRegistry?.isEnabled() !== true ||
+      (await deps.eventStore.isActiveAdministrator(viewer))
+    )
       return { canExecute: true, canCode: true, canManage: true };
     const [canExecute, canCode, canManage] = await Promise.all(
       (['execute', 'code', 'manage'] as const).map((permission) =>
