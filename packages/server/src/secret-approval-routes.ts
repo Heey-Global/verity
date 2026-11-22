@@ -37,6 +37,8 @@ export function registerSecretApprovalRoutes(
       return reply.code(404).send({ error: 'Approval not found.' });
     if (!(await deps.permitted(request.localUserId ?? undefined, record.projectId)))
       return reply.code(403).send({ error: 'Project execution permission is required.' });
+    if (record.status === 'pending')
+      return reply.code(409).send({ error: 'This approval is still pending.' });
     // Reopening retires the old outcome, so give recovery a chance to record it first.
     await deps.refresh(id);
     const unrecorded = await deps.approvals.listUnrecordedDecisions(id);
