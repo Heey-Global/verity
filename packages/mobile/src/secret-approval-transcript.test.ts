@@ -48,3 +48,26 @@ it.each(['once', 'session', 'project', 'denied', 'save_failed'] as const)(
     ]);
   },
 );
+
+it('hydrates the binding for a pending request replayed from an older server', () => {
+  const reducer = new SessionReducer();
+  const input = { url: 'https://example.com', secretAlias: 'TOKEN' };
+  reducer.apply(1, {
+    t: 'permission',
+    id: 'receipt',
+    tool: 'verity_http_request',
+    input,
+    riskClass: 'ask',
+  });
+  const secretSource = { project: 'example', config: 'stg' };
+  expect(reducer.pendingPermission?.secretSource).toBeUndefined();
+  reducer.restorePendingPermission({
+    toolUseId: 'receipt',
+    tool: 'verity_http_request',
+    input,
+    riskClass: 'ask',
+    createdAt: 1,
+    secretSource,
+  });
+  expect(reducer.pendingPermission?.secretSource).toEqual(secretSource);
+});

@@ -104,7 +104,14 @@ export function SecretApprovalCard({
         </View>
       </View>
       {destination === undefined ? (
-        <PermissionRequestDetails input={request.input} />
+        <>
+          {source ? (
+            <Text variant="bodySmall" tone="muted" selectable>
+              {spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)}
+            </Text>
+          ) : null}
+          <PermissionRequestDetails input={request.input} />
+        </>
       ) : (
         <View style={styles.flow}>
           <View style={styles.flowNode}>

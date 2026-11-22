@@ -924,8 +924,13 @@ export class SessionReducer {
 
   /** Restore a server-confirmed detached approval without reopening a completed turn. */
   restorePendingPermission(permission: PendingPermission): void {
-    if (!this._pendingPermissions.has(permission.toolUseId))
-      this._pendingPermissions.set(permission.toolUseId, { ...permission });
+    const existing = this._pendingPermissions.get(permission.toolUseId);
+    if (!existing) this._pendingPermissions.set(permission.toolUseId, { ...permission });
+    else if (!existing.secretSource && permission.secretSource)
+      this._pendingPermissions.set(permission.toolUseId, {
+        ...existing,
+        secretSource: permission.secretSource,
+      });
   }
 
   /** Reconcile a replayed permission card with the server's live pending set.

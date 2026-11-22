@@ -166,6 +166,7 @@ export class SessionStream {
     requests?: readonly PendingPermissionRequest[],
   ): void {
     const before = this.reducer.pendingPermissionIds;
+    const beforeSource = this.reducer.pendingPermission?.secretSource;
     const live = new Set(toolUseIds);
     const retire = before.filter((id) => {
       if (live.has(id)) return false;
@@ -217,7 +218,10 @@ export class SessionStream {
     }
     this.restorePendingPermissions();
     const after = this.reducer.pendingPermissionIds;
-    const changed = after.length !== before.length || after.some((id, i) => id !== before[i]);
+    const changed =
+      this.reducer.pendingPermission?.secretSource !== beforeSource ||
+      after.length !== before.length ||
+      after.some((id, i) => id !== before[i]);
     if (changed && this.caughtUp) this.opts.onUpdate?.(this.reducer.state);
   }
 
