@@ -4441,20 +4441,20 @@ export class EventStore implements EventSink {
   async appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }> {
     if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
     const { type, payload } = await this.prepareEventRow(event);
-    // Takes the cross-process append lock like every other writer. Server generations
-    // overlap during reattach/cutover, so "the generation that writes a session's events
-    // is the generation that sweeps it" is a convention, not something the database
-    // enforces: a draining generation can still be streaming a live turn's output through
-    // here while the new one probes that same turn. An advisory lock only orders holders
-    // OF it, so an append that skipped it would be invisible to
-    // {@link appendEventForRunningTurn}'s predicate and still take the lower id — exactly
-    // the reversal that lock exists to rule out.
-    //
-    // READ COMMITTED takes a new snapshot per statement. Acquire the lock before
-    // the INSERT so a tombstone committed during lock contention is visible.
+    // Serialize against other server generations and check deletion after taking the lock.
     const row = await this.withSessionEventAppend(sessionId, () =>
       this.db.transaction().execute(async (tx) => {
         await this.sessionEventAppendLock(tx, sessionId);
+        if (event.t === 'notice' && event.secretApproval) {
+          const existing = await tx
+            .selectFrom('events')
+            .select(['id', 'created_at'])
+            .where('session_id', '=', sessionId)
+            .where('type', '=', 'notice')
+            .where(sql`payload->'secretApproval'->>'id'`, '=', event.secretApproval.id)
+            .executeTakeFirst();
+          if (existing) return existing;
+        }
         const result = await sql<{ id: number; created_at: Date }>`
           insert into events (session_id, type, payload)
           select ${sessionId}, ${type}, ${payload}::jsonb

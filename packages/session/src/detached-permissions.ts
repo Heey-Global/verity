@@ -7,7 +7,11 @@ export interface DetachedPermission extends PermissionRequest {
   secretSource?: { project: string; config: string };
 }
 
+type DecisionNotice = Extract<AgentEvent, { t: 'notice' }>;
+type ApprovalOutcome = NonNullable<DecisionNotice['secretApproval']>['decision'];
+
 export interface DetachedPermissionProvider {
+  listUnrecordedDecisions?(sessionId: string): Promise<DecisionNotice[]>;
   list(sessionId: string): Promise<DetachedPermission[]>;
   failScoped?(sessionId: string, id: string): Promise<void>;
   markScopedSaved?(sessionId: string, id: string): Promise<void>;
@@ -90,6 +94,10 @@ export class DetachedPermissions {
 
   async markScopedSaved(sessionId: string, id: string): Promise<void> {
     await this.provider?.markScopedSaved?.(sessionId, id);
+  }
+
+  async unrecordedDecisions(sessionId: string): Promise<DecisionNotice[]> {
+    return (await this.provider?.listUnrecordedDecisions?.(sessionId)) ?? [];
   }
 
   async resumeApproved(sessionId: string): Promise<void> {
@@ -205,25 +213,7 @@ export async function decideDetachedPermission(input: {
         : options?.scope === 'session' || options?.scope === 'project'
           ? options.scope
           : 'once';
-  const fallbackText = {
-    once: 'Secret request allowed once.',
-    session: 'Secret request allowed for this session.',
-    project: 'Secret request allowed in this project for 30 days.',
-    denied: 'Secret request denied.',
-    save_failed: 'Secret approval could not be saved.',
-  }[outcome];
-  await input.recordDecision?.({
-    t: 'notice',
-    role: 'agent',
-    text: fallbackText,
-    secretApproval: {
-      id: toolUseId,
-      tool: request.toolName,
-      input: request.input,
-      ...(request.secretSource && { secretSource: request.secretSource }),
-      decision: outcome,
-    },
-  });
+  await input.recordDecision?.(secretApprovalNotice(request, outcome));
   if (!continuationAllowed) {
     await input.notice(
       reusableScopeSaved
@@ -234,4 +224,29 @@ export async function decideDetachedPermission(input: {
   if (decision.behavior === 'allow' && continuationAllowed)
     await input.resume(request, options?.actorId === '__local__' ? undefined : options?.actorId);
   return true;
+}
+
+export function secretApprovalNotice(
+  request: DetachedPermission,
+  decision: ApprovalOutcome,
+): DecisionNotice {
+  const text = {
+    once: 'Secret request allowed once.',
+    session: 'Secret request allowed for this session.',
+    project: 'Secret request allowed in this project for 30 days.',
+    denied: 'Secret request denied.',
+    save_failed: 'Secret approval could not be saved.',
+  }[decision];
+  return {
+    t: 'notice',
+    role: 'agent',
+    text,
+    secretApproval: {
+      id: request.toolUseId,
+      tool: request.toolName,
+      input: request.input,
+      ...(request.secretSource && { secretSource: request.secretSource }),
+      decision,
+    },
+  };
 }

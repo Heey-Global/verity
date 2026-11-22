@@ -33,8 +33,6 @@ interface LifecycleDeps {
 
 /** Detached receipt recovery is independent of any live protocol caller. */
 export class DetachedApprovalLifecycle extends DetachedPermissions {
-  private readonly unwrittenDecisions = new Map<string, Map<string, AgentEvent>>();
-  private readonly flushingDecisions = new Set<string>();
   private readonly scheduled = new Set<string>();
   private readonly failed = new Set<string>();
   constructor(private readonly dependencies: () => LifecycleDeps) {
@@ -49,31 +47,19 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
       deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
     });
     try {
-      await this.flushDecisions(sessionId);
-    } catch {
-      // A transcript write must not hide pending approvals.
+      for (const event of await this.unrecordedDecisions(sessionId)) {
+        await this.appendDecision(sessionId, event);
+      }
+    } catch (error) {
+      deps.reportError(sessionId, error);
     }
     await this.tryResumeApproved(sessionId);
   }
 
-  private async flushDecisions(sessionId: string): Promise<void> {
-    const pending = this.unwrittenDecisions.get(sessionId);
-    if (!pending || this.flushingDecisions.has(sessionId)) return;
-    this.flushingDecisions.add(sessionId);
+  private async appendDecision(sessionId: string, event: AgentEvent): Promise<void> {
     const deps = this.dependencies();
-    try {
-      for (const [id, event] of pending) {
-        const persisted = await deps.store.appendEvent(sessionId, event);
-        pending.delete(id);
-        deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
-      }
-      this.unwrittenDecisions.delete(sessionId);
-    } catch (error) {
-      deps.reportError(sessionId, error);
-      throw error;
-    } finally {
-      this.flushingDecisions.delete(sessionId);
-    }
+    const persisted = await deps.store.appendEvent(sessionId, event);
+    deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
   }
 
   private async tryResumeApproved(sessionId: string): Promise<void> {
@@ -154,18 +140,18 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
       notice: (text) =>
         this.dependencies().emitEvent(input.sessionId, { t: 'notice', role: 'agent', text }),
       recordDecision: async (event) => {
-        if (!event.secretApproval) return;
-        const pending = this.unwrittenDecisions.get(input.sessionId) ?? new Map();
-        pending.set(event.secretApproval.id, event);
-        this.unwrittenDecisions.set(input.sessionId, pending);
+        const deps = this.dependencies();
         try {
-          await this.flushDecisions(input.sessionId);
-        } catch {
-          await this.dependencies().emitEvent(input.sessionId, {
-            t: 'notice',
-            role: 'agent',
-            text: 'The decision was recorded, but its chat card could not be saved yet. Reopen this session to retry saving the card.',
-          });
+          await this.appendDecision(input.sessionId, event);
+        } catch (error) {
+          deps.reportError(input.sessionId, error);
+          await deps
+            .emitEvent(input.sessionId, {
+              t: 'notice',
+              role: 'agent',
+              text: 'The decision was recorded, but its chat card could not be saved yet. Reopen this session to retry saving the card.',
+            })
+            .catch((noticeError: unknown) => deps.reportError(input.sessionId, noticeError));
         }
       },
       resume: () => this.tryResumeApproved(input.sessionId),

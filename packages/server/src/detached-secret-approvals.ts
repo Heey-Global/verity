@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ServerDeps } from './server-deps.js';
 import { registerSecretApprovalRoutes } from './secret-approval-routes.js';
 import { legacyAdministratorId } from './view-state-routes.js';
-import type { Conductor } from '@verity/session';
+import { secretApprovalNotice, type Conductor } from '@verity/session';
 import type { EventStore } from '@verity/store';
 
 import type { BrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
@@ -40,6 +40,10 @@ export function configureDetachedSecretApprovals(input: {
   const actorFor = (actorId: string) =>
     input.localActor && actorId === '__local__' ? legacyAdministratorId : actorId;
   conductor.configureDetachedPermissions({
+    listUnrecordedDecisions: async (sessionId) =>
+      (await approvals.listUnrecordedDecisions(sessionId)).map((record) =>
+        secretApprovalNotice(requestFor(record), record.scope ?? 'denied'),
+      ),
     markScopedSaved: async (sessionId, id) => {
       await approvals.markScopedSaved(id, sessionId);
     },

@@ -168,3 +168,5 @@ export {
   transcriptPath,
   type TailState,
 } from './transcript-sync.js';
+
+export { secretApprovalNotice } from './detached-permissions.js';

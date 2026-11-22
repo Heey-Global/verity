@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import { secretApprovalNotice } from './detached-permissions.js';
 import { DetachedApprovalLifecycle } from './detached-approval-lifecycle.js';
 
 it('persists detached reusable consent for the person answering the card', async () => {
@@ -108,6 +109,8 @@ it('retries a failed decision card write when the session is refreshed', async (
   }));
   lifecycle.configure({
     list: async () => (pending ? [request] : []),
+    listUnrecordedDecisions: async () =>
+      !pending && appendEvent.mock.calls.length < 2 ? [secretApprovalNotice(request, 'once')] : [],
     decide: async () => {
       pending = false;
       return true;

@@ -160,6 +160,26 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
         .execute();
       return rows.map(record);
     },
+    async listUnrecordedDecisions(sessionId: string): Promise<BrokeredToolApprovalRecord[]> {
+      const rows = await sql<ApprovalRow>`
+        select approval.*
+        from brokered_tool_approvals approval
+        where approval.session_id = ${sessionId} and approval.decided_at is not null
+          and (approval.status = 'denied' or approval.scope = 'once' or approval.scope_saved)
+          and exists (
+            select 1 from events
+            where session_id = approval.session_id and type = 'permission'
+              and payload->>'id' = approval.id and payload ? 'secretSource'
+          )
+          and not exists (
+            select 1 from events
+            where session_id = approval.session_id and type = 'notice'
+              and payload->'secretApproval'->>'id' = approval.id
+          )
+        order by approval.decided_at, approval.id
+      `.execute(db);
+      return rows.rows.map(record);
+    },
     async listApproved(sessionId: string): Promise<BrokeredToolApprovalRecord[]> {
       const rows = await db
         .selectFrom('brokered_tool_approvals')
