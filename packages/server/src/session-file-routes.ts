@@ -124,27 +124,27 @@ export interface SessionFileRouteDeps {
    *  part of the Code permission (ADR 0023 §1). Reading it stays with read: the
    *  agent shows its files in the conversation anyway. Absent → no restriction. */
   mayChangeCode?: ((request: FastifyRequest, sessionId: string) => Promise<boolean>) | undefined;
-  list: (reply: FastifyReply, target: SessionFileRoot, path: string) => Promise<unknown>;
+  list: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   upload: (
     request: FastifyRequest,
     reply: FastifyReply,
-    target: SessionFileRoot,
+    target: SessionFileTarget,
     query: SessionFileUploadQuery,
   ) => Promise<unknown>;
   history: (
     reply: FastifyReply,
-    target: SessionFileRoot,
+    target: SessionFileTarget,
     path: string,
     version?: string,
   ) => Promise<unknown>;
-  content: (reply: FastifyReply, target: SessionFileRoot, path: string) => Promise<unknown>;
+  content: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   write: (
     reply: FastifyReply,
-    target: SessionFileRoot,
+    target: SessionFileTarget,
     body: SessionFileWriteBody,
   ) => Promise<unknown>;
-  download: (reply: FastifyReply, target: SessionFileRoot, path: string) => Promise<unknown>;
-  remove: (reply: FastifyReply, target: SessionFileRoot, path: string) => Promise<unknown>;
+  download: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
+  remove: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
   move: (
     reply: FastifyReply,
     from: SessionFileTarget,
@@ -155,14 +155,14 @@ export interface SessionFileRouteDeps {
   /** Creates an empty folder `name` inside `path`, never replacing an entry. */
   createFolder?: (
     reply: FastifyReply,
-    target: SessionFileRoot,
+    target: SessionFileTarget,
     path: string,
     name: string,
   ) => Promise<unknown>;
   /** Gives a file or folder a new name in its own folder, never replacing one. */
   rename?: (
     reply: FastifyReply,
-    target: SessionFileRoot,
+    target: SessionFileTarget,
     path: string,
     name: string,
     afterMove?: RelocationHook,
