@@ -837,11 +837,34 @@ class ManagedTests(unittest.TestCase):
         self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
         self.assertFalse((self.root / managed.JOURNAL).exists())
         deny = max(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
-        restart = self.calls.index(('/usr/bin/systemctl', 'start', managed.SERVICE), deny)
+        bootstrap = self.calls.index(('/usr/bin/systemctl', 'start', 'verity-egress-bootstrap.service'), deny)
+        restart = self.calls.index(('/usr/bin/systemctl', 'start', managed.SERVICE), bootstrap)
         self.assertIn(('/usr/bin/systemctl', 'is-active', '--quiet', managed.SERVICE), self.calls[restart + 1:])
         self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'activation_failed', 'step': 'activation'})
         status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
         self.assertEqual(status, {'version': 1, 'state': 'ready', 'reason': 'ready'})
+
+    def test_unknown_controller_state_keeps_it_stopped_after_rollback(self):
+        self.provision()
+        previous = (self.root / 'opt/verity-egress').resolve()
+        (self.source / 'node').write_bytes(b'updated node')
+        self.manifest['node'] = managed.base.digest(b'updated node')
+        self.save_manifest()
+        self.calls.clear()
+
+        def run(*args):
+            self.execute(*args)
+            if '--property=ActiveState' in args:
+                raise RuntimeError('private probe detail')
+            if 'is-active' in args:
+                raise RuntimeError('private activation detail')
+            return 'loaded' if 'show' in args else ''
+
+        with self.assertRaisesRegex(RuntimeError, 'activation detail'):
+            self.provision(run=run)
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        deny = max(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
+        self.assertFalse(any('start' in cmd for cmd in self.calls[deny + 1:]))
 
     def test_failed_controller_restart_after_rollback_reports_recovery_failure(self):
         previous, error = self.failed_upgrade_with_serving_controller(restart_fails=True)

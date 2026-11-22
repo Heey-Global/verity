@@ -968,6 +968,12 @@ def activate(root, run, release, files, configs, gid):
     journal = root / JOURNAL
     if journal.exists() or journal.is_symlink():
         raise ValueError('Managed transaction requires recovery')
+    # An unknown state keeps the earlier behavior: rollback leaves the controller stopped.
+    try:
+        restore_controller = old_target is not None and run(
+            '/usr/bin/systemctl', 'show', '--property=ActiveState', '--value', SERVICE).strip() == 'active'
+    except Exception:
+        restore_controller = False
     install_boot_recovery(root, run)
     transaction = {'version': 1, 'previous': old_target, 'target': str(release),
                    'snapshots': {name: None if data is None else data.hex()
@@ -976,9 +982,6 @@ def activate(root, run, release, files, configs, gid):
     if len(data) > 4 * 1024 * 1024:
         raise ValueError('Managed transaction journal is too large')
     # The old authority is durable before any service, link, unit or config mutation.
-    # Probed before the journal, so a failed probe leaves no transaction behind.
-    restore_controller = old_target is not None and run(
-        '/usr/bin/systemctl', 'show', '--property=ActiveState', '--value', SERVICE).strip() == 'active'
     base.atomic_file(journal, data, 0o600)
     try:
         base.stop_controller(run)
@@ -1001,6 +1004,7 @@ def activate(root, run, release, files, configs, gid):
             # A failed update must not leave a previously serving host without its
             # controller. Rollback restored the old release, units and configuration.
             try:
+                run('/usr/bin/systemctl', 'start', 'verity-egress-bootstrap.service')
                 run('/usr/bin/systemctl', 'start', SERVICE)
                 run('/usr/bin/systemctl', 'is-active', '--quiet', SERVICE)
             except Exception as restart_error:
