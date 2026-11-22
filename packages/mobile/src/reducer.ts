@@ -292,6 +292,11 @@ export class SessionReducer {
         break;
       case 'notice': {
         this.active = null;
+        if (event.secretApproval) {
+          this.clearPermissionFor(event.secretApproval.id);
+          this.emitAgentEvent(seq, ts, event);
+          break;
+        }
         if (event.role === 'operator') {
           this.appendMessage({
             kind: 'user-text',
@@ -410,10 +415,6 @@ export class SessionReducer {
           ...(event.secretSource && { secretSource: event.secretSource }),
           ...(event.grantChannel !== undefined ? { grantChannel: event.grantChannel } : {}),
         });
-        break;
-      case 'secret_approval_decision':
-        this.clearPermissionFor(event.id);
-        this.emitAgentEvent(seq, ts, event);
         break;
       case 'result':
         this.active = null; // turn end closes the open block

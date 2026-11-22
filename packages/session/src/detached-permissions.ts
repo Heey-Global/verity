@@ -155,7 +155,7 @@ export async function decideDetachedPermission(input: {
       }
     | undefined;
   persistScoped: (request: DetachedPermission, scope: 'session' | 'project') => Promise<void>;
-  recordDecision?: (event: Extract<AgentEvent, { t: 'secret_approval_decision' }>) => Promise<void>;
+  recordDecision?: (event: Extract<AgentEvent, { t: 'notice' }>) => Promise<void>;
   notice: (text: string) => Promise<void>;
   resume: (request: DetachedPermission, actorId?: string) => Promise<void>;
 }): Promise<boolean | undefined> {
@@ -197,20 +197,32 @@ export async function decideDetachedPermission(input: {
       continuationAllowed = false;
     }
   }
+  const outcome =
+    decision.behavior === 'deny'
+      ? 'denied'
+      : !continuationAllowed && !reusableScopeSaved
+        ? 'save_failed'
+        : options?.scope === 'session' || options?.scope === 'project'
+          ? options.scope
+          : 'once';
+  const fallbackText = {
+    once: 'Secret request allowed once.',
+    session: 'Secret request allowed for this session.',
+    project: 'Secret request allowed in this project for 30 days.',
+    denied: 'Secret request denied.',
+    save_failed: 'Secret approval could not be saved.',
+  }[outcome];
   await input.recordDecision?.({
-    t: 'secret_approval_decision',
-    id: toolUseId,
-    tool: request.toolName,
-    input: request.input,
-    ...(request.secretSource && { secretSource: request.secretSource }),
-    decision:
-      decision.behavior === 'deny'
-        ? 'denied'
-        : !continuationAllowed && !reusableScopeSaved
-          ? 'save_failed'
-          : options?.scope === 'session' || options?.scope === 'project'
-            ? options.scope
-            : 'once',
+    t: 'notice',
+    role: 'agent',
+    text: fallbackText,
+    secretApproval: {
+      id: toolUseId,
+      tool: request.toolName,
+      input: request.input,
+      ...(request.secretSource && { secretSource: request.secretSource }),
+      decision: outcome,
+    },
   });
   if (!continuationAllowed) {
     await input.notice(

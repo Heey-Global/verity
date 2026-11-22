@@ -31,7 +31,6 @@ it('shows all allowed choices and reveals exact request details', () => {
   fireEvent.press(screen.getByRole('button', { name: 'Deny' }));
   expect(allow.mock.calls).toEqual([[], ['session'], ['project']]);
   expect(deny).toHaveBeenCalledTimes(1);
-  fireEvent.press(screen.getByRole('button', { name: 'View request' }));
   expect(screen.getByText('GET staging.example.com/health')).toBeTruthy();
 });
 

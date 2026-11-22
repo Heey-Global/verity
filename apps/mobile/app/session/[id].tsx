@@ -5053,9 +5053,12 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
-      if (item.message.event.t === 'secret_approval_decision')
+      if (item.message.event.t === 'notice' && item.message.event.secretApproval)
         return (
-          <SecretApprovalCard request={item.message.event} decision={item.message.event.decision} />
+          <SecretApprovalCard
+            request={item.message.event.secretApproval}
+            decision={item.message.event.secretApproval.decision}
+          />
         );
       if (item.message.event.t === 'mcp_app') return <McpAppCard event={item.message.event} />;
       return <EventRow message={item.message} isLatest={isLatest} />;

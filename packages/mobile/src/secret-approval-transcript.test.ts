@@ -16,7 +16,11 @@ it.each(['once', 'session', 'project', 'denied', 'save_failed'] as const)(
     reducer.apply(2, { t: 'permission', riskClass: 'ask', ...request });
     expect(reducer.pendingPermissionIds).toEqual(['receipt']);
 
-    const event = { t: 'secret_approval_decision', ...request, decision } as const;
+    const event = {
+      t: 'notice',
+      text: 'Secret request answered.',
+      secretApproval: { ...request, decision },
+    } as const;
     reducer.apply(3, event);
     expect(reducer.pendingPermissionIds).toEqual([]);
     expect(reducer.messages[1]).toMatchObject({ kind: 'agent-event', event });

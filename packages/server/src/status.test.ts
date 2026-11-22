@@ -275,13 +275,6 @@ const SAMPLES: Record<AgentEventType, AgentEvent> = {
   tool_call_start: { t: 'tool_call_start', id: 'toolu_1', name: 'Bash' },
   tool_call: { t: 'tool_call', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } },
   tool_result: { t: 'tool_result', id: 'toolu_1', output: 'ok', isError: false },
-  secret_approval_decision: {
-    t: 'secret_approval_decision',
-    id: 'approval-1',
-    tool: 'verity_http_request',
-    input: {},
-    decision: 'once',
-  },
   permission,
   result,
   // `usedPercent` on purpose: `latestRateLimits` DROPS an `allowed` state without

@@ -377,6 +377,15 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     t: z.literal('notice'),
     text: z.string(),
     role: z.enum(['agent', 'operator']).optional(),
+    secretApproval: z
+      .object({
+        id: z.string().min(1),
+        tool: z.string().min(1),
+        input: z.unknown(),
+        secretSource: secretApprovalSourceSchema.optional(),
+        decision: z.enum(['once', 'session', 'project', 'denied', 'save_failed']),
+      })
+      .optional(),
     // Correlates a server-confirmed workflow notice with an optimistic local echo.
     clientRequestId: z.string().max(100).optional(),
   }),
@@ -492,14 +501,6 @@ export const agentEventSchema = z.discriminatedUnion('t', [
      * ({@link persistedBrokeredGrantChannelSchema}).
      */
     grantChannel: persistedBrokeredGrantChannelSchema,
-  }),
-  z.object({
-    t: z.literal('secret_approval_decision'),
-    id: z.string().min(1),
-    tool: z.string().min(1),
-    input: z.unknown(),
-    secretSource: secretApprovalSourceSchema.optional(),
-    decision: z.enum(['once', 'session', 'project', 'denied', 'save_failed']),
   }),
   z.object({
     t: z.literal('result'),

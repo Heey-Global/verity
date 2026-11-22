@@ -97,7 +97,9 @@ it.each([
     }),
   ).toBe(true);
   expect(notice).not.toHaveBeenCalled();
-  expect(recordDecision).toHaveBeenCalledWith(expect.objectContaining({ decision: status }));
+  expect(recordDecision).toHaveBeenCalledWith(
+    expect.objectContaining({ secretApproval: expect.objectContaining({ decision: status }) }),
+  );
   expect(resume).toHaveBeenCalledTimes(behavior === 'allow' ? 1 : 0);
   if (behavior === 'allow') expect(resume).toHaveBeenCalledWith(request, 'user');
   const first = detachedContinuation(request, 'user');

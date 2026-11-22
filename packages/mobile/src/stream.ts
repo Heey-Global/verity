@@ -233,10 +233,9 @@ export class SessionStream {
             (frame.event.t === 'permission' ||
               (!restored.detached &&
                 ['result', 'interrupted', 'prompt', 'session'].includes(frame.event.t)) ||
-              ((frame.event.t === 'tool_call' ||
-                frame.event.t === 'tool_result' ||
-                frame.event.t === 'secret_approval_decision') &&
-                frame.event.id === id)),
+              ((frame.event.t === 'tool_call' || frame.event.t === 'tool_result') &&
+                frame.event.id === id) ||
+              (frame.event.t === 'notice' && frame.event.secretApproval?.id === id)),
         )
       )
         continue;

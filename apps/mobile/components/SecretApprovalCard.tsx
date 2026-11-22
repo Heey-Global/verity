@@ -19,7 +19,7 @@ import { PermissionRequestDetails } from './session/PermissionRequestDetails';
 import { Button, Card, StatusTag, Text } from './ui';
 
 type Request = Pick<PendingPermission, 'tool' | 'input' | 'secretSource'>;
-type Decision = Extract<AgentEvent, { t: 'secret_approval_decision' }>['decision'];
+type Decision = NonNullable<Extract<AgentEvent, { t: 'notice' }>['secretApproval']>['decision'];
 
 const labels: Record<Decision, string> = {
   once: 'Allowed once',
@@ -132,6 +132,57 @@ export function SecretApprovalCard({
           </View>
         </View>
       )}
+      {destination !== undefined ? (
+        <View style={styles.details}>
+          {pending && http ? null : (
+            <Button
+              label={expanded ? 'Hide details' : detailsLabel}
+              variant="text"
+              size="compact"
+              icon={expanded ? 'chevron-up' : 'chevron-down'}
+              onPress={() => setExpanded(!expanded)}
+            />
+          )}
+          {expanded || (pending && http) ? (
+            <ScrollView
+              nestedScrollEnabled
+              style={styles.detailScroll}
+              contentContainerStyle={styles.detailContent}
+            >
+              {http ? (
+                <>
+                  <Text variant="code" selectable>
+                    {http.method} {http.host}
+                    {http.path}
+                  </Text>
+                  {http.body !== null ? (
+                    <Text variant="code" selectable>
+                      {spellOutBidiControls(http.body)}
+                    </Text>
+                  ) : null}
+                  <Text variant="bodySmall" selectable>
+                    {brokeredAuthSentence(http)}
+                  </Text>
+                </>
+              ) : cli ? (
+                <>
+                  <Text variant="code" selectable>
+                    {trustedCliCommandLine(cli)}
+                  </Text>
+                  <Text variant="bodySmall" selectable>
+                    {spellOutBidiControls(trustedCliRiskSentence(cli))}
+                  </Text>
+                </>
+              ) : null}
+              {source ? (
+                <Text variant="bodySmall" tone="muted" selectable>
+                  {spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)}
+                </Text>
+              ) : null}
+            </ScrollView>
+          ) : null}
+        </View>
+      ) : null}
       {actions ? (
         <>
           <View style={styles.actions}>
@@ -175,55 +226,6 @@ export function SecretApprovalCard({
             </View>
           ) : null}
         </>
-      ) : null}
-      {destination !== undefined ? (
-        <View style={styles.details}>
-          <Button
-            label={expanded ? 'Hide details' : detailsLabel}
-            variant="text"
-            size="compact"
-            icon={expanded ? 'chevron-up' : 'chevron-down'}
-            onPress={() => setExpanded(!expanded)}
-          />
-          {expanded ? (
-            <ScrollView
-              nestedScrollEnabled
-              style={styles.detailScroll}
-              contentContainerStyle={styles.detailContent}
-            >
-              {http ? (
-                <>
-                  <Text variant="code" selectable>
-                    {http.method} {http.host}
-                    {http.path}
-                  </Text>
-                  {http.body !== null ? (
-                    <Text variant="code" selectable>
-                      {spellOutBidiControls(http.body)}
-                    </Text>
-                  ) : null}
-                  <Text variant="bodySmall" selectable>
-                    {brokeredAuthSentence(http)}
-                  </Text>
-                </>
-              ) : cli ? (
-                <>
-                  <Text variant="code" selectable>
-                    {trustedCliCommandLine(cli)}
-                  </Text>
-                  <Text variant="bodySmall" selectable>
-                    {spellOutBidiControls(trustedCliRiskSentence(cli))}
-                  </Text>
-                </>
-              ) : null}
-              {source ? (
-                <Text variant="bodySmall" tone="muted" selectable>
-                  {spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)}
-                </Text>
-              ) : null}
-            </ScrollView>
-          ) : null}
-        </View>
       ) : null}
       {pending ? (
         <View style={styles.note}>

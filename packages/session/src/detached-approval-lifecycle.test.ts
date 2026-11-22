@@ -69,12 +69,16 @@ it('keeps a saved decision and reports a failed automatic continuation', async (
     }),
   ).toBe(true);
   expect(emitEvent).toHaveBeenNthCalledWith(1, 's', {
-    t: 'secret_approval_decision',
-    id: 'r',
-    tool: request.toolName,
-    input: request.input,
-    secretSource: request.secretSource,
-    decision: 'once',
+    t: 'notice',
+    role: 'agent',
+    text: 'Secret request allowed once.',
+    secretApproval: {
+      id: 'r',
+      tool: request.toolName,
+      input: request.input,
+      secretSource: request.secretSource,
+      decision: 'once',
+    },
   });
   expect(emitEvent).toHaveBeenNthCalledWith(
     2,

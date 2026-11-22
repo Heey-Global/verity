@@ -74,7 +74,19 @@ const eventExamples: Record<AgentEvent['t'], AgentEvent> = {
   },
   status: { t: 'status', state: 'crashed', message: 'Connection closed' },
   text: { t: 'text', delta: 'hello', parentToolId: 'parent' },
-  notice: { t: 'notice', text: 'notice', role: 'agent', clientRequestId: 'request' },
+  notice: {
+    t: 'notice',
+    text: 'notice',
+    role: 'agent',
+    clientRequestId: 'request',
+    secretApproval: {
+      id: 'approval-1',
+      tool: 'verity_http_request',
+      input: {},
+      decision: 'once',
+      secretSource: { project: 'example', config: 'stg' },
+    },
+  },
   prompt: {
     t: 'prompt',
     origin: 'secret-approval',
@@ -113,14 +125,6 @@ const eventExamples: Record<AgentEvent['t'], AgentEvent> = {
     isError: false,
     outputRef: { id: 'blob', bytes: 2 },
     parentToolId: 'parent',
-  },
-  secret_approval_decision: {
-    t: 'secret_approval_decision',
-    id: 'approval-1',
-    tool: 'verity_http_request',
-    input: {},
-    decision: 'once',
-    secretSource: { project: 'example', config: 'stg' },
   },
   permission: {
     t: 'permission',
