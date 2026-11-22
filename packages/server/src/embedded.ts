@@ -275,7 +275,7 @@ import { createSandboxUpdateChecker } from './sandbox-updates.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
-import { openBackupRuntime } from './backup/runtime.js';
+import { createEmbeddedBackup } from './embedded-backup.js';
 
 import type { VeritySettingsRecord } from '@verity/store';
 
@@ -1320,28 +1320,7 @@ export async function buildEmbeddedServer(
     matrixActivationDone = await notifyManagedMatrixConfigured();
   };
 
-  const backupArchitecture =
-    process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : undefined;
-  const backup =
-    config.databaseUrl && config.dataVolumeRoot && projectDocker && backupArchitecture
-      ? await openBackupRuntime({
-          probe: {
-            docker: projectDocker,
-            network: 'verity-net',
-            tufCachePath: join(config.dataVolumeRoot, 'backup-state', 'tuf-cache'),
-          },
-          root: config.dataVolumeRoot,
-          databaseUrl: config.databaseUrl,
-          currentImage: async () => (await projectDocker.inspectContainer(hostname())).image,
-          architecture: backupArchitecture,
-          release: SERVER_COMPAT.serverVersion,
-          schema: SERVER_COMPAT.schema.current,
-          store: eventStore,
-          onError: () => {
-            console.warn('verity: backup operation unavailable; queued revocations remain durable');
-          },
-        })
-      : undefined;
+  const backup = await createEmbeddedBackup({ config, projectDocker, eventStore });
   let lastDockerGcReport: DockerGcReport | undefined;
   const volumeUsage = dataVolumeRoot ? new DataVolumeUsage({ root: dataVolumeRoot }) : undefined;
   const { sessionStorage, runnerCacheStorage } = createEmbeddedSessionStorage({
