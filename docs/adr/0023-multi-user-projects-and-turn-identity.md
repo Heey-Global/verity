@@ -114,9 +114,10 @@ it: merging, saving to the project, switching or opening repositories, changing
 code files by hand, running vulnerability scans, and acting on QA and
 vulnerability findings. Reading the
 code working copy stays with read, because the agent shows its files in the
-conversation anyway. The agent gateway is held to the same boundary for the
-person behind a turn in a later step; until then, an agent working for a
-member without Code can still push.
+conversation anyway. The agent's vulnerability tool already requires Code from
+the person behind a turn for anything beyond reading. The forge gateway is held
+to the same boundary in a later step; until then, an agent working for a member
+without Code can still push.
 
 **Project creation is build authority.** Creating a project provisions a
 sandbox and may build a repository-supplied `devcontainer.json` on the host's
