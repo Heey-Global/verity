@@ -35,12 +35,14 @@ import { createEmbeddedDocker } from './embedded-docker.js';
 import { createEmbeddedForgeProxy } from './embedded-forge-proxy.js';
 import { createEmbeddedBranches } from './embedded-branches.js';
 import {
+  createEmbeddedWorktreeBindings,
   createEmbeddedWorktreeForge,
   createEmbeddedWorktreeStatus,
   createEmbeddedWorktrees,
 } from './embedded-worktrees.js';
 import {
   createEmbeddedRepositoryAnalysisBindings,
+  createEmbeddedProjectRepositoryBindings,
   createEmbeddedRepositoryAccess,
   createEmbeddedRepositoryPullRequests,
 } from './embedded-repositories.js';
@@ -126,7 +128,6 @@ import { installEmbeddedDockerGc } from './embedded-docker-gc.js';
 import { createEmbeddedSessionStorage } from './embedded-session-storage.js';
 import type { DockerGcReport } from './docker-gc.js';
 import { createServerLogSource } from './server-log-source.js';
-import { selectBranchStatus } from './forge-status-cache.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import type { BuildStorage } from './build-storage.js';
@@ -1486,15 +1487,8 @@ export async function buildEmbeddedServer(
     ...(worktrees !== undefined ? { worktrees } : {}),
     ...(branches !== undefined ? { branches } : {}),
     forgejoEnabled: projectRelayEnabled && provisioner !== undefined,
-    branchPr: async (b: string, wt: string) =>
-      (await forgeForWorktree(wt))?.prServiceFor(wt).prForBranch(b) ?? null,
-    branchPrStatus: readWorktreeStatus,
+    ...createEmbeddedWorktreeBindings({ forgeForWorktree, readWorktreeStatus }),
     ...forgeStatusDeps,
-    branchPrStatusForBranches: async (bs: readonly string[], wt: string) => {
-      const values = [];
-      for (const branch of bs) values.push(await readWorktreeStatus(branch, wt));
-      return selectBranchStatus(values, (await forgeForWorktree(wt))?.id ?? 'github');
-    },
     ...createEmbeddedRepositoryAnalysisBindings({
       eventStore,
       githubForge,
@@ -1502,9 +1496,6 @@ export async function buildEmbeddedServer(
       readProjectStatus,
       projectPullRequests,
     }),
-    mergePr: async (n: number, wt: string, expectedHeadSha?: string) =>
-      (await forgeForWorktree(wt))?.prServiceFor(wt).mergePr(n, expectedHeadSha) ?? false,
-    repoIdentity: async (wt: string) => (await forgeForWorktree(wt))?.identityFor(wt)() ?? null,
     // Live GitHub-App credential validation for the onboarding wizard (#320). The
     // route reads + decrypts the stored creds itself (unsealed-only) and hands them
     // here; this just performs the redaction-safe test-mint against GitHub.
@@ -1512,21 +1503,7 @@ export async function buildEmbeddedServer(
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
     dependencyCapacity,
-    // `verity-repo`: the project's code host executes pull request and issue actions.
-    projectRepository: async (project: ProjectRecord) => {
-      const provider = await projectForgeProvider(eventStore, githubForge, project);
-      if (provider === undefined) return undefined;
-      return {
-        hostName: provider.id === 'forgejo' ? 'Forgejo' : 'GitHub',
-        operations: provider.repositoryOperations(project),
-        listIssues: () => provider.listIssues(project),
-      };
-    },
-    ghTokenMint: async (project: {
-      owner: string;
-      repo: string;
-      forgeConnectionId?: string | null;
-    }) => (await forgeRepositoryAccess(project))?.token ?? githubForge.mintProjectToken(project),
+    ...createEmbeddedProjectRepositoryBindings({ eventStore, githubForge, forgeRepositoryAccess }),
     // Loopback MCP gateway for ACP sessions (ADR 0014 D1). The approval seam is
     // deliberately absent here and bound inside buildServer to its own conductor.
     mcpGateway,

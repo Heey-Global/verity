@@ -240,3 +240,28 @@ export function createEmbeddedRepositoryAnalysisBindings(ctx: {
     },
   };
 }
+
+export function createEmbeddedProjectRepositoryBindings(ctx: {
+  eventStore: EventStore;
+  githubForge: ReturnType<typeof createEmbeddedGitHub>['githubForge'];
+  forgeRepositoryAccess: ReturnType<typeof createEmbeddedRepositoryAccess>;
+}): Pick<ServerDeps, 'projectRepository' | 'ghTokenMint'> {
+  const { eventStore, githubForge, forgeRepositoryAccess } = ctx;
+  return {
+    // `verity-repo`: the project's code host executes pull request and issue actions.
+    projectRepository: async (project: ProjectRecord) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (provider === undefined) return undefined;
+      return {
+        hostName: provider.id === 'forgejo' ? 'Forgejo' : 'GitHub',
+        operations: provider.repositoryOperations(project),
+        listIssues: () => provider.listIssues(project),
+      };
+    },
+    ghTokenMint: async (project: {
+      owner: string;
+      repo: string;
+      forgeConnectionId?: string | null;
+    }) => (await forgeRepositoryAccess(project))?.token ?? githubForge.mintProjectToken(project),
+  };
+}
