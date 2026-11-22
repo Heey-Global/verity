@@ -701,8 +701,8 @@ describe('scheduled cache-helper retention', () => {
   });
   it('composes the production GC barriers in the same order as helper result collection', () => {
     const source = ts.createSourceFile(
-      'embedded.ts',
-      readFileSync(new URL('./embedded.ts', import.meta.url), 'utf8'),
+      'embedded-docker-gc.ts',
+      readFileSync(new URL('./embedded-docker-gc.ts', import.meta.url), 'utf8'),
       ts.ScriptTarget.Latest,
       true,
     );
