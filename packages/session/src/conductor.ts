@@ -3099,7 +3099,7 @@ export class Conductor {
     })();
   }
 
-  private async isCoveredByBrokeredGrant(
+  async isCoveredByBrokeredGrant(
     sessionId: string,
     request: PermissionRequest,
     statedChannel?: BrokeredGrantChannel,

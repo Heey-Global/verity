@@ -1,5 +1,6 @@
 import { createMcpAppAuthorization } from './mcp-apps-authorization.js';
 import { installDetachedSecretApprovals } from './detached-secret-approvals.js';
+import { createBrokeredSecretAuthorization } from './brokered-secret-authorization.js';
 import { createGatewaySessionCoordination } from './session-coordination-runtime.js';
 import type { SpawnSession } from './session-create-route.js';
 import { createLinkedSessionDelivery, listLinkedSessions } from './session-linked-delivery.js';
@@ -526,6 +527,11 @@ export function registerServerMcpRoutes({
 
   if (deps.mcpGateway !== undefined) {
     const gatewayDeps = installDetachedSecretApprovals(app, deps, conductor, canExecuteAs);
+    const brokeredSecrets = createBrokeredSecretAuthorization({
+      conductor,
+      gateway: gatewayDeps,
+      initiator: runningTurnInitiator,
+    });
     const { linkedSessionTarget, deliverLinkedMessage } = createLinkedSessionDelivery(
       deps.eventStore,
       conductor,
@@ -1249,17 +1255,8 @@ export function registerServerMcpRoutes({
           });
         }
 
-        if (toolName === 'verity_http_request' || toolName === 'verity_secret_run') {
-          const snapshot = await gatewayDeps.authorizationSnapshot?.({
-            sessionId,
-            turnId,
-            projectId,
-            toolName,
-            request,
-          });
-          if (snapshot === undefined) throw new Error('approved Doppler binding is unavailable');
-          return JSON.stringify(parseBrokeredDopplerBinding(snapshot));
-        }
+        if (toolName === 'verity_http_request' || toolName === 'verity_secret_run')
+          return brokeredSecrets.snapshot({ sessionId, turnId, projectId, toolName, request });
         const service =
           toolName === 'verity_gmail'
             ? 'gmail'
@@ -1312,14 +1309,10 @@ export function registerServerMcpRoutes({
         }
         return undefined;
       },
-      hasStandingAuthorization: async ({
-        turnId,
-        projectId,
-        sessionId,
-        toolName,
-        request,
-        invocationId,
-      }) => {
+      hasStandingAuthorization: async (call) => {
+        const { turnId, projectId, sessionId, toolName, request, invocationId } = call;
+        if (toolName === 'verity_http_request' || toolName === 'verity_secret_run')
+          return brokeredSecrets.covers(call);
         if (
           toolName === 'verity_qa_analysis' &&
           (request as { action: string }).action === 'request_repair'
