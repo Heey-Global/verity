@@ -5,7 +5,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Linking, Platform } from 'react-native';
 
-export const RECENT_IMAGE_LIMIT = 10;
+const RECENT_IMAGE_LIMIT = 10;
 
 export interface RecentImage {
   id: string;
@@ -27,7 +27,7 @@ export type RecentImages =
  * Screenshots first, then the other newest images, without duplicates. Both
  * inputs are newest first; a screenshot also appears in the general query.
  */
-export function mergeRecentImages(
+function mergeRecentImages(
   screenshots: readonly RecentImage[],
   recent: readonly RecentImage[],
   limit = RECENT_IMAGE_LIMIT,
