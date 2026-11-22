@@ -1078,6 +1078,8 @@ export class ProjectTeamStore {
       .select(['p.created_by_user_id', 'm.can_code'])
       .where('m.project_id', '=', projectId)
       .where('m.user_id', '=', userId)
+      // A concurrent change must not leave this one deriving Code from a stale value.
+      .forUpdate('m')
       .executeTakeFirst();
     if (row === undefined)
       throw new ProjectTeamError('member_not_found', 'This person is not on the project.');

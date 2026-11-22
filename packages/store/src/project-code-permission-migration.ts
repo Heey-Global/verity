@@ -3,8 +3,11 @@ import type { Migration } from 'kysely/migration';
 
 /**
  * The project permission "Code": seeing a session's technical side and adding
- * its changes to the project's code. It needs "Edit" (`can_execute`), which the
- * check constraints hold even against a writer that skips the store.
+ * its changes to the project's code. It needs "Edit" (`can_execute`). For an
+ * invitation a check constraint holds that. A membership instead loses Code
+ * whenever Edit goes: an older server still running during the upgrade demotes
+ * a member by clearing `can_execute` alone, and must neither fail on a
+ * constraint nor leave Code behind.
  *
  * Everyone who could edit until now could already merge and save to the
  * project, so every member and invitation with Edit receives Code and nobody
@@ -15,10 +18,18 @@ import type { Migration } from 'kysely/migration';
 export const projectCodePermissionMigration: Migration = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`alter table project_memberships
-      add column can_code boolean not null default false,
-      add constraint project_memberships_code_needs_execute check (not can_code or can_execute)`.execute(
-      db,
-    );
+      add column can_code boolean not null default false`.execute(db);
+    await sql`create function project_membership_code_needs_execute() returns trigger as $$
+        begin
+          if not new.can_execute then
+            new.can_code := false;
+          end if;
+          return new;
+        end
+      $$ language plpgsql`.execute(db);
+    await sql`create trigger project_membership_code_needs_execute
+      before insert or update on project_memberships for each row
+      execute function project_membership_code_needs_execute()`.execute(db);
     await sql`update project_memberships set can_code = true where can_execute`.execute(db);
     await sql`alter table project_invitations
       add column can_code boolean not null default false,
@@ -44,6 +55,10 @@ export const projectCodePermissionMigration: Migration = {
           return new;
         end
       $$ language plpgsql`.execute(db);
+    await sql`drop trigger project_membership_code_needs_execute on project_memberships`.execute(
+      db,
+    );
+    await sql`drop function project_membership_code_needs_execute()`.execute(db);
     await sql`alter table project_invitations drop column can_code`.execute(db);
     await sql`alter table project_memberships drop column can_code`.execute(db);
   },
