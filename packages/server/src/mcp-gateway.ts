@@ -1,3 +1,4 @@
+import { brokeredExecutionClaimId } from './brokered-http-consumption.js';
 import { APPROVAL_REDEMPTION_TTL_MS } from './brokered-tool-approval-store.js';
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
 import type {
@@ -189,6 +190,12 @@ export interface McpGatewayAuditRecord {
 
 export interface McpGatewayDeps {
   detachedApprovals?: BrokeredToolApprovalStore;
+  hasSecretExecutionClaim?(input: {
+    projectId: string;
+    sessionId: string;
+    turnId: string;
+    callId: string;
+  }): Promise<boolean>;
   surfaceDetachedApproval?: (sessionId: string) => Promise<void>;
   /**
    * Resolve a presented bearer to the session it was minted for, within the project the
@@ -266,6 +273,7 @@ export interface McpGatewayDeps {
       toolName: GatewayToolName;
       request: unknown;
       invocationId: string;
+      authorizationSnapshot?: string;
     },
   ): Promise<boolean>;
   /**
@@ -1020,22 +1028,30 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     let answer: ExternalPermissionAnswer;
     let detachedApproval: BrokeredToolApprovalRecord | undefined;
     let standingAuthorization = false;
-    const baseInvocationId = mcpGatewayInvocationId(id, toolName, turnId, keyed.requestMac);
+    let findStandingBlock: (() => Promise<BrokeredToolApprovalRecord | undefined>) | undefined;
+    const secretTool = toolName === 'verity_http_request' || toolName === 'verity_secret_run';
+    // Secret transport retries must survive audit-key rotation during the same turn.
+    const requestIdentity = secretTool
+      ? createHash('sha256').update(canonicalJson(request.data)).digest('hex')
+      : keyed.requestMac;
+    const baseInvocationId = mcpGatewayInvocationId(id, toolName, turnId, requestIdentity);
     // Approval receipts and durable mutation claims must identify the same authority.
     const invocationId =
       authorizationSnapshot === undefined
         ? baseInvocationId
         : `${baseInvocationId}:${createHash('sha256').update(authorizationSnapshot).digest('hex')}`;
+    const standingCall = {
+      projectId,
+      sessionId,
+      turnId,
+      toolName,
+      request: request.data,
+      invocationId,
+      ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
+    };
     if (deps.hasStandingAuthorization !== undefined) {
       try {
-        standingAuthorization = await deps.hasStandingAuthorization({
-          projectId,
-          sessionId,
-          turnId,
-          toolName,
-          request: request.data,
-          invocationId,
-        });
+        standingAuthorization = await deps.hasStandingAuthorization(standingCall);
       } catch {
         return reject(
           projectId,
@@ -1051,23 +1067,40 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     const matrixSend =
       toolName === 'verity_matrix' && matrixRequestSchema.parse(request.data).action === 'send';
     if (matrixSend) standingAuthorization = false;
-    if (standingAuthorization) {
-      answer = { decision: { behavior: 'allow' }, decidedBy: 'grant' };
-    } else if (
-      deps.detachedApprovals &&
-      (toolName === 'verity_http_request' || toolName === 'verity_secret_run')
-    ) {
+    const approvalStore = deps.detachedApprovals;
+    if (approvalStore && secretTool) {
       if (authorizationSnapshot === undefined)
         return toolError(id, 'Secret provider identity is unavailable; nothing ran.');
-      detachedApproval = await deps.detachedApprovals.createOrFindPending({
+      if (
+        await deps.hasSecretExecutionClaim?.({
+          projectId,
+          sessionId,
+          turnId,
+          callId: brokeredExecutionClaimId(invocationId),
+        })
+      )
+        return toolError(
+          id,
+          "This invocation's execution claim was already consumed. Check the prior result.",
+        );
+      const binding = {
         projectId,
         sessionId,
-        invocationId,
         toolName,
         canonicalInput: canonicalJson(request.data),
         authorizationSnapshot,
-        ...keyed,
-      });
+      } as const;
+      const legacyPrefix = mcpGatewayInvocationId(id, toolName, turnId, '');
+      findStandingBlock = () =>
+        approvalStore.findStandingAuthorizationBlock(binding, invocationId, legacyPrefix);
+      detachedApproval = standingAuthorization
+        ? await findStandingBlock()
+        : await approvalStore.createOrFindPending(
+            { ...binding, invocationId, ...keyed },
+            legacyPrefix,
+          );
+    }
+    if (detachedApproval) {
       if (detachedApproval.status === 'consumed')
         return toolError(
           id,
@@ -1102,6 +1135,8 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
               },
               decidedBy: 'card',
             };
+    } else if (standingAuthorization) {
+      answer = { decision: { behavior: 'allow' }, decidedBy: 'grant' };
     } else {
       const cancellation = AbortSignal.any([
         ...(signal === undefined ? [] : [signal]),
@@ -1235,10 +1270,26 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         !(await deps.toolAvailable({ projectId, sessionId, turnId, toolName }))
       )
         throw new ControlPlaneSessionAuthorityError('Tool access was revoked while waiting.');
-      signal?.throwIfAborted();
-      transport?.signal.throwIfAborted();
-      const execute = () =>
-        deps.invokeTool({
+      const execute = async () => {
+        if (standingAuthorization && secretTool) {
+          if (await findStandingBlock?.())
+            throw new ControlPlaneSessionAuthorityError(
+              'The secret request changed while preparing execution. Nothing ran. Check the session permission dialog.',
+            );
+          if (!(await deps.hasStandingAuthorization?.(standingCall)))
+            throw new ControlPlaneSessionAuthorityError(
+              'Secret access was revoked or expired before execution. Nothing ran.',
+            );
+          const active =
+            token === undefined ? undefined : await deps.resolveCaller({ projectId, token });
+          if (active?.sessionId !== sessionId || active.turnId !== turnId)
+            throw new ControlPlaneSessionAuthorityError(
+              'The calling turn is no longer active. Nothing ran.',
+            );
+        }
+        signal?.throwIfAborted();
+        transport?.signal.throwIfAborted();
+        return deps.invokeTool({
           projectId,
           sessionId,
           turnId,
@@ -1250,6 +1301,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           toolName: toolName,
           request: request.data,
         });
+      };
       result =
         transport === undefined
           ? await execute()

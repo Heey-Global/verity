@@ -1,3 +1,4 @@
+import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
 import { join } from 'node:path';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import type { createEmbeddedBrokeredHttp } from './embedded-brokered-http.js';
@@ -63,6 +64,7 @@ export function createEmbeddedMcpGateway(
   const mcpProxyTokens = createMcpGatewayTokens();
   const mcpGateway: Omit<McpGatewayDeps, 'requestApproval'> = {
     detachedApprovals: createBrokeredToolApprovalStore(db),
+    hasSecretExecutionClaim: createBrokeredHttpConsumptionStore(db).has,
     // Trusted CLI needs the project supervisor: it is the authority that proves this bearer
     // still names a live turn whose start request enabled execution. Deployments without the
     // supervisor omit the tool completely rather than advertising a permanently failing call.
@@ -158,7 +160,7 @@ export function createEmbeddedMcpGateway(
       : {}),
     // Both tools reuse the brokered execution implementations, including their at-most-once
     // approval fence. The gateway bearer supplies the project/session/turn identity; its
-    // fresh call id makes consumption exact for this approved invocation.
+    // stable invocation ID prevents transport retries from consuming approval twice.
     invokeTool: createMcpGatewayToolExecutor({
       brokeredHttpTool: brokeredHttpTool,
       trustedCliTool,

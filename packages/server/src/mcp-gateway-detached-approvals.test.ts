@@ -70,6 +70,20 @@ function resultOf(body: unknown): { content: { text: string }[]; isError?: boole
   return (body as { result: { content: { text: string }[]; isError?: boolean } }).result;
 }
 
+it('checks standing consent against the same provider snapshot revalidated before execution', async () => {
+  const hasStandingAuthorization = vi.fn(async () => true);
+  const { gateway, invokeTool, requestApproval } = harness({
+    authorizationSnapshot: async () => 'provider-snapshot',
+    hasStandingAuthorization,
+  });
+  await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+  expect(hasStandingAuthorization).toHaveBeenCalledWith(
+    expect.objectContaining({ authorizationSnapshot: 'provider-snapshot' }),
+  );
+  expect(requestApproval).not.toHaveBeenCalled();
+  expect(invokeTool).toHaveBeenCalledOnce();
+});
+
 it.each(['caller', 'generation'] as const)(
   'cancels approval when the %s retires',
   async (source) => {
@@ -148,6 +162,7 @@ it('returns an explicit durable waiting result without executing or holding the 
       authorizationSnapshot: 'provider-snapshot',
       canonicalInput: expect.any(String),
     }),
+    expect.any(String),
   );
   expect(surface).toHaveBeenCalledWith('sess-1');
   expect(invokeTool).not.toHaveBeenCalled();
@@ -310,5 +325,22 @@ it('does not let another person consume a detached receipt from the same session
     decidedBy: 'another-person',
   });
   expect(consume).not.toHaveBeenCalled();
+  expect(invokeTool).not.toHaveBeenCalled();
+});
+
+it('refuses to dispatch when the bearer retires during the final standing grant lookup', async () => {
+  let active = true;
+  const hasStandingAuthorization = vi.fn(async () => true).mockImplementationOnce(async () => true);
+  hasStandingAuthorization.mockImplementation(async () => {
+    active = false;
+    return true;
+  });
+  const { gateway, invokeTool } = harness({
+    authorizationSnapshot: async () => 'provider-snapshot',
+    resolveCaller: async () => (active ? { sessionId: 'sess-1', turnId: 'turn-1' } : undefined),
+    hasStandingAuthorization,
+  });
+  const response = await gateway.handle({ projectId: 'p1', token: 'session-token', body: call() });
+  expect(resultOf(response.body).content[0]?.text).toContain('no longer active');
   expect(invokeTool).not.toHaveBeenCalled();
 });

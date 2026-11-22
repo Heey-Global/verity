@@ -196,9 +196,9 @@ function build(
         macKeyId: 'key-1',
       }),
   };
-  // Only `requestExternalPermission` is reachable from this route; the rest of the
-  // conductor surface is deliberately absent so a wiring slip shows up as a crash.
+  // Keep the conductor stub limited to the route's permission seams.
   const conductor = {
+    isCoveredByBrokeredGrant: async () => false,
     isPlanningTurn: () => options.planningTurn === true,
     requestExternalPermission: (input: {
       sessionId: string;
