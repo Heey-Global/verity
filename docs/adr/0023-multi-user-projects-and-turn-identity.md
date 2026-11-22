@@ -102,11 +102,16 @@ its changes to the project's code (merging, saving to the project) is the
 levels, so later ones need not fit an order, with two dependencies: Code
 requires execute, and manage includes execute and Code, because a member who
 changes rights could grant either to themselves. The store refuses a
-combination that breaks them, and a database constraint holds Code to execute.
-Every member and invitation that could execute before Code existed receives it,
-and a project's creator always holds it. Code is local to the instance: the
-Uplink invitation contract (section 7) still carries only read and execute,
-and a join takes Code from the stored invitation.
+combination that breaks them. In the database, a check constraint holds an
+invitation's Code to execute, and a trigger clears a membership's Code when
+execute goes and sets it for a manager, so an older server still writing during
+an upgrade keeps memberships consistent. Every member and invitation that could
+execute when Code was introduced receives it, and a project's creator always
+holds it. Code is local to the instance: the Uplink invitation contract
+(section 7) still carries only read and execute, and a join takes Code from the
+stored invitation. The permission and its management are introduced before the
+routes and the agent gateway require it; until they do, execute still allows
+merging and saving to the project.
 
 **Project creation is build authority.** Creating a project provisions a
 sandbox and may build a repository-supplied `devcontainer.json` on the host's
