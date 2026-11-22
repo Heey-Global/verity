@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.94.8](https://github.com/Heey-Global/verity/compare/mobile-v1.94.7...mobile-v1.94.8) (2026-11-22)
+
+
+### Features
+
+* **mobile:** show session collaboration in the session header ([#2805](https://github.com/Heey-Global/verity/issues/2805)) ([dac29b5](https://github.com/Heey-Global/verity/commit/dac29b52eaa6d5ff1ad88892d3fa89801b51a74b))
+
+
+### Bug Fixes
+
+* **home:** rank recent sessions by message activity ([#2808](https://github.com/Heey-Global/verity/issues/2808)) ([e70f36f](https://github.com/Heey-Global/verity/commit/e70f36faf7c96689817ee675aee6359902ebcd48))
+
 ## [1.94.7](https://github.com/Heey-Global/verity/compare/mobile-v1.94.6...mobile-v1.94.7) (2026-11-22)
 
 
