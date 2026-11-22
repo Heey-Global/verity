@@ -1,11 +1,18 @@
 import { join } from 'node:path';
 import type { EventStore } from '@verity/store';
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
-import { AcpClaudeBackend, requestRunnerSupervisor, type ConductorDeps } from '@verity/session';
+import {
+  AcpClaudeBackend,
+  AcpOpenCodeBackend,
+  AcpCodexBackend,
+  requestRunnerSupervisor,
+  type ConductorDeps,
+} from '@verity/session';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import type { SessionStorage } from './session-storage.js';
 import type { createEmbeddedBranches } from './embedded-branches.js';
-import type { createEmbeddedRunnerConductorWiring } from './embedded-runner-conductor.js';
+import { createEmbeddedRunnerConductorWiring } from './embedded-runner-conductor.js';
+import { createEmbeddedSessionBackend } from './embedded-session-backend.js';
 import type { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
 import type { createRunnerArtifactPurge } from './runner-artifact-purge.js';
 import { resolveAgentContext } from './agent-context.js';
@@ -185,5 +192,27 @@ export function createEmbeddedConductorBindings(ctx: {
       const sandbox = await resolveTurnSandbox(eventStore, session.projectId, initiatedBy);
       return sandbox.projectDefault ? undefined : sandboxPersonTag(sandbox.userId);
     },
+  };
+}
+
+/** Assemble agent dependencies in construction order before the application exists. */
+export function createEmbeddedConductor(
+  ctx: Parameters<typeof createEmbeddedConductorBindings>[0] &
+    RunnerContext & {
+      config: Pick<EmbeddedServerConfig, 'permissionMode' | 'codexEnabled'>;
+      sessionBackend: Parameters<typeof createEmbeddedSessionBackend>[0];
+    },
+): Partial<ConductorDeps> {
+  return {
+    ...createEmbeddedConductorBindings(ctx),
+    ...createEmbeddedRunnerConductorWiring(ctx),
+    ...(ctx.config.permissionMode !== undefined
+      ? { permissionMode: ctx.config.permissionMode }
+      : {}),
+    // Provider-qualified models use OpenCode over ACP, like the other agents.
+    openCodeBackend: new AcpOpenCodeBackend(),
+    // Codex uses the approval-gated per-turn MCP gateway exclusively over ACP.
+    ...(ctx.config.codexEnabled === true ? { codexBackend: new AcpCodexBackend() } : {}),
+    sessionBackend: createEmbeddedSessionBackend(ctx.sessionBackend),
   };
 }
