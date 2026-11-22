@@ -6,6 +6,15 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.99.2](https://github.com/Heey-Global/verity/compare/v4.99.1...v4.99.2) (2026-11-22)
+
+
+### Bug Fixes
+
+* **matrix:** prevent shipping the dependency-cache placeholder ([#2791](https://github.com/Heey-Global/verity/issues/2791)) ([b0a4af0](https://github.com/Heey-Global/verity/commit/b0a4af0509201e31edc04a560370fb140202d3d8))
+* **server:** reuse saved secret approvals ([#2795](https://github.com/Heey-Global/verity/issues/2795)) ([0268058](https://github.com/Heey-Global/verity/commit/0268058ca6ae135a3784fdce641afd54e42a1f87))
+* **updater:** report retryable egress staging failures ([#2794](https://github.com/Heey-Global/verity/issues/2794)) ([4103e2f](https://github.com/Heey-Global/verity/commit/4103e2f0f89a9dfb3a0c5212e6f603262f381a23))
+
 ## [4.99.1](https://github.com/Heey-Global/verity/compare/v4.99.0...v4.99.1) (2026-11-22)
 
 
