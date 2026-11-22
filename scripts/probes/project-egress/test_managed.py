@@ -805,7 +805,7 @@ class ManagedTests(unittest.TestCase):
         self.assertFalse(any('docker.service' in cmd or 'docker.socket' in cmd for cmd in self.calls))
         self.assertTrue(any(cmd[-1] == 'deny' for cmd in self.calls[failure + 1:]))
 
-    def failed_upgrade_with_serving_controller(self, restart_fails=False):
+    def failed_upgrade_with_serving_controller(self, restart_fails=False, expected=RuntimeError):
         self.provision()
         previous = (self.root / 'opt/verity-egress').resolve()
         (self.source / 'node').write_bytes(b'updated node')
@@ -826,7 +826,7 @@ class ManagedTests(unittest.TestCase):
                     raise RuntimeError('private restart detail')
             return 'loaded' if 'show' in args else ''
 
-        with self.assertRaises(RuntimeError) as failed:
+        with self.assertRaises(expected) as failed:
             self.provision(run=run)
         return previous, failed.exception
 
@@ -843,6 +843,23 @@ class ManagedTests(unittest.TestCase):
         self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'activation_failed', 'step': 'activation'})
         status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
         self.assertEqual(status, {'version': 1, 'state': 'ready', 'reason': 'ready'})
+
+    def test_rollback_restores_assessed_runtimes_before_restarting_the_controller(self):
+        order = []
+        with patch.object(managed, 'restore_previous_runtime',
+                          side_effect=lambda root, run, previous: order.append(('restore', previous))):
+            previous, _ = self.failed_upgrade_with_serving_controller()
+        self.assertEqual(order, [('restore', str(previous))])
+        reset = self.calls.index(('/usr/bin/systemctl', 'reset-failed', 'verity-egress-bootstrap.service', managed.SERVICE))
+        self.assertLess(reset, self.calls.index(('/usr/bin/systemctl', 'start', managed.SERVICE), reset))
+
+    def test_unrestorable_runtime_reports_recovery_failure_without_starting(self):
+        with patch.object(managed, 'restore_previous_runtime', side_effect=ValueError('private detail')):
+            _, error = self.failed_upgrade_with_serving_controller(expected=ValueError)
+        self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'recovery_failed', 'step': 'recovery'})
+        deny = max(i for i, cmd in enumerate(self.calls) if cmd[-1] == 'deny')
+        self.assertNotIn(('/usr/bin/systemctl', 'start', managed.SERVICE), self.calls[deny:])
+        self.assertIn(('/usr/bin/systemctl', 'stop', managed.SERVICE), self.calls[deny:])
 
     def test_unknown_controller_state_keeps_it_stopped_after_rollback(self):
         self.provision()
@@ -869,6 +886,9 @@ class ManagedTests(unittest.TestCase):
     def test_failed_controller_restart_after_rollback_reports_recovery_failure(self):
         previous, error = self.failed_upgrade_with_serving_controller(restart_fails=True)
         self.assertEqual((self.root / 'opt/verity-egress').resolve(), previous)
+        # Restart=on-failure would otherwise retry a failing preflight forever.
+        restart = max(i for i, cmd in enumerate(self.calls) if cmd == ('/usr/bin/systemctl', 'start', managed.SERVICE))
+        self.assertIn(('/usr/bin/systemctl', 'stop', managed.SERVICE), self.calls[restart + 1:])
         self.assertEqual(managed.base.failure_diagnostic(error), {'reason': 'recovery_failed', 'step': 'recovery'})
         status = json.loads((self.root / 'run/verity-egress/status.json').read_text())
         self.assertEqual(status['reason'], 'controller_failed')
