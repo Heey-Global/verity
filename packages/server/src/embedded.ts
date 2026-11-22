@@ -26,7 +26,11 @@ import {
 import { createEmbeddedAgentGatewayCredentials } from './embedded-agent-gateway-credentials.js';
 import { createEmbeddedAgentGateway } from './embedded-agent-gateway.js';
 import { createEmbeddedSecretJobs, installEmbeddedSecretJobs } from './embedded-secret-jobs.js';
-import { createEmbeddedUplink } from './embedded-uplink.js';
+import {
+  createEmbeddedUplink,
+  createEmbeddedUplinkBindings,
+  createEmbeddedTeamSharingBindings,
+} from './embedded-uplink.js';
 import { createEmbeddedDocker } from './embedded-docker.js';
 import { createEmbeddedForgeProxy } from './embedded-forge-proxy.js';
 import { createEmbeddedBranches } from './embedded-branches.js';
@@ -133,7 +137,6 @@ import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { ensureStarterProject } from './welcome-session.js';
-import { previewSharingCapability } from './preview-capability.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
@@ -190,9 +193,6 @@ import type { DockerClient } from './docker.js';
 import { runDockerGc } from './docker-gc.js';
 import { DataVolumeUsage } from './data-volume-usage.js';
 import { PreviewShareConflictError, PreviewShareManager } from './preview-share-manager.js';
-import { premiumFeatureSwitches } from './uplink-control-client.js';
-import { teamSharingStatus } from './uplink-feature-state.js';
-import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
 import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
 import { createAuditRecorder } from './audit-recorder.js';
@@ -255,8 +255,6 @@ import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { createEmbeddedBackup } from './embedded-backup.js';
-
-import type { VeritySettingsRecord } from '@verity/store';
 
 /**
  * Compose the control-plane server for a single-host deployment: a real Postgres
@@ -1381,45 +1379,14 @@ export async function buildEmbeddedServer(
       : {}),
     projectEgressAvailable: async (fresh) => (await projectEgressHealth(fresh)).available,
     projectEgressStatus: projectEgressHealth,
-    previewSharingCapability: async () => {
-      const settings = await eventStore.getVeritySettings();
-      return previewSharingCapability(
-        uplinkControl?.canStartSharing() === true,
-        Boolean(settings?.uplinkSubscriptionKey?.trim()),
-        uplinkControl?.diagnostics(),
-        settings === undefined || premiumFeatureSwitches(settings).sharing,
-      );
-    },
-    ...(previewShareManager !== undefined ? { previewShareManager } : {}),
-    returnPathActivation: returnPath,
-    ...(coordinatedRecording ? { coordinatedRecording } : {}),
-    returnPathConnectorCount: () => remoteConnector?.diagnosticConnectorCount() ?? 0,
-    ...(uplinkControl !== undefined
-      ? { remoteControlDescriptor: () => uplinkControl.remoteControlDescriptor() }
-      : {}),
-    ...(uplinkControl !== undefined
-      ? {
-          uplinkDiagnostics: () => ({
-            ...uplinkControl.diagnostics(),
-            ...(remoteConnector === undefined
-              ? {}
-              : { remoteStreams: remoteConnector.recentStreams() }),
-          }),
-        }
-      : {}),
-    ...(uplinkControl !== undefined
-      ? {
-          onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials(),
-          recheckUplink: () => uplinkControl.checkEntitlements(),
-        }
-      : {}),
-    ...(uplinkControl !== undefined
-      ? {
-          onPremiumFeatureSwitchesChanged: (settings: VeritySettingsRecord) =>
-            applyPremiumFeatureSwitches(settings, uplinkControl, previewShareManager),
-        }
-      : {}),
-    ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
+    ...createEmbeddedUplinkBindings({
+      eventStore,
+      uplinkControl,
+      remoteConnector,
+      returnPath,
+      coordinatedRecording,
+      previewShareManager,
+    }),
     googleAccessToken,
     ...createEmbeddedProviderCredentialBindings({
       secretRoot,
@@ -1442,12 +1409,7 @@ export async function buildEmbeddedServer(
     ) => googleDriveTool.canReadDocumentWithoutApproval(input),
     onGoogleCredentialsChanged: () => googleAccessToken.invalidate(),
     secretCipher,
-    teamLinkIdentity: () => {
-      const identity = config.devicePairing?.identity();
-      const installation = uplinkControl?.teamInstallation();
-      return identity && installation && { ...identity, ...installation };
-    },
-    teamSharing: teamSharingStatus(uplinkControl),
+    ...createEmbeddedTeamSharingBindings({ config, uplinkControl }),
     onSecretUnlocked: createEmbeddedSecretUnlock({
       eventStore,
       docker,
