@@ -71,6 +71,32 @@ describe('AcpEventAdapter', () => {
     expect(updates.flatMap((update) => adapter.consume(update))).toEqual([]);
   });
 
+  it('keeps cursor bookkeeping out of the transcript without interrupting text', () => {
+    const adapter = new AcpEventAdapter();
+    expect(
+      adapter.consume({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Before' },
+      }),
+    ).toEqual([{ t: 'text', delta: 'Before', parentToolId: undefined }]);
+    expect(
+      adapter.consume({
+        sessionUpdate: 'cursor_update',
+        cursorId: 'cursor-1',
+        anchor: { type: 'agent_message', messageId: 'message-1', position: 'after' },
+      }),
+    ).toEqual([]);
+    expect(
+      adapter.consume({ sessionUpdate: 'cursor_update', cursorId: 'cursor-1', capabilities: null }),
+    ).toEqual([]);
+    expect(
+      adapter.consume({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'After' },
+      }),
+    ).toEqual([{ t: 'text', delta: 'After', parentToolId: undefined }]);
+  });
+
   // Plans ride on a tool call, not a new event kind: an app build that predates the
   // checklist fails a whole history page on an unknown `t`. A schema-valid event of
   // a new kind would pass every server test while breaking those clients.
