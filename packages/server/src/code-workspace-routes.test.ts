@@ -230,9 +230,9 @@ it('keeps Documents usable in a deployment without project clones', async () => 
 
 it('recognizes an existing legacy code workspace without a configured clone root', async () => {
   const h = await harness({ repository: true, configured: false });
+  const permission = vi.spyOn(h.ctx.store, 'hasProjectPermission').mockResolvedValue(false);
   try {
     await mkdir(h.target, { recursive: true });
-    const permission = vi.spyOn(h.ctx.store, 'hasProjectPermission').mockResolvedValue(false);
     h.app.addHook('onRequest', async (request) => {
       request.localUserId = 'editor';
     });
@@ -244,6 +244,7 @@ it('recognizes an existing legacy code workspace without a configured clone root
     expect(result.statusCode).toBe(403);
     expect(permission).toHaveBeenCalledWith('editor', 'p', 'code');
   } finally {
+    permission.mockRestore();
     await h.close();
   }
 });

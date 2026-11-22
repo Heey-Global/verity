@@ -403,6 +403,8 @@ export function registerServerSessionFiles(
         : undefined;
       if (!legacy || !session) return 'code';
       if (project?.kind === 'control_plane') return 'documents';
+      // resolveRoot hands back `session.worktree` itself for a Documents view and the
+      // legacy code path otherwise, so the identity comparison needs no normalizing.
       if (resolvedWorktree !== undefined)
         return resolvedWorktree === session.worktree ? 'documents' : 'code';
       if (!deps.projectCloneRoot) return 'documents';
