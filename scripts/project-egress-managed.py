@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import importlib.util
 import grp
+import hashlib
 import ipaddress
 import json
 import os
@@ -15,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 spec = importlib.util.spec_from_file_location(
@@ -646,6 +648,141 @@ def recover_transaction(root, run):
     return True
 
 
+HOST_RUNTIME_PRIVATE = 'var/lib/verity/host-runtime-private'
+
+
+def restore_previous_runtime(root, run, previous):
+    """Return Docker's project and relay runtimes to what the restored release was assessed with.
+
+    The Updater renews the host runtime and provisioning moves the relay registration before
+    activation, outside the activation transaction. Without this, a rolled-back controller
+    fails its own preflight. Returns False when the restored release has no assessed runtime.
+    """
+    assessment = root / ASSESSMENT_CONFIG
+    pins_file = Path(previous) / 'native-runtime-pins.env'
+    if (not assessment.exists() and not assessment.is_symlink()) or not pins_file.is_file():
+        return False
+    runtime = json.loads(private_file(assessment)).get('profile', {}).get('runtime')
+    if not isinstance(runtime, dict) or set(runtime) != {'path', 'sha512', 'treeSha256'}:
+        return False
+    pins = {}
+    for line in pins_file.read_text().splitlines():
+        if '=' in line and not line.startswith('#'):
+            key, value = line.split('=', 1)
+            pins[key] = value.strip("'\"")
+    release = pins.get('RUNSC_RELEASE', '')
+    if not re.fullmatch(r'release-[0-9]{8}\.[0-9]+', release):
+        raise ValueError('Invalid previous runtime pin')
+    path = '/opt/verity/runsc/' + release + '/runsc'
+    expected = {'runsc-project': {'path': path, 'runtimeArgs': base.PROJECT_RUNTIME_ARGS},
+                'runsc-relay': {'path': path, 'runtimeArgs': base.RELAY_RUNTIME_ARGS}}
+    daemon = root / 'etc/docker/daemon.json'
+    base.trusted_native_file(daemon, root)
+    authority = root / base.RELAY_RUNTIME_AUTHORITY
+    base.trusted_native_file(authority, root)
+    desired_authority = (json.dumps({'version': 1, 'runtime': runtime}, sort_keys=True) + '\n').encode()
+    registered = json.loads(daemon.read_bytes()).get('runtimes', {})
+    authorized = authority.exists() and json.loads(authority.read_bytes()) == {'version': 1, 'runtime': runtime}
+    if all(runtime_projection(registered.get(name)) == value for name, value in expected.items()):
+        if authorized:
+            return False  # The host runtime was not renewed; nothing to restore.
+        verify_previous_runtime(root, path, runtime)
+        # Only the authority differs; the host runtime lock serializes daemon.json alone.
+        base.atomic_file(authority, desired_authority, 0o600)
+        return True
+    verify_previous_runtime(root, path, runtime)
+    private = root / HOST_RUNTIME_PRIVATE
+    base.trusted_parent(private / 'lock', root)
+    if not private.is_dir():
+        # Without the host runtime service nothing else serializes daemon.json writes.
+        raise ValueError('Host runtime service state is missing')
+    lock_fd = os.open(private / 'lock', os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(lock_fd, 'a') as lock:
+        # The host runtime service owns daemon.json writes under this lock.
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise ValueError('Host runtime service is busy')
+                time.sleep(0.25)
+        if (private / 'daemon-install/pending').exists():
+            raise ValueError('Host runtime service recovery is pending')
+        original = daemon.read_bytes()
+        mode = daemon.stat().st_mode & 0o777
+        previous_authority = authority.read_bytes() if authority.exists() else None
+        config = json.loads(original)
+        runtimes = config.setdefault('runtimes', {})
+        previous_runtimes = {name: runtime_projection(runtimes.get(name)) for name in expected}
+        changed = any(previous_runtimes[name] != value for name, value in expected.items())
+        for name, value in expected.items():
+            # Only path and arguments are ours; other keys stay with their owner.
+            entry = runtimes.get(name)
+            runtimes[name] = {**(entry if isinstance(entry, dict) else {}), **value}
+        candidate = daemon.with_name('.verity-egress-daemon.json')
+        base.trusted_native_file(candidate, root)
+        try:
+            if changed:
+                base.atomic_file(candidate, (json.dumps(config) + '\n').encode(), mode)
+                run('/usr/bin/dockerd', '--validate', '--config-file', str(candidate))
+                base.atomic_file(daemon, candidate.read_bytes(), mode)
+            try:
+                if changed:
+                    run('/usr/bin/systemctl', 'reload', 'docker.service')
+                    await_runtimes(run, expected)
+                if (previous_authority is None
+                        or json.loads(previous_authority) != {'version': 1, 'runtime': runtime}):
+                    base.atomic_file(authority, desired_authority, 0o600)
+            except Exception:
+                try:
+                    if previous_authority is not None:
+                        base.atomic_file(authority, previous_authority, 0o600)
+                    if changed:
+                        base.atomic_file(daemon, original, mode)
+                        run('/usr/bin/systemctl', 'reload', 'docker.service')
+                        await_runtimes(run, {name: value for name, value in previous_runtimes.items()
+                                             if value is not None})
+                except Exception as revert_error:
+                    # Docker may now run registrations the file no longer holds.
+                    raise ValueError('Docker runtime registrations could not be reverted') from revert_error
+                raise
+        finally:
+            candidate.unlink(missing_ok=True)
+    return True
+
+
+def verify_previous_runtime(root, path, runtime):
+    binary = root / path.lstrip('/')
+    base.trusted_parent(binary, root)
+    if (runtime['path'] != path or not os.access(binary, os.X_OK)
+            or hashlib.sha512(binary.read_bytes()).hexdigest() != runtime['sha512']
+            or base.runtime_tree_digest(binary.parent) != runtime['treeSha256']):
+        raise ValueError('Previous runtime differs from its assessed identity')
+
+
+def runtime_projection(entry):
+    # The same view the controller preflight compares.
+    if not isinstance(entry, dict):
+        return None
+    return {'path': entry.get('path'), 'runtimeArgs': entry.get('runtimeArgs', [])}
+
+
+def await_runtimes(run, expected, timeout=30):
+    # A successful reload only sends SIGHUP; convergence is what Docker reports.
+    deadline = time.monotonic() + timeout
+    while True:
+        info = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
+                              'info', '--format', '{{json .}}'))
+        live = info.get('Runtimes', {})
+        if all(runtime_projection(live.get(name, {})) == value for name, value in expected.items()):
+            return
+        if time.monotonic() >= deadline:
+            raise ValueError('Docker did not register the previous runtimes')
+        time.sleep(0.25)
+
+
 RECOVERY_UNIT = 'etc/systemd/system/verity-egress-recovery.service'
 RECOVERY_DROPIN = 'etc/systemd/system/verity-egress-bootstrap.service.d/recovery.conf'
 RECOVERY_DOCKER_DROPIN = 'etc/systemd/system/docker.service.d/egress-recovery.conf'
@@ -1002,8 +1139,12 @@ def activate(root, run, release, files, configs, gid):
         recover_transaction(root, run)
         if restore_controller:
             # A failed update must not leave a previously serving host without its
-            # controller. Rollback restored the old release, units and configuration.
+            # controller. Rollback restored the old release, units and configuration;
+            # the runtimes it was assessed with are restored next.
             try:
+                restore_previous_runtime(root, run, old_target)
+                # A failing new controller may have exhausted the unit's start limit.
+                run('/usr/bin/systemctl', 'reset-failed', 'verity-egress-bootstrap.service', SERVICE)
                 run('/usr/bin/systemctl', 'start', 'verity-egress-bootstrap.service')
                 run('/usr/bin/systemctl', 'start', SERVICE)
                 run('/usr/bin/systemctl', 'is-active', '--quiet', SERVICE)
