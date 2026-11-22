@@ -1,3 +1,5 @@
+import type { ServerDeps } from './server-deps.js';
+import { selectBranchStatus } from './forge-status-cache.js';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import type { EventStore } from '@verity/store';
@@ -77,4 +79,27 @@ export function createEmbeddedWorktrees(
     : undefined;
 
   return worktrees;
+}
+
+export function createEmbeddedWorktreeBindings(ctx: {
+  forgeForWorktree: ReturnType<typeof createEmbeddedWorktreeForge>;
+  readWorktreeStatus: ReturnType<typeof createEmbeddedWorktreeStatus>;
+}): Pick<
+  ServerDeps,
+  'branchPr' | 'branchPrStatus' | 'branchPrStatusForBranches' | 'mergePr' | 'repoIdentity'
+> {
+  const { forgeForWorktree, readWorktreeStatus } = ctx;
+  return {
+    branchPr: async (b: string, wt: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).prForBranch(b) ?? null,
+    branchPrStatus: readWorktreeStatus,
+    branchPrStatusForBranches: async (bs: readonly string[], wt: string) => {
+      const values = [];
+      for (const branch of bs) values.push(await readWorktreeStatus(branch, wt));
+      return selectBranchStatus(values, (await forgeForWorktree(wt))?.id ?? 'github');
+    },
+    mergePr: async (n: number, wt: string, expectedHeadSha?: string) =>
+      (await forgeForWorktree(wt))?.prServiceFor(wt).mergePr(n, expectedHeadSha) ?? false,
+    repoIdentity: async (wt: string) => (await forgeForWorktree(wt))?.identityFor(wt)() ?? null,
+  };
 }
