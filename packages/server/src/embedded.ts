@@ -116,9 +116,7 @@ export {
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
 import { resolveAgentContext } from './agent-context.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
-import { readNativeReclamation } from './storage-reclamation.js';
 import { installEmbeddedDockerGc } from './embedded-docker-gc.js';
-import { sessionStorageDiagnostics } from './session-storage.js';
 import { createEmbeddedSessionStorage } from './embedded-session-storage.js';
 import type { DockerGcReport } from './docker-gc.js';
 import { createServerLogSource } from './server-log-source.js';
@@ -128,7 +126,6 @@ import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import type { BuildStorage } from './build-storage.js';
 import {
   createEmbeddedBuildStorage,
-  databaseStorageBytes,
   installEmbeddedBuildStorage,
 } from './embedded-build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
@@ -178,7 +175,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
 import { buildControlPlane } from './app.js';
-import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
+import { createEmbeddedRuntimeDiagnostics } from './embedded-runtime-diagnostics.js';
 import { createProjectListCache } from './project-list-cache.js';
 
 import { createAuthTokenRegistry } from './auth.js';
@@ -189,7 +186,7 @@ import { startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import type { DockerClient } from './docker.js';
-import { dockerGcDiagnostics, runDockerGc } from './docker-gc.js';
+import { runDockerGc } from './docker-gc.js';
 import { DataVolumeUsage } from './data-volume-usage.js';
 import { PreviewShareConflictError, PreviewShareManager } from './preview-share-manager.js';
 import { premiumFeatureSwitches } from './uplink-control-client.js';
@@ -1526,37 +1523,16 @@ export async function buildEmbeddedServer(
     listBrokeredGrants: async (projectId) =>
       brokeredHttpGrants.list(projectId, (await brokeredGrantBindingId(projectId)) ?? null),
     revokeBrokeredGrant: (projectId, grantId) => brokeredHttpGrants.revoke(projectId, grantId),
-    runtimeDiagnostics: createRuntimeDiagnostics({
-      dockerBaseUrl: config.dockerBaseUrl,
-      dataRoot: config.dataVolumeRoot,
-      serverContainerId: config.diagnosticServerContainerId?.trim() || hostname(),
-      hostSnapshotPath: config.hostDiagnosticSnapshotPath,
-      builderMigrationPath: '/run/verity-buildkit/migration-status.json',
-      builderAdmissionDirectory: '/run/verity-buildkit',
-      buildStorageReportPath: '/run/verity-host-diagnostics/storage.json',
-      buildStorageReservations: () => buildStorage?.unresolvedAttempts() ?? [],
-      buildQueue: () => buildStorage?.queueState() ?? { waiting: 0 },
-      dependencyCapacity: () => dependencyCapacity?.diagnostics(),
-      storageReclamation: async () => {
-        const report = sessionStorage?.lastReport;
-        const databaseBytes = await databaseStorageBytes(db);
-        const nativeBuildkit = await readNativeReclamation();
-        return {
-          accounting:
-            'Image and dependency sizes are estimates with shared layers/reflinks; do not sum categories. Unknown measurements are null. No freed-byte claim is inferred from apparent sizes.',
-          lastGc: lastDockerGcReport ? dockerGcDiagnostics(lastDockerGcReport) : null,
-          dataVolume: volumeUsage?.diagnostics() ?? null,
-          worktrees: report ? sessionStorageDiagnostics(report) : null,
-          runnerCaches: runnerCacheStorage?.lastReport ?? null,
-          databaseBytes,
-          nativeBuildkit,
-          activeBuildkitBytes:
-            typeof nativeBuildkit?.overlayAllocatedBytes === 'number'
-              ? nativeBuildkit.overlayAllocatedBytes
-              : null,
-        };
-      },
-      projectBuildFailure: (projectId) => provisioner?.lastBuildFailure(projectId),
+    runtimeDiagnostics: createEmbeddedRuntimeDiagnostics({
+      config,
+      db,
+      buildStorage,
+      dependencyCapacity,
+      sessionStorage,
+      runnerCacheStorage,
+      volumeUsage,
+      provisioner,
+      getLastDockerGcReport: () => lastDockerGcReport,
     }),
     ...(secretJobRuntimeReadiness !== undefined ? { secretJobRuntimeReadiness } : {}),
     ...(config.pushEnabled === true
