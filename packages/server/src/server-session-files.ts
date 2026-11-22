@@ -403,13 +403,13 @@ export function registerServerSessionFiles(
         : undefined;
       if (!legacy || !session) return 'code';
       if (project?.kind === 'control_plane') return 'documents';
+      // In a repository project the session is a code session even while its checkout is missing.
+      if (deps.projectCloneRoot && project && project.kind !== 'local') return 'code';
       // resolveRoot hands back `session.worktree` itself for a Documents view and the
       // legacy code path otherwise, so the identity comparison needs no normalizing.
       if (resolvedWorktree !== undefined)
         return resolvedWorktree === session.worktree ? 'documents' : 'code';
       if (!deps.projectCloneRoot) return 'documents';
-      // In a repository project the session is a code session even while its checkout is missing.
-      if (project && project.kind !== 'local') return 'code';
       return (await isDirectory(legacy)) ||
         (project &&
           ((await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))) ||
