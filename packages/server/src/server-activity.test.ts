@@ -33,7 +33,6 @@ import {
   ZERO_USAGE,
 } from './server-fixture.test-helper.js';
 import { buildServer, redactScrollDiagnosticData, redactScrollDiagnosticEvent } from './server.js';
-
 describe('GET /sessions/:id/activity', () => {
   it('reflects the conductor in-flight + queued state', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
@@ -55,14 +54,12 @@ describe('GET /sessions/:id/activity', () => {
       planningRevision: 0,
     });
   });
-
   it('reports permission prompts waiting for a decision', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     pendingPermissions.mockReturnValue(['toolu_pending']);
     const res = await app.inject({ method: 'GET', url: '/sessions/s1/activity' });
     expect(res.json()).toMatchObject({ pendingPermissions: ['toolu_pending'] });
   });
-
   it('keeps activity busy and model-switch pending until backend termination is confirmed', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     isBusy.mockReturnValue(true);
@@ -70,7 +67,6 @@ describe('GET /sessions/:id/activity', () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/s1/activity' });
     expect(res.json()).toMatchObject({ busy: true, modelSwitchPending: true });
   });
-
   it('marks a session busy-because-unconfirmed so the fence is not read as work', async () => {
     // Without this flag the two states look identical from the app: `busy: true` with
     // nothing running. The operator needs to know the session is reserved pending a
@@ -999,6 +995,7 @@ describe('GET /sessions', () => {
         eventCount: 0,
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
+        lastMessageAt: null,
         lastSeenEventCount: null,
         inboxDismissed: [],
       },
@@ -1017,6 +1014,7 @@ describe('GET /sessions', () => {
         eventCount: 0,
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: null,
+        lastMessageAt: null,
         lastSeenEventCount: null,
         inboxDismissed: [],
       },
@@ -1190,6 +1188,7 @@ describe('GET /sessions', () => {
         eventCount: 0,
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: expect.any(Number),
+        lastMessageAt: null,
         lastSeenEventCount: null,
         inboxDismissed: [],
       },
