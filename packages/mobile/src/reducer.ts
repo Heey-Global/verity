@@ -342,6 +342,7 @@ export class SessionReducer {
         this._running = true;
         // Steering belongs to the current turn and must retain its background work.
         if (!event.steered) this._openTasks.clear();
+        if (event.origin === 'secret-approval') break;
         const msg: UserTextMessage = {
           kind: 'user-text',
           id: `user-${String(seq)}`,
@@ -406,8 +407,13 @@ export class SessionReducer {
           input: event.input,
           riskClass: event.riskClass,
           createdAt: ts,
+          ...(event.secretSource && { secretSource: event.secretSource }),
           ...(event.grantChannel !== undefined ? { grantChannel: event.grantChannel } : {}),
         });
+        break;
+      case 'secret_approval_decision':
+        this.clearPermissionFor(event.id);
+        this.emitAgentEvent(seq, ts, event);
         break;
       case 'result':
         this.active = null; // turn end closes the open block

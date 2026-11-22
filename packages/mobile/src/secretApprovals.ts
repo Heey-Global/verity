@@ -1,3 +1,4 @@
+import { secretApprovalSourceSchema } from '@verity/events';
 import { z } from 'zod';
 
 export const pendingPermissionRequestSchema = z.object({
@@ -8,6 +9,7 @@ export const pendingPermissionRequestSchema = z.object({
   grantChannel: z.literal('acp').optional(),
   createdAt: z.number().optional(),
   detached: z.boolean().optional(),
+  secretSource: secretApprovalSourceSchema.optional(),
 });
 export type PendingPermissionRequest = z.infer<typeof pendingPermissionRequestSchema>;
 

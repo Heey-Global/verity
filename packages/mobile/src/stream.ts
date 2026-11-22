@@ -210,6 +210,7 @@ export class SessionStream {
           input: request.input,
           riskClass: request.riskClass,
           createdAt: request.createdAt ?? previous?.permission.createdAt ?? frame?.ts ?? Date.now(),
+          ...(request.secretSource && { secretSource: request.secretSource }),
           ...(request.grantChannel !== undefined ? { grantChannel: request.grantChannel } : {}),
         },
       });
@@ -232,7 +233,9 @@ export class SessionStream {
             (frame.event.t === 'permission' ||
               (!restored.detached &&
                 ['result', 'interrupted', 'prompt', 'session'].includes(frame.event.t)) ||
-              ((frame.event.t === 'tool_call' || frame.event.t === 'tool_result') &&
+              ((frame.event.t === 'tool_call' ||
+                frame.event.t === 'tool_result' ||
+                frame.event.t === 'secret_approval_decision') &&
                 frame.event.id === id)),
         )
       )

@@ -46,6 +46,11 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
       const persisted = await deps.store.appendEvent(sessionId, event);
       deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
     });
+    await this.tryResumeApproved(sessionId);
+  }
+
+  private async tryResumeApproved(sessionId: string): Promise<void> {
+    const deps = this.dependencies();
     // A failed continuation must not make the read lose an otherwise actionable card.
     try {
       await this.resumeApproved(sessionId);
@@ -100,7 +105,7 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
   async answer(
     input: Omit<
       Parameters<typeof decideDetachedPermission>[0],
-      'permissions' | 'notice' | 'resume' | 'persistScoped' | 'options'
+      'permissions' | 'notice' | 'resume' | 'persistScoped' | 'recordDecision' | 'options'
     > & {
       options?:
         | (Parameters<typeof decideDetachedPermission>[0]['options'] & {
@@ -121,7 +126,8 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
       },
       notice: (text) =>
         this.dependencies().emitEvent(input.sessionId, { t: 'notice', role: 'agent', text }),
-      resume: () => this.resumeApproved(input.sessionId),
+      recordDecision: (event) => this.dependencies().emitEvent(input.sessionId, event),
+      resume: () => this.tryResumeApproved(input.sessionId),
     });
   }
 }

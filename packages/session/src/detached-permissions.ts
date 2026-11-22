@@ -4,6 +4,7 @@ import type { PermissionDecision, PermissionRequest } from '@verity/adapter-clau
 export interface DetachedPermission extends PermissionRequest {
   brokeredGrantBindingId?: string;
   createdAt?: number;
+  secretSource?: { project: string; config: string };
 }
 
 export interface DetachedPermissionProvider {
@@ -57,6 +58,7 @@ export class DetachedPermissions {
       detached: true as const,
       ...(request.createdAt === undefined ? {} : { createdAt: request.createdAt }),
       input: request.input,
+      ...(request.secretSource && { secretSource: request.secretSource }),
     }));
   }
 
@@ -112,7 +114,7 @@ export class DetachedPermissions {
   }
 }
 
-export function detachedPermissionEvent(request: PermissionRequest): AgentEvent {
+export function detachedPermissionEvent(request: DetachedPermission): AgentEvent {
   return {
     t: 'permission',
     id: request.toolUseId,
@@ -120,6 +122,7 @@ export function detachedPermissionEvent(request: PermissionRequest): AgentEvent 
     input: request.input,
     riskClass: 'ask',
     grantChannel: 'acp',
+    ...(request.secretSource && { secretSource: request.secretSource }),
   };
 }
 
@@ -131,6 +134,7 @@ export function detachedContinuation(request: PermissionRequest, actorId?: strin
       { tool: request.toolName, input: request.input },
     ),
     dispatch: {
+      origin: 'secret-approval' as const,
       durableDispatchId: `secret-approval:${request.toolUseId}`,
       displayPrompt: `Continue after approval of ${request.toolName} (${request.toolUseId}).`,
       ...(actorId === undefined ? {} : { initiatedBy: { userId: actorId } }),
@@ -151,6 +155,7 @@ export async function decideDetachedPermission(input: {
       }
     | undefined;
   persistScoped: (request: DetachedPermission, scope: 'session' | 'project') => Promise<void>;
+  recordDecision?: (event: Extract<AgentEvent, { t: 'secret_approval_decision' }>) => Promise<void>;
   notice: (text: string) => Promise<void>;
   resume: (request: DetachedPermission, actorId?: string) => Promise<void>;
 }): Promise<boolean | undefined> {
@@ -192,18 +197,28 @@ export async function decideDetachedPermission(input: {
       continuationAllowed = false;
     }
   }
-  const text = !continuationAllowed
-    ? reusableScopeSaved
-      ? 'The reusable secret approval was saved and remains active, but automatic continuation could not be recorded. Answering the card did not execute the action. If still needed, retry only the exact original authorized request once.'
-      : 'The requested reusable secret approval could not be saved. Nothing ran and this approval will not resume the action. Review and request the operation again if it is still needed.'
-    : `Secret tool approval ${toolUseId} was ${decision.behavior === 'allow' ? 'approved' : 'denied'}. Nothing was executed by answering the card. ${
-        decision.behavior === 'allow'
-          ? reusableScopeSaved
-            ? `The selected ${options?.scope} approval was saved; continue only the original authorized action.`
-            : 'If the operation is still needed, retry the exact original tool request; its approval is single-use and valid for five minutes.'
-          : 'Do not retry this operation without a new user instruction.'
-      }`;
-  await input.notice(text);
+  await input.recordDecision?.({
+    t: 'secret_approval_decision',
+    id: toolUseId,
+    tool: request.toolName,
+    input: request.input,
+    ...(request.secretSource && { secretSource: request.secretSource }),
+    decision:
+      decision.behavior === 'deny'
+        ? 'denied'
+        : !continuationAllowed && !reusableScopeSaved
+          ? 'save_failed'
+          : options?.scope === 'session' || options?.scope === 'project'
+            ? options.scope
+            : 'once',
+  });
+  if (!continuationAllowed) {
+    await input.notice(
+      reusableScopeSaved
+        ? 'The reusable secret approval was saved and remains active, but automatic continuation could not be recorded. Answering the card did not execute the action. If still needed, retry only the exact original authorized request once.'
+        : 'The requested reusable secret approval could not be saved. Nothing ran and this approval will not resume the action. Review and request the operation again if it is still needed.',
+    );
+  }
   if (decision.behavior === 'allow' && continuationAllowed)
     await input.resume(request, options?.actorId === '__local__' ? undefined : options?.actorId);
   return true;

@@ -34,6 +34,13 @@ const validEvents: Record<AgentEvent['t'], AgentEvent> = {
   tool_call_start: { t: 'tool_call_start', id: 't1', name: 'Bash' },
   tool_call: { t: 'tool_call', id: 't1', name: 'Bash', input: { command: 'ls' } },
   tool_result: { t: 'tool_result', id: 't1', output: 'a\nb', isError: false },
+  secret_approval_decision: {
+    t: 'secret_approval_decision',
+    id: 'approval-1',
+    tool: 'verity_http_request',
+    input: {},
+    decision: 'once',
+  },
   permission: {
     t: 'permission',
     id: 'p1',
