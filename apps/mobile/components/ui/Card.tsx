@@ -181,7 +181,9 @@ const warnedRows = new Set<string>();
  * row navigates (`navigates`), never just because it can be pressed.
  *
  * `selected` makes the row one option of a single-choice list: it is announced
- * as a radio button and shows a check mark instead of a trailing element.
+ * as a radio button and shows a check mark instead of a trailing element. With
+ * `multiple` it is one option of a list where several can be checked, and is
+ * announced as a checkbox instead.
  */
 export function Row({
   title,
@@ -192,6 +194,7 @@ export function Row({
   onLongPress,
   navigates = false,
   selected,
+  multiple = false,
   active = false,
   disabled = false,
   settled = false,
@@ -216,6 +219,8 @@ export function Row({
   onLongPress?: (() => void) | undefined;
   navigates?: boolean;
   selected?: boolean;
+  /** With `selected`: one of several options that can be checked together. */
+  multiple?: boolean;
   /** The navigation destination currently open beside this row. */
   active?: boolean;
   disabled?: boolean;
@@ -316,7 +321,7 @@ export function Row({
       onPressIn={() => setHeld(true)}
       onPressOut={() => setHeld(false)}
       disabled={disabled}
-      accessibilityRole={choice ? 'radio' : 'button'}
+      accessibilityRole={choice ? (multiple ? 'checkbox' : 'radio') : 'button'}
       accessibilityLabel={
         accessibilityLabel ?? spokenLabel(title, subtitle, choice ? undefined : trailing, tag)
       }

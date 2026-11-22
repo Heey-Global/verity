@@ -95,6 +95,24 @@ and managing membership. An instance administrator manages the service, but
 that role does not implicitly authorize application-level use of another
 user's credentials.
 
+**Code is a separate permission.** Executing turns ("Edit") lets a member work
+with the agent and use the preview. Seeing a session's technical side and adding
+its changes to the project's code (merging, saving to the project) is the
+**Code** permission. Permissions are independent attributes rather than ranked
+levels, so later ones need not fit an order, with two dependencies: Code
+requires execute, and manage includes execute and Code, because a member who
+changes rights could grant either to themselves. The store refuses a
+combination that breaks them. In the database, a check constraint holds an
+invitation's Code to execute, and a trigger clears a membership's Code when
+execute goes and sets it for a manager, so an older server still writing during
+an upgrade keeps memberships consistent. Every member and invitation that could
+execute when Code was introduced receives it, and a project's creator always
+holds it. Code is local to the instance: the Uplink invitation contract
+(section 7) still carries only read and execute, and a join takes Code from the
+stored invitation. The permission and its management are introduced before the
+routes and the agent gateway require it; until they do, execute still allows
+merging and saving to the project.
+
 **Project creation is build authority.** Creating a project provisions a
 sandbox and may build a repository-supplied `devcontainer.json` on the host's
 Docker through the policy gateway of ADR 0017. Team members cannot create
