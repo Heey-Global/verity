@@ -24,7 +24,7 @@ jest.mock('expo-file-system', () => ({
 
 jest.mock('expo-image-manipulator', () => ({
   manipulateAsync: (...args: unknown[]) => mockManipulateAsync(...args),
-  SaveFormat: { JPEG: 'jpeg' },
+  SaveFormat: { JPEG: 'jpeg', PNG: 'png' },
 }));
 
 jest.mock('expo-image-picker', () => ({
@@ -529,23 +529,25 @@ describe('recent strip images', () => {
 
   // A screenshot is mostly text; recompressing it to JPEG would blur what the
   // agent is asked to read.
-  it('sends a PNG screenshot as it is, from its downloaded local file', async () => {
+  it('re-encodes the downloaded PNG screenshot losslessly without original metadata', async () => {
     mockGetAssetInfoAsync.mockResolvedValue({
       uri: 'ph://shot',
       localUri: 'file:///library/IMG_1.PNG',
       filename: 'IMG_1.PNG',
     });
-    mockFileData.set('file:///library/IMG_1.PNG', 'cG5n');
+    mockManipulateAsync.mockResolvedValue({ base64: 'cG5n' });
 
     await expect(attachRecentImage('shot')).resolves.toEqual([
       { kind: 'image', mediaType: 'image/png', data: 'cG5n' },
     ]);
     expect(mockGetAssetInfoAsync).toHaveBeenCalledWith('shot', { shouldDownloadFromNetwork: true });
-    expect(mockManipulateAsync).not.toHaveBeenCalled();
+    expect(mockManipulateAsync).toHaveBeenCalledWith('file:///library/IMG_1.PNG', [], {
+      base64: true,
+      format: 'png',
+    });
   });
 
   it('transcodes an HEIC photo, even one named like a JPEG', async () => {
-    const heic = Buffer.from('\0\0\0\u0018ftypheic\0\0\0\0').toString('base64');
     mockManipulateAsync.mockResolvedValue({ uri: 'file:///converted.jpg', base64: 'anBlZw==' });
     mockGetAssetInfoAsync.mockResolvedValue({
       uri: 'ph://a',
@@ -561,7 +563,6 @@ describe('recent strip images', () => {
       localUri: 'file:///library/IMG_3.JPG',
       filename: 'IMG_3.JPG',
     });
-    mockFileData.set('file:///library/IMG_3.JPG', heic);
     await expect(attachRecentImage('b')).resolves.toEqual([
       { kind: 'image', mediaType: 'image/jpeg', data: 'anBlZw==' },
     ]);
