@@ -536,6 +536,8 @@ describe('Code permission of the person a request acts for', () => {
     const mayWriteCode = vi.fn(async () => false);
     const h = await harness((_req, res) => res.end('{}'), { ...lena, mayWriteCode });
     expect(await writes(h.port)).toEqual([403, 403, 200]);
+    const refusal = await call(h.port, '/repos/acme/app/pulls', undefined, undefined, '{}');
+    expect(JSON.parse(refusal.body).message).toMatch(/needs the Code permission/);
     expect(h.received.map((r) => r.path)).toEqual(['/repos/acme/app/pulls']);
     expect(mayWriteCode).toHaveBeenCalledWith('p1', 'lena');
   });
@@ -547,5 +549,16 @@ describe('Code permission of the person a request acts for', () => {
     });
     expect(await writes(h.port)).toEqual([200, 200, 200]);
     expect(h.received).toHaveLength(3);
+  });
+
+  it('keeps the plain refusal when the project policy, not Code, forbids the write', async () => {
+    const h = await harness((_req, res) => res.end('{}'), {
+      ...lena,
+      mayWriteCode: async () => false,
+      actions: new Set<ForgeAction>(['pulls-read']),
+    });
+    const refusal = await call(h.port, '/repos/acme/app/pulls', undefined, undefined, '{}');
+    expect(refusal.status).toBe(403);
+    expect(JSON.parse(refusal.body)).toEqual({ error: 'forge broker request rejected' });
   });
 });

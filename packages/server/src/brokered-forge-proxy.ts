@@ -58,6 +58,8 @@ const CODE_WRITE_ACTIONS: ReadonlySet<ForgeAction> = new Set([
   'pulls-write',
   'releases-write',
 ]);
+const CODE_PERMISSION_REFUSAL =
+  'The person this turn works for needs the Code permission in this project to push or change pull requests and releases. Leave the changes in the session for a project member with Code permission.';
 export const FORGE_PROXY_CA_FILE = '/run/verity/forge-proxy/ca.crt';
 // Never log upstream messages, URLs, headers or error objects: they can contain credentials.
 const SAFE_TRANSPORT_CODES = new Set([
@@ -120,14 +122,18 @@ function capability(request: IncomingMessage): string | undefined {
     ? credential.slice(FORGE_PLACEHOLDER_PREFIX.length)
     : undefined;
 }
-function fail(response: ServerResponse, status: number): void {
+function fail(response: ServerResponse, status: number, message?: string): void {
   if (response.headersSent) {
     response.destroy();
     return;
   }
   if (status === 401) response.setHeader('www-authenticate', 'Basic realm="Verity forge broker"');
   response.writeHead(status, { 'content-type': 'application/json', connection: 'close' });
-  response.end('{"error":"forge broker request rejected"}');
+  response.end(
+    message === undefined
+      ? '{"error":"forge broker request rejected"}'
+      : JSON.stringify({ error: 'forge broker request rejected', message }),
+  );
 }
 async function bufferedBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -303,6 +309,9 @@ export function createBrokeredForgeProxy(options: {
             generationSignal?.removeEventListener('abort', retire);
             abort.abort();
           });
+          // Set when a write was refused only because its person lacks Code, so the
+          // refusal can say so instead of looking like any other policy refusal.
+          let refusedForCode = false;
           void (async () => {
             if (
               hostname === 'ghcr.io' &&
@@ -441,10 +450,14 @@ export function createBrokeredForgeProxy(options: {
                     ...(Buffer.isBuffer(body) ? { body } : {}),
                   },
                   candidate,
-                  withoutCodeWrites(
-                    options.actions?.(candidate.projectId) ?? ALL_ACTIONS,
-                    codeWritesRefused,
-                  ),
+                  codeWritesRefused
+                    ? new WithoutCodeWrites(
+                        options.actions?.(candidate.projectId) ?? ALL_ACTIONS,
+                        () => {
+                          refusedForCode = true;
+                        },
+                      )
+                    : (options.actions?.(candidate.projectId) ?? ALL_ACTIONS),
                   abort.signal,
                 );
                 chosen = candidate;
@@ -595,7 +608,13 @@ export function createBrokeredForgeProxy(options: {
               if (!(error instanceof ForgePolicyError)) {
                 report(phase, error);
               }
-              fail(response, error instanceof ForgePolicyError ? 403 : 502);
+              fail(
+                response,
+                error instanceof ForgePolicyError ? 403 : 502,
+                error instanceof ForgePolicyError && refusedForCode
+                  ? CODE_PERMISSION_REFUSAL
+                  : undefined,
+              );
             })
             .finally(() => {
               clearTimeout(timeout);
@@ -621,11 +640,19 @@ export function createBrokeredForgeProxy(options: {
   };
 }
 
-function withoutCodeWrites(
-  actions: ReadonlySet<ForgeAction>,
-  refused: boolean,
-): ReadonlySet<ForgeAction> {
-  return refused
-    ? new Set([...actions].filter((action) => !CODE_WRITE_ACTIONS.has(action)))
-    : actions;
+/** The allowed actions without code writes. It reports when an adapter asked for a
+ *  code write the project would otherwise allow, which is a refusal for Code. */
+class WithoutCodeWrites extends Set<ForgeAction> {
+  constructor(
+    private readonly allowed: ReadonlySet<ForgeAction>,
+    private readonly onRefused: () => void,
+  ) {
+    super([...allowed].filter((action) => !CODE_WRITE_ACTIONS.has(action)));
+  }
+
+  override has(action: ForgeAction): boolean {
+    if (super.has(action)) return true;
+    if (CODE_WRITE_ACTIONS.has(action) && this.allowed.has(action)) this.onRefused();
+    return false;
+  }
 }
