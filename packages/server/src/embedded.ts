@@ -1,4 +1,4 @@
-import { createEmbeddedConductorBindings } from './embedded-conductor.js';
+import { createEmbeddedConductor } from './embedded-conductor.js';
 import { createEmbeddedAudit, createEmbeddedAuditBindings } from './embedded-audit.js';
 import { createEmbeddedProjectRuntimeBindings } from './embedded-project-runtime.js';
 import { createEmbeddedSecretUnlock } from './embedded-secret-unlock.js';
@@ -11,8 +11,6 @@ import {
   createEmbeddedClaudeCredentialSync,
   createEmbeddedProviderCredentialBindings,
 } from './embedded-provider-credentials.js';
-import { createEmbeddedSessionBackend } from './embedded-session-backend.js';
-import { createEmbeddedRunnerConductorWiring } from './embedded-runner-conductor.js';
 import {
   createEmbeddedProjectRelayControl,
   validateEmbeddedProjectRelay,
@@ -149,13 +147,7 @@ import {
   parseEgressReadiness,
   type SandboxEgressProbe,
 } from './sandbox-turn-readiness.js';
-import {
-  AcpCodexBackend,
-  AcpOpenCodeBackend,
-  CODEX_DEFAULT_MODEL,
-  InMemoryEventBus,
-  requestRunnerSupervisor,
-} from '@verity/session';
+import { CODEX_DEFAULT_MODEL, InMemoryEventBus, requestRunnerSupervisor } from '@verity/session';
 import {
   createPostgresDb,
   createSealableSecretCipher,
@@ -1479,45 +1471,24 @@ export async function buildEmbeddedServer(
     // project-scoped token (only wired when the App-token mint + docker/clone-root
     // are configured — same guard as `refreshProjectToken`).
     ...(projectWorktrees !== undefined ? { projectWorktrees } : {}),
-    conductor: {
-      ...createEmbeddedConductorBindings({
-        config,
-        eventStore,
-        sessionStorage,
-        transcriptStore,
-        brokeredSecretAliases,
-        brokeredGrantBindingId,
-        brokeredHttpGrants,
-        branches,
-        purgeRunnerArtifacts,
-      }),
-      ...createEmbeddedRunnerConductorWiring({
-        config,
-        eventStore,
-        bus,
-        transcriptStore,
-        allocateEventFile,
-        allocateControlSocket,
-        mcpGatewayTokens,
-        turnCredentials,
-        mcpProxyTokens,
-        getLog: () => app.log,
-        brokeredGrantBindingId,
-        brokeredHttpGrants,
-      }),
-      ...(config.permissionMode !== undefined ? { permissionMode: config.permissionMode } : {}),
-      // OpenCode backend (#143) for provider-qualified models, over ACP like every
-      // other agent since ADR 0012 Amendment 4. The conductor routes by model; not
-      // enabled → Claude-only.
-      openCodeBackend: new AcpOpenCodeBackend(),
-      // Codex runs exclusively over ACP. ADR 0014 supplies its brokered tools through
-      // the approval-gated per-turn MCP gateway.
-      ...(config.codexEnabled === true
-        ? {
-            codexBackend: new AcpCodexBackend(),
-          }
-        : {}),
-      sessionBackend: createEmbeddedSessionBackend({
+    conductor: createEmbeddedConductor({
+      config,
+      eventStore,
+      sessionStorage,
+      transcriptStore,
+      brokeredSecretAliases,
+      brokeredGrantBindingId,
+      brokeredHttpGrants,
+      branches,
+      purgeRunnerArtifacts,
+      bus,
+      allocateEventFile,
+      allocateControlSocket,
+      mcpGatewayTokens,
+      turnCredentials,
+      mcpProxyTokens,
+      getLog: () => app.log,
+      sessionBackend: {
         config,
         createStore: () => new EventStore(db, secretCipher),
         secretRoot,
@@ -1552,8 +1523,8 @@ export async function buildEmbeddedServer(
             return awaitControlPlaneRunnerIdentity;
           },
         },
-      }),
-    },
+      },
+    }),
   });
   startCloneConfigSweep(config.hostCloneRoot, Boolean(durableServerRoot), (event, msg) =>
     app.log.warn(event, msg),
