@@ -32,6 +32,7 @@ import {
 } from './projectCollaboration.js';
 import { repositoryPullRequestsSchema } from './projectPullRequests.js';
 import { createSecretApprovalsClient, pendingPermissionRequestSchema } from './secretApprovals.js';
+import { createSessionCollaborationClient } from './sessionCollaboration.js';
 export type { PendingPermissionRequest } from './secretApprovals.js';
 import {
   projectEgressPolicySchema,
@@ -2732,6 +2733,9 @@ export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
   readonly secretApprovals = createSecretApprovalsClient((path, init) => this.request(path, init));
+  readonly sessionCollaboration = createSessionCollaborationClient((path, init) =>
+    this.request(path, init),
+  );
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
   readonly projectQA = projectQAClient((path, init) => this.request(path, init));
@@ -3664,21 +3668,6 @@ export class VerityClient {
         ),
       })
       .parse(await res.json()).approvals;
-  }
-
-  async linkSessions(id: string, targetSessionId: string): Promise<void> {
-    await this.request(`/sessions/${encodeURIComponent(id)}/links`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ targetSessionId }),
-    });
-  }
-
-  async unlinkSessions(id: string, targetSessionId: string): Promise<void> {
-    await this.request(
-      `/sessions/${encodeURIComponent(id)}/links/${encodeURIComponent(targetSessionId)}`,
-      { method: 'DELETE' },
-    );
   }
 
   /**

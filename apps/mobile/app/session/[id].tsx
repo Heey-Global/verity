@@ -21,6 +21,7 @@ import {
 } from '../../components/project/managedServerApproval';
 import { useGoogleAccountAvailability } from '../../hooks/useGoogleAccountAvailability';
 import { useFocusedSessionRead } from '../../hooks/useFocusedSessionRead';
+import { useSessionCollaboration } from '../../hooks/useSessionCollaboration';
 import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/useServerConnection';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
@@ -42,7 +43,6 @@ import { Button } from '../../components/ui/Button';
 import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
 import { meetingSavedCard, latestMeetingCards } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
-import { isLinkableSession } from '../../lib/sessionLinks';
 import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
 import { CodeHostIcon } from '../../components/CodeHostIcon';
 import { useFeatureHint } from '../../components/FeatureHint';
@@ -91,6 +91,7 @@ import {
   VerityApiError,
   type VerityClient,
   type ChoicesMessage,
+  type CollaborationEntry,
   type Message,
   type ChoicesOption,
   type ModeSwitchMessage,
@@ -250,7 +251,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
-import { LinkedSessionChips } from '../../components/LinkedSessionChips';
+import { CollaborationRow, CollaborationSheet } from '../../components/session/collaboration';
 import {
   AutomationBar,
   AutomationProposalCard,
@@ -735,9 +736,6 @@ export const SessionChat = memo(function SessionChat({
     sessionId,
     initialListLoaded || (loaded && session.messages.length === 0) || locallyCreated,
   );
-  const [linkedSessions, setLinkedSessions] = useState<
-    Awaited<ReturnType<VerityClient['listSessionLinks']>>
-  >([]);
   const [pendingLinkedMessages, setPendingLinkedMessages] = useState<
     Awaited<ReturnType<VerityClient['listPendingLinkedMessages']>>
   >([]);
@@ -746,16 +744,8 @@ export const SessionChat = memo(function SessionChat({
     null,
   );
   useEffect(() => {
-    setLinkedSessions([]);
     setPendingLinkedMessages([]);
   }, [client, sessionId]);
-  const readLinks = useCallback(
-    async (signal: AbortSignal) => {
-      const links = await client.listSessionLinks(sessionId, signal);
-      if (!signal.aborted) setLinkedSessions(links);
-    },
-    [client, sessionId],
-  );
   const readApprovals = useCallback(
     async (signal: AbortSignal) => {
       const items = await client.listPendingLinkedMessages(sessionId, signal);
@@ -763,7 +753,7 @@ export const SessionChat = memo(function SessionChat({
     },
     [client, sessionId],
   );
-  useFocusedSessionRead(client, sessionId, 'links', optionalWorkReady, readLinks);
+  const collaboration = useSessionCollaboration(client, sessionId, optionalWorkReady);
   useFocusedSessionRead(
     client,
     sessionId,
@@ -799,29 +789,6 @@ export const SessionChat = memo(function SessionChat({
           mockups: undefined,
         })
       : router.push({ pathname: '/session/[id]', params: { id: link.sessionId } });
-  const disconnectLinkedSession = (link: (typeof linkedSessions)[number]) => {
-    Alert.alert(
-      'Disconnect sessions?',
-      `Stop sharing agent messages with ${link.name ?? link.sessionId}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Disconnect',
-          style: 'destructive',
-          onPress: () => {
-            void client
-              .unlinkSessions(sessionId, link.sessionId)
-              .then(() => {
-                setLinkedSessions((current) =>
-                  current.filter((item) => item.sessionId !== link.sessionId),
-                );
-              })
-              .catch(() => Alert.alert('Disconnect failed', 'Please try again.'));
-          },
-        },
-      ],
-    );
-  };
   const compactLandscape =
     Platform.OS === 'ios' && !Platform.isPad && windowWidth > windowHeight && !embedded;
   usePermissionHaptic(loaded, session.pendingPermission?.toolUseId);
@@ -2382,18 +2349,13 @@ export const SessionChat = memo(function SessionChat({
   const [settingsProjects, setSettingsProjects] = useState<
     Awaited<ReturnType<VerityClient['listProjects']>>
   >([]);
-  const [settingsSessions, setSettingsSessions] = useState<
-    Awaited<ReturnType<VerityClient['listSessions']>>
-  >([]);
   useEffect(() => {
     if (!sessionSettingsOpen) return;
     let active = true;
-    void Promise.all([client.listProjects(), client.listSessions()])
-      .then(([projects, sessions]) => {
-        if (active) {
-          setSettingsProjects(projects);
-          setSettingsSessions(sessions);
-        }
+    void client
+      .listProjects()
+      .then((projects) => {
+        if (active) setSettingsProjects(projects);
       })
       .catch(() => undefined);
     return () => {
@@ -2780,6 +2742,12 @@ export const SessionChat = memo(function SessionChat({
     },
     [cancelPendingUserScrollSettle, cancelRestoreTimers, repinToLatestEdge],
   );
+  // A decision held on this session's own card is answered here, not in the peer.
+  const openCollaborator = (entry: CollaborationEntry) =>
+    entry.state === 'waitingForYou' &&
+    pendingLinkedMessages.some((item) => item.targetSessionId === entry.sessionId)
+      ? scrollToLatest(true)
+      : openLinkedSession(entry);
   const onMergePullRequest = useCallback<UseBranches['mergePullRequest']>(
     (number) => {
       // Merging dispatches a server-authored transcript turn for both success and
@@ -3963,10 +3931,19 @@ export const SessionChat = memo(function SessionChat({
           ) : null}
         </View>
       </View>
-      <LinkedSessionChips
-        links={linkedSessions}
-        onOpen={openLinkedSession}
-        onDisconnect={disconnectLinkedSession}
+      <CollaborationRow
+        entries={collaboration.entries}
+        onOpenEntry={openCollaborator}
+        onOpenList={collaboration.openSheet}
+      />
+      <CollaborationSheet
+        visible={collaboration.sheetOpen}
+        entries={collaboration.entries}
+        onOpen={(entry) => {
+          collaboration.closeSheet();
+          openCollaborator(entry);
+        }}
+        onClose={collaboration.closeSheet}
       />
     </View>
   );
@@ -4350,17 +4327,6 @@ export const SessionChat = memo(function SessionChat({
           projects={settingsProjects
             .filter((project) => project.kind === 'local')
             .map((project) => ({ id: project.id, name: projectTitle(project) }))}
-          linkableSessions={settingsSessions
-            .filter((candidate) => isLinkableSession(candidate, sessionId, settingsProjects))
-            .map((candidate) => ({
-              id: candidate.sessionId,
-              name: candidate.name ?? candidate.sessionId,
-              projectId: candidate.projectId!,
-              projectName:
-                projectTitle(
-                  settingsProjects.find((project) => project.id === candidate.projectId),
-                ) ?? candidate.projectId!,
-            }))}
           client={client}
           onClose={() => setSessionSettingsOpen(false)}
           onChanged={() => {
