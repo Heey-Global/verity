@@ -10,6 +10,7 @@ import {
 const shipped = resolve('features/verity-sandbox-toolkit/agent-seed');
 const helper = 'bin/verity-dependencies';
 const companion = 'bin/verity-dependency-storage.mjs';
+const preload = 'bin/verity-dependency-storage-preload.mjs';
 const oldImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'a'.repeat(64)}`;
 const newImage = `ghcr.io/heey-global/verity/verity-server@sha256:${'b'.repeat(64)}`;
 const roots: string[] = [];
@@ -30,6 +31,29 @@ async function fixture() {
 }
 
 describe('agent seed dependency helper companion publication', () => {
+  it('rejects an omitted imported preload before promotion and accepts its non-executable mode', async () => {
+    const f = await fixture();
+    await publishAgentSeedAtomically(f.standalone, f.target, oldImage, '4.90.0');
+    const previous = await readlink(join(f.target, '.current'));
+    const content = await readFile(join(f.source, preload));
+    await rm(join(f.source, preload));
+    await expect(
+      publishAgentSeedAtomically(f.source, f.target, newImage, '4.99.0'),
+    ).rejects.toThrow(`required file is missing: ${preload}`);
+    expect(await readlink(join(f.target, '.current'))).toBe(previous);
+    await writeFile(join(f.source, preload), content, { mode: 0o644 });
+    await chmod(join(f.source, preload), 0o644);
+    await publishAgentSeedAtomically(f.source, f.target, newImage, '4.99.0');
+    expect((await stat(join(f.target, '.current', preload))).mode & 0o777).toBe(0o644);
+  });
+
+  it('preserves rollback compatibility with storage companions predating the preload', async () => {
+    const f = await fixture();
+    await writeFile(join(f.source, companion), 'export const previousCompanion = true;\n');
+    await rm(join(f.source, preload));
+    await publishAgentSeedAtomically(f.source, f.target, oldImage, '4.90.0');
+    await validatePublishedAgentSeed(join(f.target, '.current'), oldImage, '4.90.0');
+  });
   it('rejects a missing companion before changing the selected seed', async () => {
     const f = await fixture();
     await publishAgentSeedAtomically(f.standalone, f.target, oldImage, '4.90.0');

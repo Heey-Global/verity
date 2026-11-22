@@ -1307,6 +1307,13 @@ import { createConnection as createConnection3 } from "node:net";
 import { lstat as lstat3, mkdir as mkdir2, readdir } from "node:fs/promises";
 import { join as join4 } from "node:path";
 
+// features/verity-sandbox-toolkit/src/spawn-broker/capacity-leases.mjs
+var UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+function validateCapacityLeaseRequest(request) {
+  if (request?.protocolVersion !== 1 || request.kind !== "capacity-lease" || !["create", "status", "retire"].includes(request.action) || typeof request.operationId !== "string" || !UUID.test(request.operationId) || typeof request.generation !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(request.generation))
+    throw new Error("invalid capacity lease request");
+}
+
 // features/verity-sandbox-toolkit/src/runner-supervisor/requests.mjs
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { createConnection as createConnection2, createServer } from "node:net";
@@ -1437,6 +1444,15 @@ async function handleSupervisorRequest(runtimeDir, runnerInstanceId, request, tu
   }
   const skillsManifestHash = request.kind === "status" ? await installedSkillsManifestHash() : void 0;
   switch (request.kind) {
+    case "capacity-lease":
+      validateCapacityLeaseRequest(request);
+      return await brokerStorageRequest({
+        protocolVersion: 1,
+        kind: "capacity-lease",
+        action: request.action,
+        operationId: request.operationId,
+        generation: request.generation
+      });
     case "stack-health":
       return await brokerStorageRequest({ protocolVersion: 1, kind: "stack-health" });
     case "egress-readiness":
@@ -1453,6 +1469,7 @@ async function handleSupervisorRequest(runtimeDir, runnerInstanceId, request, tu
         ...skillsManifestHash ? { builtInSkillsManifestHash: skillsManifestHash } : {},
         persistentSessionHomes: true,
         cacheMaintenanceVersion: 2,
+        capacityLeaseVersion: 1,
         turnOwnershipVersion: 1,
         planningIsolation: capabilities.scriptIsolation,
         knowledgeIsolation: capabilities.scriptIsolation,

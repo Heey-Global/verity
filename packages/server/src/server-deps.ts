@@ -1,4 +1,5 @@
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
+import type { DependencyCapacity } from './dependency-capacity.js';
 import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { SessionStorage } from './session-storage.js';
 import type { Backend, Conductor, EventBus } from '@verity/session';
@@ -68,6 +69,7 @@ import type { TeamAvailability } from './uplink-feature-state.js';
 import type { WorktreeProvisioner } from './worktree.js';
 
 export interface ServerDeps {
+  dependencyCapacity?: DependencyCapacity | undefined;
   /** Internal service; public operations remain gated on complete recovery acceptance. */
   backup?: BackupRuntime | undefined;
   webAppDir?: string | undefined;

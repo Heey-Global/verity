@@ -17,9 +17,32 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { env, fixture, helper } from './dependency-fixture.js';
+
+// Policy fixtures exercise managed verification independently of broker leases,
+// which have their own admission/descriptor integration suite.
+function policyHelperSource(trusted: string): string {
+  const storage = pathToFileURL(resolve('agent-seed/bin/verity-dependency-storage.mjs')).href;
+  writeFileSync(
+    join(trusted, 'policy-storage.mjs'),
+    `export * from ${JSON.stringify(storage)};
+import { beginCapacityLease as begin } from ${JSON.stringify(storage)};
+export const beginCapacityLease = (kind, growth) => begin(kind, growth, { environment: {} });
+`,
+  );
+  return readFileSync(helper, 'utf8')
+    .replace(
+      "const directory = '/usr/local/lib/verity';",
+      `const directory = ${JSON.stringify(trusted)};`,
+    )
+    .replace(
+      "from './verity-dependency-storage.mjs'",
+      `from ${JSON.stringify(pathToFileURL(join(trusted, 'policy-storage.mjs')).href)}`,
+    );
+}
 
 describe('shared dependency reuse', () => {
   it('reuses compatible ancestor dependencies without installing private copies', () => {
@@ -1056,6 +1079,10 @@ describe('shared dependency reuse', () => {
     const f = fixture();
     const trusted = join(f.root, 'bin', 'trusted-policy');
     mkdirSync(trusted);
+    cpSync(
+      'agent-seed/bin/verity-dependency-storage-preload.mjs',
+      join(trusted, 'verity-dependency-storage-preload.mjs'),
+    );
     writeFileSync(
       join(trusted, 'verity-npm-preflight.mjs'),
       "export const npmStateDirectory = (root) => root + '/.cache';\n",
@@ -1068,13 +1095,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
 `,
     );
     const instrumented = join(f.root, 'bin', 'helper.mjs');
-    writeFileSync(
-      instrumented,
-      readFileSync(helper, 'utf8').replace(
-        "const directory = '/usr/local/lib/verity';",
-        `const directory = ${JSON.stringify(trusted)};`,
-      ),
-    );
+    writeFileSync(instrumented, policyHelperSource(trusted));
     writeFileSync(
       join(f.worktree, 'package-lock.json'),
       JSON.stringify({
@@ -1108,6 +1129,10 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     const trusted = join(f.root, 'bin', 'hook-policy');
     mkdirSync(trusted);
     cpSync(
+      'agent-seed/bin/verity-dependency-storage-preload.mjs',
+      join(trusted, 'verity-dependency-storage-preload.mjs'),
+    );
+    cpSync(
       'features/verity-sandbox-toolkit/bin/verity-npm-preflight.mjs',
       join(trusted, 'verity-npm-preflight.mjs'),
     );
@@ -1119,13 +1144,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
 `,
     );
     const instrumented = join(f.root, 'bin', 'hook-helper.mjs');
-    writeFileSync(
-      instrumented,
-      readFileSync(helper, 'utf8').replace(
-        "const directory = '/usr/local/lib/verity';",
-        `const directory = ${JSON.stringify(trusted)};`,
-      ),
-    );
+    writeFileSync(instrumented, policyHelperSource(trusted));
     writeFileSync(
       join(f.worktree, 'package-lock.json'),
       JSON.stringify({
@@ -1157,6 +1176,10 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
       const f = fixture();
       const trusted = join(f.root, 'bin', 'legacy-policy');
       mkdirSync(trusted);
+      cpSync(
+        'agent-seed/bin/verity-dependency-storage-preload.mjs',
+        join(trusted, 'verity-dependency-storage-preload.mjs'),
+      );
       writeFileSync(
         join(trusted, 'verity-npm-preflight.mjs'),
         variant === 'missing'
@@ -1165,13 +1188,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
       );
       writeFileSync(join(trusted, 'verity-package-install.mjs'), '// permits preparation');
       const instrumented = join(f.root, 'bin', 'legacy-helper.mjs');
-      writeFileSync(
-        instrumented,
-        readFileSync(helper, 'utf8').replace(
-          "const directory = '/usr/local/lib/verity';",
-          `const directory = ${JSON.stringify(trusted)};`,
-        ),
-      );
+      writeFileSync(instrumented, policyHelperSource(trusted));
       writeFileSync(
         join(f.worktree, 'package-lock.json'),
         JSON.stringify({
@@ -1197,6 +1214,10 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     const f = fixture();
     const trusted = join(f.root, 'bin', 'rejecting-policy');
     mkdirSync(trusted);
+    cpSync(
+      'agent-seed/bin/verity-dependency-storage-preload.mjs',
+      join(trusted, 'verity-dependency-storage-preload.mjs'),
+    );
     writeFileSync(
       join(trusted, 'verity-npm-preflight.mjs'),
       "export const npmStateDirectory = (root) => root + '/.cache';\n",
@@ -1206,13 +1227,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
       "if (process.env.TEST_POLICY_REJECT === '1') process.exit(47);\n",
     );
     const instrumented = join(f.root, 'bin', 'policy-helper.mjs');
-    writeFileSync(
-      instrumented,
-      readFileSync(helper, 'utf8').replace(
-        "const directory = '/usr/local/lib/verity';",
-        `const directory = ${JSON.stringify(trusted)};`,
-      ),
-    );
+    writeFileSync(instrumented, policyHelperSource(trusted));
     const result = spawnSync(process.execPath, [instrumented, 'install'], {
       cwd: f.worktree,
       env: {

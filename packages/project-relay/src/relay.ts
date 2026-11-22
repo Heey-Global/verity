@@ -31,6 +31,7 @@ export const BROKER_RELAY_ROUTES: ReadonlySet<string> = new Set([
   'POST /internal/project/memory',
   'POST /internal/project/repo',
   'POST /internal/package-install',
+  'POST /internal/dependency-storage',
   'GET /internal/package-artifacts/*',
   'HEAD /internal/package-artifacts/*',
   'HEAD /internal/package-artifacts/authority',

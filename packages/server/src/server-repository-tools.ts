@@ -5,6 +5,7 @@ import { registerGitSignRoute } from './git-sign-route.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
+import { registerDependencyCapacityRoute } from './dependency-capacity-route.js';
 import { registerProjectRepoRoute } from './project-repo-route.js';
 import {
   createSessionRepositories,
@@ -13,6 +14,11 @@ import {
 
 export function installRepositoryTools(app: FastifyInstance, ctx: ServerContext): void {
   const { deps, conductor } = ctx;
+  registerDependencyCapacityRoute(app, {
+    store: deps.eventStore,
+    ...(deps.dependencyCapacity ? { capacity: deps.dependencyCapacity } : {}),
+    ...(deps.ghTokenCapabilities ? { capabilities: deps.ghTokenCapabilities } : {}),
+  });
   registerGitSignRoute(app, {
     eventStore: deps.eventStore,
     ...(deps.signingCapabilities !== undefined

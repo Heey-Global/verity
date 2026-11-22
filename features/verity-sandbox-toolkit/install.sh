@@ -541,6 +541,7 @@ install -d /opt/verity/package-managers /usr/local/lib/verity
 install -m 0644 "$FEATURE_DIR/bin/verity-package-artifacts.mjs" /usr/local/lib/verity/verity-package-artifacts.mjs
 install -m 0644 "$FEATURE_DIR/bin/verity-package-policy.mjs" /usr/local/lib/verity/verity-package-policy.mjs
 install -m 0644 "$FEATURE_DIR/bin/verity-npm-preflight.mjs" /usr/local/lib/verity/verity-npm-preflight.mjs
+install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-dependency-storage-preload.mjs" /usr/local/lib/verity/verity-dependency-storage-preload.mjs
 install -m 0755 "$FEATURE_DIR/bin/verity-package-install.mjs" /usr/local/lib/verity/verity-package-install.mjs
 for PACKAGE_MANAGER in npm pnpm yarn bun pip uv; do
   printf '#!/bin/sh\nexec node /usr/local/lib/verity/verity-package-install.mjs %s "$@"\n' "$PACKAGE_MANAGER" > "/opt/verity/package-managers/$PACKAGE_MANAGER"
@@ -695,6 +696,7 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-local-checks" /opt/agent-seed/bin/verity-local-checks
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dependencies" /opt/agent-seed/bin/verity-dependencies
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-dependency-storage.mjs" /opt/agent-seed/bin/verity-dependency-storage.mjs
+install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-dependency-storage-preload.mjs" /opt/agent-seed/bin/verity-dependency-storage-preload.mjs
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*

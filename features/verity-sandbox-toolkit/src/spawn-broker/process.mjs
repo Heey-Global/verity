@@ -1,3 +1,4 @@
+import { capacityLeaseRequest } from './capacity-leases.mjs';
 import { spawn } from 'node:child_process';
 import { createManagedSecretServers } from '../../bin/verity-managed-secret-servers.mjs';
 import { createConnection, createServer } from 'node:net';
@@ -518,6 +519,7 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
             persistentSessionHomes: true,
             cacheMaintenanceVersion: 2,
             runtimeAdmissionFenceVersion: 1,
+            capacityLeaseVersion: 1,
             planningIsolation: scriptIsolation.available,
             knowledgeIsolation: scriptIsolation.available,
             scriptIsolation: scriptIsolation.available,
@@ -549,6 +551,12 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
           return;
         }
         if (closing) throw new Error('agent spawn broker is shutting down');
+        if (isObject(raw) && raw.kind === 'capacity-lease') {
+          protocolFailed = true;
+          send(socket, await capacityLeaseRequest(raw, options));
+          socket.end();
+          return;
+        }
         if (
           isObject(raw) &&
           raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&

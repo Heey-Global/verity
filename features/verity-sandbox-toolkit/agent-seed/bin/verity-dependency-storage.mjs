@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import {
+  constants,
+  openSync,
+  closeSync,
+  fstatSync,
   lstatSync,
   readFileSync,
   readdirSync,
@@ -11,6 +18,7 @@ import {
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { capacityPreloadPath } from './verity-dependency-storage-preload.mjs';
 
 // Every activated tree is a verbatim copy of a central installation. Without this
 // record a later identity change could not tell such a copy from one carrying
@@ -208,6 +216,25 @@ export function admitCopy(
   };
 }
 
+/** Check every actual copy destination, including private trees on other mounts.
+ * Charging the full bound to each filesystem is conservative when trees split
+ * across devices, without mistaking free space beside Git metadata for theirs. */
+export function admitCopyDestinations(
+  destinations,
+  growth,
+  environment = process.env,
+  sample = statfsSync,
+) {
+  if (destinations.length === 0)
+    throw new Error('Dependency copy destinations are unknown; no additional copy admitted.');
+  const admissions = destinations.map((path) => admitCopy(path, growth, environment, sample(path)));
+  return {
+    ...admissions[0],
+    availableBytes: Math.min(...admissions.map((entry) => entry.availableBytes)),
+    freeInodes: Math.min(...admissions.map((entry) => entry.freeInodes)),
+  };
+}
+
 /** At most one measured full installation may accumulate in recovery before replacement pauses. */
 export function recoveryBudget(gitDir, replacementTrees, newlyPreservedTrees) {
   if (newlyPreservedTrees.length === 0) return;
@@ -226,4 +253,200 @@ export function recoveryBudget(gitDir, replacementTrees, newlyPreservedTrees) {
     throw new Error(
       `Dependency recovery budget exceeded: ${held} retained bytes plus ${added} newly preserved bytes exceed the ${budget}-byte measured installation allowance. Resolve the existing recovery copies before replacing dependencies; no recovery data was deleted.`,
     );
+}
+
+const LEASE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
+const LEASE_ROOT = '/run/verity-capacity-leases';
+
+/** Bounded machine authorization; never print broker response bodies or capabilities. */
+export async function dependencyStorageRequest(body, environment = process.env) {
+  const memory = environment.VERITY_PROJECT_MEMORY_URL ?? '';
+  if (!/\/internal\/project\/memory$/u.test(memory))
+    throw new Error(
+      'Dependency capacity requires the project broker; restore sandbox provisioning.',
+    );
+  let url;
+  let capability;
+  try {
+    url = new URL(memory.replace(/\/internal\/project\/memory$/u, '/internal/dependency-storage'));
+    capability = readFileSync(
+      environment.VERITY_GH_BROKER_CAPABILITY_FILE ?? '/run/verity/gh-token-capability',
+      'utf8',
+    ).trim();
+  } catch {
+    throw new Error('Dependency capacity broker configuration is unavailable.');
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !capability)
+    throw new Error('Dependency capacity broker configuration is invalid.');
+  const payload = JSON.stringify({ ...body, version: 1, sessionId: environment.VERITY_SESSION_ID });
+  return new Promise((resolve, reject) => {
+    let timer;
+    const fail = (message) => {
+      clearTimeout(timer);
+      reject(new Error(message));
+    };
+    const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${capability}`,
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+        },
+      },
+      (response) => {
+        let data = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => {
+          data += chunk;
+          if (data.length > 16_384) request.destroy();
+        });
+        response.on('aborted', () => fail('Dependency capacity broker response was interrupted.'));
+        response.on('error', () => fail('Dependency capacity broker response failed.'));
+        response.on('end', () => {
+          clearTimeout(timer);
+          if ((response.statusCode ?? 500) >= 400 || (response.statusCode ?? 0) < 200)
+            return fail(
+              `Dependency capacity broker refused admission (HTTP ${response.statusCode ?? 500}).`,
+            );
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            fail('Dependency capacity broker returned an invalid response.');
+          }
+        });
+      },
+    );
+    request.on('error', () => fail('Dependency capacity broker request failed.'));
+    timer = setTimeout(() => {
+      fail('Dependency capacity broker request timed out after 30 seconds.');
+      request.destroy();
+    }, 30_000);
+    request.end(payload);
+  });
+}
+
+/** flock changes the shared open-file description, which survives in children. */
+export async function flockCapacityDescriptor(fd) {
+  const code = await new Promise((resolve, reject) => {
+    const child = spawn('flock', ['--shared', '--nonblock', '4'], {
+      stdio: ['ignore', 'ignore', 'ignore', 'ignore', fd],
+    });
+    child.once('error', () => reject(new Error('Dependency capacity holder could not start.')));
+    child.once('close', resolve);
+  });
+  if (code !== 0) throw new Error('Dependency capacity holder is unavailable.');
+}
+
+export async function holdCapacityLock(path) {
+  const id = path.slice(LEASE_ROOT.length + 1, -5);
+  if (!LEASE_ID.test(id) || path !== `${LEASE_ROOT}/${id}.lock`)
+    throw new Error('Dependency capacity lock path is invalid.');
+  if (realpathSync(LEASE_ROOT) !== LEASE_ROOT)
+    throw new Error('Dependency capacity lock directory is unsafe.');
+  const parent = lstatSync(LEASE_ROOT);
+  if (!parent.isDirectory() || parent.uid !== 0 || parent.mode & 0o022)
+    throw new Error('Dependency capacity lock directory is untrusted.');
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const expected = lstatSync(path);
+    const actual = fstatSync(fd);
+    if (
+      !actual.isFile() ||
+      actual.uid !== 0 ||
+      actual.mode & 0o022 ||
+      expected.dev !== actual.dev ||
+      expected.ino !== actual.ino
+    )
+      throw new Error('Dependency capacity lock identity is untrusted.');
+    await flockCapacityDescriptor(fd);
+    const after = lstatSync(path);
+    if (after.dev !== actual.dev || after.ino !== actual.ino)
+      throw new Error('Dependency capacity lock changed before admission.');
+    return { fd, close: () => closeSync(fd) };
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+}
+
+/** A lease is mandatory for managed sessions; standalone tools retain local checks. */
+export async function beginCapacityLease(kind, growth, options = {}) {
+  const environment = options.environment ?? process.env;
+  if (!environment.VERITY_SESSION_ID) return { fd: undefined, release: async () => {} };
+  const id = randomUUID();
+  const request = options.request ?? ((body) => dependencyStorageRequest(body, environment));
+  const path = `${LEASE_ROOT}/${id}.lock`;
+  const validate = (reply, states) => {
+    if (
+      reply?.version !== 1 ||
+      reply.id !== id ||
+      !LEASE_ID.test(reply.id) ||
+      reply.lockPath !== path ||
+      reply.admitted !== true ||
+      !states.includes(reply.state)
+    )
+      throw new Error('Dependency capacity lease was not admitted by the current broker.');
+    return reply;
+  };
+  const transition = async (action, body, states) => {
+    let reply;
+    try {
+      reply = await request({ version: 1, id, action, ...body });
+    } catch {
+      // Lost replies must consult the same id, never reserve a second allowance.
+      reply = await request({ version: 1, id, action: 'status' });
+    }
+    return validate(reply, states);
+  };
+  let holder;
+  const settle = async () => {
+    try {
+      await request({ version: 1, id, action: 'settle' });
+    } catch {
+      // A hint cannot prove retirement. The broker keeps uncertain holders charged.
+      console.warn('Dependency capacity settlement is pending broker reconciliation.');
+    }
+  };
+  try {
+    await transition('reserve', { kind, bytes: growth.bytes, inodes: growth.inodes }, ['reserved']);
+    holder = await (options.hold ?? holdCapacityLock)(path);
+    await transition('start', {}, ['started']);
+    let released = false;
+    return {
+      fd: holder.fd,
+      id,
+      async release() {
+        if (released) return;
+        released = true;
+        holder.close();
+        await settle();
+      },
+    };
+  } catch {
+    holder?.close();
+    await settle();
+    throw new Error('Dependency capacity admission failed; no additional dependency work started.');
+  }
+}
+
+export function capacityChildOptions(lockFd, lease, environment) {
+  return {
+    stdio:
+      lease?.fd === undefined
+        ? ['inherit', 'inherit', 'inherit', lockFd]
+        : ['inherit', 'inherit', 'inherit', lockFd ?? 'ignore', lease.fd],
+    env:
+      lease?.fd === undefined
+        ? environment
+        : {
+            ...environment,
+            VERITY_DEPENDENCY_STORAGE_FD: '4',
+            VERITY_DEPENDENCY_STORAGE_LEASE_ID: lease.id,
+            VERITY_DEPENDENCY_PREPARATION_FD: lockFd === undefined ? undefined : '3',
+            NODE_OPTIONS:
+              `${environment.NODE_OPTIONS ?? ''} --import=${JSON.stringify(capacityPreloadPath)}`.trim(),
+          },
+  };
 }

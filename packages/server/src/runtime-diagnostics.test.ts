@@ -126,6 +126,49 @@ function fixture() {
   };
 }
 describe('runtime diagnostics', () => {
+  it('reports bounded durable dependency reservations without inventing unknown capacity', async () => {
+    const read = vi.fn(() => ({
+      initialized: true,
+      count: 1,
+      reservedBytes: 4096,
+      reservedInodes: 2,
+      oldestAt: '2026-10-06T18:14:00Z',
+      leases: [
+        {
+          id: '11111111-1111-4111-8111-111111111111',
+          kind: 'dependency-copy' as const,
+          state: 'uncertain' as const,
+          bytes: 4096,
+          inodes: 2,
+          createdAt: '2026-10-06T18:14:00Z',
+        },
+      ],
+    }));
+    const result = await createRuntimeDiagnostics({ ...fixture(), dependencyCapacity: read })({});
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(result.dependencyCapacity).toEqual(read.mock.results[0]?.value);
+    expect(
+      runtimeDiagnosticSnapshotSchema.safeParse({
+        ...result,
+        dependencyCapacity: {
+          ...result.dependencyCapacity,
+          leases: Array.from({ length: 21 }, () => read().leases[0]),
+        },
+      }).success,
+    ).toBe(false);
+    const unknown = await createRuntimeDiagnostics({
+      ...fixture(),
+      dependencyCapacity: () => ({
+        initialized: false,
+        count: 0,
+        problem: 'Durable inventory unavailable',
+        leases: [],
+      }),
+    })({});
+    expect(unknown.dependencyCapacity).not.toHaveProperty('reservedBytes');
+    expect(unknown.dependencyCapacity).not.toHaveProperty('reservedInodes');
+  });
+
   it('correlates scoped lifecycle, memory and technical errors without exposing raw source data', async () => {
     const deps = fixture();
     const result = await createRuntimeDiagnostics(deps)({

@@ -4,7 +4,9 @@ import type { AssistantDatabase } from './schema-assistant.js';
 import type { PeopleDatabase } from './schema-people.js';
 import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
 import type { ProjectInquiryDatabase } from './schema-project-inquiries.js';
-import type { SandboxDatabase } from './schema-sandbox.js';
+import type { SandboxDatabase, SandboxRepairIntentsTable } from './schema-sandbox.js';
+export type { SandboxRepairIntentsTable } from './schema-sandbox.js';
+import type { CapacityLeaseDatabase } from './schema-capacity-leases.js';
 import type { ProjectQADatabase } from './schema-project-qa.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
@@ -23,20 +25,6 @@ export interface WikiMaintenanceTable {
   project_id: string;
   session_id: string | null;
   last_run_at: Date | null;
-}
-
-export interface SandboxRepairIntentsTable {
-  project_id: string;
-  version: number;
-  attempt_id: string;
-  status: string;
-  source_generation: string | null;
-  target_image_ref: string | null;
-  failures: number;
-  retry_at: Date;
-  storage_refused: boolean;
-  last_failure_at: Date;
-  last_failure_message: string;
 }
 
 export interface ProjectRepositoriesTable {
@@ -1756,6 +1744,7 @@ export interface Database
     AssistantDatabase,
     PeopleDatabase,
     SandboxDatabase,
+    CapacityLeaseDatabase,
     SessionCoordinationDatabase,
     ProjectQADatabase,
     BrokeredApprovalDatabase,

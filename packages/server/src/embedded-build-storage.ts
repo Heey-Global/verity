@@ -2,6 +2,13 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
+import type { Database, EventStore } from '@verity/store';
+import { sql, type Kysely } from 'kysely';
+import {
+  createEmbeddedDependencyCapacity,
+  installDependencyCapacityReconciliation,
+} from './embedded-dependency-capacity.js';
+import type { DependencyCapacity } from './dependency-capacity.js';
 import { BuildStorage } from './build-storage.js';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import { startNativeRetirementEvidence } from './native-buildkit.js';
@@ -9,9 +16,29 @@ import { dockerHostFor } from './project-backend.js';
 import { createProtectedBuildClient } from './project-egress-build-client.js';
 import { devcontainerBuilderIdle, type ProvisionerImpl } from './provisioner.js';
 
+export async function databaseStorageBytes(db: Kysely<Database>): Promise<number | null> {
+  try {
+    const result = await sql<{
+      bytes: string;
+    }>`select pg_database_size(current_database())::text as bytes`.execute(db);
+    const value = Number(result.rows[0]?.bytes);
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createEmbeddedBuildStorage(
-  config: Pick<EmbeddedServerConfig, 'dataVolumeRoot' | 'dataDir' | 'workspacesDir'>,
-): { buildStorage: BuildStorage; stopNativeEvidence: () => void } {
+  config: Pick<
+    EmbeddedServerConfig,
+    'dataVolumeRoot' | 'dataDir' | 'workspacesDir' | 'dockerBaseUrl'
+  >,
+  store?: EventStore,
+): {
+  buildStorage: BuildStorage;
+  dependencyCapacity: DependencyCapacity | undefined;
+  stopNativeEvidence: () => void;
+} {
   const buildStorage = new BuildStorage(
     join(
       config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
@@ -25,7 +52,10 @@ export function createEmbeddedBuildStorage(
   const retirementEvidence = startNativeRetirementEvidence(
     () => buildStorage.retirementInventoryEmpty() === true,
   );
-  return { buildStorage, stopNativeEvidence: () => retirementEvidence.stop() };
+  const dependencyCapacity = store
+    ? createEmbeddedDependencyCapacity(buildStorage, store, config.dockerBaseUrl)
+    : undefined;
+  return { buildStorage, dependencyCapacity, stopNativeEvidence: () => retirementEvidence.stop() };
 }
 
 export function installEmbeddedBuildStorage(
@@ -34,6 +64,7 @@ export function installEmbeddedBuildStorage(
     config,
     buildStorage,
     provisioner,
+    dependencyCapacity,
   }: {
     config: Pick<
       EmbeddedServerConfig,
@@ -41,8 +72,10 @@ export function installEmbeddedBuildStorage(
     >;
     buildStorage: Pick<BuildStorage, 'setReleaseListener' | 'reconcile'> | undefined;
     provisioner: Pick<ProvisionerImpl, 'resetStorageRefusedRepairBackoff'> | undefined;
+    dependencyCapacity?: DependencyCapacity | undefined;
   },
 ): void {
+  installDependencyCapacityReconciliation(app, dependencyCapacity);
   // An interrupted build must not hold build storage until someone reboots the host.
   // Ask at start and every five minutes whether earlier attempts provably ended.
   if (buildStorage !== undefined) {
