@@ -181,7 +181,8 @@ const config: ExpoConfig = {
     [
       'expo-media-library',
       {
-        photosPermission: 'Allow Verity to offer your recent screenshot when capturing a task.',
+        photosPermission:
+          'Allow Verity to show your recent screenshots and photos so you can attach them.',
         savePhotosPermission: false,
         granularPermissions: ['photo'],
       },

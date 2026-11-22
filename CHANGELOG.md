@@ -6,6 +6,18 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.100.0](https://github.com/Heey-Global/verity/compare/v4.99.4...v4.100.0) (2026-11-22)
+
+
+### Features
+
+* **mobile:** show session collaboration in the session header ([#2805](https://github.com/Heey-Global/verity/issues/2805)) ([dac29b5](https://github.com/Heey-Global/verity/commit/dac29b52eaa6d5ff1ad88892d3fa89801b51a74b))
+
+
+### Bug Fixes
+
+* **home:** rank recent sessions by message activity ([#2808](https://github.com/Heey-Global/verity/issues/2808)) ([e70f36f](https://github.com/Heey-Global/verity/commit/e70f36faf7c96689817ee675aee6359902ebcd48))
+
 ## [4.99.4](https://github.com/Heey-Global/verity/compare/v4.99.3...v4.99.4) (2026-11-22)
 
 
