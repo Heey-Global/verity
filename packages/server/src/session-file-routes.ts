@@ -200,7 +200,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     return { root, dir };
   };
 
-  /** False after refusing: changing the worktree by hand needs the Code permission. */
+  /** False after refusing: changing a code worktree by hand needs the Code permission. */
   const codeWritable = async (
     request: FastifyRequest,
     reply: FastifyReply,
@@ -208,6 +208,8 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     ...roots: SessionFileRootName[]
   ) => {
     if (!roots.includes('worktree') || deps.mayChangeCode === undefined) return true;
+    // A Documents session keeps its documents in the worktree: that is no code.
+    if ((await deps.workspaceKind?.(id)) === 'documents') return true;
     if (await deps.mayChangeCode(request, id)) return true;
     reply.code(403).send({ error: 'Changing code files needs permission to work with code.' });
     return false;

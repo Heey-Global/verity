@@ -56,7 +56,9 @@ it('needs Code to change worktree files, and only those', async () => {
   const upload = vi.fn(async () => undefined);
   const content = vi.fn(async () => ({ text: 'readable' }));
   const mayChangeCode = vi.fn(async () => false);
+  let workspaceKind: 'documents' | 'code' = 'code';
   registerSessionFileRoutes(app, {
+    workspaceKind: async () => workspaceKind,
     resolveRoot: async (_session, root) => `/files/${root}`,
     list: async () => [],
     upload,
@@ -101,9 +103,15 @@ it('needs Code to change worktree files, and only those', async () => {
     expect((await put('documents')).statusCode).toBe(200);
     expect(write).toHaveBeenCalledTimes(1);
 
-    mayChangeCode.mockResolvedValue(true);
+    // A Documents session keeps its documents in the worktree; they stay editable.
+    workspaceKind = 'documents';
     expect((await put('worktree')).statusCode).toBe(200);
     expect(write).toHaveBeenCalledTimes(2);
+    workspaceKind = 'code';
+
+    mayChangeCode.mockResolvedValue(true);
+    expect((await put('worktree')).statusCode).toBe(200);
+    expect(write).toHaveBeenCalledTimes(3);
   } finally {
     await app.close();
   }
