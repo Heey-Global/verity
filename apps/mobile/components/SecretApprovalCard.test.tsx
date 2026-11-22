@@ -12,7 +12,7 @@ const request = {
   secretSource: { project: 'example', config: 'stg' },
 };
 
-it('shows all allowed choices and reveals exact request details', () => {
+it('shows all allowed choices alongside the exact request details', () => {
   const allow = jest.fn();
   const deny = jest.fn();
   render(
@@ -23,7 +23,7 @@ it('shows all allowed choices and reveals exact request details', () => {
   );
 
   expect(screen.getByText('staging.example.com')).toBeTruthy();
-  expect(screen.getByText('Doppler · example / stg')).toBeTruthy();
+  expect(screen.getAllByText('Doppler · example / stg')).toHaveLength(2);
   expect(screen.getByText('Verity does not pass the secret value to the agent.')).toBeTruthy();
   fireEvent.press(screen.getByRole('button', { name: 'Allow once' }));
   fireEvent.press(screen.getByRole('button', { name: 'Allow this session' }));
@@ -45,7 +45,7 @@ it('renders the answered card with the original binding and without approval con
   expect(screen.getByRole('button', { name: 'View request' })).toBeTruthy();
 });
 
-it('shows the exact command and its secret injection in the details', () => {
+it('shows the full command and injection warning before approval', () => {
   render(
     <SecretApprovalCard
       request={{
@@ -59,8 +59,7 @@ it('shows the exact command and its secret injection in the details', () => {
     />,
   );
 
-  expect(screen.getByText('"gh" "api" "rate_limit"')).toBeTruthy();
+  expect(screen.getAllByText('"gh" "api" "rate_limit"')).toHaveLength(2);
   expect(screen.getByText('GITHUB_TOKEN')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'View command' }));
   expect(screen.getByText(/Verity injects.*GH_TOKEN/)).toBeTruthy();
 });

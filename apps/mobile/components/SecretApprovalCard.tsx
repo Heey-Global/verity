@@ -68,7 +68,13 @@ export function SecretApprovalCard({
       : 'Secret injection';
   return (
     <Card stacked attention={pending}>
-      <View style={styles.heading}>
+      <View
+        style={styles.heading}
+        accessibilityRole={pending ? 'alert' : undefined}
+        accessibilityLabel={
+          pending ? `Approval required for ${isHttp ? 'an HTTP request' : 'a command'}` : undefined
+        }
+      >
         <View style={styles.title}>
           <Icon
             name={
@@ -134,7 +140,7 @@ export function SecretApprovalCard({
       )}
       {destination !== undefined ? (
         <View style={styles.details}>
-          {pending && http ? null : (
+          {pending ? null : (
             <Button
               label={expanded ? 'Hide details' : detailsLabel}
               variant="text"
@@ -143,7 +149,7 @@ export function SecretApprovalCard({
               onPress={() => setExpanded(!expanded)}
             />
           )}
-          {expanded || (pending && http) ? (
+          {expanded || pending ? (
             <ScrollView
               nestedScrollEnabled
               style={styles.detailScroll}
