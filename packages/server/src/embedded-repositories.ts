@@ -1,3 +1,4 @@
+import type { ServerDeps } from './server-deps.js';
 import type { EventStore, ProjectRecord } from '@verity/store';
 import type { createEmbeddedGitHub } from './embedded-github.js';
 import { ForgejoTransport } from './forgejo-transport.js';
@@ -125,4 +126,117 @@ export function createEmbeddedRepositoryPullRequests(
     githubDiagnostics: () => githubForge.rateDiagnostics?.(),
   };
   return { readProjectStatus, invalidateProjectStatus, projectPullRequests, forgeStatusDeps };
+}
+
+export function createEmbeddedRepositoryAnalysisBindings(ctx: {
+  eventStore: EventStore;
+  githubForge: ReturnType<typeof createEmbeddedGitHub>['githubForge'];
+  githubQAAnalysis: ReturnType<typeof createEmbeddedGitHub>['githubQAAnalysis'];
+  readProjectStatus: ReturnType<typeof createEmbeddedRepositoryPullRequests>['readProjectStatus'];
+  projectPullRequests: ProjectPullRequestBackend;
+}): Pick<
+  ServerDeps,
+  'repairPullRequest' | 'qaAnalysisRead' | 'projectPullRequests' | 'repairDiscovery'
+> {
+  const { eventStore, githubForge, githubQAAnalysis, readProjectStatus, projectPullRequests } = ctx;
+  return {
+    repairPullRequest: async (project, number) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      return (await provider?.repositoryOperations(project).findPullRequest({ number })) ?? null;
+    },
+    qaAnalysisRead: async (project, request, authorize) => {
+      if (project.kind === 'forgejo') {
+        await authorize();
+        const provider = await projectForgeProvider(eventStore, githubForge, project);
+        if (request.action === 'pulls' && provider?.discover) {
+          const page = await provider.discover(project, request.page);
+          await authorize();
+          return {
+            data: page.pulls,
+            nextPage: page.nextPage,
+            checkedAt: new Date().toISOString(),
+            untrusted: true,
+          };
+        }
+        if (request.action === 'pull_status' && provider) {
+          const pull = await provider
+            .repositoryOperations(project)
+            .findPullRequest({ number: request.number });
+          await authorize();
+          const status = pull ? await readProjectStatus(project, pull.head) : null;
+          await authorize();
+          return {
+            data: status?.number === request.number ? status : null,
+            checkedAt: new Date().toISOString(),
+            untrusted: true,
+          };
+        }
+        return {
+          available: false,
+          reason:
+            'This Forgejo integration supports PR reads, not historical Actions/release analysis',
+        };
+      }
+      if (project.kind !== 'github')
+        return { available: false, reason: 'This project has no supported repository provider' };
+      return githubQAAnalysis(project, request, authorize);
+    },
+    projectPullRequests,
+    repairDiscovery: async (project, pageNumber) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider?.discover) throw new Error('Repository monitoring unsupported');
+      const firstPage = await provider.discover(project, 1);
+      const olderPage = pageNumber > 1 ? await provider.discover(project, pageNumber) : undefined;
+      const page = olderPage
+        ? {
+            ...olderPage,
+            pulls: [
+              ...new Map(
+                [...firstPage.pulls, ...olderPage.pulls].map((p) => [p.number, p]),
+              ).values(),
+            ],
+            runs: [
+              ...new Map([...firstPage.runs, ...olderPage.runs].map((r) => [r.id, r])).values(),
+            ],
+          }
+        : firstPage;
+      const statuses = [];
+      for (const pull of page.pulls) {
+        if (pull.fork) continue;
+        const status = await readProjectStatus(project, pull.branch);
+        if (status && status.number === pull.number && status.headSha === pull.sha)
+          statuses.push({ branch: pull.branch, status });
+        else await eventStore.repairs.invalidateObservation(project.id, `pr:${pull.number}`);
+      }
+      for (const incident of await eventStore.repairs.incidents(project.id)) {
+        if (
+          !incident.resource.startsWith('pr:') ||
+          ['resolved', 'superseded'].includes(incident.state)
+        )
+          continue;
+        const evidence = JSON.parse(incident.evidence) as { branch?: string };
+        if (
+          !evidence.branch ||
+          statuses.some((row) => `pr:${row.status.number}` === incident.resource)
+        )
+          continue;
+        const tracked = await provider.repositoryOperations(project).findPullRequest({
+          number: Number(incident.resource.slice(3)),
+        });
+        if (tracked && tracked.state !== 'open') {
+          await eventStore.repairs.retireResource(project.id, incident.resource);
+          continue;
+        }
+        const status = await readProjectStatus(project, evidence.branch);
+        const discovered = page.pulls.find((p) => `pr:${p.number}` === incident.resource);
+        if (
+          status &&
+          `pr:${status.number}` === incident.resource &&
+          (!discovered || (!discovered.fork && status.headSha === discovered.sha))
+        )
+          statuses.push({ branch: evidence.branch, status });
+      }
+      return { page, statuses };
+    },
+  };
 }

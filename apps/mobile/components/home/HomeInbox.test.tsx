@@ -907,7 +907,10 @@ it('lists recent sessions the sections above do not hold, newest first', async (
   const running = session('working', { status: 'running', lastActivityAt: 90 });
   const unread = session('unread', { eventCount: 8, lastSeenEventCount: 2, lastActivityAt: 80 });
   const quiet = Array.from({ length: 12 }, (_, index) =>
-    session(`quiet-${String(index)}`, { lastActivityAt: index + 1 }),
+    session(`quiet-${String(index)}`, {
+      lastMessageAt: index + 1,
+      lastActivityAt: 100 - index,
+    }),
   );
   await renderInbox([...quiet, running, unread]);
   const recent = within(screen.getByTestId('work-recent'));

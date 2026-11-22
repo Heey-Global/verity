@@ -1,121 +1,40 @@
 import type { EventStore } from '@verity/store';
 import Fastify from 'fastify';
-import { expect, it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 import { registerSessionLinkRoutes } from './session-link-routes.js';
 
-it.each(['project-a', 'project-b', 'control'])(
-  'links two distinct sessions with target project %s and removes the link from either side',
-  async (targetProjectId) => {
-    const sessions = new Map([
-      ['a', { projectId: 'project-a' }],
-      ['b', { projectId: targetProjectId }],
-    ]);
-    const projects = new Map([
-      [
-        'project-a',
-        { id: 'project-a', repo: 'alpha', kind: 'github', state: 'active', hiddenAt: null },
-      ],
-      [
-        'project-b',
-        { id: 'project-b', repo: 'beta', kind: 'github', state: 'active', hiddenAt: null },
-      ],
-    ]);
-    projects.set('control', {
-      id: 'control',
-      repo: 'Verity Control',
-      kind: 'control_plane',
-      state: 'active',
-      hiddenAt: null,
-    });
-    const createSessionLink = vi.fn(async () => true);
-    const deleteSessionLink = vi.fn(async () => true);
-    const app = Fastify();
-    registerSessionLinkRoutes(app, {
-      getSession: async (id: string) => sessions.get(id),
-      getProject: async (id: string) => projects.get(id),
-      listProjects: async () => [...projects.values()],
-      createSessionLink,
-      deleteSessionLink,
-      listSessionLinks: async () => [
-        { peerSessionId: 'b', peerProjectId: targetProjectId, peerName: 'API work' },
-      ],
-    } as unknown as EventStore);
-
-    const created = await app.inject({
-      method: 'POST',
-      url: '/sessions/a/links',
-      payload: { targetSessionId: 'b' },
-    });
-    expect(created.statusCode).toBe(201);
-    expect(createSessionLink).toHaveBeenCalledWith('a', 'b');
-
-    if (targetProjectId === 'control') {
-      const reverse = await app.inject({
-        method: 'POST',
-        url: '/sessions/b/links',
-        payload: { targetSessionId: 'a' },
-      });
-      expect(reverse.statusCode).toBe(201);
-      expect(createSessionLink).toHaveBeenLastCalledWith('b', 'a');
-    }
-
-    const listed = await app.inject({ method: 'GET', url: '/sessions/a/links' });
-    expect(listed.json().links).toEqual([
-      {
-        sessionId: 'b',
-        name: 'API work',
-        projectId: targetProjectId,
-        projectName: projects.get(targetProjectId)!.repo,
-      },
-    ]);
-
-    const removed = await app.inject({ method: 'DELETE', url: '/sessions/b/links/a' });
-    expect(removed.statusCode).toBe(200);
-    expect(deleteSessionLink).toHaveBeenCalledWith('b', 'a');
-    const selfLink = await app.inject({
-      method: 'POST',
-      url: '/sessions/a/links',
-      payload: { targetSessionId: 'a' },
-    });
-    expect(selfLink.statusCode).toBe(400);
-    expect(createSessionLink).toHaveBeenCalledTimes(targetProjectId === 'control' ? 2 : 1);
-    await app.close();
-  },
-);
-
-it('links sessions in sleeping projects, which a linked message wakes', async () => {
-  const project = (id: string, state: string) => ({
-    id,
-    repo: id,
-    kind: 'local',
-    state,
-    hiddenAt: null,
-  });
-  const projects = new Map([
-    ['awake', project('awake', 'active')],
-    ['asleep', project('asleep', 'sleeping')],
-    ['broken', project('broken', 'failed')],
-  ]);
-  const createSessionLink = vi.fn(async () => true);
+function appWithLinks() {
   const app = Fastify();
   registerSessionLinkRoutes(app, {
-    getSession: async (id: string) => ({ projectId: id }),
-    getProject: async (id: string) => projects.get(id),
-    createSessionLink,
+    getSession: async (id: string) => (id === 'a' ? { projectId: 'project-a' } : undefined),
+    listProjects: async () => [{ id: 'project-b', repo: 'beta' }],
+    listSessionLinks: async () => [
+      { peerSessionId: 'b', peerProjectId: 'project-b', peerName: 'API work' },
+    ],
   } as unknown as EventStore);
-  const link = (source: string, target: string) =>
-    app.inject({
-      method: 'POST',
-      url: `/sessions/${source}/links`,
-      payload: { targetSessionId: target },
-    });
+  return app;
+}
 
-  // Refusing a sleeping peer is how the picker's tap once did nothing at all.
-  expect((await link('awake', 'asleep')).statusCode).toBe(201);
-  expect((await link('asleep', 'awake')).statusCode).toBe(201);
-  // A failed Sandbox is not woken by a turn, so a link to it could never deliver.
-  const refused = await link('awake', 'broken');
-  expect(refused.statusCode).toBe(400);
-  expect(createSessionLink).toHaveBeenCalledTimes(2);
+it('lists the links a session holds for linked messaging', async () => {
+  const app = appWithLinks();
+  const listed = await app.inject({ method: 'GET', url: '/sessions/a/links' });
+  expect(listed.json().links).toEqual([
+    { sessionId: 'b', name: 'API work', projectId: 'project-b', projectName: 'beta' },
+  ]);
+  expect((await app.inject({ method: 'GET', url: '/sessions/missing/links' })).statusCode).toBe(
+    404,
+  );
+  await app.close();
+});
+
+// Links now come only from coordination and inquiries. A surviving manual route
+// would let a client create a link that no collaboration entry ever explains.
+it.each([
+  ['POST', '/sessions/a/links'],
+  ['DELETE', '/sessions/a/links/b'],
+] as const)('no longer serves manual linking: %s %s', async (method, url) => {
+  const app = appWithLinks();
+  const response = await app.inject({ method, url, payload: { targetSessionId: 'b' } });
+  expect(response.statusCode).toBe(404);
   await app.close();
 });

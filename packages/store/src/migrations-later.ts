@@ -1,6 +1,7 @@
 import { capacityLeasesMigration } from './capacity-leases-migration.js';
 import { brokeredToolApprovalMigration } from './brokered-tool-approval-migration.js';
 import { projectQAMigration } from './project-qa-migration.js';
+import { sessionMessageRecencyMigration } from './session-message-recency-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -681,3 +682,5 @@ migrations['0233_project_inquiry_human_approval'] = {
 migrations['0234_project_qa'] = projectQAMigration;
 
 migrations['0235_dependency_capacity_leases'] = capacityLeasesMigration;
+
+migrations['0236_session_message_recency_index'] = sessionMessageRecencyMigration;

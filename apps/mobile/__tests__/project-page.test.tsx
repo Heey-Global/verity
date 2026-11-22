@@ -1198,23 +1198,20 @@ describe('project page', () => {
     expect(onSessionChanged).toHaveBeenCalledWith('login', false);
   });
 
-  it('links a session from Work through the session settings', async () => {
+  it('opens session settings from Work without a manual linking entry', async () => {
     const linked = session('pair', { linked: true });
     const { client } = await renderPage([running, linked]);
     Object.assign(client, {
       listProjects: jest.fn().mockResolvedValue([makeDetail().project]),
-      listSessions: jest.fn().mockResolvedValue([running, linked]),
-      listSessionLinks: jest.fn().mockResolvedValue([]),
     });
     // The linked session is quiet, so only All lists it with its marker.
     fireEvent.press(screen.getByRole('tab', { name: 'All' }));
     await act(async () => fireEvent.press(screen.getAllByLabelText('Edit')[0]!));
-    expect(screen.getByText('Linked sessions')).toBeTruthy();
-    // The link marker on a row goes straight to its links.
-    fireEvent.press(screen.getByLabelText('Close session settings'));
+    expect(screen.getByLabelText('Close session settings')).toBeTruthy();
+    // Links arise from coordination only: neither the sheet nor the row marker links by hand.
     expect(screen.queryByText('Linked sessions')).toBeNull();
-    await act(async () => fireEvent.press(screen.getByLabelText('Open linked sessions')));
-    expect(screen.getByText('Linked sessions')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('Close session settings'));
+    expect(screen.queryByLabelText('Open linked sessions')).toBeNull();
   });
 
   it('deletes a session after confirmation and tells the host which one', async () => {

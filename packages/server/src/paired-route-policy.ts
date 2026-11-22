@@ -52,6 +52,12 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     routeScopeKey('GET', '/sessions/:id/project-inquiries'),
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],
+  // Peers are filtered per project inside the handler, so a member sees only
+  // collaborators in projects they may work in.
+  [
+    routeScopeKey('GET', '/sessions/:id/collaboration'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
   [
     routeScopeKey('POST', '/sessions/:id/project-inquiries'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
@@ -783,8 +789,6 @@ export const ADMINISTRATOR_ONLY_RESOURCE_ROUTES: ReadonlySet<string> = new Set([
   routeScopeKey('PATCH', '/projects/order'),
   routeScopeKey('PATCH', '/sessions/order'),
   routeScopeKey('POST', '/sessions/:id/project'),
-  routeScopeKey('POST', '/sessions/:id/links'),
-  routeScopeKey('DELETE', '/sessions/:id/links/:targetId'),
   routeScopeKey('GET', '/sessions/:id/links'),
   routeScopeKey('GET', '/sessions/:id/linked-message-approvals'),
   routeScopeKey('GET', '/sessions/:id/qa-approvals'),

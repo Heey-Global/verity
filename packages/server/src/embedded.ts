@@ -1,3 +1,4 @@
+import { createEmbeddedSecretUnlock } from './embedded-secret-unlock.js';
 import {
   installEmbeddedLocalPreviewRecovery,
   installEmbeddedPublicPreviewRecovery,
@@ -25,7 +26,11 @@ import {
 import { createEmbeddedAgentGatewayCredentials } from './embedded-agent-gateway-credentials.js';
 import { createEmbeddedAgentGateway } from './embedded-agent-gateway.js';
 import { createEmbeddedSecretJobs, installEmbeddedSecretJobs } from './embedded-secret-jobs.js';
-import { createEmbeddedUplink } from './embedded-uplink.js';
+import {
+  createEmbeddedUplink,
+  createEmbeddedUplinkBindings,
+  createEmbeddedTeamSharingBindings,
+} from './embedded-uplink.js';
 import { createEmbeddedDocker } from './embedded-docker.js';
 import { createEmbeddedForgeProxy } from './embedded-forge-proxy.js';
 import { createEmbeddedBranches } from './embedded-branches.js';
@@ -35,6 +40,7 @@ import {
   createEmbeddedWorktrees,
 } from './embedded-worktrees.js';
 import {
+  createEmbeddedRepositoryAnalysisBindings,
   createEmbeddedRepositoryAccess,
   createEmbeddedRepositoryPullRequests,
 } from './embedded-repositories.js';
@@ -132,7 +138,6 @@ import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { ensureStarterProject } from './welcome-session.js';
-import { previewSharingCapability } from './preview-capability.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
@@ -189,9 +194,6 @@ import type { DockerClient } from './docker.js';
 import { runDockerGc } from './docker-gc.js';
 import { DataVolumeUsage } from './data-volume-usage.js';
 import { PreviewShareConflictError, PreviewShareManager } from './preview-share-manager.js';
-import { premiumFeatureSwitches } from './uplink-control-client.js';
-import { teamSharingStatus } from './uplink-feature-state.js';
-import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
 import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
 import { createAuditRecorder } from './audit-recorder.js';
@@ -242,7 +244,7 @@ import {
   type ClaudeEgressIdentityService,
 } from './claude-egress-identity.js';
 import { installEmbeddedProjectRelayRuntime } from './embedded-project-relay-runtime.js';
-import { originalSandbox, type ProjectRelayLifecycle } from './project-relay-lifecycle.js';
+import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
@@ -254,8 +256,6 @@ import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { createEmbeddedBackup } from './embedded-backup.js';
-
-import type { VeritySettingsRecord } from '@verity/store';
 
 /**
  * Compose the control-plane server for a single-host deployment: a real Postgres
@@ -1380,45 +1380,14 @@ export async function buildEmbeddedServer(
       : {}),
     projectEgressAvailable: async (fresh) => (await projectEgressHealth(fresh)).available,
     projectEgressStatus: projectEgressHealth,
-    previewSharingCapability: async () => {
-      const settings = await eventStore.getVeritySettings();
-      return previewSharingCapability(
-        uplinkControl?.canStartSharing() === true,
-        Boolean(settings?.uplinkSubscriptionKey?.trim()),
-        uplinkControl?.diagnostics(),
-        settings === undefined || premiumFeatureSwitches(settings).sharing,
-      );
-    },
-    ...(previewShareManager !== undefined ? { previewShareManager } : {}),
-    returnPathActivation: returnPath,
-    ...(coordinatedRecording ? { coordinatedRecording } : {}),
-    returnPathConnectorCount: () => remoteConnector?.diagnosticConnectorCount() ?? 0,
-    ...(uplinkControl !== undefined
-      ? { remoteControlDescriptor: () => uplinkControl.remoteControlDescriptor() }
-      : {}),
-    ...(uplinkControl !== undefined
-      ? {
-          uplinkDiagnostics: () => ({
-            ...uplinkControl.diagnostics(),
-            ...(remoteConnector === undefined
-              ? {}
-              : { remoteStreams: remoteConnector.recentStreams() }),
-          }),
-        }
-      : {}),
-    ...(uplinkControl !== undefined
-      ? {
-          onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials(),
-          recheckUplink: () => uplinkControl.checkEntitlements(),
-        }
-      : {}),
-    ...(uplinkControl !== undefined
-      ? {
-          onPremiumFeatureSwitchesChanged: (settings: VeritySettingsRecord) =>
-            applyPremiumFeatureSwitches(settings, uplinkControl, previewShareManager),
-        }
-      : {}),
-    ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
+    ...createEmbeddedUplinkBindings({
+      eventStore,
+      uplinkControl,
+      remoteConnector,
+      returnPath,
+      coordinatedRecording,
+      previewShareManager,
+    }),
     googleAccessToken,
     ...createEmbeddedProviderCredentialBindings({
       secretRoot,
@@ -1441,76 +1410,20 @@ export async function buildEmbeddedServer(
     ) => googleDriveTool.canReadDocumentWithoutApproval(input),
     onGoogleCredentialsChanged: () => googleAccessToken.invalidate(),
     secretCipher,
-    teamLinkIdentity: () => {
-      const identity = config.devicePairing?.identity();
-      const installation = uplinkControl?.teamInstallation();
-      return identity && installation && { ...identity, ...installation };
-    },
-    teamSharing: teamSharingStatus(uplinkControl),
-    onSecretUnlocked: async () => {
-      // Restore process-local relay listeners before filtering persisted gateway
-      // certificates. A new Server owns none yet; treating that as identity drift
-      // would recreate a valid retained Sandbox while checking its unlock state.
-      for (const project of await eventStore.listProjects()) {
-        if (project.kind === 'control_plane' || project.state !== 'active') continue;
-        try {
-          await provisioner?.resumeProjectRelay?.(project.id);
-        } catch (error) {
-          app.log.warn(
-            { err: error, projectId: project.id },
-            'Retained relay resume deferred until project recovery',
-          );
-        }
-      }
-      await projectAgentGatewayIdentity();
-      let inspected = 0;
-      let repaired = 0;
-      let deferred = 0;
-      if (docker !== undefined && provisioner?.repairSandboxForTurn !== undefined) {
-        for (const project of await eventStore.listProjects()) {
-          if (project.kind === 'control_plane' || project.state !== 'active') continue;
-          try {
-            const container = await docker.inspectContainer(project.containerName);
-            if (!container.running) continue;
-            inspected += 1;
-            if (await agentGatewayReady(originalSandbox(project.id), container)) continue;
-            const didRepair = await provisioner.repairSandboxForTurn(
-              project.id,
-              `secret-unlock:${project.id}`,
-              undefined,
-              { requireFreshAgentGatewayIdentity: true },
-            );
-            if (didRepair) repaired += 1;
-            else deferred += 1;
-          } catch (error) {
-            deferred += 1;
-            app.log.warn(
-              { err: error, projectId: project.id },
-              'Agent Gateway identity reconciliation deferred for project',
-            );
-          }
-        }
-      }
-      await projectAgentGatewayIdentity(inspected > 0);
-      app.log.info(
-        { inspected, repaired, deferred, projectedBindings: agentGatewayState.bindings.length },
-        'Agent Gateway identity reconciliation completed after secret unlock',
-      );
-      // Publishes what the sealed boot had to skip. Ordered after the gateway
-      // projection because both mint from the same CA and the gateway is what a
-      // Sandbox needs first; the Runner picks its material up by generation file.
-      const runnerIdentityPublished = await publishRunnerIdentity('secret unlock');
-      app.log.info(
-        { published: runnerIdentityPublished },
-        'control-plane Runner identity resume completed after secret unlock',
-      );
-      // The provider settings are readable now. A sealed boot can only have written
-      // the credential-free fallback, and the Runner reads the file through a
-      // directory mount, so replacing it here reaches containers already running.
-      await materializeOpenCodeConfig('secret unlock');
-      await codexModelCatalog?.refresh();
-      uplinkControl?.start();
-    },
+    ...createEmbeddedTeamSharingBindings({ config, uplinkControl }),
+    onSecretUnlocked: createEmbeddedSecretUnlock({
+      eventStore,
+      docker,
+      provisioner,
+      projectAgentGatewayIdentity,
+      agentGatewayReady,
+      agentGatewayState,
+      publishRunnerIdentity,
+      materializeOpenCodeConfig,
+      codexModelCatalog,
+      uplinkControl,
+      log: () => app.log,
+    }),
     authRegistry,
     ...(config.https !== undefined ? { https: config.https } : {}),
     ...(config.devicePairing !== undefined ? { devicePairing: config.devicePairing } : {}),
@@ -1582,104 +1495,13 @@ export async function buildEmbeddedServer(
       for (const branch of bs) values.push(await readWorktreeStatus(branch, wt));
       return selectBranchStatus(values, (await forgeForWorktree(wt))?.id ?? 'github');
     },
-    repairPullRequest: async (project, number) => {
-      const provider = await projectForgeProvider(eventStore, githubForge, project);
-      return (await provider?.repositoryOperations(project).findPullRequest({ number })) ?? null;
-    },
-    qaAnalysisRead: async (project, request, authorize) => {
-      if (project.kind === 'forgejo') {
-        await authorize();
-        const provider = await projectForgeProvider(eventStore, githubForge, project);
-        if (request.action === 'pulls' && provider?.discover) {
-          const page = await provider.discover(project, request.page);
-          await authorize();
-          return {
-            data: page.pulls,
-            nextPage: page.nextPage,
-            checkedAt: new Date().toISOString(),
-            untrusted: true,
-          };
-        }
-        if (request.action === 'pull_status' && provider) {
-          const pull = await provider
-            .repositoryOperations(project)
-            .findPullRequest({ number: request.number });
-          await authorize();
-          const status = pull ? await readProjectStatus(project, pull.head) : null;
-          await authorize();
-          return {
-            data: status?.number === request.number ? status : null,
-            checkedAt: new Date().toISOString(),
-            untrusted: true,
-          };
-        }
-        return {
-          available: false,
-          reason:
-            'This Forgejo integration supports PR reads, not historical Actions/release analysis',
-        };
-      }
-      if (project.kind !== 'github')
-        return { available: false, reason: 'This project has no supported repository provider' };
-      return githubQAAnalysis(project, request, authorize);
-    },
-    projectPullRequests,
-    repairDiscovery: async (project, pageNumber) => {
-      const provider = await projectForgeProvider(eventStore, githubForge, project);
-      if (!provider?.discover) throw new Error('Repository monitoring unsupported');
-      const firstPage = await provider.discover(project, 1);
-      const olderPage = pageNumber > 1 ? await provider.discover(project, pageNumber) : undefined;
-      const page = olderPage
-        ? {
-            ...olderPage,
-            pulls: [
-              ...new Map(
-                [...firstPage.pulls, ...olderPage.pulls].map((p) => [p.number, p]),
-              ).values(),
-            ],
-            runs: [
-              ...new Map([...firstPage.runs, ...olderPage.runs].map((r) => [r.id, r])).values(),
-            ],
-          }
-        : firstPage;
-      const statuses = [];
-      for (const pull of page.pulls) {
-        if (pull.fork) continue;
-        const status = await readProjectStatus(project, pull.branch);
-        if (status && status.number === pull.number && status.headSha === pull.sha)
-          statuses.push({ branch: pull.branch, status });
-        else await eventStore.repairs.invalidateObservation(project.id, `pr:${pull.number}`);
-      }
-      for (const incident of await eventStore.repairs.incidents(project.id)) {
-        if (
-          !incident.resource.startsWith('pr:') ||
-          ['resolved', 'superseded'].includes(incident.state)
-        )
-          continue;
-        const evidence = JSON.parse(incident.evidence) as { branch?: string };
-        if (
-          !evidence.branch ||
-          statuses.some((row) => `pr:${row.status.number}` === incident.resource)
-        )
-          continue;
-        const tracked = await provider.repositoryOperations(project).findPullRequest({
-          number: Number(incident.resource.slice(3)),
-        });
-        if (tracked && tracked.state !== 'open') {
-          await eventStore.repairs.retireResource(project.id, incident.resource);
-          continue;
-        }
-        const status = await readProjectStatus(project, evidence.branch);
-        const discovered = page.pulls.find((p) => `pr:${p.number}` === incident.resource);
-        if (
-          status &&
-          `pr:${status.number}` === incident.resource &&
-          (!discovered || (!discovered.fork && status.headSha === discovered.sha))
-        )
-          statuses.push({ branch: evidence.branch, status });
-      }
-      return { page, statuses };
-    },
+    ...createEmbeddedRepositoryAnalysisBindings({
+      eventStore,
+      githubForge,
+      githubQAAnalysis,
+      readProjectStatus,
+      projectPullRequests,
+    }),
     mergePr: async (n: number, wt: string, expectedHeadSha?: string) =>
       (await forgeForWorktree(wt))?.prServiceFor(wt).mergePr(n, expectedHeadSha) ?? false,
     repoIdentity: async (wt: string) => (await forgeForWorktree(wt))?.identityFor(wt)() ?? null,

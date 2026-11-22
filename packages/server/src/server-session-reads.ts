@@ -303,6 +303,7 @@ export function installSessionReads(
         eventCount: facts.eventCount,
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: facts.lastActivityAt,
+        lastMessageAt: facts.lastMessageAt,
         busy: conductor.isBusy(id) || hasMeetingJob(id),
         queued: conductor.queuedItems(id),
       };
