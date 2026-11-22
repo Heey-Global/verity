@@ -1,6 +1,7 @@
 import type { ProjectPermission } from '@verity/store';
 
 import { routeScopeKey } from './route-scopes.js';
+
 type ResourceRule =
   | {
       readonly kind: 'project' | 'session';
@@ -13,10 +14,11 @@ type PairedRoutePolicy =
   ResourceRule | { readonly kind: 'administrator' } | { readonly kind: 'active_user' };
 
 /** Routes become available to members only after their resource and required
- * permission are declared here. Adding a session's changes to the project's code
- * (merging, saving, switching or opening repositories, acting on QA and
- * vulnerability findings) needs the Code permission, not only execute (ADR 0023 §1). Everything else remains administrator-only,
- * including collections and cross-project actions. */
+ * permission are declared here. Everything else remains administrator-only,
+ * including collections and cross-project actions. Adding a session's changes
+ * to the project's code (merging, saving, switching or opening repositories,
+ * acting on QA and vulnerability findings) needs the Code permission, not only
+ * execute (ADR 0023 §1). */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, ResourceRule>([
   // Deleting a project, or tearing down its sandboxes, ends everyone's work in it:
   // only the person who created it or an administrator may (members with manage
