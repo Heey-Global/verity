@@ -7,8 +7,9 @@ ProjectEgressProvisioningError: Project network protection preparation failed
 (install, exit 1, operation <operation>, phase staging, code command_failed).
 ```
 
-The app then reports that host runtime recovery needs attention. The current
-version keeps serving.
+The current version keeps serving. The app may report that host runtime recovery
+needs attention. Updaters that recognize proof of an unchanged host can report
+the failed attempt as retryable instead.
 
 ## What the diagnostic means
 
@@ -24,11 +25,11 @@ A correction to the helper therefore takes effect in the next signed target,
 also when the installed release is older. A correction to orchestration or to
 error classification takes effect only once the installed Updater contains it.
 
-`phase staging` means the helper failed before it submitted a host systemd unit.
-No `verity-egress-provision-<operation>.service` exists, so there is no unit
-journal, and no host firewall change was applied by that attempt. The
-configuration step can still have updated the protected database role, which is
-why older Updaters keep the operation `recovery-required`.
+`phase staging` means this invocation failed before submitting a host systemd
+unit. An earlier invocation of the same operation may have submitted
+`verity-egress-provision-<operation>.service` and left journal entries or firewall
+changes. The configuration step can also update the protected database role
+before submission. Both cases can require recovery.
 
 Lock and fence failures at the very start of the helper exit without any
 diagnostic. A log line that names `phase staging` therefore comes from the
@@ -52,28 +53,29 @@ Do not run the installer with `--reinstall`: it deletes all Verity data.
 
 ## Locate the failing step on the host
 
-Run these read-only commands as root on the deployment host. Replace
-`<operation>` with the 24-character operation from the log line.
+Run these read-only commands as root on the deployment host. Set
+`operation` to the 24-character operation from the log line.
 
 ```sh
-ls -la /var/lib/verity-egress/provision/ /var/lib/verity-egress/provision/<operation>/
+operation='paste-operation-id-here'
+ls -la /var/lib/verity-egress/provision/ "/var/lib/verity-egress/provision/$operation/"
 df -h /var/lib/verity-egress
 docker info --format '{{.LoggingDriver}}'
 ```
 
 - With a helper that names staging steps, a missing stage directory means the
   failure happened before the configuration generator ran. A failed attempt
-  removes its new stage only in that case. A remaining directory shows how far
+  removes its new stage only in that case. An uncompacted directory shows how far
   staging got: `release/`, the two `project-egress-*.py` scripts,
   `assessment-authorization.json` and `config/` are created in that order.
-  Directories of older helpers can be compacted later and prove less.
+  Compaction can remove those files and leave the directory in place.
 - Copying the release payload needs a few hundred MiB of free space under
   `/var/lib/verity-egress`.
 - With the `journald` logging driver, the removed helper's error output is still
   in the host journal:
 
   ```sh
-  journalctl --no-pager CONTAINER_NAME=verity-egress-install-<operation>
+  journalctl --no-pager CONTAINER_NAME="verity-egress-install-$operation"
   ```
 
   That output can contain host paths. Review it before sharing it.
