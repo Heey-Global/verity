@@ -155,13 +155,6 @@ export function createEmbeddedConductorBindings(ctx: {
           }
         : {}),
     },
-    // Runner wiring (ADR 0006), opt-in per deployment flag — see {@link
-    // buildRunnerConductorWiring}. `runnerSupervisor` routes project turns through a
-    // restart-surviving Sandbox {@link SupervisorRunnerClient} (Server-owned transcript
-    // + reattach recovery); `runnerTransport` uses the in-process
-    // {@link FileTailRunnerClient} event-file/control-socket transport; neither leaves
-    // the Conductor's default loopback byte-for-byte unchanged. `eventStore` is the real
-    // EventSink; events republish onto the SAME hoisted `bus` the live WS stream reads.
     // Switching a session to another backend drops the previous backend's
     // `session_backend_state` row, and that row was the only thing naming its files
     // on the runner runtime. Purging here is the one chance to reach them; otherwise
