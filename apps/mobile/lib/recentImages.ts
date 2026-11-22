@@ -18,6 +18,8 @@ export type RecentImages =
   | { kind: 'loading' }
   /** Access refused; the strip offers a tile that opens the system settings. */
   | { kind: 'denied' }
+  /** The library could not be read although access was granted: the camera tile only. */
+  | { kind: 'failed' }
   /** `limited`: iOS shares only the photos the user picked, so the strip offers "Manage". */
   | { kind: 'ready'; images: RecentImage[]; limited: boolean };
 
@@ -57,9 +59,12 @@ async function loadRecentImages(ask: boolean): Promise<RecentImages> {
   if (permission.status === 'undetermined' && permission.canAskAgain && ask)
     permission = await MediaLibrary.requestPermissionsAsync(false, ['photo']);
   if (permission.status !== 'granted') return { kind: 'denied' };
-  // Only iOS reports screenshots as a subtype; elsewhere the filter is ignored
-  // and both queries return the same newest images, which the merge collapses.
-  const [screenshots, recent] = await Promise.all([query(true), query(false)]);
+  // Only iOS knows screenshots as a subtype (and only there is the filter an
+  // option); elsewhere the strip is simply the newest images.
+  const [screenshots, recent] = await Promise.all([
+    Platform.OS === 'ios' ? query(true) : Promise.resolve([]),
+    query(false),
+  ]);
   return {
     kind: 'ready',
     images: mergeRecentImages(screenshots, recent),
@@ -84,9 +89,10 @@ export function useRecentImages(active: boolean): {
       .then((next) => {
         if (current === generation.current) setState(next);
       })
-      // An unreadable library degrades to the rows below the strip, not an alert.
+      // An unreadable library leaves the camera tile, not an alert, and not a
+      // Settings tile that could not fix it.
       .catch(() => {
-        if (current === generation.current) setState({ kind: 'denied' });
+        if (current === generation.current) setState({ kind: 'failed' });
       });
   }, []);
   useEffect(() => {

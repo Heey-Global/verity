@@ -314,7 +314,10 @@ export async function pickImagesFromLibrary(remaining: number): Promise<Attachme
  */
 export async function attachRecentImage(assetId: string): Promise<AttachmentUpload[]> {
   const info = await MediaLibrary.getAssetInfoAsync(assetId, { shouldDownloadFromNetwork: true });
-  const uri = info.localUri ?? info.uri;
+  // Without a local file (an iCloud photo that could not be downloaded) there
+  // is nothing the file readers can open.
+  const uri = info.localUri;
+  if (!uri) throw new Error('This photo is not available on this device right now.');
   const extension = /\.(\w+)$/.exec(info.filename)?.[1]?.toLowerCase();
   const mediaType =
     extension === 'png'

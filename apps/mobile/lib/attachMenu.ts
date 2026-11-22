@@ -5,6 +5,7 @@ import type { GmailSessionConnection } from '@verity/mobile';
 // tested without rendering the whole session screen.
 import type { IconName } from '../components/Icon';
 import { MEETING_AUDIO_ENABLED } from './featureFlags';
+import type { GoogleService } from './sessionGoogleAccess';
 
 export type AttachAnchor = { x: number; y: number; width: number; height: number };
 
@@ -21,7 +22,6 @@ export interface AttachMenuHandlers {
   onOpenConnectors: () => void;
 }
 
-import type { GoogleService } from './sessionGoogleAccess';
 export type { GoogleService };
 export type GoogleMenuAccess = Partial<Record<GoogleService, GmailSessionConnection | null>>;
 

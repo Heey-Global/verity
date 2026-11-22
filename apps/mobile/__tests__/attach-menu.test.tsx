@@ -120,9 +120,23 @@ it('asks for photo access on the first open only', async () => {
     mockLibrary.permission = { status: 'granted', accessPrivileges: 'all', canAskAgain: true };
     return mockLibrary.permission;
   });
-  renderMenu();
+  const view = renderMenu();
+  await screen.findAllByLabelText(/^Attach recent image/);
+  view.rerender(<AttachMenu visible={false} {...view.props} />);
+  view.rerender(<AttachMenu visible {...view.props} />);
   await screen.findAllByLabelText(/^Attach recent image/);
   expect(mockRequestPermissions).toHaveBeenCalledTimes(1);
+});
+
+// Settings cannot fix a library that failed to read, so it must not be offered.
+it('keeps only the camera when the library cannot be read', async () => {
+  const { getAssetsAsync } = jest.requireMock('expo-media-library/legacy');
+  getAssetsAsync.mockRejectedValueOnce(new Error('io'));
+  renderMenu();
+  await waitFor(() => expect(getAssetsAsync).toHaveBeenCalled());
+  expect(screen.getByLabelText('Take photo')).toBeTruthy();
+  expect(screen.queryByLabelText('Allow photo access')).toBeNull();
+  expect(screen.queryAllByLabelText(/^Attach recent image/)).toHaveLength(0);
 });
 
 it('offers Settings in the strip when photo access was refused', async () => {

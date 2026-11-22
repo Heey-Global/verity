@@ -571,4 +571,9 @@ describe('recent strip images', () => {
       expect.objectContaining({ format: 'jpeg' }),
     );
   });
+
+  it('says so when an iCloud photo could not be brought to the device', async () => {
+    mockGetAssetInfoAsync.mockResolvedValue({ uri: 'ph://c', localUri: null, filename: 'c.JPG' });
+    await expect(attachRecentImage('c')).rejects.toThrow('not available on this device');
+  });
 });
