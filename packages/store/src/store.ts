@@ -1,4 +1,5 @@
 import { CapacityLeaseStore } from './capacity-leases.js';
+import { readSessionProjectionActivity } from './session-projection-activity.js';
 import { createStoredSessionLink } from './session-links.js';
 import { ProjectTeamStore } from './project-team.js';
 import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
@@ -1127,6 +1128,8 @@ export interface SessionProjectionFacts {
   lastEventSeq: number;
   /** `created_at` of the newest event in epoch ms; null for an empty log. */
   lastActivityAt: number | null;
+  /** Newest user prompt or top-level agent text; excludes technical events. */
+  lastMessageAt: number | null;
   /** Ascending by seq, filtered to {@link SESSION_PROJECTION_EVENT_TYPES} — and
    *  bounded to the NEWEST `tailLimit` of them. Whether that is far enough back
    *  is a fact about the derivation the caller is running, not about this read,
@@ -5412,6 +5415,7 @@ export class EventStore implements EventSink {
           eventCount: 0,
           lastEventSeq: 0,
           lastActivityAt: null,
+          lastMessageAt: null,
           events: [],
           eventsTruncated: false,
           rateLimitEvents: [],
@@ -5446,18 +5450,7 @@ export class EventStore implements EventSink {
         // mutation, so this read shares the tail/usage snapshot without scanning
         // one index entry per streamed delta on every overview poll.
         for (const ids of chunks) {
-          const totals = await tx
-            .selectFrom('session_event_stats')
-            .select(['session_id', 'event_count', 'last_event_seq', 'last_activity_at'])
-            .where('session_id', 'in', ids)
-            .execute();
-          for (const row of totals) {
-            const entry = facts.get(row.session_id);
-            if (entry === undefined) continue;
-            entry.eventCount = Number(row.event_count);
-            entry.lastEventSeq = Number(row.last_event_seq);
-            entry.lastActivityAt = row.last_activity_at?.getTime() ?? null;
-          }
+          await readSessionProjectionActivity(tx, ids, facts);
         }
       });
     return facts;

@@ -343,6 +343,8 @@ export interface SessionSummary extends SessionRecord {
   agentTextCounterVersion?: 'agent-text-v2';
   /** Timestamp of the newest canonical event, for metadata-only recency displays. */
   lastActivityAt: number | null;
+  /** Most recent user or agent message; technical events do not affect recency. */
+  lastMessageAt?: number | null;
   /**
    * Conditions about THIS session worth interrupting the operator for — currently
    * only `sandbox_disconnected` (see `attention.ts`). Absent when there is

@@ -389,6 +389,7 @@ export {
   type ProjectInquiry,
   type ProjectInquiryGrant,
 } from './project-inquiries.js';
+export type { SessionCoordinationEntry } from './session-coordination.js';
 export {
   INVITATION_MAX_TTL_MS,
   ProjectTeamError,

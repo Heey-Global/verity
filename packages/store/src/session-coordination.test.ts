@@ -103,3 +103,38 @@ it('commits links and recovery state atomically, and never restores a revoked gr
   );
   expect(await ctx.store.listSessionLinks('source')).toEqual([]);
 });
+
+it('lists a session’s requests from both sides and keeps a handover marked through later phases', async () => {
+  await ctx.store.createProject({
+    id: 'project',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'project',
+    state: 'active',
+    containerName: 'project',
+  });
+  await sql`update sessions set project_id = 'project' where session_id = 'source'`.execute(ctx.db);
+  // A target id that sorts before its source: the link is stored in the other order.
+  await ctx.store.createSession({
+    sessionId: 'a-target',
+    projectId: 'project',
+    worktree: '/target',
+    model: 'test',
+  });
+  const coordination = ctx.store.sessionCoordination;
+  await coordination.claim('source', 'request', 'hash', 'a-target');
+  await coordination.update('source', 'request', { phase: 'created', result: { created: true } });
+  // The link phase writes no result; losing the mark would turn a handover into a question.
+  await ctx.store.createSessionLink('source', 'a-target', 'request');
+  const [entry] = await coordination.listForSession('a-target');
+  expect(entry).toMatchObject({
+    sourceSessionId: 'source',
+    targetSessionId: 'a-target',
+    phase: 'linked',
+    createdSession: true,
+  });
+  expect(entry?.linkedAt).toBeInstanceOf(Date);
+  expect(await coordination.listForSession('source')).toEqual([entry]);
+  await ctx.store.deleteSessionLink('source', 'a-target');
+  expect((await coordination.listForSession('source'))[0]?.linkedAt).toBeNull();
+});

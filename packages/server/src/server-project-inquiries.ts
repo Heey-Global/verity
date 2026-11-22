@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ServerContext } from './server-context.js';
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
+import { installSessionCollaboration } from './session-collaboration-routes.js';
 
 type InquiryRuntime = ReturnType<typeof registerProjectInquiryRuntime>;
 
@@ -32,6 +33,8 @@ export function installProjectInquiries(
 ): InquiryRuntime {
   const { deps, conductor } = ctx;
   const { authorized, spawn } = wiring;
+  // The header's collaboration row reads inquiries alongside coordination requests.
+  installSessionCollaboration(app, ctx, { authorized });
   return registerProjectInquiryRuntime({
     app,
     store: deps.eventStore,

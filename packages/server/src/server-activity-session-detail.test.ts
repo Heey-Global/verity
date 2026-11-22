@@ -32,6 +32,7 @@ describe('GET /sessions/:id', () => {
       eventCount: 0,
       agentTextCounterVersion: 'agent-text-v2',
       lastActivityAt: expect.any(Number),
+      lastMessageAt: null,
       lastSeenEventCount: null,
       inboxDismissed: [],
       busy: false,

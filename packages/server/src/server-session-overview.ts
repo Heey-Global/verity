@@ -813,6 +813,7 @@ export function createServerSessionOverview({
     eventCount: 0,
     lastEventSeq: 0,
     lastActivityAt: null,
+    lastMessageAt: null,
     events: [],
     eventsTruncated: false,
     rateLimitEvents: [],
@@ -1134,6 +1135,7 @@ export function createServerSessionOverview({
       // tail would quietly shrink as a session got longer.
       usage: facts.usage,
       lastActivityAt: facts.lastActivityAt,
+      lastMessageAt: facts.lastMessageAt,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
       resumable,

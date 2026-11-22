@@ -821,6 +821,11 @@ export {
   type RepositoryInstructions,
 } from './projectCollaboration.js';
 export {
+  type CollaborationEntry,
+  type CollaborationDirection,
+  type CollaborationState,
+} from './sessionCollaboration.js';
+export {
   PULL_REQUEST_STATES,
   pullRequestAction,
   pullRequestCounts,
