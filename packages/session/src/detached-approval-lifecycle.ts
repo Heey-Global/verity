@@ -33,6 +33,8 @@ interface LifecycleDeps {
 
 /** Detached receipt recovery is independent of any live protocol caller. */
 export class DetachedApprovalLifecycle extends DetachedPermissions {
+  private readonly unwrittenDecisions = new Map<string, Map<string, AgentEvent>>();
+  private readonly flushingDecisions = new Set<string>();
   private readonly scheduled = new Set<string>();
   private readonly failed = new Set<string>();
   constructor(private readonly dependencies: () => LifecycleDeps) {
@@ -46,7 +48,32 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
       const persisted = await deps.store.appendEvent(sessionId, event);
       deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
     });
+    try {
+      await this.flushDecisions(sessionId);
+    } catch {
+      // A transcript write must not hide pending approvals.
+    }
     await this.tryResumeApproved(sessionId);
+  }
+
+  private async flushDecisions(sessionId: string): Promise<void> {
+    const pending = this.unwrittenDecisions.get(sessionId);
+    if (!pending || this.flushingDecisions.has(sessionId)) return;
+    this.flushingDecisions.add(sessionId);
+    const deps = this.dependencies();
+    try {
+      for (const [id, event] of pending) {
+        const persisted = await deps.store.appendEvent(sessionId, event);
+        pending.delete(id);
+        deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
+      }
+      this.unwrittenDecisions.delete(sessionId);
+    } catch (error) {
+      deps.reportError(sessionId, error);
+      throw error;
+    } finally {
+      this.flushingDecisions.delete(sessionId);
+    }
   }
 
   private async tryResumeApproved(sessionId: string): Promise<void> {
@@ -126,7 +153,21 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
       },
       notice: (text) =>
         this.dependencies().emitEvent(input.sessionId, { t: 'notice', role: 'agent', text }),
-      recordDecision: (event) => this.dependencies().emitEvent(input.sessionId, event),
+      recordDecision: async (event) => {
+        if (!event.secretApproval) return;
+        const pending = this.unwrittenDecisions.get(input.sessionId) ?? new Map();
+        pending.set(event.secretApproval.id, event);
+        this.unwrittenDecisions.set(input.sessionId, pending);
+        try {
+          await this.flushDecisions(input.sessionId);
+        } catch {
+          await this.dependencies().emitEvent(input.sessionId, {
+            t: 'notice',
+            role: 'agent',
+            text: 'The decision was recorded, but its chat card could not be saved yet. Reopen this session to retry saving the card.',
+          });
+        }
+      },
       resume: () => this.tryResumeApproved(input.sessionId),
     });
   }
