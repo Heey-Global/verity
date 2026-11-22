@@ -292,6 +292,11 @@ export class SessionReducer {
         break;
       case 'notice': {
         this.active = null;
+        if (event.secretApproval) {
+          this.clearPermissionFor(event.secretApproval.id);
+          this.emitAgentEvent(seq, ts, event);
+          break;
+        }
         if (event.role === 'operator') {
           this.appendMessage({
             kind: 'user-text',
@@ -342,6 +347,7 @@ export class SessionReducer {
         this._running = true;
         // Steering belongs to the current turn and must retain its background work.
         if (!event.steered) this._openTasks.clear();
+        if (event.origin === 'secret-approval') break;
         const msg: UserTextMessage = {
           kind: 'user-text',
           id: `user-${String(seq)}`,
@@ -406,6 +412,7 @@ export class SessionReducer {
           input: event.input,
           riskClass: event.riskClass,
           createdAt: ts,
+          ...(event.secretSource && { secretSource: event.secretSource }),
           ...(event.grantChannel !== undefined ? { grantChannel: event.grantChannel } : {}),
         });
         break;
@@ -917,8 +924,13 @@ export class SessionReducer {
 
   /** Restore a server-confirmed detached approval without reopening a completed turn. */
   restorePendingPermission(permission: PendingPermission): void {
-    if (!this._pendingPermissions.has(permission.toolUseId))
-      this._pendingPermissions.set(permission.toolUseId, { ...permission });
+    const existing = this._pendingPermissions.get(permission.toolUseId);
+    if (!existing) this._pendingPermissions.set(permission.toolUseId, { ...permission });
+    else if (!existing.secretSource && permission.secretSource)
+      this._pendingPermissions.set(permission.toolUseId, {
+        ...existing,
+        secretSource: permission.secretSource,
+      });
   }
 
   /** Reconcile a replayed permission card with the server's live pending set.

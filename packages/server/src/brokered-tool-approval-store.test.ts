@@ -210,7 +210,7 @@ it('recovers scoped consent before continuation but exposes a failed grant save 
   expect(await store.failScoped(pending.id, 'other-session')).toBeUndefined();
   expect(await store.failScoped(pending.id, 'session')).toMatchObject({
     status: 'denied',
-    scope: null,
+    scope: 'project',
   });
   expect(await store.listApproved('session')).toEqual([]);
   expect((await store.listReopenable('session'))[0]?.id).toBe(pending.id);
@@ -301,4 +301,36 @@ it('reopens interrupted scoped saves after restart without restoring execution a
   await restarted.markScopedSaved(pending.id, 'session');
   expect(await restarted.listApproved('session')).toEqual([]);
   expect(await restarted.consume(reopened!.id, input, 'retry')).toBeUndefined();
+});
+
+it('recovers a saved decision with no transcript card and deduplicates concurrent writers', async () => {
+  const approval = await store.createOrFindPending(input);
+  await ctx.store.appendEvent(input.sessionId, {
+    t: 'permission',
+    id: approval.id,
+    tool: input.toolName,
+    input: JSON.parse(input.canonicalInput) as unknown,
+    riskClass: 'ask',
+  });
+  await store.decide(approval.id, input.sessionId, true, 'approver', 'once');
+  const restarted = createBrokeredToolApprovalStore(ctx.db, () => now);
+  expect(await restarted.listUnrecordedDecisions(input.sessionId)).toMatchObject([
+    { id: approval.id, scope: 'once', decidedBy: 'approver' },
+  ]);
+
+  const event = {
+    t: 'notice',
+    text: 'Secret request allowed once.',
+    secretApproval: { id: approval.id, tool: input.toolName, input: {}, decision: 'once' },
+  } as const;
+  const results = await Promise.all([
+    ctx.store.appendEvent(input.sessionId, event),
+    ctx.store.appendEvent(input.sessionId, event),
+  ]);
+  expect(results[1]).toMatchObject({ ...results[0], existing: true });
+  expect(await restarted.listUnrecordedDecisions(input.sessionId)).toEqual([]);
+  expect(
+    (await ctx.store.getEvents(input.sessionId)).filter(({ t }) => t === 'notice'),
+  ).toHaveLength(1);
+  await ctx.store.waitForMessageProjectionIdle();
 });

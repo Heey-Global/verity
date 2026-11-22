@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ServerDeps } from './server-deps.js';
 import { registerSecretApprovalRoutes } from './secret-approval-routes.js';
 import { legacyAdministratorId } from './view-state-routes.js';
-import type { Conductor } from '@verity/session';
+import { secretApprovalNotice, type Conductor } from '@verity/session';
 import type { EventStore } from '@verity/store';
 
 import type { BrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
@@ -25,19 +25,32 @@ export function configureDetachedSecretApprovals(input: {
   const { conductor, store, approvals, gateway } = input;
   const requestFor = (
     record: Awaited<ReturnType<BrokeredToolApprovalStore['listPending']>>[number],
-  ) => ({
-    requestId: record.id,
-    toolUseId: record.id,
-    toolName: record.toolName,
-    createdAt: Date.parse(record.createdAt),
-    input: JSON.parse(record.canonicalInput) as Record<string, unknown>,
-    brokeredGrantBindingId: brokeredDopplerBindingId(
-      parseBrokeredDopplerBinding(record.authorizationSnapshot),
-    ),
-  });
+  ) => {
+    const binding = parseBrokeredDopplerBinding(record.authorizationSnapshot);
+    return {
+      requestId: record.id,
+      toolUseId: record.id,
+      toolName: record.toolName,
+      createdAt: Date.parse(record.createdAt),
+      input: JSON.parse(record.canonicalInput) as Record<string, unknown>,
+      secretSource: { project: binding.dopplerProject, config: binding.dopplerConfig },
+      brokeredGrantBindingId: brokeredDopplerBindingId(binding),
+    };
+  };
   const actorFor = (actorId: string) =>
     input.localActor && actorId === '__local__' ? legacyAdministratorId : actorId;
   conductor.configureDetachedPermissions({
+    listUnrecordedDecisions: async (sessionId) =>
+      (await approvals.listUnrecordedDecisions(sessionId)).map((record) =>
+        secretApprovalNotice(
+          requestFor(record),
+          record.status === 'denied'
+            ? record.scope === null
+              ? 'denied'
+              : 'save_failed'
+            : (record.scope ?? 'denied'),
+        ),
+      ),
     markScopedSaved: async (sessionId, id) => {
       await approvals.markScopedSaved(id, sessionId);
     },
