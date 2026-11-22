@@ -117,33 +117,34 @@ export interface SessionFileRouteDeps {
    *  session does not exist — or, for a knowledge root, when the session has no
    *  project or the deployment has no knowledge folder configured. */
   codeAvailable?: ((sessionId: string) => Promise<boolean>) | undefined;
-  workspaceKind?: ((sessionId: string) => Promise<'documents' | 'code'>) | undefined;
+  workspaceKind?:
+    ((sessionId: string, resolvedWorktree?: string) => Promise<'documents' | 'code'>) | undefined;
   resolveRoot: (sessionId: string, root: SessionFileRootName) => Promise<string | undefined>;
   /** Whether the requester may change the code working copy by hand, which is
    *  part of the Code permission (ADR 0023 §1). Reading it stays with read: the
    *  agent shows its files in the conversation anyway. Absent → no restriction. */
   mayChangeCode?: ((request: FastifyRequest, sessionId: string) => Promise<boolean>) | undefined;
-  list: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
+  list: (reply: FastifyReply, target: SessionFileRoot, path: string) => Promise<unknown>;
   upload: (
     request: FastifyRequest,
     reply: FastifyReply,
-    target: SessionFileTarget,
+    target: SessionFileRoot,
     query: SessionFileUploadQuery,
   ) => Promise<unknown>;
   history: (
     reply: FastifyReply,
-    target: SessionFileTarget,
+    target: SessionFileRoot,
     path: string,
     version?: string,
   ) => Promise<unknown>;
-  content: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
+  content: (reply: FastifyReply, target: SessionFileRoot, path: string) => Promise<unknown>;
   write: (
     reply: FastifyReply,
-    target: SessionFileTarget,
+    target: SessionFileRoot,
     body: SessionFileWriteBody,
   ) => Promise<unknown>;
-  download: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
-  remove: (reply: FastifyReply, target: SessionFileTarget, path: string) => Promise<unknown>;
+  download: (reply: FastifyReply, target: SessionFileRoot, path: string) => Promise<unknown>;
+  remove: (reply: FastifyReply, target: SessionFileRoot, path: string) => Promise<unknown>;
   move: (
     reply: FastifyReply,
     from: SessionFileTarget,
@@ -154,14 +155,14 @@ export interface SessionFileRouteDeps {
   /** Creates an empty folder `name` inside `path`, never replacing an entry. */
   createFolder?: (
     reply: FastifyReply,
-    target: SessionFileTarget,
+    target: SessionFileRoot,
     path: string,
     name: string,
   ) => Promise<unknown>;
   /** Gives a file or folder a new name in its own folder, never replacing one. */
   rename?: (
     reply: FastifyReply,
-    target: SessionFileTarget,
+    target: SessionFileRoot,
     path: string,
     name: string,
     afterMove?: RelocationHook,
@@ -205,11 +206,11 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     request: FastifyRequest,
     reply: FastifyReply,
     id: string,
-    ...roots: SessionFileRootName[]
+    target: SessionFileTarget,
   ) => {
-    if (!roots.includes('worktree') || deps.mayChangeCode === undefined) return true;
+    if (target.root !== 'worktree' || deps.mayChangeCode === undefined) return true;
     // A Documents session keeps its documents in the worktree: that is no code.
-    if ((await deps.workspaceKind?.(id)) === 'documents') return true;
+    if ((await deps.workspaceKind?.(id, target.dir)) === 'documents') return true;
     if (await deps.mayChangeCode(request, id)) return true;
     reply.code(403).send({ error: 'Changing code files needs permission to work with code.' });
     return false;
@@ -276,9 +277,9 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       return reply
         .code(403)
         .send({ error: 'Session drafts are read-only here; edit them in their session.' });
-    if (!(await codeWritable(request, reply, id, query.root))) return reply;
     const value = await target(id, query.root, reply);
     if (value === undefined) return reply;
+    if (!(await codeWritable(request, reply, id, value))) return reply;
     return deps.upload(request, reply, value, query);
   });
 
@@ -297,9 +298,9 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
         return reply
           .code(403)
           .send({ error: 'Shared knowledge is managed in Settings › Shared knowledge.' });
-      if (!(await codeWritable(request, reply, id, body.root))) return reply;
       const value = await target(id, body.root, reply);
       if (value === undefined) return reply;
+      if (!(await codeWritable(request, reply, id, value))) return reply;
       return createFolder(reply, value, body.path, body.name);
     });
 
@@ -334,9 +335,9 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       const body = sessionFileWriteBody.parse(request.body);
       if (body.root === 'drafts' || body.root === 'sources')
         return reply.code(403).send({ error: 'This area is read-only.' });
-      if (!(await codeWritable(request, reply, id, body.root))) return reply;
       const value = await target(id, body.root, reply);
       if (value === undefined) return reply;
+      if (!(await codeWritable(request, reply, id, value))) return reply;
       return deps.write(reply, value, body);
     },
   );
@@ -356,9 +357,9 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       return reply
         .code(403)
         .send({ error: 'Session drafts are retained until explicitly resolved.' });
-    if (!(await codeWritable(request, reply, id, root))) return reply;
     const value = await target(id, root, reply);
     if (value === undefined) return reply;
+    if (!(await codeWritable(request, reply, id, value))) return reply;
     return deps.remove(reply, value, path);
   });
 
@@ -368,11 +369,12 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     if (body.root === 'drafts' || body.toRoot === 'drafts')
       return reply.code(403).send({ error: 'Session drafts are read-only here.' });
     if (!sameKind(body.root, body.toRoot, reply)) return reply;
-    if (!(await codeWritable(request, reply, id, body.root, body.toRoot))) return reply;
     const from = await target(id, body.root, reply);
     if (from === undefined) return reply;
     const to = await target(id, body.toRoot, reply);
     if (to === undefined) return reply;
+    if (!(await codeWritable(request, reply, id, from))) return reply;
+    if (from.dir !== to.dir && !(await codeWritable(request, reply, id, to))) return reply;
     return deps.move(reply, from, to, body);
   });
 }

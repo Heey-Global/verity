@@ -393,7 +393,7 @@ export function registerServerSessionFiles(
             (await isDirectory(code))
         : false;
     },
-    workspaceKind: async (id) => {
+    workspaceKind: async (id, resolvedWorktree) => {
       const session = await deps.eventStore.getSession(id);
       const project = session?.projectId
         ? await deps.eventStore.getProject(session.projectId)
@@ -402,7 +402,10 @@ export function registerServerSessionFiles(
         ? legacySessionCodePath(session.worktree, session.sessionId)
         : undefined;
       if (!legacy || !session) return 'code';
-      if (project?.kind === 'control_plane' || !deps.projectCloneRoot) return 'documents';
+      if (project?.kind === 'control_plane') return 'documents';
+      if (resolvedWorktree !== undefined)
+        return resolvedWorktree === session.worktree ? 'documents' : 'code';
+      if (!deps.projectCloneRoot) return 'documents';
       // In a repository project the session is a code session even while its checkout is missing.
       if (project && project.kind !== 'local') return 'code';
       return (await isDirectory(legacy)) ||

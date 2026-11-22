@@ -228,6 +228,26 @@ it('keeps Documents usable in a deployment without project clones', async () => 
   }
 });
 
+it('recognizes an existing legacy code workspace without a configured clone root', async () => {
+  const h = await harness({ repository: true, configured: false });
+  try {
+    await mkdir(h.target, { recursive: true });
+    const permission = vi.spyOn(h.ctx.store, 'hasProjectPermission').mockResolvedValue(false);
+    h.app.addHook('onRequest', async (request) => {
+      request.localUserId = 'editor';
+    });
+    const result = await h.app.inject({
+      method: 'POST',
+      url: '/sessions/s/files/folders',
+      payload: { root: 'worktree', name: 'new-folder' },
+    });
+    expect(result.statusCode).toBe(403);
+    expect(permission).toHaveBeenCalledWith('editor', 'p', 'code');
+  } finally {
+    await h.close();
+  }
+});
+
 it('reports an ordinary missing checkout as unavailable and keeps a present one browsable', async () => {
   const h = await harness({ repository: true });
   try {
