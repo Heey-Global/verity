@@ -5056,6 +5056,7 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
       if (item.message.event.t === 'notice' && item.message.event.secretApproval)
         return (
           <SecretApprovalCard
+            key={item.message.id}
             request={item.message.event.secretApproval}
             decision={item.message.event.secretApproval.decision}
           />
