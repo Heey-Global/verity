@@ -88,19 +88,44 @@ const egressFailureReasons = new Set([
   'native_package_unavailable',
   'assessment_authorization_invalid',
 ]);
+/** Fixed command groups the helper runs before it submits any host unit. */
+const egressStagingSteps = new Set([
+  'stage_prepare',
+  'release_copy',
+  'scripts',
+  'config',
+  'assessment_authorization',
+  'launcher',
+]);
 const egressFailureSteps = new Set([
   'validation',
   'recovery',
   'prerequisites',
   'runtime_preflight',
   'activation',
+  ...egressStagingSteps,
 ]);
+
+/**
+ * `hostWork` is `none` only when the helper proved it failed before submitting
+ * a host unit and no earlier attempt of the operation had submitted one.
+ */
+export class ProjectEgressProvisioningError extends HostRuntimeRenewalError {
+  constructor(
+    recovery: 'unchanged' | 'recovery-required',
+    readonly hostWork: 'none' | 'possible',
+  ) {
+    super(recovery);
+    this.name = 'ProjectEgressProvisioningError';
+  }
+}
 
 /** Helper output is untrusted and may contain credentials: relay only fixed diagnostic fields. */
 function egressPreparationError(spec: ContainerSpec, status: number, logs: string): Error {
   const stage = spec.labels?.['verity.renewal-stage'] === 'verify' ? 'verify' : 'install';
   const operation = /^verity-egress-(?:install|verify)-([a-f0-9]{24})$/u.exec(spec.name ?? '')?.[1];
   let detail = '';
+  let notSubmitted = false;
   if (operation !== undefined && logs.length <= 4096) {
     try {
       const result = JSON.parse(logs.trim()) as Record<string, unknown>;
@@ -119,14 +144,34 @@ function egressPreparationError(spec: ContainerSpec, status: number, logs: strin
           detail += `, reason ${result.reason}`;
         if (typeof result.step === 'string' && egressFailureSteps.has(result.step))
           detail += `, step ${result.step}`;
+        // Older helpers name no staging step and stay conservative.
+        notSubmitted =
+          result.phase === 'staging' &&
+          result.code === 'command_failed' &&
+          typeof result.step === 'string' &&
+          egressStagingSteps.has(result.step) &&
+          result.step !== 'config' &&
+          result.step !== 'launcher' &&
+          result.hostUnchanged === true;
       }
     } catch {
       /* Missing or invalid diagnostics never establish successful restoration. */
     }
   }
-  const error = new HostRuntimeRenewalError(stage === 'verify' ? 'unchanged' : 'recovery-required');
-  error.name = 'ProjectEgressProvisioningError';
-  error.message = `Project network protection preparation failed (${stage}, exit ${status}${operation === undefined ? '' : `, operation ${operation}`}${detail}). ${stage === 'verify' ? 'Target verification did not complete.' : 'Host changes may require recovery; inspect the provisioning unit journal.'}`;
+  // Verification never writes the host, but an earlier attempt of the same
+  // operation may have: the persisted host state stays conservative for it.
+  const unchanged = stage === 'verify' || (stage === 'install' && notSubmitted);
+  const error = new ProjectEgressProvisioningError(
+    unchanged ? 'unchanged' : 'recovery-required',
+    stage === 'install' && notSubmitted ? 'none' : 'possible',
+  );
+  error.message = `Project network protection preparation failed (${stage}, exit ${status}${operation === undefined ? '' : `, operation ${operation}`}${detail}). ${
+    stage === 'verify'
+      ? 'Target verification did not complete.'
+      : notSubmitted
+        ? 'The helper failed before submitting host provisioning; no host network protection changes were made. Retry the update.'
+        : 'Host changes may require recovery; inspect the provisioning unit journal.'
+  }`;
   return error;
 }
 
@@ -250,7 +295,9 @@ export async function runHostRenewalJob(
     if (spec.labels?.['verity.managed-role'] === 'egress-provisioning') {
       const logs = await docker.containerLogs?.(id, 1).catch(() => '');
       const error = egressPreparationError(spec, status, logs ?? '');
-      await docker.removeContainer(id);
+      // Preserve the observed outcome if cleanup fails. A later retry can adopt
+      // the owned, exited helper and attempt removal again.
+      await docker.removeContainer(id).catch(() => undefined);
       throw error;
     }
     let recovery: 'unchanged' | 'restored' | 'recovery-required' =

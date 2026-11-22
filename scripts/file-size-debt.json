@@ -27,7 +27,7 @@
   "packages/server/src/provisioner.ts": 8059,
   "packages/server/src/runner-boundary-attestation.test.ts": 1611,
   "packages/server/src/self-update-live-smoke.ts": 3133,
-  "packages/server/src/self-update/docker-update-preparation.test.ts": 1875,
+  "packages/server/src/self-update/docker-update-preparation.test.ts": 1873,
   "packages/server/src/self-update/managed-server-owner.test.ts": 1726,
   "packages/server/src/self-update/updater-status.test.ts": 1908,
   "packages/server/src/self-update/updater-status.ts": 1683,
