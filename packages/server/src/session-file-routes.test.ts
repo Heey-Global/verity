@@ -55,6 +55,7 @@ it('needs Code to change worktree files, and only those', async () => {
   const move = vi.fn(async () => undefined);
   const upload = vi.fn(async () => undefined);
   const content = vi.fn(async () => ({ text: 'readable' }));
+  const createFolder = vi.fn(async () => ({ path: 'new' }));
   const mayChangeCode = vi.fn(async () => false);
   let workspaceKind: 'documents' | 'code' = 'code';
   registerSessionFileRoutes(app, {
@@ -68,6 +69,7 @@ it('needs Code to change worktree files, and only those', async () => {
     remove,
     move,
     write,
+    createFolder,
     mayChangeCode,
   });
   const put = (root: string) =>
@@ -94,6 +96,20 @@ it('needs Code to change worktree files, and only those', async () => {
       (await app.inject({ method: 'POST', url: '/sessions/s/files?fileName=a.png', payload: '' }))
         .statusCode,
     ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/sessions/s/files/folders',
+          payload: { root: 'worktree', name: 'new' },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (await app.inject({ method: 'DELETE', url: '/sessions/s/files?root=worktree&path=a.md' }))
+        .statusCode,
+    ).toBe(403);
+    expect(createFolder).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
     expect(move).not.toHaveBeenCalled();
