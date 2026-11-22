@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /** One session this session works with, as `GET /sessions/:id/collaboration` reports it. */
-export const collaborationEntrySchema = z.object({
+const collaborationEntrySchema = z.object({
   sessionId: z.string(),
   sessionName: z.string().nullable(),
   projectId: z.string(),

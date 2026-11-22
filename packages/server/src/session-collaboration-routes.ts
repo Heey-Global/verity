@@ -3,8 +3,8 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { ServerContext } from './server-context.js';
 
-export type CollaborationDirection = 'asked' | 'askedBy' | 'handedOver';
-export type CollaborationState = 'waitingForYou' | 'working' | 'answer' | 'done';
+type CollaborationDirection = 'asked' | 'askedBy' | 'handedOver';
+type CollaborationState = 'waitingForYou' | 'working' | 'answer' | 'done';
 
 export interface CollaborationEntry {
   sessionId: string;
@@ -57,7 +57,7 @@ type Candidate = {
  * question or handover it made through coordination, and project inquiries in
  * either direction. Manual links alone are not collaboration and are not listed.
  */
-export async function readSessionCollaboration(
+async function readSessionCollaboration(
   deps: SessionCollaborationDeps,
   sessionId: string,
   userId: string | null,

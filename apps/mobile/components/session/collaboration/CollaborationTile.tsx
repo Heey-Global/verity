@@ -7,7 +7,7 @@ import { Text } from '../../ui';
 import { tint } from '../../ui/tint';
 
 /** Reads the system's Reduce Motion setting and follows changes to it. */
-export function useReduceMotion(): boolean {
+function useReduceMotion(): boolean {
   // Still until the setting is known, so a moving ring never flashes first.
   const [reduceMotion, setReduceMotion] = useState(true);
   useEffect(() => {
