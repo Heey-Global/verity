@@ -356,12 +356,11 @@ export function createGitHubAppProjectTokenMint(
       const [repository] = reported;
       if (identity === undefined || reported.length !== 1 || repository === undefined) return;
       if (expectedId !== undefined && repository.id !== expectedId) return;
-      if (
-        expectedId !== undefined &&
-        repository.owner === requested.owner &&
-        repository.repo === requested.repo
-      )
-        return;
+      const sameName = repository.owner === requested.owner && repository.repo === requested.repo;
+      // By ID, an unchanged name needs no write. By name, a different reported name
+      // is never a rename: GitHub resolves a bare name in the installation's own
+      // account, which need not be the owner the project was stored under.
+      if (expectedId !== undefined ? sameName : !sameName) return;
       try {
         await identity.reconcile({
           requestedOwner: requested.owner,

@@ -183,6 +183,17 @@ describe('rename-stable project token mint', () => {
     ]);
   });
 
+  it('records nothing when a name resolves under another owner', async () => {
+    // The token request names only the repository; GitHub answers from the
+    // installation's own account (`heey-global`), not the stored `someone-else`.
+    const gh = github({ repositories: new Map([[4242, 'deep-ocr']]) });
+    const known = identity();
+    await expect(
+      mint(gh.fetch, known.store)({ owner: 'someone-else', repo: 'deep-ocr' }),
+    ).resolves.toBe('token-4242');
+    expect(known.observations).toEqual([]);
+  });
+
   it('recovers a project renamed before its ID was recorded through GitHub’s redirect', async () => {
     const gh = github({
       repositories: new Map([[4242, 'ocr-engine']]),

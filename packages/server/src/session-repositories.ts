@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { followGitHubOrigin } from './clone-origin.js';
 import { realpath, rm, stat } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import {
@@ -222,7 +223,20 @@ export function createSessionRepositories(deps: {
       const existing = (await deps.store.listSessionRepositoryWorkspaces(sessionId)).find(
         (workspace) => workspace.repositoryId === repositoryId,
       );
-      if (existing) return { workspace: existing };
+      if (existing) {
+        // A module checkout made before its repository was renamed on GitHub still
+        // names the old URL, which the broker no longer assigns. Best effort: a
+        // checkout that cannot be updated still opens as it is.
+        if (deps.cloneRoot && deps.git && repository.kind === 'github') {
+          const git = deps.git(project, projectClonePath(deps.cloneRoot, project));
+          await followGitHubOrigin(
+            async (args) => ({ stdout: await git(args), stderr: '' }),
+            existing.worktree,
+            `https://github.com/${repository.owner}/${repository.repo}.git`,
+          ).catch(() => undefined);
+        }
+        return { workspace: existing };
+      }
       if (!deps.cloneRoot || !deps.git)
         throw new RepositoryCheckoutError(
           'project sandbox unavailable',
