@@ -3,6 +3,7 @@ import { brokeredToolApprovalMigration } from './brokered-tool-approval-migratio
 import { projectQAMigration } from './project-qa-migration.js';
 import { sessionMessageRecencyMigration } from './session-message-recency-migration.js';
 import { projectCodePermissionMigration } from './project-code-permission-migration.js';
+import { sessionCreatorMigration } from './session-creator-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -687,3 +688,5 @@ migrations['0235_dependency_capacity_leases'] = capacityLeasesMigration;
 migrations['0236_session_message_recency_index'] = sessionMessageRecencyMigration;
 
 migrations['0237_project_code_permission'] = projectCodePermissionMigration;
+
+migrations['0238_session_creators'] = sessionCreatorMigration;

@@ -2,6 +2,13 @@ import { measureLatencyPhase, type EventStore, type SessionRecord } from '@verit
 import type { FastifyInstance } from 'fastify';
 import type { AttentionSignal } from './attention.js';
 import type { SessionSummary, SessionListEnvelope } from './server-types.js';
+import {
+  addressedTo,
+  addressRequests,
+  viewerCodeRights,
+  type RequestAddressing,
+  type RequestAddressingDeps,
+} from './session-request-addressees.js';
 import { viewerId } from './view-state-routes.js';
 
 export interface SessionListRouteDeps {
@@ -22,6 +29,14 @@ export interface SessionListRouteDeps {
   ) => Promise<
     { all: true } | { all: false; projectIds: ReadonlySet<string>; unassigned: boolean }
   >;
+  /** Address each session's requests to a person (ADR 0023). Absent → every
+   *  request is for everyone, as for the single operator. */
+  requestAddressing?: RequestAddressingDeps;
+}
+
+interface SessionListLoad {
+  summaries: SessionSummary[];
+  addressing: ReadonlyMap<string, RequestAddressing>;
 }
 
 export function registerSessionListRoute(app: FastifyInstance, deps: SessionListRouteDeps): void {
@@ -39,8 +54,8 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
    */
   // Only concurrent computations share work; a completed read is never cached.
   // Authentication hooks still run independently before every handler invocation.
-  let inFlight: Promise<SessionSummary[]> | undefined;
-  const load = async (): Promise<SessionSummary[]> => {
+  let inFlight: Promise<SessionListLoad> | undefined;
+  const load = async (): Promise<SessionListLoad> => {
     const [all, hidden] = await Promise.all([
       measureLatencyPhase('session_list', () => deps.store.listSessions()),
       deps.hiddenSessionIds?.(),
@@ -58,9 +73,12 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
     }
     const orders = await deps.store.sessionSortOrders(sessions);
     for (const summary of summaries) summary.sortOrder = orders.get(summary.sessionId) ?? null;
-    return summaries;
+    const addressing = deps.requestAddressing
+      ? await addressRequests(deps.requestAddressing, summaries)
+      : new Map<string, RequestAddressing>();
+    return { summaries, addressing };
   };
-  const sharedLoad = (): Promise<SessionSummary[]> => {
+  const sharedLoad = (): Promise<SessionListLoad> => {
     if (inFlight !== undefined) return inFlight;
     const read = load();
     inFlight = read;
@@ -73,7 +91,7 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
   };
   app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
     const viewer = viewerId(request);
-    const [all, views, scope] = await Promise.all([
+    const [{ summaries: all, addressing }, views, scope] = await Promise.all([
       sharedLoad(),
       deps.store.viewState.sessionViews(viewer),
       deps.visibleTo?.(viewer) ?? Promise.resolve({ all: true as const }),
@@ -87,19 +105,40 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
     // The shared load may serve several people at once, so each answer gets its
     // own copies carrying the requester's read mark and dismissed Home items.
     // A session this person never touched is unread-neutral and hides nothing.
-    const summaries = shared.map(({ planningPlan, ...summary }): SessionSummary => {
-      const view = views.get(summary.sessionId);
-      return {
-        ...summary,
-        // The plan text can run to pages and this route is polled by every
-        // device; an overview only needs to know that a plan waits for approval.
-        ...(summary.planning === 'active' && planningPlan != null
-          ? { planningPresented: true as const }
-          : {}),
-        lastSeenEventCount: view?.lastSeenEventCount ?? null,
-        inboxDismissed: view?.inboxDismissed ?? [],
-      };
-    });
+    // Without accounts every request is the one operator's, so nothing is addressed.
+    const personal =
+      deps.requestAddressing !== undefined && request.localUserId != null
+        ? { holdsCode: viewerCodeRights(deps.requestAddressing, viewer) }
+        : undefined;
+    const summaries = await Promise.all(
+      shared.map(
+        async ({
+          planningPlan,
+          requestInitiator: _initiator,
+          ...summary
+        }): Promise<SessionSummary> => {
+          const view = views.get(summary.sessionId);
+          return {
+            ...summary,
+            // The plan text can run to pages and this route is polled by every
+            // device; an overview only needs to know that a plan waits for approval.
+            ...(summary.planning === 'active' && planningPlan != null
+              ? { planningPresented: true as const }
+              : {}),
+            lastSeenEventCount: view?.lastSeenEventCount ?? null,
+            inboxDismissed: view?.inboxDismissed ?? [],
+            ...(personal === undefined
+              ? {}
+              : await addressedTo(
+                  viewer,
+                  summary,
+                  addressing.get(summary.sessionId),
+                  personal.holdsCode,
+                )),
+          };
+        },
+      ),
+    );
     if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
     // Server attention signals are the administrator's to act on.
     const attention =

@@ -228,8 +228,12 @@ function sessionItems(
   const items: InboxItem[] = [];
 
   // Permissions: one item per parked prompt the server could describe.
+  // Requests belong to the person who asked (ADR 0023). The session still shows
+  // and answers every one of them; Home lists only the requester's own.
+  const mine = session.addressedToViewer !== false;
   const requests = session.pendingPermissionRequests ?? [];
   for (const request of requests) {
+    if (request.addressedToViewer === false) continue;
     const { title, lines, message, decidable } = permissionOverview(request.tool, request.input);
     items.push({
       ...base,
@@ -265,6 +269,7 @@ function sessionItems(
   // still needs the operator; send them to the card instead of hiding it.
   const described = new Set(requests.map((request) => request.toolUseId));
   if (
+    mine &&
     session.permissionAwaitingInput === true &&
     (session.pendingPermissions ?? []).some((id) => !described.has(id))
   ) {
@@ -287,7 +292,7 @@ function sessionItems(
   }).map((flag) => flag.kind);
 
   // Question: the turn's choices, or an awaiting session asking in prose.
-  const choices = session.openChoices;
+  const choices = mine ? session.openChoices : undefined;
   if (choices !== undefined) {
     items.push({
       ...base,
@@ -315,7 +320,7 @@ function sessionItems(
               open('Own answer'),
             ],
     });
-  } else if (flags.includes('question') && session.permissionAwaitingInput !== true) {
+  } else if (mine && flags.includes('question') && session.permissionAwaitingInput !== true) {
     items.push({
       ...base,
       key: `question:${session.sessionId}`,
@@ -332,6 +337,7 @@ function sessionItems(
   // the session, where the plan can be read in full. The key follows the
   // revision, so a revised plan comes back after a dismissal.
   if (
+    mine &&
     session.planning === 'active' &&
     session.planningPresented === true &&
     session.status !== 'running'
@@ -352,7 +358,7 @@ function sessionItems(
   // Mockups: open until the user tells the agent in the chat to build; marks alone
   // never end the review.
   const review = session.mockupReview;
-  if (review?.state === 'pending' && review.screens.length > 0) {
+  if (mine && review?.state === 'pending' && review.screens.length > 0) {
     const undecided = review.screens.some((screen) => screen.verdict === 'open');
     items.push({
       ...base,

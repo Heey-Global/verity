@@ -21,6 +21,8 @@ export interface PendingPermissionRequest {
   toolUseId: string;
   tool: string;
   riskClass: RiskClass;
+  /** Session list only, per person: whether this prompt is for the requester. */
+  addressedToViewer?: boolean;
   detached?: boolean;
   grantChannel?: 'acp';
   createdAt?: number;
@@ -120,4 +122,18 @@ function inputFits(input: unknown): boolean {
   return (
     serialized !== undefined && Buffer.byteLength(serialized, 'utf8') <= PERMISSION_INPUT_MAX_BYTES
   );
+}
+
+/**
+ * The person the current turn runs for: the `initiatedBy` of its opening prompt,
+ * which is whom the turn's questions and permission prompts are for. A steered
+ * prompt is guidance inside that turn and does not change whose it is.
+ */
+export function requestInitiatorFromProjection(events: readonly AgentEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event?.t !== 'prompt' || event.steered === true) continue;
+    return event.initiatedBy?.userId;
+  }
+  return undefined;
 }

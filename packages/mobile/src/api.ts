@@ -1,3 +1,4 @@
+import { addressedToViewerSchema, openChoicesSchema } from './sessionRequests.js';
 import { mcpAppsClient } from './mcp-apps-client.js';
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
@@ -282,16 +283,6 @@ export type AttentionSignal = z.infer<typeof attentionSignalSchema>;
  * as the answer. A block that no longer parses (a newer server, a malformed
  * option) reads as "no open question" rather than failing the whole list.
  */
-const openChoicesSchema = z.object({
-  question: z.string().optional(),
-  options: z
-    .array(z.object({ label: z.string().min(1), recommended: z.boolean().optional() }))
-    .min(1),
-  multiSelect: z.boolean().optional(),
-});
-
-/** One parked permission prompt with what it asks. `input` is absent when the
- * server judged it too large to carry; the app then opens the session instead. */
 /** A mockup review: the screens the agent presented, each marked approved,
  * discarded or still open. An older server's `comment` reads as discarded, as the
  * server itself reads it. A value this build does not understand reads as absent
@@ -407,6 +398,8 @@ export const sessionSummarySchema = z
     /** Keys of this session's Home items the requesting person dismissed, synced
      * across their devices. ABSENT = older server that cannot dismiss. */
     inboxDismissed: z.array(z.string()).optional(),
+    /** Whether its questions, plans and mockups are the requester's to answer. */
+    addressedToViewer: addressedToViewerSchema,
     /** Conditions about THIS session, e.g. a sandbox that lost its connection to
      * the server (`sandbox_disconnected`). Absent from a healthy session and from
      * any older server, both of which read as "nothing to report". */

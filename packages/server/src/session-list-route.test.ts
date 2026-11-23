@@ -147,3 +147,84 @@ it('marks a plan awaiting approval without sending its text', async () => {
     await app.close();
   }
 });
+
+it('addresses requests to the person a turn runs for, and secret prompts to Code holders', async () => {
+  // One shared load serves everyone; whom a request is for must still be decided
+  // per requester, or a member's Home fills with every colleague's questions.
+  const app = Fastify();
+  app.addHook('onRequest', async (request) => {
+    const user = request.headers['x-user'];
+    if (typeof user === 'string') request.localUserId = user;
+  });
+  const summaries = [
+    // Mara's turn asks for a secret she cannot allow, and asks a question.
+    {
+      sessionId: 'turn',
+      projectId: 'p',
+      requestInitiator: 'mara',
+      pendingPermissions: ['secret', 'bash'],
+      pendingPermissionRequests: [
+        { toolUseId: 'secret', tool: 'mcp__verity__verity_secret_run', riskClass: 'ask' },
+        { toolUseId: 'bash', tool: 'Bash', riskClass: 'ask' },
+      ],
+    },
+    // No turn names anyone: the session's creator owns its requests.
+    { sessionId: 'idle', projectId: 'p', pendingPermissions: [] },
+  ] as unknown as SessionSummary[];
+  const hasProjectPermission = vi.fn(
+    async (user: string, _project: string, permission: string) =>
+      permission === 'code' && user === 'alex',
+  );
+  registerSessionListRoute(app, {
+    store: {
+      listSessions: async () => [],
+      linkedSessionIds: async () => new Set(),
+      sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async () => new Map() } as never,
+    },
+    summarizeSessions: async () => summaries.map((summary) => ({ ...summary })),
+    collectAttention: async () => [],
+    prunePrSummaryCache: () => {},
+    pruneBranchCache: () => {},
+    requestAddressing: {
+      store: {
+        sessionPeople: { owners: async () => new Map([['idle', 'alex']]) } as never,
+        isActiveAdministrator: async () => false,
+        hasProjectPermission,
+      },
+    },
+  });
+  const read = async (user?: string) => {
+    const result = await app.inject({
+      url: '/sessions',
+      ...(user === undefined ? {} : { headers: { 'x-user': user } }),
+    });
+    return Object.fromEntries(
+      (result.json() as SessionSummary[]).map((s) => [
+        s.sessionId,
+        {
+          session: s.addressedToViewer,
+          requests: s.pendingPermissionRequests?.map((r) => r.addressedToViewer),
+          initiator: s.requestInitiator,
+        },
+      ]),
+    );
+  };
+  try {
+    expect(await read('mara')).toEqual({
+      turn: { session: true, requests: [false, true], initiator: undefined },
+      idle: { session: false, requests: undefined, initiator: undefined },
+    });
+    expect(await read('alex')).toEqual({
+      turn: { session: false, requests: [true, false], initiator: undefined },
+      idle: { session: true, requests: undefined, initiator: undefined },
+    });
+    // Without accounts there is one operator, and nothing is narrowed.
+    expect(await read()).toEqual({
+      turn: { session: undefined, requests: [undefined, undefined], initiator: undefined },
+      idle: { session: undefined, requests: undefined, initiator: undefined },
+    });
+  } finally {
+    await app.close();
+  }
+});

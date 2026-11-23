@@ -626,3 +626,52 @@ describe('inboxView', () => {
     expect(woke.visible).toEqual([]);
   });
 });
+
+describe('requests addressed to someone else', () => {
+  // Home and the project overview list what the requester has to answer. Showing a
+  // colleague's question there would invite answering on their behalf.
+  const asking = (over: Partial<SessionSummary> = {}) =>
+    session('s1', {
+      status: 'awaiting_input',
+      openChoices: { question: 'Which color?', options: [{ label: 'Red' }, { label: 'Blue' }] },
+      planning: 'active',
+      planningPresented: true,
+      pendingPermissions: ['secret', 'bash'],
+      pendingPermissionRequests: [
+        { toolUseId: 'secret', tool: 'verity_secret_run', riskClass: 'ask', input: {} },
+        { toolUseId: 'bash', tool: 'Bash', riskClass: 'ask', input: { command: 'ls' } },
+      ],
+      ...over,
+    });
+  const kinds = (s: SessionSummary) =>
+    inboxItems({ sessions: [s], projects: [], now: NOW }).map((item) => item.key.split(':')[0]);
+
+  it('keeps every request when the server does not address them', () => {
+    expect(kinds(asking())).toEqual(['permission', 'permission', 'question', 'plan']);
+  });
+
+  it('leaves out requests for someone else but keeps a prompt sent to the requester', () => {
+    const s = asking({
+      addressedToViewer: false,
+      pendingPermissionRequests: [
+        {
+          toolUseId: 'secret',
+          tool: 'verity_secret_run',
+          riskClass: 'ask',
+          input: {},
+          addressedToViewer: true,
+        },
+        {
+          toolUseId: 'bash',
+          tool: 'Bash',
+          riskClass: 'ask',
+          input: { command: 'ls' },
+          addressedToViewer: false,
+        },
+      ],
+    });
+    expect(inboxItems({ sessions: [s], projects: [], now: NOW }).map((item) => item.key)).toEqual([
+      'permission:s1:secret',
+    ]);
+  });
+});

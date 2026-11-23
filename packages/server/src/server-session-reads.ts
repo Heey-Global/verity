@@ -170,6 +170,7 @@ export function installSessionList(
         unassigned: false,
       };
     },
+    requestAddressing: { store: deps.eventStore },
     prunePrSummaryCache,
     pruneBranchCache,
     summarizeSessions,

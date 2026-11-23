@@ -22,6 +22,7 @@ export function createHandoffSessionCreator({
   isProjectSessionModel,
   isConfiguredProjectSessionModel,
   makeBranch,
+  runningTurnInitiator,
 }: Pick<
   ServerMcpRouteDeps,
   | 'deps'
@@ -33,16 +34,19 @@ export function createHandoffSessionCreator({
   | 'isProjectSessionModel'
   | 'isConfiguredProjectSessionModel'
   | 'makeBranch'
+  | 'runningTurnInitiator'
 >) {
   const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
   return async ({
     projectId,
     name,
     idempotencyKey,
+    caller,
   }: {
     projectId: string;
     name: string;
     idempotencyKey: string;
+    caller?: { sessionId: string; turnId: string };
   }) => {
     const existing = controlHandoffSessionCreates.get(idempotencyKey);
     if (existing !== undefined) return existing;
@@ -116,6 +120,9 @@ export function createHandoffSessionCreator({
             worktree,
             model: selectedModel,
             name,
+            createdByUserId: caller
+              ? ((await runningTurnInitiator(caller.sessionId, caller.turnId))?.userId ?? null)
+              : null,
           });
         } catch (error) {
           await provisioner.remove(worktree).catch(() => undefined);
