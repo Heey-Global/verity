@@ -151,6 +151,17 @@ it.each(['all', 'limited'] as const)(
   },
 );
 
+it('does not reselect an image when attachment capacity returns', async () => {
+  const view = renderMenu({ remainingAttachments: 2 });
+  const tiles = await screen.findAllByLabelText(/^Select recent image/);
+  fireEvent.press(tiles[0]);
+  fireEvent.press(tiles[1]);
+  view.rerender(<AttachMenu {...view.props} visible remainingAttachments={1} />);
+  view.rerender(<AttachMenu {...view.props} visible remainingAttachments={2} />);
+  expect(screen.getByRole('button', { name: 'Attach 1 image' })).toBeTruthy();
+  expect(tiles[1]).toHaveProperty('props.accessibilityState.checked', false);
+});
+
 it('rechecks photo access when returning from Settings without a library event', async () => {
   mockLibrary.permission.status = 'denied';
   const appState = jest.mocked(AppState.addEventListener);

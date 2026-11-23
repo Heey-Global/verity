@@ -74,6 +74,11 @@ export function AttachMenu({
       setSelected([]);
     }
   }, [visible]);
+  useEffect(() => {
+    setSelected((current) =>
+      current.length > remainingAttachments ? current.slice(0, remainingAttachments) : current,
+    );
+  }, [remainingAttachments]);
   const recent = useRecentImages(visible, selected);
   const images = recent.state.kind === 'ready' ? recent.state.images : [];
   const selection = selected.filter((image) => images.some(({ id }) => id === image.id));

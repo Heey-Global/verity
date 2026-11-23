@@ -2694,10 +2694,12 @@ export const SessionChat = memo(function SessionChat({
   ]);
 
   // Sendable with text OR at least one attachment (a bare screenshot is valid).
+  const [attachingRecent, setAttachingRecent] = useState(false);
   const canSend =
     (draft.trim().length > 0 || attachments.length > 0) &&
     attachments.length <= MAX_ATTACHMENTS_PER_TURN &&
     !sending &&
+    !attachingRecent &&
     !dead;
   // Show a one-time rate-limit banner only when the 5h window is exhausted
   // (status !== 'allowed'); the common 'allowed' case shows nothing.
@@ -2762,7 +2764,7 @@ export const SessionChat = memo(function SessionChat({
   }, [branches.saveToProject, scrollToLatest]);
   const voiceAbort = voice.abort;
   voiceAutoSendRef.current = async (text) => {
-    if (!text || sending || dead || attachments.length > 0) return false;
+    if (!text || sending || attachingRecent || dead || attachments.length > 0) return false;
     const accepted = await sendTurn(text);
     if (!accepted) return false;
     scrollToLatest(true);
@@ -2771,15 +2773,7 @@ export const SessionChat = memo(function SessionChat({
   };
   const onSend = useCallback(() => {
     const prompt = draft.trim();
-    // Enforce the cap here as well as through `canSend`: hardware Enter invokes
-    // this callback directly and can bypass the disabled send button. Restored
-    // queue backlogs may exceed the cap and must remain intact until trimmed.
-    if (
-      (prompt.length === 0 && attachments.length === 0) ||
-      attachments.length > MAX_ATTACHMENTS_PER_TURN ||
-      sending
-    )
-      return;
+    if (!canSend) return; // Hardware Enter can invoke this with the button disabled.
     // End any live dictation FIRST (#133): otherwise the voice hook's next (partial/
     // final) result writes the transcript back into the field right after we clear
     // it, and recording stays on. `abort()` swallows the trailing result; no-op idle.
@@ -2833,7 +2827,7 @@ export const SessionChat = memo(function SessionChat({
   }, [
     draft,
     attachments,
-    sending,
+    canSend,
     sendTurn,
     scrollToLatest,
     setDraft,
@@ -2862,18 +2856,16 @@ export const SessionChat = memo(function SessionChat({
   // picker fns throw a user-facing message on failure — a silent no-op would look
   // like a dead button.
   const performPick = useCallback(
-    (pick: (remaining: number) => Promise<AttachmentUpload[]>) => {
-      void (async () => {
-        const remaining = MAX_ATTACHMENTS_PER_TURN - attachments.length;
-        if (remaining <= 0) return;
-        try {
-          const picked = await pick(remaining);
-          if (picked.length === 0) return;
-          setAttachments((cur) => [...cur, ...picked].slice(0, MAX_ATTACHMENTS_PER_TURN));
-        } catch (error) {
-          Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
-        }
-      })();
+    async (pick: (remaining: number) => Promise<AttachmentUpload[]>) => {
+      const remaining = MAX_ATTACHMENTS_PER_TURN - attachments.length;
+      if (remaining <= 0) return;
+      try {
+        const picked = await pick(remaining);
+        if (picked.length === 0) return;
+        setAttachments((cur) => [...cur, ...picked].slice(0, MAX_ATTACHMENTS_PER_TURN));
+      } catch (error) {
+        Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
+      }
     },
     [attachments.length],
   );
@@ -3337,7 +3329,10 @@ export const SessionChat = memo(function SessionChat({
   const onAttachRecent = useCallback(
     (ids: readonly string[]) => {
       setAttachMenuOpen(false);
-      performPick((remaining) => attachRecentImages(ids, remaining));
+      setAttachingRecent(true);
+      void performPick((remaining) => attachRecentImages(ids, remaining)).finally(() =>
+        setAttachingRecent(false),
+      );
     },
     [performPick],
   );
@@ -4829,7 +4824,9 @@ export const SessionChat = memo(function SessionChat({
           onLiveMeeting,
         }}
         onAttachRecent={onAttachRecent}
-        remainingAttachments={Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)}
+        remainingAttachments={
+          attachingRecent ? 0 : Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)
+        }
         google={{
           connected: googleConnected,
           loading: googleCatalogLoading,
