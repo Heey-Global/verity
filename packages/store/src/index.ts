@@ -405,3 +405,8 @@ export {
 } from './session-mockups.js';
 export { isSessionLinkProject } from './project-session-links.js';
 export type { ChangeSubmission, ChangeSubmissionState } from './change-submissions.js';
+export {
+  GitHubRepositoryIdentityStore,
+  type GitHubRepositoryObservation,
+  type GitHubRepositoryReconciliation,
+} from './github-repository-identity.js';

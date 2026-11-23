@@ -3,6 +3,7 @@ import { isRunnerSupervisorBackend, type Backend } from '@verity/session';
 import {
   EventStore,
   ProjectIdentityClaimConflict,
+  type GitHubRepositoryObservation,
   type VeritySettingsPatch,
   type ProjectRecord,
 } from '@verity/store';
@@ -818,27 +819,69 @@ export function createProjectTurnPreparationSerializer(deps: {
 export async function syncProjectsFromInstallation(
   eventStore: EventStore,
   installation: GitHubInstallationService,
-  opts?: { includeHidden?: boolean },
+  opts?: {
+    includeHidden?: boolean;
+    /** Records a repository's ID and moves projects bound to it to its current name. */
+    reconcile?: (observation: GitHubRepositoryObservation) => Promise<unknown>;
+  },
 ): Promise<ProjectRecord[]> {
   // Live repos first; if GitHub is unreachable we keep `[]` so the per-repo
   // upsert loop is a no-op — the persisted cache below still surfaces the rows
   // we already have.
   const live = await installation
     .listInstallationRepos()
-    .catch(() => [] as { owner: string; repo: string; archived?: boolean }[]);
+    .catch(() => [] as { owner: string; repo: string; archived?: boolean; id?: string }[]);
 
+  const githubProjects = async () =>
+    (await eventStore.listProjects({ includeHidden: true })).filter(
+      (project) =>
+        (project.kind === undefined || project.kind === 'github') &&
+        (project.forgeConnectionId ?? 'legacy-github') === 'legacy-github',
+    );
+  const reconcile = async (observation: GitHubRepositoryObservation): Promise<void> => {
+    try {
+      await opts?.reconcile?.(observation);
+    } catch (error) {
+      console.warn(
+        `verity: could not reconcile GitHub repository ${observation.owner}/${observation.repo}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+    }
+  };
+  let github = await githubProjects();
+  // A project already bound to a repository's ID follows it to its current name,
+  // rather than a second, empty project appearing under the new one. Moves go
+  // first, so a repository that took over an old name is seen in the same pass.
+  if (opts?.reconcile !== undefined) {
+    let moved = false;
+    for (const r of live) {
+      const from =
+        r.id === undefined
+          ? undefined
+          : github.find(
+              (project) =>
+                project.githubRepositoryId === r.id &&
+                (project.owner !== r.owner.toLowerCase() || project.repo !== r.repo.toLowerCase()),
+            );
+      if (from === undefined || r.id === undefined) continue;
+      await reconcile({
+        requestedOwner: from.owner,
+        requestedRepo: from.repo,
+        id: r.id,
+        owner: r.owner.toLowerCase(),
+        repo: r.repo.toLowerCase(),
+      });
+      moved = true;
+    }
+    if (moved) github = await githubProjects();
+  }
   // Repeated overview polls must not acquire the global knowledge lifecycle
   // lock and rewrite every unchanged repository, starving unrelated reads.
   const existing = new Map(
-    (await eventStore.listProjects({ includeHidden: true }))
-      .filter(
-        (project) =>
-          (project.kind === undefined || project.kind === 'github') &&
-          (project.forgeConnectionId ?? 'legacy-github') === 'legacy-github' &&
-          // The sync maintains each repository's first project; further projects
-          // of the same repository follow its archive state in the store.
-          (project.repositoryInstance ?? 1) === 1,
-      )
+    github
+      // The sync maintains each repository's first project; further projects
+      // of the same repository follow its archive state in the store.
+      .filter((project) => (project.repositoryInstance ?? 1) === 1)
       .map((project) => [`${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`, project]),
   );
 
@@ -854,6 +897,9 @@ export async function syncProjectsFromInstallation(
     const owner = r.owner.toLowerCase();
     const repo = r.repo.toLowerCase();
     const current = existing.get(`${owner}/${repo}`);
+    // A project found by name learns the ID the installation reports for that name.
+    if (r.id !== undefined && current !== undefined && !current.githubRepositoryId)
+      await reconcile({ requestedOwner: owner, requestedRepo: repo, id: r.id, owner, repo });
     const legacyNames = [`dev-${owner}--${repo}`, `dev-${owner}-${repo}`];
     if (
       current &&

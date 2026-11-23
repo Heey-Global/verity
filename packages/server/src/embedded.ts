@@ -420,7 +420,7 @@ export async function buildEmbeddedServer(
     cachedProjectTokenMint,
     githubQAAnalysis,
     githubForge,
-  } = createEmbeddedGitHub(config, eventStore);
+  } = createEmbeddedGitHub(config, eventStore, () => provisioner);
   const forgeRepositoryAccess = createEmbeddedRepositoryAccess(eventStore);
   const forgeForWorktree = createEmbeddedWorktreeForge(config, eventStore, githubForge);
   const { readProjectStatus, forgeStatusDeps, projectPullRequests } =

@@ -53,6 +53,8 @@ export type HttpFetch = (
     headers?: Record<string, string>;
     signal?: AbortSignal;
     body?: string;
+    /** `manual` returns a redirect response instead of following it. */
+    redirect?: 'follow' | 'manual' | 'error';
     /** Transport hint for long streaming responses (the Docker image-pull
      *  progress stream): resolve as soon as the headers arrive and expose the
      *  body incrementally as {@link HttpResponse.body}. The global `fetch`
@@ -1105,6 +1107,8 @@ interface InstallationRepo {
   owner: string;
   repo: string;
   archived?: boolean;
+  /** GitHub's rename-stable repository ID (decimal), when GitHub reports one. */
+  id?: string;
 }
 
 /**
@@ -1174,12 +1178,14 @@ function toInstallationRepo(raw: Record<string, unknown>): InstallationRepo | nu
   const login = (owner as Record<string, unknown>).login;
   const name = raw.name;
   const archived = raw.archived;
+  const id = raw.id;
   if (typeof login !== 'string' || login === '') return null;
   if (typeof name !== 'string' || name === '') return null;
   return {
     owner: login.toLowerCase(),
     repo: name.toLowerCase(),
     ...(archived === true ? { archived: true } : {}),
+    ...(typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? { id: String(id) } : {}),
   };
 }
 
