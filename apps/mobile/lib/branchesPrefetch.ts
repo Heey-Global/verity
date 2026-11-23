@@ -81,7 +81,8 @@ export function seedSessionBranches(client: VerityClient, session: SessionSummar
     pullRequest,
     pullRequests:
       cached?.pullRequests?.flatMap((row) => {
-        if (!row.repository.isDefault || row.url !== known?.url) return [row];
+        if (!row.repository.isDefault || row.url !== (known?.url ?? cached?.pullRequest?.url))
+          return [row];
         return pullRequest ? [{ ...row, ...pullRequest }] : [];
       }) ?? cached?.pullRequests,
   });

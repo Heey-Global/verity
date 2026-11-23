@@ -200,7 +200,13 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
               setPreviewable(res.previewable ?? []);
               setCurrentPr(res.currentPr ?? null);
               setPullRequest(res.pullRequest ?? null);
-              setRepositoryPullRequests(pullRequests);
+              setRepositoryPullRequests(
+                res.pullRequests === null
+                  ? (pullRequests?.map((row) =>
+                      row.phase === 'open' ? { ...row, mergeable: null, pipeline: 'unknown' } : row,
+                    ) ?? null)
+                  : pullRequests,
+              );
               setOwner(res.owner);
               setRepo(res.repo);
               setCodeHost(res.codeHost);

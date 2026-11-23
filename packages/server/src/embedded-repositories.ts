@@ -239,7 +239,7 @@ export function createEmbeddedRepositoryAnalysisBindings(ctx: {
       const statuses = [];
       for (const pull of page.pulls) {
         if (pull.fork) continue;
-        const status = await readProjectStatus(project, pull.branch);
+        const status = await readProjectStatus(project, pull.branch, true, pull.number);
         if (status && status.number === pull.number && status.headSha === pull.sha)
           statuses.push({ branch: pull.branch, status });
         else await eventStore.repairs.invalidateObservation(project.id, `pr:${pull.number}`);
@@ -263,7 +263,12 @@ export function createEmbeddedRepositoryAnalysisBindings(ctx: {
           await eventStore.repairs.retireResource(project.id, incident.resource);
           continue;
         }
-        const status = await readProjectStatus(project, evidence.branch);
+        const status = await readProjectStatus(
+          project,
+          evidence.branch,
+          true,
+          Number(incident.resource.slice(3)),
+        );
         const discovered = page.pulls.find((p) => `pr:${p.number}` === incident.resource);
         if (
           status &&
