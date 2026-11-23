@@ -17,6 +17,7 @@ const resourcePolicy = [
 export const mockupPreviewPolicy = `${resourcePolicy}; sandbox; frame-ancestors 'self'`;
 
 const options: sanitizeHtml.IOptions = {
+  nonTextTags: ['script', 'style', 'textarea', 'option', 'xmp', 'title'],
   allowedTags: [
     ...sanitizeHtml.defaults.allowedTags,
     'button',
