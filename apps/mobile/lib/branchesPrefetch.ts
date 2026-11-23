@@ -117,7 +117,7 @@ export function branchesSnapshotWriter(
               : row,
           ) ?? null)
         : value.pullRequests;
-    remember(cache, sessionId, { ...value, pullRequests });
+    remember(cache, sessionId, value.pullRequests === null ? { ...value, pullRequests } : value);
   };
 }
 

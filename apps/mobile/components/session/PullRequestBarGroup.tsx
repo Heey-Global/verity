@@ -30,8 +30,9 @@ function colorFor(
 function priority(pr: BranchPullRequest): number {
   if (pr.phase !== 'open') return 3;
   const { kind } = pullRequestMergeButton(pr, initialMergeState);
+  if (kind === 'merge') return 1;
   if (kind === 'blocked' || kind === 'refresh' || pr.pipeline === 'failure') return 0;
-  return kind === 'merge' ? 1 : 2;
+  return 2;
 }
 
 export function PullRequestBarGroup({

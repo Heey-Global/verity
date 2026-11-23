@@ -54,6 +54,7 @@ function withKnownCodeHost(raw: unknown): unknown {
 }
 
 const sessionPullRequestStatusSchema = pullRequestSchema.unwrap().extend({
+  observationFailed: z.boolean().optional(),
   repository: z.object({
     id: z.string().min(1),
     name: z.string().min(1),

@@ -423,34 +423,26 @@ export function installSessionRoutes(
         reply.code(503);
         return { error: 'branch switching is not configured' };
       }
-      if (!(await worktreeExists(session.worktree))) {
-        return {
-          current: '',
-          switchable: [],
-          previewable: [],
-          workspaceMissing: true,
-          currentPr: null,
-          pullRequest: null,
-        };
-      }
       const readStage = <T>(stage: BranchReadStage, read: () => Promise<T>): Promise<T> =>
         measureBranchReadStage(stage, read, (timing) =>
           request.log.info(timing, 'verity: slow branch read stage'),
         );
-      const branchState = await readStage('metadata', () =>
-        readBranchMetadata(branches, session.worktree).catch((error: unknown) => {
-          request.log.warn(
-            {
-              sessionId: id,
-              worktree: session.worktree,
-              errorType: error instanceof Error ? error.constructor.name : typeof error,
-              message: error instanceof Error ? error.message : String(error),
-            },
-            'verity: branch list degraded because git metadata is unavailable',
-          );
-          return null;
-        }),
-      );
+      const branchState = (await worktreeExists(session.worktree))
+        ? await readStage('metadata', () =>
+            readBranchMetadata(branches, session.worktree).catch((error: unknown) => {
+              request.log.warn(
+                {
+                  sessionId: id,
+                  worktree: session.worktree,
+                  errorType: error instanceof Error ? error.constructor.name : typeof error,
+                  message: error instanceof Error ? error.message : String(error),
+                },
+                'verity: branch list degraded because git metadata is unavailable',
+              );
+              return null;
+            }),
+          )
+        : null;
       const readRepositoryPRs = (pullRequest?: PullRequestStatus | null) =>
         readStage('pr', async () => {
           const key = encodeURIComponent(session.sessionId);
