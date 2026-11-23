@@ -223,7 +223,7 @@ preview removes inline `<svg>` markup.
 Use sample data and native controls such as `<details>`, checkboxes and radio
 buttons. CSS selectors like `:checked` can show different states based on
 your choices. The preview disables JavaScript and blocks external resources,
-link navigation, and form submission. Each HTML file may be up to 2 MiB and contain up to 4,096 elements.
+link navigation, and form submission. Each HTML file may be up to 2 MiB and contain up to 4,096 elements with up to 64 levels of nesting.
 The review opens the saved draft directly, so a project server and screenshot
 renderer are unnecessary.
 

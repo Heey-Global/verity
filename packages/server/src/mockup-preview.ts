@@ -19,8 +19,7 @@ export const mockupPreviewPolicy = `${resourcePolicy}; sandbox; frame-ancestors 
 export class MockupPreviewLimitError extends Error {}
 
 const options: sanitizeHtml.IOptions = {
-  nestingLimit: 64,
-  nonTextTags: ['script', 'style', 'textarea', 'option', 'xmp', 'title'],
+  nonTextTags: ['script', 'style', 'textarea', 'option', 'xmp', 'title', 'iframe'],
   allowedTags: [
     ...sanitizeHtml.defaults.allowedTags,
     'button',
@@ -64,13 +63,29 @@ function documentAttributes(attributes: Record<string, string>): string {
 
 export function mockupPreviewDocument(html: string): string {
   let tags = 0;
+  const openTags: string[] = [];
+  const headStyles: string[] = [];
   let htmlAttributes = '';
   let bodyAttributes = '';
   const content = sanitizeHtml(html, {
     ...options,
-    // The parser still visits elements beyond the output nesting limit.
-    onOpenTag: () => {
+    onOpenTag: (tag) => {
       if (++tags > 4096) throw new MockupPreviewLimitError('HTML mockup exceeds 4096 elements');
+      openTags.push(tag);
+      if (openTags.length > 64)
+        throw new MockupPreviewLimitError('HTML mockup exceeds 64 levels of nesting');
+    },
+    onCloseTag: () => {
+      openTags.pop();
+    },
+    exclusiveFilter: (frame) => {
+      if (frame.tag !== 'style' || openTags.at(-1) !== 'head') return false;
+      // Keep only stylesheet text in the trusted head. Prevent it from ending
+      // the new raw-text element when parsed again by the browser.
+      headStyles.push(
+        `<style>${frame.text.replace(/<(?=\/style(?:[\s/>]|$))/giu, '\\3c ')}</style>`,
+      );
+      return true;
     },
     transformTags: {
       ...options.transformTags,
@@ -84,5 +99,5 @@ export function mockupPreviewDocument(html: string): string {
       },
     },
   });
-  return `<!doctype html><html${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${resourcePolicy}"></head><body${bodyAttributes}>${content}</body></html>`;
+  return `<!doctype html><html${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${resourcePolicy}">${headStyles.join('')}</head><body${bodyAttributes}>${content}</body></html>`;
 }

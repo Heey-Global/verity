@@ -35,13 +35,15 @@ it('keeps safe document attributes used by CSS and locale settings', () => {
   );
   expect(preview).toContain('<html lang="ar" dir="rtl" data-theme="dark" style="--spacing: 1rem">');
   expect(preview).toContain('<body class="compact" style="padding: var(--spacing)">');
-  expect(preview).toContain('html[data-theme="dark"] body.compact');
+  expect(preview).toMatch(
+    /<style>html\[data-theme="dark"\] body\.compact .*<\/style><\/head><body/u,
+  );
   expect(preview).not.toContain('onload');
   expect(preview).not.toContain('Hidden tab title');
 });
 
 it('bounds parser work as well as rendered document depth', () => {
   const nested = '<div>'.repeat(100);
-  expect(mockupPreviewDocument(nested)).not.toContain(nested);
-  expect(() => mockupPreviewDocument('<div>'.repeat(4097))).toThrow(/4096 elements/);
+  expect(() => mockupPreviewDocument(nested)).toThrow(/64 levels of nesting/);
+  expect(() => mockupPreviewDocument('<div></div>'.repeat(4097))).toThrow(/4096 elements/);
 });
