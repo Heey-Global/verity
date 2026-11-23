@@ -163,6 +163,20 @@ describe('GitHub repository identity', () => {
     ).rejects.toThrow('invalid GitHub repository ID');
   });
 
+  it('forgets the repository ID when a project is disconnected and relinked', async () => {
+    await project('p', 'deep-ocr');
+    await ctx.store.githubRepositories.reconcile({ ...renamed, repo: 'deep-ocr' });
+    const local = await ctx.store.disconnectProjectFromGitHub('p');
+    expect(local).toMatchObject({ kind: 'local', githubRepositoryId: null });
+    const target = { owner: 'heey-global', repo: 'another-repo' };
+    expect(await ctx.store.reserveProjectIdentity('p', target)).toBe(true);
+    // A stale ID would scope the relinked project's tokens to the old repository.
+    expect(await ctx.store.linkProjectToGitHub('p', target)).toMatchObject({
+      repo: 'another-repo',
+      githubRepositoryId: null,
+    });
+  });
+
   it('adopts the placeholder the installation sync left under the new name', async () => {
     await project('p', 'deep-ocr');
     await ctx.store.githubRepositories.reconcile({ ...renamed, repo: 'deep-ocr' });

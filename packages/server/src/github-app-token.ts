@@ -484,7 +484,11 @@ export function createCachedProjectTokenMint(
     }
     // The recorded repository ID is part of the scope: a token minted for one bound
     // repository is never handed to a caller of the same name bound to another.
-    const key = `${authority}\0${project.owner}/${project.repo}\0${project.githubRepositoryId ?? ''}`;
+    // `undefined` (bare coordinates, ID looked up) and `null` (an unbound project,
+    // scoped by name) can resolve to different repositories, so they never share.
+    const scope =
+      project.githubRepositoryId === undefined ? '?' : (project.githubRepositoryId ?? '-');
+    const key = `${authority}\0${project.owner}/${project.repo}\0${scope}`;
     const hit = cache.get(key);
     if (hit !== undefined && now() - hit.at < ttlMs) return Promise.resolve(hit.token);
     const existing = inflight.get(key);

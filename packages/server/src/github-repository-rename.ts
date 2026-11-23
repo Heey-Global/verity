@@ -23,6 +23,8 @@ export async function reconcileGitHubRepository(
       `verity: GitHub repository ${observation.requestedOwner}/${observation.requestedRepo} ` +
         `is now ${observation.owner}/${observation.repo}; project ${projectId} follows it`,
     );
+    // `syncProjectCheckout` shares the per-project checkout lock with provisioning,
+    // so a rename recorded mid-provision queues behind it instead of racing it.
     void (async () => {
       try {
         const project = await eventStore.getProject(projectId);

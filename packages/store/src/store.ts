@@ -6343,11 +6343,9 @@ export class EventStore implements EventSink {
    * (whose ON CONFLICT branch would target the WRONG row — the GitHub-side
    * identity we are moving TO).
    *
-   * `container_name` is left alone: the container already exists under its
-   * local-project name and renaming it would mean recreating it for nothing.
-   * `clone_dir` is pinned to whatever directory the clone occupies right now, so
-   * the derived `<owner>-<repo>` path change does NOT relocate it — sessions
-   * persist absolute worktree paths under that directory.
+   * `container_name` stays (renaming would recreate the container); `clone_dir` is
+   * pinned to the clone's current directory, as sessions persist absolute worktree
+   * paths under it. Any GitHub repository ID is cleared; the new one is learned.
    *
    * Returns `undefined` when the project no longer exists. Throws the driver's
    * unique-violation when `(owner, repo)` is already registered — the caller maps
@@ -6431,6 +6429,7 @@ export class EventStore implements EventSink {
           kind: target.kind ?? 'github',
           forge_connection_id: target.forgeConnectionId ?? null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
+          github_repository_id: null,
           updated_at: sql`now()`,
         })
         .where('id', '=', id)
@@ -6491,6 +6490,7 @@ export class EventStore implements EventSink {
           repository_instance: 1,
           forge_connection_id: null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
+          github_repository_id: null,
           latest_release_tag: null,
           latest_release_name: null,
           latest_release_url: null,

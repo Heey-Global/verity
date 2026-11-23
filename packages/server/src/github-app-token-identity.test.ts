@@ -307,4 +307,18 @@ describe('cached project token mint', () => {
     await expect(cached({ ...name, githubRepositoryId: '4242' })).resolves.toBe('token-4242');
     expect(minted).toEqual(['4242', '9999']);
   });
+
+  it('keeps a bare-coordinate caller apart from an unbound project of the same name', async () => {
+    // The first borrows the ID recorded for the name, the second mints by name:
+    // they can resolve to different repositories, so neither reuses the other's token.
+    const minted: (string | null | undefined)[] = [];
+    const cached = createCachedProjectTokenMint((project) => {
+      minted.push(project.githubRepositoryId);
+      return Promise.resolve(`token-${String(project.githubRepositoryId)}`);
+    });
+    const name = { owner: 'heey-global', repo: 'deep-ocr' };
+    await expect(cached(name)).resolves.toBe('token-undefined');
+    await expect(cached({ ...name, githubRepositoryId: null })).resolves.toBe('token-null');
+    expect(minted).toEqual([undefined, null]);
+  });
 });
