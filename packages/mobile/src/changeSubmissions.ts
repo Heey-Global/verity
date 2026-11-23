@@ -58,7 +58,7 @@ export function changeSubmissionsClient(
         .parse(await response.json()).submission;
     },
     /** Ask the session agent to commit its work, then add it to the local project. */
-    async saveToProject(sessionId: string): Promise<{ accepted: true }> {
+    saveToProject: async (sessionId: string): Promise<{ accepted: true }> => {
       const response = await request(`/sessions/${encodeURIComponent(sessionId)}/save-to-project`, {
         method: 'POST',
       });
