@@ -5,7 +5,7 @@ import { isSessionLinkProject, type SessionLinkProject } from './project-session
 import { SessionCoordinationStore } from './session-coordination.js';
 
 /** The link and its coordination receipt must commit together to preserve revocation on retry. */
-export async function createStoredSessionLink(
+async function createStoredSessionLink(
   db: Kysely<Database>,
   leftId: string,
   rightId: string,
