@@ -18,12 +18,14 @@ import {
   type GoogleMenuAccess,
   type GoogleService,
 } from '../lib/attachMenu';
-import { useRecentImages } from '../lib/recentImages';
+import { type RecentImages, useRecentImages } from '../lib/recentImages';
 import { Icon, type IconName } from './Icon';
 import { Button } from './ui/Button';
 import { Image } from './ui/Image';
 import { tint } from './ui/tint';
 import { Toggle } from './ui/Toggle';
+
+type RecentImage = Extract<RecentImages, { kind: 'ready' }>['images'][number];
 
 export interface AttachMenuGoogle {
   /** A centrally connected Google account; without one there is no Connectors row. */
@@ -64,7 +66,7 @@ export function AttachMenu({
 }) {
   const { width: winW, height: winH } = useWindowDimensions();
   const [view, setView] = useState<'main' | 'connectors'>('main');
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<RecentImage[]>([]);
   // Reopening the menu starts on its first page again.
   useEffect(() => {
     if (!visible) {
@@ -73,9 +75,17 @@ export function AttachMenu({
     }
   }, [visible]);
   const recent = useRecentImages(visible);
-  const images = recent.state.kind === 'ready' ? recent.state.images : [];
-  const selection = selected.filter((id) => images.some((image) => image.id === id));
-  const attachable = selection.slice(0, remainingAttachments);
+  const state = recent.state;
+  const latest = state.kind === 'ready' ? state.images : [];
+  const selection =
+    state.kind === 'ready'
+      ? selected.filter((image) => !state.limited || latest.some(({ id }) => id === image.id))
+      : [];
+  const images = [
+    ...latest,
+    ...selection.filter((image) => !latest.some(({ id }) => id === image.id)),
+  ];
+  const attachable = selection.slice(0, remainingAttachments).map(({ id }) => id);
   const strip = recent.state.kind !== 'unavailable';
   const rows = attachMenuRows(
     { ...handlers, onOpenConnectors: () => setView('connectors') },
@@ -120,14 +130,15 @@ export function AttachMenu({
               {strip ? (
                 <RecentStrip
                   recent={recent}
+                  images={images}
                   onCapture={handlers.onCapturePhoto}
                   selected={attachable}
                   canSelectMore={attachable.length < remainingAttachments}
-                  onSelect={(id) =>
+                  onSelect={(image) =>
                     setSelected((current) =>
-                      current.includes(id)
-                        ? current.filter((item) => item !== id)
-                        : [...current.filter((item) => selection.includes(item)), id],
+                      current.some(({ id }) => id === image.id)
+                        ? current.filter(({ id }) => id !== image.id)
+                        : [...selection, image],
                     )
                   }
                 />
@@ -215,16 +226,18 @@ function CatalogStatus({ error }: { error: string | null }) {
 
 function RecentStrip({
   recent,
+  images,
   onCapture,
   selected,
   canSelectMore,
   onSelect,
 }: {
   recent: ReturnType<typeof useRecentImages>;
+  images: readonly RecentImage[];
   onCapture: () => void;
   selected: readonly string[];
   canSelectMore: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (image: RecentImage) => void;
 }) {
   const { theme } = useUnistyles();
   const { state } = recent;
@@ -244,7 +257,7 @@ function RecentStrip({
         <Icon name="camera" size={24} color={theme.colors.textMuted} />
       </Pressable>
       {state.kind === 'ready'
-        ? state.images.map((image, index) => {
+        ? images.map((image, index) => {
             // Numbered in the order the images will be attached.
             const order = selected.indexOf(image.id) + 1;
             const checked = order > 0;
@@ -253,7 +266,7 @@ function RecentStrip({
               <Pressable
                 key={image.id}
                 style={[styles.tile, disabled ? styles.tileDisabled : null]}
-                onPress={() => onSelect(image.id)}
+                onPress={() => onSelect(image)}
                 disabled={disabled}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked, disabled }}

@@ -130,6 +130,22 @@ it('shows a screenshot taken while the menu is open without attaching it', async
   expect(onAttachRecent).toHaveBeenCalledWith(['shot-2']);
 });
 
+it('keeps a selected screenshot available when newer screenshots fill the strip', async () => {
+  const { onAttachRecent } = renderMenu();
+  const tiles = await screen.findAllByLabelText(/^Select recent image/);
+  fireEvent.press(tiles[0]);
+  mockLibrary.screenshots = Array.from({ length: 10 }, (_, index) => image(`new-${index}`));
+  await act(async () => {
+    for (const listener of mockListeners) listener();
+  });
+  const retained = await screen.findByLabelText('Select recent image 11');
+  expect(within(retained).getByText('1')).toBeTruthy();
+  fireEvent.press(screen.getByRole('button', { name: 'Attach 1 image' }));
+  expect(onAttachRecent).toHaveBeenCalledWith(['shot-2']);
+  fireEvent.press(retained);
+  expect(screen.queryByRole('button', { name: 'Attach 1 image' })).toBeNull();
+});
+
 it('rechecks photo access when returning from Settings without a library event', async () => {
   mockLibrary.permission.status = 'denied';
   const appState = jest.mocked(AppState.addEventListener);
