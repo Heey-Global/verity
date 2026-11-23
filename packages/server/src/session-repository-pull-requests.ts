@@ -132,7 +132,7 @@ export function createSessionRepositoryPullRequests(
                 statuses.set(legacy.number, {
                   status:
                     projectPullRequests.defaultBranch && legacy.phase === 'open'
-                      ? { ...legacy, mergeable: null, pipeline: 'unknown' }
+                      ? { ...legacy, mergeable: null, pipeline: 'unknown', observationFailed: true }
                       : legacy,
                 });
               for (const [number, { status }] of statuses) {

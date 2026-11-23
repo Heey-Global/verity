@@ -594,10 +594,17 @@ export function createServerSessionOverview({
           continue;
         // Near quota exhaustion background discovery yields to agents and open apps.
         if (session.projectId && (await deferForgeReads(session.projectId))) continue;
+        let primary: PullRequestStatus | null = null;
         try {
-          if (!(await worktreeExists(session.worktree))) continue;
-          const primary = await backgroundPrStatus(session);
-          await maybeDispatchPrRepairTurns(session, primary);
+          if (await worktreeExists(session.worktree)) {
+            const status = await backgroundPrStatus(session);
+            await maybeDispatchPrRepairTurns(session, status);
+            primary = status;
+          }
+        } catch (err) {
+          app.log.warn({ err, sessionId: session.sessionId }, 'background primary PR check failed');
+        }
+        try {
           const rows = await observePullRequests(session);
           for (const row of rows ?? []) {
             const pr = row.status;
