@@ -1,3 +1,28 @@
+import { createHash } from 'node:crypto';
+
+export const MOCKUP_HTML_ATTACHMENT = 'application/vnd.verity.mockup-html';
+
+/** The session-derived mask keeps identical HTML isolated by session while
+ * leaving the existing content addresses for generic attachments intact. */
+export function attachmentContentAddress(bytes: Buffer, sessionId?: string): string {
+  if (sessionId === undefined) return createHash('sha256').update(bytes).digest('hex');
+  const mask = createHash('sha256').update('verity-mockup:').update(sessionId).digest();
+  const digest = createHash('sha256').update(bytes).digest();
+  for (const [index, byte] of mask.entries()) digest[index] = digest[index]! ^ byte;
+  return digest.toString('hex');
+}
+
+export function attachmentStorageRecord(base64Data: string, mediaType: string, sessionId?: string) {
+  const bytes = Buffer.from(base64Data, 'base64');
+  const ordinaryType =
+    mediaType === MOCKUP_HTML_ATTACHMENT ? 'application/octet-stream' : mediaType;
+  return {
+    hash: attachmentContentAddress(bytes, sessionId),
+    media_type: sessionId === undefined ? ordinaryType : MOCKUP_HTML_ATTACHMENT,
+    bytes,
+  };
+}
+
 // Mockup review state of a session: the screens an agent presented and the
 // reviewer's marks, as stored and as read back.
 
@@ -7,13 +32,13 @@
  *  the review ended. */
 export type SessionMockupState = 'pending' | 'revising' | 'approved';
 
-/** One presented screen. The image is a snapshot in the attachment store, so the
+/** One presented screen. The artifact is a snapshot in the attachment store, so the
  *  round stays as it was reviewed even when the agent rewrites the file later. */
 export interface MockupScreenRecord {
   name: string;
-  /** SHA-256 of the image in the attachment store. */
+  /** Content address of the artifact in the attachment store. */
   attachment: string;
-  mediaType: 'image/png' | 'image/jpeg';
+  mediaType: 'image/png' | 'image/jpeg' | 'text/html';
   width: number;
   height: number;
   verdict: MockupVerdict;

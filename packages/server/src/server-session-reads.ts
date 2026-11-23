@@ -496,6 +496,6 @@ export function installSessionAttachments(app: FastifyInstance, ctx: ServerConte
   // Content-addressed → the bytes for a given id never change, so it's cached
   // forever (immutable). 404 for an unknown hash.
   registerAttachmentRoute(app, {
-    getAttachment: (hash) => ctx.deps.eventStore.getAttachment(hash),
+    getAttachment: (hash, maxBytes) => ctx.deps.eventStore.getAttachment(hash, maxBytes),
   });
 }

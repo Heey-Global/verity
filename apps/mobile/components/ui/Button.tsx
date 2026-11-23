@@ -30,6 +30,7 @@ export function Button({
   fullWidth = false,
   accessibilityLabel,
   accessibilityHint,
+  selected,
   role = 'button',
 }: {
   /** A verb: "Activate", "Copy", "Remove key". */
@@ -44,6 +45,8 @@ export function Button({
   accessibilityLabel?: string;
   /** What happens when the label alone does not say it ("the starter keeps preparing"). */
   accessibilityHint?: string;
+  /** The active option in a group of mutually exclusive buttons. */
+  selected?: boolean;
   /** `link` for an action that leaves the app for an external page. */
   role?: 'button' | 'link';
 }) {
@@ -64,7 +67,7 @@ export function Button({
       accessibilityRole={role}
       accessibilityLabel={accessibilityLabel ?? label}
       accessibilityHint={accessibilityHint}
-      accessibilityState={{ disabled: locked, busy: loading }}
+      accessibilityState={{ disabled: locked, busy: loading, selected }}
       style={({ pressed }) => [
         styles.base,
         size === 'compact' ? styles.compact : size === 'small' ? styles.small : styles.large,

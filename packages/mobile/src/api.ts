@@ -8,6 +8,7 @@ export { branchListSchema, type BranchList, type SessionPullRequestStatus } from
 import { addressedToViewerSchema, openChoicesSchema } from './sessionRequests.js';
 import { changeSubmissionsClient, sessionChangeSubmissionSchema } from './changeSubmissions.js';
 import { mcpAppsClient } from './mcp-apps-client.js';
+import { attachmentsClient } from './attachments-client.js';
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
   agentLoginResponseSchema,
@@ -2686,6 +2687,10 @@ export class VerityClient {
   readonly getMcpAppDocument = this.mcpApps.getMcpAppDocument;
   readonly createMcpAppDocumentUrl = this.mcpApps.createMcpAppDocumentUrl;
   readonly callMcpAppTool = this.mcpApps.callMcpAppTool;
+
+  private readonly attachments = attachmentsClient(this.request.bind(this));
+  readonly getMockupPreviewDocument = this.attachments.getMockupPreviewDocument;
+  readonly readTaskAttachment = this.attachments.readTaskAttachment;
 
   async getAttendeeSettings(): Promise<{ configured: boolean }> {
     return z
@@ -6755,14 +6760,6 @@ export class VerityClient {
 
   async deleteTask(id: string): Promise<void> {
     await this.request(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  }
-
-  async readTaskAttachment(id: string, hash: string): Promise<ArrayBuffer> {
-    const res = await this.request(
-      `/tasks/${encodeURIComponent(id)}/attachments/${encodeURIComponent(hash)}`,
-      { method: 'GET' },
-    );
-    return res.arrayBuffer();
   }
 
   async qaApprovals(sessionId: string) {

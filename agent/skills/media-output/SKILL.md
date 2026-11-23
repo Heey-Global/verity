@@ -5,9 +5,20 @@ description: Use when creating or comparing visual media.
 
 # Visible media output
 
-Mockups are the exception outside planning mode: when the user asks for mockups, when an accepted plan lists them, and for every revision of them, present the images with `verity_mockups_present` (one screen per image) instead of Markdown links, so the user can review them and the new round replaces the old one. Planning mode does not allow presenting; describe the mockups in the plan's Mockups section instead.
+Outside planning mode, present mockups with `verity_mockups_present` whenever
+the user requests them, an accepted plan lists them, or the user requests a
+revision. Include the full set when submitting a revised round.
 
-When you create, compare, or ask the user to choose between images or visual variants, the images must be visible in the chat. Include each image as a Markdown image link to the actual workspace file, for example:
+Use a worktree-relative `htmlPath` for each web UI draft. Prepare one
+self-contained UTF-8 HTML file per screen beginning with `<!doctype html>`, with inline CSS and embedded assets.
+Use native HTML controls and CSS for local interactions. The preview disables
+JavaScript. Use a worktree-relative `path` to submit a PNG or JPEG for native
+screenshots, image drafts, or explicitly requested image files. Provide one
+path field per screen.
+
+In planning mode, describe the mockups in the plan's Mockups section.
+
+For visual work outside mockup review, when you create, compare, or ask the user to choose between images or visual variants, the images must be visible in the chat. Include each image as a Markdown image link to the actual workspace file, for example:
 
 ![Option label](relative/path/to/image.png)
 

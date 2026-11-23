@@ -4,6 +4,7 @@ import {
   type SessionMockups,
   storedMockupState,
   mockupReview,
+  attachmentStorageRecord,
 } from './session-mockups.js';
 import { findRecordedApprovalDecision } from './secret-approval-events.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
@@ -4409,21 +4410,18 @@ export class EventStore implements EventSink {
     return hash;
   }
 
-  /**
-   * Store an image blob from its base64 payload, content-addressed by the SHA-256
-   * of the decoded bytes. Idempotent: a re-upload of identical bytes is a no-op
-   * (ON CONFLICT DO NOTHING), so the same image dedupes to one row. Returns the
-   * hash — the `id` a `prompt` event references and the client fetches by.
-   */
-  async putAttachment(mediaType: string, base64Data: string): Promise<string> {
-    const bytes = Buffer.from(base64Data, 'base64');
-    const hash = createHash('sha256').update(bytes).digest('hex');
+  async putAttachment(
+    mediaType: string,
+    base64Data: string,
+    mockupSessionId?: string,
+  ): Promise<string> {
+    const attachment = attachmentStorageRecord(base64Data, mediaType, mockupSessionId);
     await this.db
       .insertInto('attachments')
-      .values({ hash, media_type: mediaType, bytes })
+      .values(attachment)
       .onConflict((oc) => oc.column('hash').doNothing())
       .execute();
-    return hash;
+    return attachment.hash;
   }
 
   /** Read a stored blob; an optional byte ceiling filters it before transfer. */

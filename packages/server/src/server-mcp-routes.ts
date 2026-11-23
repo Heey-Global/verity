@@ -1562,13 +1562,7 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
             mockupRevision: review.revision,
             // The chat renders this round from the result, so it keeps showing what
             // was presented after later rounds replace the session's review.
-            screens: review.screens.map(({ name, attachment, width, height, verdict }) => ({
-              name,
-              attachment,
-              width,
-              height,
-              verdict,
-            })),
+            screens: review.screens,
             note: 'Verity shows the mockups in the chat; the user marks each screen and explains in the chat. End your turn now and do not implement the rest of the plan until the user tells you in the chat to implement.',
           };
         }

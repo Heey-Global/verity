@@ -72,3 +72,10 @@ import './unistyles';
 // 15-second per-test ceiling in jest.config.js.
 import { configure } from '@testing-library/react-native';
 configure({ asyncUtilTimeout: 10_000 });
+
+// WebView is native-only. Individual suites can override this render stub.
+jest.mock('react-native-webview', () => ({
+  __esModule: true,
+  default: require('react-native').View,
+  WebView: require('react-native').View,
+}));
