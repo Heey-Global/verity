@@ -481,12 +481,15 @@ export function installSessionRoutes(
           return Promise.race([entry.read, budget]).finally(() => clearTimeout(timeout));
         });
       if (branchState === null) {
+        const pullRequests = await readRepositoryPRs();
         return {
           current: '',
           switchable: [],
           previewable: [],
           workspaceMissing: true,
-          pullRequests: (await readRepositoryPRs())?.map((row) => row.status) ?? null,
+          ...(pullRequests === undefined
+            ? {}
+            : { pullRequests: pullRequests?.map((row) => row.status) ?? null }),
           currentPr: null,
           pullRequest: null,
         };
