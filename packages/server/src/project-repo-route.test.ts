@@ -437,6 +437,33 @@ it('does not associate a viewed PR from another branch with the active workspace
   expect(remember).not.toHaveBeenCalled();
 });
 
+it('marks a PR from the default branch ready without associating it with the session', async () => {
+  const shared = { ...pull, head: 'main' };
+  const remember = vi.fn();
+  const markPullRequestReady = vi.fn().mockResolvedValue(shared);
+  const { call } = setup({
+    ops: operations({
+      defaultBranch: vi.fn().mockResolvedValue('main'),
+      findPullRequest: vi.fn().mockResolvedValue(shared),
+      markPullRequestReady,
+    }),
+    getSession: vi.fn().mockResolvedValue({ projectId: 'p', worktree: '/wt' }),
+    currentRepositoryBranch: vi.fn().mockResolvedValue('feature'),
+    repositorySessionBranches: vi.fn().mockResolvedValue(['main']),
+    store: {
+      getProjectRepository: vi.fn(),
+      listProjectRepositories: vi.fn(),
+      recordRepositoryPullRequest: remember,
+      upsertSessionRepositoryWorkspace: vi.fn(),
+    },
+  });
+  expect((await call({ action: 'pr.ready', number: 7, sessionId: 'session' })).statusCode).toBe(
+    200,
+  );
+  expect(markPullRequestReady).toHaveBeenCalledWith(7);
+  expect(remember).not.toHaveBeenCalled();
+});
+
 it('records and invalidates a created PR for a previous branch of the session', async () => {
   const remember = vi.fn();
   const changed = vi.fn();
