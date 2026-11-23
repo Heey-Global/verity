@@ -489,8 +489,8 @@ const styles = StyleSheet.create((theme) => ({
   },
   heroBody: { flex: 1, gap: theme.spacing.xxs },
   nameLine: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  // The name gives way to the state beside it and truncates.
-  name: { flexShrink: 1, minWidth: 0 },
+  // Reserve the remaining row width for the name, including when it is an input.
+  name: { flex: 1, minWidth: 0 },
   content: {
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
