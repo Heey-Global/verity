@@ -8,7 +8,12 @@ import {
 import { findRecordedApprovalDecision } from './secret-approval-events.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
-import { createStoredSessionLink } from './session-links.js';
+import {
+  SessionLinkStore,
+  type SessionLinkRecord,
+  type SessionLinkReservation,
+  type PendingSessionLinkMessage,
+} from './session-links.js';
 import { ProjectTeamStore, type ProjectPermission } from './project-team.js';
 import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
 import {
@@ -53,7 +58,6 @@ import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { recordSessionCreator, SessionPeopleStore } from './session-people.js';
-import { isSessionLinkProject } from './project-session-links.js';
 import { ChangeSubmissionStore } from './change-submissions.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { CalendarWatchStore } from './calendar-watch.js';
@@ -142,28 +146,11 @@ export interface SessionRecord {
  *  which tells the app whether the newest plan was carried out. */
 export type SessionPlanning = 'active' | 'implemented' | 'discarded';
 
-export interface SessionLinkRecord {
-  sessionId: string;
-  peerSessionId: string;
-  peerProjectId: string;
-  peerName: string | null;
-}
-
-export type SessionLinkReservation = 'reserved' | 'duplicate' | 'exhausted' | 'unlinked';
-
-export interface PendingSessionLinkMessage {
-  id: string;
-  invocationId: string;
-  sourceSessionId: string;
-  targetSessionId: string;
-  sourceProjectId: string;
-  requestMac: string;
-  macKeyId: string;
-  message: string;
-  approvedAt: Date | null;
-  createdAt: Date;
-}
-
+export type {
+  SessionLinkRecord,
+  SessionLinkReservation,
+  PendingSessionLinkMessage,
+} from './session-links.js';
 export type GoogleWorkspaceFileKind = 'slides' | 'docs' | 'sheets';
 
 export interface SessionWorkspaceFileRecord {
@@ -1494,6 +1481,7 @@ export class EventStore implements EventSink {
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
     const db = rootDb;
+    this.sessionLinks = new SessionLinkStore(db);
     this.capacityLeases = new CapacityLeaseStore(db);
     this.userContext = new UserContextStore(db);
     this.userProfiles = new UserProfileStore(db);
@@ -1521,6 +1509,7 @@ export class EventStore implements EventSink {
     this.changeSubmissions = new ChangeSubmissionStore(db);
   }
 
+  private readonly sessionLinks: SessionLinkStore;
   readonly capacityLeases: CapacityLeaseStore;
   readonly userContext: UserContextStore;
   readonly userProfiles: UserProfileStore;
@@ -1580,72 +1569,24 @@ export class EventStore implements EventSink {
     await sql`delete from attendee_state where id = ${id}`.execute(this.db);
   }
 
-  /** One delivery at a time leaves pool capacity for conductor acceptance. */
-  private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
-
   async createSessionLink(leftId: string, rightId: string, requestId?: string): Promise<boolean> {
-    return createStoredSessionLink(this.db, leftId, rightId, isSessionLinkProject, requestId);
+    return this.sessionLinks.createSessionLink(leftId, rightId, requestId);
   }
 
   async deleteSessionLink(leftId: string, rightId: string): Promise<boolean> {
-    const [sessionA, sessionB] = [leftId, rightId].sort() as [string, string];
-    const deleted = await this.db
-      .deleteFrom('session_links')
-      .where('session_a', '=', sessionA)
-      .where('session_b', '=', sessionB)
-      .returning('session_a')
-      .executeTakeFirst();
-    return deleted !== undefined;
+    return this.sessionLinks.deleteSessionLink(leftId, rightId);
   }
 
-  /** Both endpoints are marked using one query for the overview. */
   async linkedSessionIds(): Promise<Set<string>> {
-    const rows = await this.db
-      .selectFrom('session_links')
-      .select(['session_a', 'session_b'])
-      .execute();
-    return new Set(rows.flatMap((row) => [row.session_a, row.session_b]));
+    return this.sessionLinks.linkedSessionIds();
   }
 
   async listSessionLinks(sessionId: string): Promise<SessionLinkRecord[]> {
-    const rows = await this.db
-      .selectFrom('session_links')
-      .innerJoin('sessions', (join) =>
-        join
-          .onRef('sessions.session_id', '=', 'session_links.session_a')
-          .on('session_links.session_b', '=', sessionId),
-      )
-      .select(['sessions.session_id as peer_id', 'sessions.project_id', 'sessions.name'])
-      .unionAll(
-        this.db
-          .selectFrom('session_links')
-          .innerJoin('sessions', (join) =>
-            join
-              .onRef('sessions.session_id', '=', 'session_links.session_b')
-              .on('session_links.session_a', '=', sessionId),
-          )
-          .select(['sessions.session_id as peer_id', 'sessions.project_id', 'sessions.name']),
-      )
-      .execute();
-    return rows
-      .filter((row) => row.project_id !== null)
-      .map((row) => ({
-        sessionId,
-        peerSessionId: row.peer_id,
-        peerProjectId: row.project_id!,
-        peerName: row.name,
-      }));
+    return this.sessionLinks.listSessionLinks(sessionId);
   }
 
   async sessionLinkHasAllowance(sourceId: string, targetId: string): Promise<boolean> {
-    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const row = await this.db
-      .selectFrom('session_links')
-      .select(['remaining_a', 'remaining_b'])
-      .where('session_a', '=', sessionA)
-      .where('session_b', '=', sessionB)
-      .executeTakeFirst();
-    return row !== undefined && (sourceId === sessionA ? row.remaining_a : row.remaining_b) > 0;
+    return this.sessionLinks.sessionLinkHasAllowance(sourceId, targetId);
   }
 
   async sessionLinkHasDelivery(
@@ -1653,16 +1594,7 @@ export class EventStore implements EventSink {
     targetId: string,
     invocationId: string,
   ): Promise<boolean> {
-    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const row = await this.db
-      .selectFrom('session_link_deliveries')
-      .select('invocation_id')
-      .where('invocation_id', '=', invocationId)
-      .where('session_a', '=', sessionA)
-      .where('session_b', '=', sessionB)
-      .where('source_session_id', '=', sourceId)
-      .executeTakeFirst();
-    return row !== undefined;
+    return this.sessionLinks.sessionLinkHasDelivery(sourceId, targetId, invocationId);
   }
 
   async createPendingSessionLinkMessage(input: {
@@ -1675,142 +1607,34 @@ export class EventStore implements EventSink {
     macKeyId: string;
     message: string;
   }): Promise<boolean> {
-    const [sessionA, sessionB] = [input.sourceSessionId, input.targetSessionId].sort() as [
-      string,
-      string,
-    ];
-    return this.db.transaction().execute(async (trx) => {
-      // Several links may share one source. Lock that session before counting so
-      // concurrent requests to different peers cannot each fill the last slot.
-      const source = await trx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('session_id', '=', input.sourceSessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!source) return false;
-      const link = await trx
-        .selectFrom('session_links')
-        .select('session_a')
-        .where('session_a', '=', sessionA)
-        .where('session_b', '=', sessionB)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!link) return false;
-      const count = await trx
-        .selectFrom('session_link_pending_messages')
-        .select(sql<number>`count(*)::int`.as('count'))
-        .where('source_session_id', '=', input.sourceSessionId)
-        .executeTakeFirstOrThrow();
-      if (count.count >= 6) throw new Error('too many linked messages awaiting approval');
-      const inserted = await trx
-        .insertInto('session_link_pending_messages')
-        .values({
-          id: input.id,
-          invocation_id: input.invocationId,
-          session_a: sessionA,
-          session_b: sessionB,
-          source_session_id: input.sourceSessionId,
-          target_session_id: input.targetSessionId,
-          source_project_id: input.sourceProjectId,
-          request_mac: input.requestMac,
-          mac_key_id: input.macKeyId,
-          message: input.message,
-          approved_at: null,
-        })
-        .onConflict((oc) => oc.column('invocation_id').doNothing())
-        .returning('id')
-        .executeTakeFirst();
-      return inserted !== undefined;
-    });
+    return this.sessionLinks.createPendingSessionLinkMessage(input);
   }
 
   async listPendingSessionLinkMessages(
     sourceSessionId: string,
   ): Promise<PendingSessionLinkMessage[]> {
-    const rows = await this.db
-      .selectFrom('session_link_pending_messages')
-      .selectAll()
-      .where('source_session_id', '=', sourceSessionId)
-      .orderBy('created_at')
-      .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      invocationId: row.invocation_id,
-      sourceSessionId: row.source_session_id,
-      targetSessionId: row.target_session_id,
-      sourceProjectId: row.source_project_id,
-      requestMac: row.request_mac,
-      macKeyId: row.mac_key_id,
-      message: row.message,
-      approvedAt: row.approved_at,
-      createdAt: row.created_at,
-    }));
+    return this.sessionLinks.listPendingSessionLinkMessages(sourceSessionId);
   }
 
   async pendingSessionLinkMessageIds(
     sessionIds: readonly string[],
   ): Promise<Map<string, string[]>> {
-    const result = new Map<string, string[]>();
-    if (sessionIds.length === 0) return result;
-    const rows = await this.db
-      .selectFrom('session_link_pending_messages')
-      .select(['id', 'source_session_id'])
-      .where('source_session_id', 'in', [...sessionIds])
-      .execute();
-    for (const row of rows) {
-      const ids = result.get(row.source_session_id) ?? [];
-      ids.push(row.id);
-      result.set(row.source_session_id, ids);
-    }
-    return result;
+    return this.sessionLinks.pendingSessionLinkMessageIds(sessionIds);
   }
 
   async getPendingSessionLinkMessage(
     sourceSessionId: string,
     id: string,
   ): Promise<PendingSessionLinkMessage | undefined> {
-    const row = await this.db
-      .selectFrom('session_link_pending_messages')
-      .selectAll()
-      .where('source_session_id', '=', sourceSessionId)
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row === undefined
-      ? undefined
-      : {
-          id: row.id,
-          invocationId: row.invocation_id,
-          sourceSessionId: row.source_session_id,
-          targetSessionId: row.target_session_id,
-          sourceProjectId: row.source_project_id,
-          requestMac: row.request_mac,
-          macKeyId: row.mac_key_id,
-          message: row.message,
-          approvedAt: row.approved_at,
-          createdAt: row.created_at,
-        };
+    return this.sessionLinks.getPendingSessionLinkMessage(sourceSessionId, id);
   }
 
   async approvePendingSessionLinkMessage(sourceSessionId: string, id: string): Promise<boolean> {
-    const updated = await this.db
-      .updateTable('session_link_pending_messages')
-      .set({ approved_at: sql`coalesce(approved_at, now())` })
-      .where('source_session_id', '=', sourceSessionId)
-      .where('id', '=', id)
-      .returning('id')
-      .executeTakeFirst();
-    return updated !== undefined;
+    return this.sessionLinks.approvePendingSessionLinkMessage(sourceSessionId, id);
   }
 
   async deletePendingSessionLinkMessage(sourceSessionId: string, id: string): Promise<boolean> {
-    const deleted = await this.db
-      .deleteFrom('session_link_pending_messages')
-      .where('source_session_id', '=', sourceSessionId)
-      .where('id', '=', id)
-      .returning('id')
-      .executeTakeFirst();
-    return deleted !== undefined;
+    return this.sessionLinks.deletePendingSessionLinkMessage(sourceSessionId, id);
   }
 
   async reserveSessionLinkMessage(
@@ -1820,66 +1644,13 @@ export class EventStore implements EventSink {
     approvedRenewal: boolean,
     deliver?: () => Promise<void>,
   ): Promise<SessionLinkReservation> {
-    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const previous = this.sessionLinkDeliveryTail;
-    let release = (): void => undefined;
-    const finished = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.sessionLinkDeliveryTail = finished;
-    try {
-      await previous;
-      return await this.db.transaction().execute(async (trx) => {
-        const link = await trx
-          .selectFrom('session_links')
-          .selectAll()
-          .where('session_a', '=', sessionA)
-          .where('session_b', '=', sessionB)
-          .forUpdate()
-          .executeTakeFirst();
-        if (!link) return 'unlinked';
-        const prior = await trx
-          .selectFrom('session_link_deliveries')
-          .select(['invocation_id', 'session_a', 'session_b', 'source_session_id'])
-          .where('invocation_id', '=', invocationId)
-          .executeTakeFirst();
-        if (prior) {
-          if (
-            prior.session_a !== sessionA ||
-            prior.session_b !== sessionB ||
-            prior.source_session_id !== sourceId
-          )
-            throw new Error('linked message invocation was reused for a different target');
-          await deliver?.();
-          return 'duplicate';
-        }
-        const column = sourceId === sessionA ? 'remaining_a' : 'remaining_b';
-        const remaining = link[column];
-        if (remaining === 0 && !approvedRenewal) return 'exhausted';
-        await trx
-          .updateTable('session_links')
-          .set({ [column]: remaining === 0 ? 5 : remaining - 1 })
-          .where('session_a', '=', sessionA)
-          .where('session_b', '=', sessionB)
-          .execute();
-        await trx
-          .insertInto('session_link_deliveries')
-          .values({
-            invocation_id: invocationId,
-            session_a: sessionA,
-            session_b: sessionB,
-            source_session_id: sourceId,
-          })
-          .execute();
-        // The row lock keeps unlink and project changes from completing until
-        // the target has accepted this turn. Global serialization leaves pool
-        // capacity for conductor work that uses the same store.
-        await deliver?.();
-        return 'reserved';
-      });
-    } finally {
-      release();
-    }
+    return this.sessionLinks.reserveSessionLinkMessage(
+      sourceId,
+      targetId,
+      invocationId,
+      approvedRenewal,
+      deliver,
+    );
   }
 
   /** Encrypt a normalized secret value for storage (null stays null). */

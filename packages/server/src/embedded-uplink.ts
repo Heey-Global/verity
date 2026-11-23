@@ -1,3 +1,6 @@
+import type { FastifyInstance } from 'fastify';
+import { SealedError } from '@verity/store';
+import { installTeamOutbox } from './team-outbox-worker.js';
 import type { EventStore, VeritySettingsRecord } from '@verity/store';
 import type { ServerDeps } from './server-deps.js';
 import { previewSharingCapability } from './preview-capability.js';
@@ -207,4 +210,22 @@ export function createEmbeddedTeamSharingBindings(ctx: {
     },
     teamSharing: teamSharingStatus(uplinkControl),
   };
+}
+
+export function installEmbeddedTeamOutbox(
+  app: FastifyInstance,
+  team: Parameters<typeof installTeamOutbox>[1]['team'],
+  uplinkControl: ReturnType<typeof createEmbeddedUplink>['uplinkControl'],
+  devicePairing: EmbeddedServerConfig['devicePairing'],
+): void {
+  if (uplinkControl !== undefined) {
+    // Deliver queued team changes to Uplink once it negotiated team v1.
+    installTeamOutbox(app, {
+      team,
+      uplink: uplinkControl,
+      identityKey: () => devicePairing?.identity().identityKey,
+      log: app.log,
+      isSealed: (error) => error instanceof SealedError,
+    });
+  }
 }
