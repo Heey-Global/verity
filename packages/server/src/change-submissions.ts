@@ -144,6 +144,8 @@ export interface ChangeSubmissionRouteDeps {
   revision?: (session: SessionRecord) => Promise<string | undefined>;
   /** The phase of the session's pull request, if it has one. */
   prPhase?: (session: SessionRecord) => Promise<PullRequestPhase | undefined>;
+  /** Whether the session changed anything the project does not have yet. */
+  hasChanges?: (session: SessionRecord) => Promise<boolean | undefined>;
 }
 
 export function registerChangeSubmissionRoutes(
@@ -169,8 +171,11 @@ export function registerChangeSubmissionRoutes(
     const session = await deps.store.getSession(id);
     if (session === undefined) return reply.code(404).send({ error: 'session not found' });
     const viewer = request.localUserId ?? null;
+    const hasChanges = await deps.hasChanges?.(session).catch(() => undefined);
     return {
       submission: await describe(session),
+      // Absent when unreadable; the app then offers submitting anyway.
+      ...(hasChanges === undefined ? {} : { hasChanges }),
       // Without accounts the one operator holds every right.
       viewerCanCode: viewer === null || (await holdsCode(deps.store, viewer, session.projectId)),
     };

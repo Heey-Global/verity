@@ -64,6 +64,11 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
     }
     case 'compaction':
       return { kind: 'compaction', label: 'Context compacted', tone: 'neutral' };
+    case 'notice':
+      // Submitted changes (ADR 0023) read as a quiet history line, not a message.
+      if (event.changeSubmission !== undefined)
+        return { kind: 'change-submission', label: event.text, tone: 'neutral' };
+      return { kind: event.t, label: event.t, tone: 'neutral' };
     case 'interrupted':
       return { kind: 'interrupted', label: 'Turn interrupted', tone: 'warning' };
     case 'merged':

@@ -1,4 +1,5 @@
 import { addressedToViewerSchema, openChoicesSchema } from './sessionRequests.js';
+import { changeSubmissionsClient, sessionChangeSubmissionSchema } from './changeSubmissions.js';
 import { mcpAppsClient } from './mcp-apps-client.js';
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
@@ -394,6 +395,7 @@ export const sessionSummarySchema = z
     inboxDismissed: z.array(z.string()).optional(),
     /** Whether its questions, plans and mockups are the requester's to answer. */
     addressedToViewer: addressedToViewerSchema,
+    changeSubmission: sessionChangeSubmissionSchema,
     /** Conditions about THIS session, e.g. a sandbox that lost its connection to
      * the server (`sandbox_disconnected`). Absent from a healthy session and from
      * any older server, both of which read as "nothing to report". */
@@ -2725,6 +2727,8 @@ export class VerityClient {
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
   readonly projectQA = projectQAClient((path, init) => this.request(path, init));
+  readonly changeSubmissions = changeSubmissionsClient((path, init) => this.request(path, init));
+  readonly saveSessionToProject = this.changeSubmissions.saveToProject;
   readonly getProjectTeam = this.people.getProjectTeam;
   readonly createProjectInvitation = this.people.createProjectInvitation;
   readonly getProjectInvitation = this.people.getProjectInvitation;
@@ -6775,14 +6779,6 @@ export class VerityClient {
       method: 'POST',
     });
     return localMergedSchema.parse(await res.json());
-  }
-
-  /** Ask the session agent to commit its work, then add it to the local project. */
-  async saveSessionToProject(id: string): Promise<{ accepted: true }> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/save-to-project`, {
-      method: 'POST',
-    });
-    return z.object({ accepted: z.literal(true) }).parse(await res.json());
   }
 
   /** Answer a live mid-turn permission prompt (#149): allow (optionally with edited

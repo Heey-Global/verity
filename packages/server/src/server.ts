@@ -441,6 +441,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     revision: async (session) =>
       (await branchesForSession(session))?.headRevision?.(session.worktree),
     prPhase: async (session) => (await sessionPrCache.get(session))?.phase,
+    hasChanges: async (session) => {
+      const branches = await branchesForSession(session);
+      if (!branches || session.projectId === null) return undefined;
+      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
+        session.projectId,
+      );
+      const base = `origin/${settings?.defaultBranch ?? 'main'}`;
+      return branches.hasProjectChanges(session.worktree, base);
+    },
   });
   installMeetingIntake(app, ctx, { attendeeMeetings, spawn: sessionCreate.spawn });
 

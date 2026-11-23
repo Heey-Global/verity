@@ -708,3 +708,40 @@ describe('requests addressed to someone else', () => {
     expect(keys(waiting(false))).toEqual([]);
   });
 });
+
+describe('submitted changes', () => {
+  const submitted = (over: Record<string, unknown> = {}) =>
+    session('s1', {
+      changeSubmission: {
+        status: 'waiting',
+        submittedBy: { id: 'mara', name: 'Mara' },
+        submittedAt: 5,
+        addressedToViewer: true,
+        ...over,
+      },
+    } as Partial<SessionSummary>);
+  const items = (s: SessionSummary) => inboxItems({ sessions: [s], projects: [], now: NOW });
+
+  it('asks a member with Code to check them', () => {
+    expect(items(submitted())).toEqual([
+      expect.objectContaining({
+        key: 'code_review:s1:5',
+        kind: 'code_review',
+        tag: 'Code review',
+        title: 'Mara submitted changes',
+        message: 'Check them and add them to the project.',
+      }),
+    ]);
+    expect(items(submitted({ checker: { id: 'alex' } }))[0]?.message).toBe(
+      'You are checking them.',
+    );
+  });
+
+  // The server addresses a submission to whoever checks it; without that flag
+  // (no accounts, an older server) there is nobody else to hand changes to.
+  it('stays away from others and from added changes', () => {
+    expect(items(submitted({ addressedToViewer: false }))).toEqual([]);
+    expect(items(submitted({ addressedToViewer: undefined }))).toEqual([]);
+    expect(items(submitted({ status: 'added' }))).toEqual([]);
+  });
+});
