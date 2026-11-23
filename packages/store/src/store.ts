@@ -4,6 +4,7 @@ import {
   type SessionMockups,
   storedMockupState,
   mockupReview,
+  attachmentContentAddress,
 } from './session-mockups.js';
 import { findRecordedApprovalDecision } from './secret-approval-events.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
@@ -4409,15 +4410,13 @@ export class EventStore implements EventSink {
     return hash;
   }
 
-  /**
-   * Keep the legacy digest for generic uploads. Flipping a digest bit for HTML
-   * distinguishes identical bytes without adding a forgeable prefix to the input.
-   */
-  async putAttachment(mediaType: string, base64Data: string): Promise<string> {
+  async putAttachment(
+    mediaType: string,
+    base64Data: string,
+    mockupSessionId?: string,
+  ): Promise<string> {
     const bytes = Buffer.from(base64Data, 'base64');
-    const digest = createHash('sha256').update(bytes).digest();
-    if (mediaType === 'text/html') digest[0] = digest[0]! ^ 0x80;
-    const hash = digest.toString('hex');
+    const hash = attachmentContentAddress(bytes, mockupSessionId);
     await this.db
       .insertInto('attachments')
       .values({ hash, media_type: mediaType, bytes })

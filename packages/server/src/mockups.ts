@@ -4,7 +4,13 @@
 // implement, and the agent ends the review before it goes on. Files are copied
 // into the attachment store when presented, so a round in the chat keeps showing
 // what was reviewed after the files change.
-import type { EventStore, MockupScreenRecord, MockupVerdict, SessionMockups } from '@verity/store';
+import {
+  MOCKUP_HTML_ATTACHMENT,
+  type EventStore,
+  type MockupScreenRecord,
+  type MockupVerdict,
+  type SessionMockups,
+} from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { MAX_HTML_MOCKUP_BYTES } from './mockup-preview.js';
@@ -125,7 +131,11 @@ export function createSessionMockups(deps: MockupDeps) {
           },
         );
         const format = html ? mockupHtml(bytes) : mockupImage(bytes);
-        const attachment = await store.putAttachment(format.mediaType, bytes.toString('base64'));
+        const attachment = await store.putAttachment(
+          html ? MOCKUP_HTML_ATTACHMENT : format.mediaType,
+          bytes.toString('base64'),
+          html ? sessionId : undefined,
+        );
         screens.push({ name: screen.name, attachment, ...format });
       }
       const stored = await store.updateSessionMockups(

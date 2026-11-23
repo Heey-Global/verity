@@ -10,7 +10,7 @@ the user requests them, an accepted plan lists them, or the user requests a
 revision. Include the full set when submitting a revised round.
 
 Use a worktree-relative `htmlPath` for each web UI draft. Prepare one
-self-contained UTF-8 HTML file per screen with inline CSS and embedded assets.
+self-contained UTF-8 HTML file per screen beginning with `<!doctype html>`, with inline CSS and embedded assets.
 Use native HTML controls and CSS for local interactions. The preview disables
 JavaScript. Use a worktree-relative `path` to submit a PNG or JPEG for native
 screenshots, image drafts, or explicitly requested image files. Provide one

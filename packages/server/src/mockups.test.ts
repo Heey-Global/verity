@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { EventStore } from '@verity/store';
+import { EventStore, MOCKUP_HTML_ATTACHMENT } from '@verity/store';
 import { Conductor, type Backend, type RunTurnOptions } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -180,8 +180,8 @@ describe('presenting mockups', () => {
 
   it('refuses to preview an oversized HTML attachment uploaded outside review', async () => {
     const bytes = Buffer.alloc(2 * 1024 * 1024 + 1);
-    const hash = await store.putAttachment('text/html', bytes.toString('base64'));
-    expect((await app.inject(`/attachments/${hash}?mockup=1`)).statusCode).toBe(404);
+    const hash = await store.putAttachment(MOCKUP_HTML_ATTACHMENT, bytes.toString('base64'), 's1');
+    expect((await app.inject(`/sessions/s1/mockup-attachments/${hash}`)).statusCode).toBe(404);
   });
 
   it('snapshots a mixed HTML and image round', async () => {
@@ -203,12 +203,16 @@ describe('presenting mockups', () => {
     writeFileSync(path, html.replace('Original', 'Changed'));
     const htmlAttachment = round.screens[0]!.attachment;
     expect(htmlAttachment).not.toBe(generic);
-    const preview = await app.inject(`/attachments/${htmlAttachment}?mockup=1`);
+    expect((await app.inject(`/attachments/${htmlAttachment}`)).statusCode).toBe(404);
+    expect(
+      (await app.inject(`/sessions/other/mockup-attachments/${htmlAttachment}`)).statusCode,
+    ).toBe(404);
+    const preview = await app.inject(`/sessions/s1/mockup-attachments/${htmlAttachment}`);
     expect(preview.statusCode).toBe(200);
     expect(preview.body).toContain('Original');
     expect(round.screens.map((screen) => screen.mediaType)).toEqual(['text/html', 'image/png']);
     expect(await store.getAttachment(round.screens[0]!.attachment)).toEqual({
-      mediaType: 'text/html',
+      mediaType: MOCKUP_HTML_ATTACHMENT,
       bytes: Buffer.from(html),
     });
     expect((await store.getSession('s1'))?.mockupReview).toEqual(round);

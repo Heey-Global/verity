@@ -3,9 +3,11 @@ import { render, screen } from '@testing-library/react-native';
 import { HtmlMockupPreview } from '../components/session/HtmlMockupPreview';
 
 const mockGetDocument = jest.fn(
-  async (_attachment: string, _signal: AbortSignal) =>
+  async (_sessionId: string, _attachment: string, _signal: AbortSignal) =>
     '<details><summary>Plans</summary></details>',
 );
+
+jest.mock('expo-router', () => ({ useLocalSearchParams: () => ({ id: 'session' }) }));
 
 jest.mock('../lib/client', () => ({
   createVerityClient: () => ({ getMockupPreviewDocument: mockGetDocument }),
@@ -19,7 +21,7 @@ it('loads the authorized preview into a local WebView without scripting or a bri
   const preview = render(<HtmlMockupPreview attachment="saved-screen" name="Pricing" />);
   const view = await screen.findByLabelText('Pricing mockup');
 
-  expect(mockGetDocument).toHaveBeenCalledWith('saved-screen', expect.any(AbortSignal));
+  expect(mockGetDocument).toHaveBeenCalledWith('session', 'saved-screen', expect.any(AbortSignal));
   expect(view.props).toMatchObject({
     source: { html: '<details><summary>Plans</summary></details>', baseUrl: 'about:blank' },
     javaScriptEnabled: false,
@@ -35,7 +37,7 @@ it('loads the authorized preview into a local WebView without scripting or a bri
   };
   expect(onShouldStartLoadWithRequest({ url: 'about:blank' })).toBe(true);
   expect(onShouldStartLoadWithRequest({ url: 'https://example.test/' })).toBe(false);
-  const [, signal] = mockGetDocument.mock.calls[0]!;
+  const [, , signal] = mockGetDocument.mock.calls[0]!;
   preview.unmount();
   expect(signal.aborted).toBe(true);
 });

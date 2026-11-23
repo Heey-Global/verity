@@ -1,6 +1,6 @@
 import type { Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
-import { EventStore, createSealableSecretCipher } from '@verity/store';
+import { EventStore, MOCKUP_HTML_ATTACHMENT, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -100,8 +100,9 @@ describe('browser authentication through the Core', () => {
     const browser = await registry.mint('Browser', true);
     const html = '<details><summary>Show prices</summary></details><script>init()</script>';
     const attachment = await ctx.store.putAttachment(
-      'text/html',
+      MOCKUP_HTML_ATTACHMENT,
       Buffer.from(html).toString('base64'),
+      's1',
     );
     const app = buildServer({
       eventStore: ctx.store,
@@ -110,7 +111,7 @@ describe('browser authentication through the Core', () => {
       authRegistry: registry,
     });
     try {
-      const url = `/attachments/${attachment}?mockup=1`;
+      const url = `/sessions/s1/mockup-attachments/${attachment}`;
       expect((await app.inject(url)).statusCode).toBe(401);
       const preview = await app.inject({ url, headers: { cookie: cookie(browser.token) } });
       expect(preview.statusCode).toBe(200);

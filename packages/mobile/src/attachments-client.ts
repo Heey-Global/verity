@@ -2,13 +2,17 @@ export function attachmentsClient(request: (path: string, init: RequestInit) => 
   return {
     async getMockupPreviewDocument(
       this: void,
+      sessionId: string,
       attachment: string,
       signal: AbortSignal,
     ): Promise<string> {
-      const response = await request(`/attachments/${encodeURIComponent(attachment)}?mockup=1`, {
-        method: 'GET',
-        signal,
-      });
+      const response = await request(
+        `/sessions/${encodeURIComponent(sessionId)}/mockup-attachments/${encodeURIComponent(attachment)}`,
+        {
+          method: 'GET',
+          signal,
+        },
+      );
       if (response.headers.get('content-type')?.split(';', 1)[0] !== 'text/html') {
         throw new Error('Invalid mockup preview response');
       }

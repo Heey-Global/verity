@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import { attachmentUploadSchema, type AgentEvent, type TasksRequest } from '@verity/events';
 import {
+  MOCKUP_HTML_ATTACHMENT,
   OPEN_TASK_STATUSES,
   TASK_ATTACHMENTS_MAX,
   TASK_DETAIL_MAX,
@@ -256,7 +257,8 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     )
       return reply.code(404).send({ error: 'attachment not found' });
     const blob = await deps.eventStore.getAttachment(hash);
-    if (blob === undefined) return reply.code(404).send({ error: 'attachment not found' });
+    if (blob === undefined || blob.mediaType === MOCKUP_HTML_ATTACHMENT)
+      return reply.code(404).send({ error: 'attachment not found' });
     return attachmentDownloadHeaders(reply, blob.mediaType).send(blob.bytes);
   });
 

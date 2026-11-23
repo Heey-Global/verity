@@ -1,3 +1,17 @@
+import { createHash } from 'node:crypto';
+
+export const MOCKUP_HTML_ATTACHMENT = 'application/vnd.verity.mockup-html';
+
+/** The session-derived mask keeps identical HTML isolated by session while
+ * leaving the existing content addresses for generic attachments intact. */
+export function attachmentContentAddress(bytes: Buffer, sessionId?: string): string {
+  if (sessionId === undefined) return createHash('sha256').update(bytes).digest('hex');
+  const mask = createHash('sha256').update('verity-mockup:').update(sessionId).digest();
+  const digest = createHash('sha256').update(bytes).digest();
+  for (const [index, byte] of mask.entries()) digest[index] = digest[index]! ^ byte;
+  return digest.toString('hex');
+}
+
 // Mockup review state of a session: the screens an agent presented and the
 // reviewer's marks, as stored and as read back.
 

@@ -1,3 +1,4 @@
+import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
@@ -9,12 +10,14 @@ import { Text } from '../ui';
 type PreviewDocument = { attachment: string; html: string | null };
 
 export function HtmlMockupPreview({ attachment, name }: { attachment: string; name: string }) {
+  const { id: sessionId } = useLocalSearchParams<{ id: string }>();
   const [document, setDocument] = useState<PreviewDocument | undefined>();
   useEffect(() => {
     const controller = new AbortController();
     const client = createVerityClient();
     void (
-      client?.getMockupPreviewDocument(attachment, controller.signal) ?? Promise.resolve(null)
+      client?.getMockupPreviewDocument(sessionId, attachment, controller.signal) ??
+      Promise.resolve(null)
     ).then(
       (html) => {
         if (!controller.signal.aborted) setDocument({ attachment, html });
@@ -24,7 +27,7 @@ export function HtmlMockupPreview({ attachment, name }: { attachment: string; na
       },
     );
     return () => controller.abort();
-  }, [attachment]);
+  }, [attachment, sessionId]);
 
   const html = document?.attachment === attachment ? document.html : undefined;
   if (typeof html !== 'string') {
