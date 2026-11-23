@@ -41,3 +41,10 @@ it('loads the authorized preview into a local WebView without scripting or a bri
   preview.unmount();
   expect(signal.aborted).toBe(true);
 });
+
+it('shows an unavailable state when the preview cannot be fetched', async () => {
+  mockGetDocument.mockRejectedValueOnce(new Error('Unauthorized'));
+  render(<HtmlMockupPreview attachment="unavailable-screen" name="Missing" />);
+  expect(await screen.findByText('The mockup could not be loaded.')).toBeOnTheScreen();
+  expect(screen.queryByLabelText('Missing mockup')).toBeNull();
+});

@@ -18,7 +18,7 @@ path field per screen.
 
 In planning mode, describe the mockups in the plan's Mockups section.
 
-When you create, compare, or ask the user to choose between images or visual variants, the images must be visible in the chat. Include each image as a Markdown image link to the actual workspace file, for example:
+For visual work outside mockup review, when you create, compare, or ask the user to choose between images or visual variants, the images must be visible in the chat. Include each image as a Markdown image link to the actual workspace file, for example:
 
 ![Option label](relative/path/to/image.png)
 
