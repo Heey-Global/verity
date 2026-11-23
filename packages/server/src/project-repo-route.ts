@@ -256,8 +256,16 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
             body.number !== undefined ? { number: body.number } : { head: body.head! },
           );
           if (found === null) return reply.code(404).send({ error: 'no pull request found' });
-          if (body.action === 'pr.view')
-            return { host: repository.hostName, pullRequest: await remember(found) };
+          if (body.action === 'pr.view') {
+            const defaultBranch = await ops.defaultBranch().catch(() => undefined);
+            return {
+              host: repository.hostName,
+              pullRequest:
+                defaultBranch === undefined || found.head === defaultBranch
+                  ? found
+                  : await remember(found),
+            };
+          }
           if (found.state !== 'open')
             return reply
               .code(409)
