@@ -7,24 +7,28 @@ export class SessionPeopleStore {
   constructor(private readonly db: Kysely<Database>) {}
 
   /**
-   * The person each session's requests belong to when no turn names one: the
-   * session's creator, else its project's creator. Sessions with neither — no
-   * recorded creator and no project — are left out.
+   * The people each session's requests fall to when no turn names one, in order:
+   * the session's creator, then its project's creator. Each is a candidate the
+   * caller can pass over when that person can no longer answer. Sessions with
+   * neither are left out.
    */
-  async owners(sessionIds: readonly string[]): Promise<Map<string, string>> {
+  async owners(sessionIds: readonly string[]): Promise<Map<string, string[]>> {
     if (sessionIds.length === 0) return new Map();
     const rows = await this.db
       .selectFrom('sessions as s')
       .leftJoin('session_creators as c', 'c.session_id', 's.session_id')
       .leftJoin('projects as p', 'p.id', 's.project_id')
-      .select([
-        's.session_id',
-        sql<string | null>`coalesce(c.user_id, p.created_by_user_id)`.as('owner'),
-      ])
+      .select(['s.session_id', 'c.user_id as creator', 'p.created_by_user_id as projectCreator'])
       .where('s.session_id', 'in', [...sessionIds])
       .execute();
     return new Map(
-      rows.flatMap((row) => (row.owner === null ? [] : [[row.session_id, row.owner] as const])),
+      rows.flatMap((row) => {
+        const people = [row.creator, row.projectCreator].filter(
+          (person, index, all): person is string =>
+            person !== null && all.indexOf(person) === index,
+        );
+        return people.length === 0 ? [] : [[row.session_id, people] as const];
+      }),
     );
   }
 }

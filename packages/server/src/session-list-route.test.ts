@@ -175,7 +175,8 @@ it('addresses requests to the person a turn runs for, and secret prompts to Code
       pendingPermissions: [],
       openChoices: { question: 'Ship it?', options: [{ label: 'Yes' }] },
     },
-    // Its turn ran for someone who has since left the project: the creator answers.
+    // Its turn ran for someone who has since left the project, and so did its
+    // creator: the project creator answers.
     {
       sessionId: 'left',
       projectId: 'p',
@@ -215,8 +216,9 @@ it('addresses requests to the person a turn runs for, and secret prompts to Code
         sessionPeople: {
           owners: async () =>
             new Map([
-              ['idle', 'alex'],
-              ['left', 'mara'],
+              ['idle', ['alex']],
+              // The creator left too; the project creator is next in line.
+              ['left', ['gone-too', 'mara']],
             ]),
         } as never,
         isActiveAdministrator: async () => false,

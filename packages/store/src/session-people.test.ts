@@ -33,7 +33,7 @@ beforeEach(async () => {
 });
 
 describe('session owners', () => {
-  it('names the creator, else the project creator, and leaves ownerless sessions out', async () => {
+  it('names the creator, then the project creator, and leaves ownerless sessions out', async () => {
     await ctx.store.createSession({
       sessionId: 'mine',
       worktree: '/wt/mine',
@@ -50,7 +50,9 @@ describe('session owners', () => {
     });
     await ctx.store.createSession({ sessionId: 'loose', worktree: '/wt/loose', model: 'm' });
     const owners = await ctx.store.sessionPeople.owners(['mine', 'old', 'loose', 'missing']);
-    expect(Object.fromEntries(owners)).toEqual({ mine: 'mara', old: 'owner' });
+    // The project creator stays a candidate behind the creator, for when the
+    // creator can no longer answer.
+    expect(Object.fromEntries(owners)).toEqual({ mine: ['mara', 'owner'], old: ['owner'] });
   });
 
   it('forgets a creator who is deleted, falling back to the project creator', async () => {
@@ -62,7 +64,7 @@ describe('session owners', () => {
       createdByUserId: 'mara',
     });
     await ctx.db.deleteFrom('users').where('id', '=', 'mara').execute();
-    expect((await ctx.store.sessionPeople.owners(['mine'])).get('mine')).toBe('owner');
+    expect((await ctx.store.sessionPeople.owners(['mine'])).get('mine')).toEqual(['owner']);
   });
 
   it('creates a session for an identity without a user row, leaving it to the project creator', async () => {
@@ -73,6 +75,6 @@ describe('session owners', () => {
       projectId: 'p1',
       createdByUserId: 'not-a-user',
     });
-    expect((await ctx.store.sessionPeople.owners(['service'])).get('service')).toBe('owner');
+    expect((await ctx.store.sessionPeople.owners(['service'])).get('service')).toEqual(['owner']);
   });
 });

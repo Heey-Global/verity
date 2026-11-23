@@ -85,7 +85,10 @@ export async function addressRequests(
     // A person who left the project, or was deactivated, cannot answer: the next one
     // in line does, and with nobody left the request is for everyone who sees it.
     let owner: string | null = null;
-    for (const candidate of [summary.requestInitiator, fallback.get(summary.sessionId)]) {
+    for (const candidate of [
+      summary.requestInitiator,
+      ...(fallback.get(summary.sessionId) ?? []),
+    ]) {
       if (candidate !== undefined && (await cached('read', candidate, summary.projectId))) {
         owner = candidate;
         break;

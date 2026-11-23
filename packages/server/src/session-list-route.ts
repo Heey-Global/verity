@@ -73,8 +73,13 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
     }
     const orders = await deps.store.sessionSortOrders(sessions);
     for (const summary of summaries) summary.sortOrder = orders.get(summary.sessionId) ?? null;
+    // Addressing only narrows Home; a failed rights check must not take the list
+    // down for everyone, so it falls back to everything for everyone.
     const addressing = deps.requestAddressing
-      ? await addressRequests(deps.requestAddressing, summaries)
+      ? await addressRequests(deps.requestAddressing, summaries).catch((error: unknown) => {
+          app.log.warn({ err: error }, 'verity: could not address session requests');
+          return new Map<string, RequestAddressing>();
+        })
       : new Map<string, RequestAddressing>();
     return { summaries, addressing };
   };
@@ -114,7 +119,8 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
       shared.map(
         async ({
           planningPlan,
-          requestInitiator: _initiator,
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure-omit
+          requestInitiator,
           ...summary
         }): Promise<SessionSummary> => {
           const view = views.get(summary.sessionId);
