@@ -17,7 +17,7 @@
   "packages/server/src/build-storage.test.ts": 1904,
   "packages/server/src/docker.test.ts": 3287,
   "packages/server/src/docker.ts": 2674,
-  "packages/server/src/embedded.test.ts": 3496,
+  "packages/server/src/embedded.test.ts": 3483,
   "packages/server/src/embedded.ts": 1529,
   "packages/server/src/github.test.ts": 1659,
   "packages/server/src/mcp-gateway-route.test.ts": 3172,
