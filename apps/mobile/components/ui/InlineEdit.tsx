@@ -205,7 +205,7 @@ const styles = StyleSheet.create((theme) => ({
   fieldFocused: { borderBottomColor: theme.colors.action },
   fieldError: { borderBottomColor: theme.colors.attention },
   input: { flex: 1, minWidth: 0, color: theme.colors.text, paddingVertical: 0 },
-  inputMulti: { minHeight: theme.typography.subtitle.lineHeight * 3, textAlignVertical: 'top' },
+  inputMulti: { minHeight: theme.typography.subtitle.lineHeight, textAlignVertical: 'top' },
   check: {
     width: 28,
     height: 28,
