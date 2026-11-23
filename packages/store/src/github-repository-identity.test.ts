@@ -177,6 +177,46 @@ describe('GitHub repository identity', () => {
     });
   });
 
+  it('leaves an unbound newcomer under the old name when the renamed repository reports in by ID', async () => {
+    await project('p', 'deep-ocr');
+    await ctx.store.githubRepositories.reconcile({ ...renamed, repo: 'deep-ocr' });
+    // A repository that took over the old name was added as a second project and
+    // has not minted yet, so its row carries the old name without an ID.
+    await ctx.db
+      .insertInto('projects')
+      .values({
+        id: 'newcomer',
+        owner: 'heey-global',
+        repo: 'deep-ocr',
+        repository_instance: 2,
+        container_name: 'verity-heey-global-deep-ocr-2',
+        state: 'absent',
+      })
+      .execute();
+
+    const result = await ctx.store.githubRepositories.reconcile(renamed);
+
+    expect(result.renamedProjectIds).toEqual(['p']);
+    expect(await ctx.store.getProject('newcomer')).toMatchObject({
+      repo: 'deep-ocr',
+      githubRepositoryId: null,
+    });
+  });
+
+  it('moves an unbound project when GitHub itself redirected its name', async () => {
+    await project('p', 'deep-ocr');
+    // An answer by ID alone does not vouch for the old name ...
+    await ctx.store.githubRepositories.reconcile(renamed);
+    expect((await ctx.store.getProject('p'))?.repo).toBe('deep-ocr');
+    // ... GitHub's redirect from that name does.
+    await ctx.store.githubRepositories.reconcile({ ...renamed, redirected: true });
+    expect(await ctx.store.getProject('p')).toMatchObject({
+      repo: 'ocr-engine',
+      githubRepositoryId: '4242',
+      cloneDir: 'heey-global-deep-ocr',
+    });
+  });
+
   it('adopts the placeholder the installation sync left under the new name', async () => {
     await project('p', 'deep-ocr');
     await ctx.store.githubRepositories.reconcile({ ...renamed, repo: 'deep-ocr' });

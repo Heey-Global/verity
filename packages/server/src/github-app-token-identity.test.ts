@@ -217,6 +217,8 @@ describe('rename-stable project token mint', () => {
         id: '4242',
         owner: 'heey-global',
         repo: 'ocr-engine',
+        // GitHub confirmed the rename, so rows unbound under the old name may follow.
+        redirected: true,
       },
     ]);
   });

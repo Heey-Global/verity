@@ -66,6 +66,8 @@ export interface GitHubRepositoryIdentity {
     id: string;
     owner: string;
     repo: string;
+    /** GitHub redirected the requested name to this repository (a confirmed rename). */
+    redirected?: boolean;
   }): Promise<void>;
 }
 
@@ -352,6 +354,7 @@ export function createGitHubAppProjectTokenMint(
     const record = async (
       reported: GitHubTokenRepository[],
       expectedId: string | undefined,
+      redirected = false,
     ): Promise<void> => {
       const [repository] = reported;
       if (identity === undefined || reported.length !== 1 || repository === undefined) return;
@@ -366,6 +369,7 @@ export function createGitHubAppProjectTokenMint(
           requestedOwner: requested.owner,
           requestedRepo: requested.repo,
           ...repository,
+          ...(redirected ? { redirected: true } : {}),
         });
       } catch (error) {
         opts.onIdentityError?.(error);
@@ -412,7 +416,7 @@ export function createGitHubAppProjectTokenMint(
         repository_ids: [Number(renamedId)],
         ...permissions,
       });
-      if (minted !== undefined) await record(minted.repositories, renamedId);
+      if (minted !== undefined) await record(minted.repositories, renamedId, true);
       return minted?.token;
     }
   };

@@ -5,11 +5,15 @@ import type { Database } from './schema.js';
 /** What GitHub reported for a repository Verity asked about by name or by ID. */
 export interface GitHubRepositoryObservation {
   /** The coordinates the caller used. Rows that still carry them and have no
-   *  recorded ID are bound to {@link id}: either GitHub answered for exactly that
-   *  name, or a row already bound to {@link id} carries it, in which case the
-   *  unbound rows are further projects registered under that same repository. */
+   *  recorded ID are bound to {@link id} only when GitHub vouched for that name:
+   *  it answered for exactly that name, or redirected it ({@link redirected}).
+   *  Otherwise — an answer by ID — only rows already bound to {@link id} move: an
+   *  unbound row under the old name may belong to a repository that took it over. */
   requestedOwner: string;
   requestedRepo: string;
+  /** GitHub redirected the requested name to {@link id}: a rename it confirmed,
+   *  which only happens while no other repository holds the old name. */
+  redirected?: boolean;
   /** GitHub's numeric repository ID, as a decimal string. */
   id: string;
   /** The repository's current, canonical coordinates. */
@@ -87,11 +91,15 @@ export class GitHubRepositoryIdentityStore {
       // Serialize with project creation, linking and the installation sync, which
       // allocate the same `(owner, repo, repository_instance)` identities.
       await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const renamedProjectIds = await this.reconcileProjects(tx, id, requested, canonical);
+      const vouched =
+        observation.redirected === true ||
+        (requested.owner === canonical.owner && requested.repo === canonical.repo);
+      const unbound = vouched ? requested : undefined;
+      const renamedProjectIds = await this.reconcileProjects(tx, id, unbound, canonical);
       const renamedRepositoryProjectIds = await this.reconcileRepositories(
         tx,
         id,
-        requested,
+        unbound,
         canonical,
       );
       return { renamedProjectIds, renamedRepositoryProjectIds };
@@ -101,7 +109,7 @@ export class GitHubRepositoryIdentityStore {
   private async reconcileProjects(
     tx: Transaction<Database>,
     id: string,
-    requested: { owner: string; repo: string },
+    unbound: { owner: string; repo: string } | undefined,
     canonical: { owner: string; repo: string },
   ): Promise<string[]> {
     const rows = await tx
@@ -110,14 +118,16 @@ export class GitHubRepositoryIdentityStore {
       .where('forge_scope', '=', LEGACY_GITHUB_SCOPE)
       .where('kind', '=', 'github')
       .where((eb) =>
-        eb.or([
-          eb('github_repository_id', '=', id),
-          eb.and([
-            eb('github_repository_id', 'is', null),
-            eb('owner', '=', requested.owner),
-            eb('repo', '=', requested.repo),
-          ]),
-        ]),
+        unbound === undefined
+          ? eb('github_repository_id', '=', id)
+          : eb.or([
+              eb('github_repository_id', '=', id),
+              eb.and([
+                eb('github_repository_id', 'is', null),
+                eb('owner', '=', unbound.owner),
+                eb('repo', '=', unbound.repo),
+              ]),
+            ]),
       )
       .orderBy('repository_instance')
       .orderBy('id')
@@ -210,7 +220,7 @@ export class GitHubRepositoryIdentityStore {
   private async reconcileRepositories(
     tx: Transaction<Database>,
     id: string,
-    requested: { owner: string; repo: string },
+    unbound: { owner: string; repo: string } | undefined,
     canonical: { owner: string; repo: string },
   ): Promise<string[]> {
     const rows = await tx
@@ -220,14 +230,16 @@ export class GitHubRepositoryIdentityStore {
       .where('forge_connection_id', 'is', null)
       .where('removed_at', 'is', null)
       .where((eb) =>
-        eb.or([
-          eb('github_repository_id', '=', id),
-          eb.and([
-            eb('github_repository_id', 'is', null),
-            eb(sql<string>`lower(owner)`, '=', requested.owner),
-            eb(sql<string>`lower(repo)`, '=', requested.repo),
-          ]),
-        ]),
+        unbound === undefined
+          ? eb('github_repository_id', '=', id)
+          : eb.or([
+              eb('github_repository_id', '=', id),
+              eb.and([
+                eb('github_repository_id', 'is', null),
+                eb(sql<string>`lower(owner)`, '=', unbound.owner),
+                eb(sql<string>`lower(repo)`, '=', unbound.repo),
+              ]),
+            ]),
       )
       .orderBy('id')
       .forUpdate()
