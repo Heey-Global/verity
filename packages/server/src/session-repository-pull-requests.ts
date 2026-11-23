@@ -7,10 +7,14 @@ export function createSessionRepositoryPullRequests(
   { eventStore, projectPullRequests }: Pick<ServerDeps, 'eventStore' | 'projectPullRequests'>,
   branchesForSession: (session: SessionRecord) => Promise<GitBranchService | undefined>,
 ) {
-  return async (session: SessionRecord, legacy?: PullRequestStatus | null) => {
+  return async (
+    session: SessionRecord,
+    legacy?: PullRequestStatus | null,
+    signal?: AbortSignal,
+  ) => {
     if (!session.projectId || !projectPullRequests) return undefined;
     const project = await eventStore.getProject(session.projectId);
-    if (!project || project.kind === 'local' || project.kind === 'control_plane') return undefined;
+    if (!project || project.kind === 'control_plane') return undefined;
     const [repositories, workspaces, branches] = await Promise.all([
       eventStore.listProjectRepositories(project.id),
       eventStore.listSessionRepositoryWorkspaces(session.sessionId),
@@ -18,6 +22,7 @@ export function createSessionRepositoryPullRequests(
     ]);
     const results = await Promise.all(
       repositories.map(async (repository) => {
+        if (repository.kind !== 'github' && repository.kind !== 'forgejo') return [];
         const workspace = workspaces.find((row) => row.repositoryId === repository.id);
         const worktree = repository.isDefault ? session.worktree : workspace?.worktree;
         if (!worktree) return [];
@@ -54,11 +59,13 @@ export function createSessionRepositoryPullRequests(
         };
         const statuses = new Map<number, { status: PullRequestStatus; head?: string }>();
         for (const head of heads) {
+          if (signal?.aborted) break;
           if (!head) continue;
           const status = await projectPullRequests.status(target, head).catch(() => null);
           if (status) statuses.set(status.number, { status, head });
         }
         for (const [number, head] of recorded) {
+          if (signal?.aborted) break;
           if (statuses.has(number)) continue;
           const status = await projectPullRequests.status(target, head, number).catch(() => null);
           if (status?.number === number) statuses.set(number, { status, head });

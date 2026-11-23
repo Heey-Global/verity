@@ -457,7 +457,7 @@ it('records and invalidates a created PR for a previous branch of the session', 
     (await call({ action: 'pr.create', head: pull.head, title: 'Fix', sessionId: 'session' }))
       .statusCode,
   ).toBe(200);
-  expect(remember).toHaveBeenCalledWith('p', 'default:p', pull.head, pull, 'session');
+  expect(remember).toHaveBeenCalledWith('p', 'default:p', pull.head, pull, 'session', true);
   expect(changed).toHaveBeenCalledWith('session', expect.objectContaining({ id: 'p' }));
 });
 

@@ -38,8 +38,10 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     appendPendingNote: vi.fn().mockResolvedValue(undefined),
   } as unknown as EventStore;
   const reset = vi.fn().mockResolvedValue({ base: 'main' });
+  let legacyOnly = false;
   const branches = {
-    sessionBranches: async (path: string) => [path === '/api' ? 'feat/api' : 'feat/site'],
+    sessionBranches: async (path: string) =>
+      legacyOnly && path === '/site' ? [] : [path === '/api' ? 'feat/api' : 'feat/site'],
     current: async (path: string) => (path === '/api' ? 'feat/api' : 'feat/site'),
     headRevision: async () => sha,
     isDirty: async () => false,
@@ -105,7 +107,8 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     },
     branchesForSession,
     localMergeTarget: async () => undefined,
-    sessionPrStatus: async () => null,
+    sessionPrStatus: async () =>
+      legacyOnly ? await backend.status(project, 'feat/site', 7) : null,
     compactPr: () => null,
     applyPrSummaryAction: vi.fn(),
     invalidatePrSummaryAction: vi.fn(),
@@ -136,6 +139,7 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     expect((await merge('api')).json()).toEqual({ merged: true });
     expect(reset).not.toHaveBeenCalled();
     expect(beforePrCleanup).not.toHaveBeenCalled();
+    legacyOnly = true;
     expect((await merge('default:p')).json()).toEqual({ merged: true });
     expect(beforePrCleanup).toHaveBeenCalledWith(session);
     expect(afterPrCleanup).toHaveBeenCalledWith(

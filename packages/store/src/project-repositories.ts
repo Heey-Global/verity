@@ -206,6 +206,7 @@ export class ProjectRepositoryStore {
     branch: string,
     pullRequest: unknown,
     sessionId?: string,
+    preserveWorkspaceBranch = false,
   ): Promise<void> {
     const entry = sql`${JSON.stringify(pullRequest)}::jsonb`;
     const list = sql`coalesce(pull_request_history, '[]'::jsonb) ||
@@ -213,21 +214,21 @@ export class ProjectRepositoryStore {
         pull_request_history @> jsonb_build_array(jsonb_build_object('number', pull_request->'number')),
         false
       ) then jsonb_build_array(pull_request) else '[]'::jsonb end`;
+    const updated = sql`coalesce((
+      select pr from jsonb_array_elements(${list}) as saved(pr)
+      where pr->>'number' = (${entry})->>'number'
+      limit 1
+    ), '{}'::jsonb) || ${entry}`;
     let query = this.db
       .updateTable('session_repository_workspaces')
       .set({
-        pull_request: sql`case when pull_request->>'number' = (${entry})->>'number'
-          then pull_request || ${entry} else ${entry} end`,
+        pull_request: updated,
         pull_request_history: sql`(
           select coalesce(jsonb_agg(pr order by position), '[]'::jsonb)
           from jsonb_array_elements(${list}) with ordinality as saved(pr, position)
           where pr->>'number' is distinct from (${entry})->>'number'
-        ) || jsonb_build_array(coalesce((
-          select pr from jsonb_array_elements(${list}) as saved(pr)
-          where pr->>'number' = (${entry})->>'number'
-          limit 1
-        ), '{}'::jsonb) || ${entry})`,
-        branch,
+        ) || jsonb_build_array(${updated})`,
+        ...(preserveWorkspaceBranch ? {} : { branch }),
       })
       .where('project_id', '=', projectId)
       .where('repository_id', '=', repositoryId);

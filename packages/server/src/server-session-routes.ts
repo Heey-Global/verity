@@ -463,7 +463,26 @@ export function installSessionRoutes(
           : undefined;
       const pullRequest =
         rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
-      const pullRequests = await resolvePullRequests(session, pullRequest);
+      const pullRequests = await readStage('pr', async () => {
+        const controller = new AbortController();
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const budget = new Promise<undefined>((resolve) => {
+          timeout = setTimeout(() => {
+            controller.abort();
+            resolve(undefined);
+          }, 2000);
+        });
+        return Promise.race([
+          resolvePullRequests(session, pullRequest, controller.signal).catch((err: unknown) => {
+            request.log.warn(
+              { err, sessionId: id },
+              'Session repository pull requests unavailable',
+            );
+            return undefined;
+          }),
+          budget,
+        ]).finally(() => clearTimeout(timeout));
+      });
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)

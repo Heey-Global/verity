@@ -189,7 +189,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
             projectId: project.id,
             repositoryId: `default:${project.id}`,
             worktree: session.worktree,
-            branch: pr.head,
+            branch: actualBranch ?? pr.head,
           });
       }
       await deps.store?.recordRepositoryPullRequest(
@@ -201,6 +201,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
           ...(dependsOn === undefined ? {} : { dependsOn }),
         },
         belongsToSession ? sessionId : undefined,
+        ...(belongsToSession && actualBranch !== pr.head ? ([true] as const) : []),
       );
       if (sessionId && belongsToSession) await deps.pullRequestChanged?.(sessionId, project);
       return pr;

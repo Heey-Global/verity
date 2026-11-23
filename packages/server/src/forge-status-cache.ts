@@ -80,7 +80,8 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       const generation = observation;
       const branchKey = `${scope(id)}:branch:${branch}`;
       const key = aliases.get(branchKey) ?? branchKey;
-      const epoch = branchEpochs.get(branchKey) ?? 0;
+      const headKey = branchKey.split('\0')[0]!;
+      const epoch = branchEpochs.get(headKey) ?? 0;
       const running = pending.get(key);
       if (running) return running;
       const previous = entries.get(key);
@@ -120,7 +121,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
                 : 30_000;
         const entry = { value, failures, checkedAt: now(), nextReadAt: now() + ttl };
         if (!generation.valid) return unknown(value);
-        if ((branchEpochs.get(branchKey) ?? 0) !== epoch) return value;
+        if ((branchEpochs.get(headKey) ?? 0) !== epoch) return value;
         entries.set(key, entry);
         if (value) {
           const prKey = `${scope(id)}:pr:${value.number}`;
@@ -160,16 +161,26 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       const scopeKey = scope(id);
       for (const branch of branches) {
         const branchKey = `${scopeKey}:branch:${branch}`;
-        const prKey = aliases.get(branchKey);
+        const numbered = new Set(
+          [...aliases.keys(), ...pending.keys(), ...entries.keys()].filter((key) =>
+            key.startsWith(`${branchKey}\0`),
+          ),
+        );
+        const keys = [branchKey, ...numbered];
         const nextEpoch = (branchEpochs.get(branchKey) ?? 0) + 1;
         // Re-insert so the bound below evicts the least recently invalidated branch.
         branchEpochs.delete(branchKey);
         branchEpochs.set(branchKey, nextEpoch);
-        for (const key of prKey === undefined ? [branchKey] : [branchKey, prKey]) {
+        for (const key of keys) {
+          const prKey = aliases.get(key);
+          if (prKey !== undefined) {
+            pending.delete(prKey);
+            entries.delete(prKey);
+          }
           pending.delete(key);
           entries.delete(key);
+          aliases.delete(key);
         }
-        aliases.delete(branchKey);
       }
       while (branchEpochs.size > 4096) branchEpochs.delete(branchEpochs.keys().next().value!);
     },

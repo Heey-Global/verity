@@ -116,12 +116,19 @@ export function registerSessionMergeRoutes(
         reply.code(404);
         return { error: `session ${id} not found` };
       }
-      const target =
+      let target =
         repositoryId === undefined
           ? undefined
           : (await deps.resolvePullRequests?.(session))?.find(
               (row) => row.status.repository.id === repositoryId && row.status.number === number,
             );
+      if (target === undefined && repositoryId === `default:${session.projectId}`) {
+        const legacy = await sessionPrStatus(session).catch(() => null);
+        if (legacy?.number === number)
+          target = (await deps.resolvePullRequests?.(session, legacy))?.find(
+            (row) => row.status.repository.id === repositoryId && row.status.number === number,
+          );
+      }
       if (repositoryId !== undefined && target === undefined) {
         reply.code(404);
         return { error: 'pull request is not associated with this session and repository' };

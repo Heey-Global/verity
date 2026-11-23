@@ -199,7 +199,7 @@ function PullRequestBar({
           ? theme.colors.attention
           : theme.colors.onAction;
   const conflictTarget = pullRequest.baseRef ?? 'the base branch';
-  const prNumber = String(pullRequest.number);
+  const prNumber = repo ? `${pullRequest.number} in ${repo}` : String(pullRequest.number);
   const blockedLabels: Record<PullRequestBlockReason, string> = {
     permission: `A maintainer must merge pull request ${prNumber}`,
     rejected: `Merge blocked because the forge rejected pull request ${prNumber}`,
@@ -304,7 +304,7 @@ function PullRequestBar({
             })
           }
           accessibilityRole="button"
-          accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
+          accessibilityLabel={`Hide pull request ${prNumber} status`}
         >
           <CodeHostIcon provider={provider} size={16} color={theme.colors.textMuted} />
           <Text style={styles.prDismissText}>×</Text>

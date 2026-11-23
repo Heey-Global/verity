@@ -187,6 +187,23 @@ describe('project repository assignments', () => {
     expect(all.find((row) => row.repositoryId === 'default:p')?.pullRequests).toEqual([
       sameNumberInDefault,
     ]);
+    await ctx.store.recordRepositoryPullRequest(
+      'p',
+      extra.id,
+      pullRequest.head,
+      { number: 7, title: 'Updated history' },
+      's',
+      true,
+    );
+    const historical = (await ctx.store.listSessionRepositoryWorkspaces('s')).find(
+      (row) => row.repositoryId === extra.id,
+    );
+    expect(historical?.branch).toBe(second.head);
+    expect(historical?.pullRequest).toEqual({
+      ...pullRequest,
+      state: 'closed',
+      title: 'Updated history',
+    });
     const updated = await ctx.store.listSessionRepositoryWorkspaces('s');
     expect(await ctx.store.removeProjectRepository('p', extra.id)).toBe(true);
     expect(await ctx.store.getProjectRepository('p', extra.id)).toBeUndefined();

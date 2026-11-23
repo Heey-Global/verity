@@ -45,9 +45,11 @@ it('expands into status-ordered repository rows and routes merge and dismiss ind
   ]);
   expect(screen.getByText('2/3 checks run')).toBeTruthy();
   expect(screen.getByText(/closed ·/)).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Merge pull request 42', disabled: false }));
-  fireEvent.press(screen.getByRole('button', { name: 'Hide pull request 42 status' }));
-  await screen.findByRole('button', { name: 'Merge pull request 42', busy: false });
+  fireEvent.press(
+    screen.getByRole('button', { name: 'Merge pull request 42 in app', disabled: false }),
+  );
+  fireEvent.press(screen.getByRole('button', { name: 'Hide pull request 42 in docs status' }));
+  await screen.findByRole('button', { name: 'Merge pull request 42 in app', busy: false });
   expect(onMerge).toHaveBeenCalledWith(42, 'app', undefined);
   expect(onDismiss).toHaveBeenCalledWith(closed);
 });
