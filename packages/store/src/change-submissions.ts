@@ -17,6 +17,7 @@ export const changeSubmissionsMigration: Migration = {
       submitted_at timestamptz not null default now(),
       revision text,
       pull_request_url text,
+      pull_request_head text,
       state text not null check (state in ('submitted', 'withdrawn', 'added')),
       updated_at timestamptz not null default now()
     )`.execute(db);
@@ -34,8 +35,10 @@ export interface ChangeSubmission {
   submittedAt: Date;
   /** The commit the session's branch was at when submitted, when it could be read. */
   revision: string | null;
-  /** A pull request the session already had when submitted; it is not this one's. */
+  /** A pull request the session already had when submitted, and its head commit
+   *  then: until it changes, that pull request is not this submission's. */
   pullRequestUrl: string | null;
+  pullRequestHead: string | null;
   state: ChangeSubmissionState;
 }
 
@@ -48,7 +51,8 @@ export class ChangeSubmissionStore {
     userId: string;
     revision?: string | undefined;
     pullRequestUrl?: string | undefined;
-  }): Promise<ChangeSubmission> {
+    pullRequestHead?: string | undefined;
+  }): Promise<ChangeSubmission | undefined> {
     const row = await this.db
       .insertInto('change_submissions')
       .values({
@@ -56,21 +60,28 @@ export class ChangeSubmissionStore {
         submitted_by: input.userId,
         revision: input.revision ?? null,
         pull_request_url: input.pullRequestUrl ?? null,
+        pull_request_head: input.pullRequestHead ?? null,
         state: 'submitted',
       })
       .onConflict((conflict) =>
-        conflict.column('session_id').doUpdateSet({
-          submitted_by: input.userId,
-          submitted_at: sql`now()`,
-          revision: input.revision ?? null,
-          pull_request_url: input.pullRequestUrl ?? null,
-          state: 'submitted',
-          updated_at: sql`now()`,
-        }),
+        conflict
+          .column('session_id')
+          .doUpdateSet({
+            submitted_by: input.userId,
+            submitted_at: sql`now()`,
+            revision: input.revision ?? null,
+            pull_request_url: input.pullRequestUrl ?? null,
+            pull_request_head: input.pullRequestHead ?? null,
+            state: 'submitted',
+            updated_at: sql`now()`,
+          })
+          // An open submission stays as it is: a second submit (a double tap, two
+          // devices) must not restart the review or announce it twice.
+          .where('change_submissions.state', '<>', 'submitted'),
       )
       .returningAll()
-      .executeTakeFirstOrThrow();
-    return fromRow(row);
+      .executeTakeFirst();
+    return row === undefined ? undefined : fromRow(row);
   }
 
   /** Moves an open submission to `state`; false when none was open. */
@@ -107,8 +118,7 @@ export class ChangeSubmissionStore {
 
   /**
    * The people who started a turn in each session after its submission, first
-   * writer first: whoever with Code writes first is the one checking. Compared in
-   * the database, so a prompt in the same millisecond keeps its true order.
+   * writer first: whoever with Code writes first is the one checking.
    */
   async writersSince(
     submissions: readonly Pick<ChangeSubmission, 'sessionId'>[],
@@ -128,6 +138,8 @@ export class ChangeSubmissionStore {
         submissions.map((s) => s.sessionId),
       )
       .where('e.type', '=', 'prompt')
+      .where('c.state', '=', 'submitted')
+      // Both stamps come from the database clock.
       .whereRef('e.created_at', '>', 'c.submitted_at')
       .orderBy('e.id')
       .execute();
@@ -147,6 +159,7 @@ function fromRow(row: {
   submitted_at: Date;
   revision: string | null;
   pull_request_url: string | null;
+  pull_request_head: string | null;
   state: string;
 }): ChangeSubmission {
   return {
@@ -155,6 +168,7 @@ function fromRow(row: {
     submittedAt: row.submitted_at,
     revision: row.revision,
     pullRequestUrl: row.pull_request_url,
+    pullRequestHead: row.pull_request_head,
     state: row.state as ChangeSubmissionState,
   };
 }

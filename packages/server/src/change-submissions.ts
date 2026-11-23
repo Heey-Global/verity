@@ -37,16 +37,22 @@ export type PullRequestPhase = 'open' | 'merged' | 'closed';
 export interface SubmissionPullRequest {
   phase: PullRequestPhase;
   url?: string | undefined;
+  headSha?: string | undefined;
 }
 
 /** The session's pull request unless it predates the submission: a PR merged
  *  before someone submitted new changes says nothing about those changes. */
 function pullRequestSince(
-  submission: Pick<ChangeSubmission, 'pullRequestUrl'>,
+  submission: Pick<ChangeSubmission, 'pullRequestUrl' | 'pullRequestHead'>,
   pr: SubmissionPullRequest | undefined,
 ): PullRequestPhase | undefined {
   if (pr === undefined) return undefined;
-  return pr.url !== undefined && pr.url === submission.pullRequestUrl ? undefined : pr.phase;
+  // The same pull request counts once someone pushed to it after the submission.
+  const earlier =
+    pr.url !== undefined &&
+    pr.url === submission.pullRequestUrl &&
+    (pr.headSha === undefined || pr.headSha === submission.pullRequestHead);
+  return earlier ? undefined : pr.phase;
 }
 
 export function changeSubmissionStatus(input: {
@@ -107,11 +113,18 @@ export async function describeSubmissions(
     const name = names.get(id);
     return name === undefined ? { id } : { id, name };
   };
+  const settled: Promise<boolean>[] = [];
   live.forEach(({ submission, pr }, index) => {
     const checker = checkers[index];
     const prPhase = pullRequestSince(submission, pr);
     const status = changeSubmissionStatus({ state: submission.state, prPhase, checker });
     if (status === undefined) return;
+    // A merged pull request ends the submission for good: the member can submit
+    // follow-up work, and nobody can withdraw what already landed.
+    if (status === 'added' && submission.state === 'submitted')
+      settled.push(
+        store.changeSubmissions.settle(submission.sessionId, 'added').catch(() => false),
+      );
     views.set(submission.sessionId, {
       status,
       submittedBy: person(submission.submittedBy),
@@ -119,6 +132,7 @@ export async function describeSubmissions(
       submittedAt: submission.submittedAt.getTime(),
     });
   });
+  await Promise.all(settled);
   return views;
 }
 
@@ -225,9 +239,11 @@ export function registerChangeSubmissionRoutes(
     if (await holdsCode(deps.store, viewer, session.projectId)) {
       return reply.code(409).send({ error: 'You can add these changes yourself.' });
     }
-    // A second submission of the same changes would ask everyone again.
+    // A second submission of the same changes would ask everyone again; one whose
+    // changes were added already is done and makes room for new ones.
     if ((await deps.store.changeSubmissions.get(id))?.state === 'submitted') {
-      return reply.code(200).send({ submission: await describe(session) });
+      const open = await describe(session);
+      if (open?.status !== 'added') return reply.code(200).send({ submission: open });
     }
     if ((await deps.hasChanges?.(session).catch(() => undefined)) === false) {
       return reply.code(409).send({ error: 'This session has no changes to submit.' });
@@ -236,13 +252,16 @@ export function registerChangeSubmissionRoutes(
       deps.revision?.(session).catch(() => undefined),
       deps.pullRequest?.(session).catch(() => undefined),
     ]);
-    await deps.store.changeSubmissions.submit({
+    const stored = await deps.store.changeSubmissions.submit({
       sessionId: id,
       userId: viewer,
       revision,
-      // A pull request that exists now is an earlier one, not these changes'.
-      pullRequestUrl: pr?.phase === 'open' ? undefined : pr?.url,
+      // A pull request that exists now counts only once it moves past this point.
+      pullRequestUrl: pr?.url,
+      pullRequestHead: pr?.headSha,
     });
+    // Another request submitted first; it has announced the submission.
+    if (stored === undefined) return reply.code(200).send({ submission: await describe(session) });
     await deps.publish(id, {
       t: 'notice',
       text: `${await nameOf(viewer)} submitted changes`,
@@ -256,7 +275,7 @@ export function registerChangeSubmissionRoutes(
     const session = await deps.store.getSession(id);
     if (session === undefined) return reply.code(404).send({ error: 'session not found' });
     const submission = await deps.store.changeSubmissions.get(id);
-    if (submission?.state !== 'submitted') {
+    if (submission?.state !== 'submitted' || (await describe(session))?.status === 'added') {
       return reply.code(409).send({ error: 'Nothing is submitted in this session.' });
     }
     const viewer = request.localUserId ?? null;

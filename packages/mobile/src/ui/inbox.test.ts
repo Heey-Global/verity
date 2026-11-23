@@ -719,7 +719,7 @@ describe('submitted changes', () => {
         addressedToViewer: true,
         ...over,
       },
-    } as Partial<SessionSummary>);
+    });
   const items = (s: SessionSummary) => inboxItems({ sessions: [s], projects: [], now: NOW });
 
   it('asks a member with Code to check them', () => {
@@ -743,5 +743,6 @@ describe('submitted changes', () => {
     expect(items(submitted({ addressedToViewer: false }))).toEqual([]);
     expect(items(submitted({ addressedToViewer: undefined }))).toEqual([]);
     expect(items(submitted({ status: 'added' }))).toEqual([]);
+    expect(items(submitted({ status: 'adding' }))).toEqual([]);
   });
 });

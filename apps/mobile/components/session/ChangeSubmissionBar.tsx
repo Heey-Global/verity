@@ -3,6 +3,7 @@ import {
   openPullRequestPrompt,
   projectNoun,
   type ChangeSubmissionState,
+  VerityApiError,
   type VerityClient,
 } from '@verity/mobile';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -45,6 +46,7 @@ export function ChangeSubmissionBar({
   // The session the bar shows now: a read for another one must not land here.
   const current = useRef(sessionId);
   current.current = sessionId;
+  const unsupported = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -57,8 +59,10 @@ export function ChangeSubmissionBar({
       try {
         const next = await client.changeSubmissions.read(sessionId, signal);
         if (mounted.current && current.current === sessionId) setState(next);
-      } catch {
-        // An older server has no submissions; a passing failure keeps the last state.
+      } catch (caught) {
+        // An older server has no submissions: stop asking. A passing failure keeps
+        // the last state.
+        if (caught instanceof VerityApiError && caught.status === 404) unsupported.current = true;
       }
     },
     [client, sessionId],
@@ -67,7 +71,9 @@ export function ChangeSubmissionBar({
     setState(undefined);
     const controller = new AbortController();
     void load(controller.signal);
-    const timer = setInterval(() => void load(), REFRESH_MS);
+    const timer = setInterval(() => {
+      if (!unsupported.current) void load();
+    }, REFRESH_MS);
     return () => {
       controller.abort();
       clearInterval(timer);

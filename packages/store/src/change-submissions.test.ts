@@ -32,6 +32,9 @@ describe('change submissions', () => {
       state: 'submitted',
     });
     expect([...(await submissions().open(['s1', 'other'])).keys()]).toEqual(['s1']);
+    // A second submit while one is open changes nothing.
+    expect(await submissions().submit({ sessionId: 's1', userId: 'mara' })).toBeUndefined();
+    expect((await submissions().get('s1'))?.revision).toBe('abc');
 
     expect(await submissions().settle('s1', 'withdrawn')).toBe(true);
     // Only an open submission can be settled; a second withdrawal changes nothing.
@@ -52,7 +55,7 @@ describe('change submissions', () => {
       initiatedBy: { userId: 'alex' },
     });
     await new Promise((resolve) => setTimeout(resolve, 5));
-    const submitted = await submissions().submit({ sessionId: 's1', userId: 'mara' });
+    await submissions().submit({ sessionId: 's1', userId: 'mara' });
     await new Promise((resolve) => setTimeout(resolve, 5));
     await ctx.store.appendEvent('s1', {
       t: 'prompt',
@@ -70,7 +73,7 @@ describe('change submissions', () => {
       initiatedBy: { userId: 'mara' },
     });
     await ctx.store.appendEvent('s1', { t: 'prompt', text: 'agent' });
-    expect(Object.fromEntries(await submissions().writersSince([submitted]))).toEqual({
+    expect(Object.fromEntries(await submissions().writersSince([{ sessionId: 's1' }]))).toEqual({
       s1: ['mara', 'alex'],
     });
   });

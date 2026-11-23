@@ -96,7 +96,7 @@ describe('change submission routes', () => {
       if (typeof user === 'string') request.localUserId = user;
     });
     const published: AgentEvent[] = [];
-    let pr: { phase: PullRequestPhase; url: string } | undefined;
+    let pr: { phase: PullRequestPhase; url: string; headSha: string } | undefined;
     let hasChanges: boolean | undefined;
     registerChangeSubmissionRoutes(app, {
       store: ctx.store,
@@ -120,8 +120,8 @@ describe('change submission routes', () => {
       app,
       call,
       published,
-      setPullRequest: (phase: PullRequestPhase, url = 'https://forge/pr/2') =>
-        (pr = { phase, url }),
+      setPullRequest: (phase: PullRequestPhase, url = 'https://forge/pr/2', headSha = 'h1') =>
+        (pr = { phase, url, headSha }),
       setChanges: (next: boolean | undefined) => (hasChanges = next),
     };
   };
@@ -190,6 +190,36 @@ describe('change submission routes', () => {
       expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'waiting' } });
       setPullRequest('open', 'https://forge/pr/2');
       expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'adding' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('counts a pull request open at submission once someone pushes to it', async () => {
+    const { app, call, setPullRequest } = setup();
+    try {
+      setPullRequest('open', 'https://forge/pr/3', 'before');
+      await call('POST', 'mara');
+      expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'waiting' } });
+      setPullRequest('open', 'https://forge/pr/3', 'after');
+      expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'adding' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  // Merged changes are done: the member must be able to submit follow-up work,
+  // and nobody can take back what already landed.
+  it('settles a submission whose pull request merged', async () => {
+    const { app, call, published, setPullRequest } = setup();
+    try {
+      await call('POST', 'mara');
+      setPullRequest('merged');
+      expect((await call('DELETE', 'mara')).status).toBe(409);
+      expect((await ctx.store.changeSubmissions.get('s1'))?.state).toBe('added');
+      setPullRequest('merged');
+      expect((await call('POST', 'mara')).status).toBe(201);
+      expect(published.filter((event) => event.t === 'notice')).toHaveLength(2);
     } finally {
       await app.close();
     }

@@ -408,7 +408,11 @@ function sessionItems(
   // Submitted changes wait on everyone with Code until one of them writes in the
   // session; the server then addresses them to that person alone (ADR 0023).
   const submission = session.changeSubmission;
-  if (submission?.addressedToViewer === true && submission.status !== 'added') {
+  // Once a pull request is open, its own item takes over from the review.
+  if (
+    submission?.addressedToViewer === true &&
+    (submission.status === 'waiting' || submission.status === 'checking')
+  ) {
     const who = submission.submittedBy.name ?? 'A member';
     items.push({
       ...base,
