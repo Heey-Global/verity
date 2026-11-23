@@ -127,7 +127,10 @@ function inputFits(input: unknown): boolean {
 /**
  * The person the current turn runs for: the `initiatedBy` of its opening prompt,
  * which is whom the turn's questions and permission prompts are for. A steered
- * prompt is guidance inside that turn and does not change whose it is.
+ * prompt is guidance inside that turn and does not change whose it is. The
+ * overview passes a tail only when it holds an opening prompt and otherwise reads
+ * the whole log (`projectionTailIsSelfContained`), so the latest opening prompt
+ * found here is always the current turn's.
  */
 export function requestInitiatorFromProjection(events: readonly AgentEvent[]): string | undefined {
   for (let i = events.length - 1; i >= 0; i -= 1) {

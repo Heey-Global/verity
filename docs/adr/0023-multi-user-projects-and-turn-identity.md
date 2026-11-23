@@ -291,6 +291,8 @@ project overview list only the requests addressed to the viewer. The session
 itself still shows every request, and members who may execute can answer there.
 Allowing a secret or network prompt requires Code (section 1), so a prompt the
 person asking cannot allow is addressed to every member with Code instead.
+A prompt the server cannot describe, such as a linked-session approval, stays
+unaddressed and appears for every member, because nobody can tell whom it is for.
 
 ### 3. Personal connections, with explicit shared-service exceptions
 

@@ -79,7 +79,8 @@ export async function addressRequests(
     }
     return held;
   };
-  for (const summary of asking) {
+  // Sessions resolve side by side; the cache still reads each right once.
+  const resolve = async (summary: SessionSummary): Promise<RequestAddressing> => {
     // A person who left the project, or was deactivated, cannot answer: the next one
     // in line does, and with nobody left the request is for everyone who sees it.
     let owner: string | null = null;
@@ -95,11 +96,13 @@ export async function addressRequests(
     const ownerMayAllow =
       sensitive.length === 0 ||
       (owner !== null && (await cached('code', owner, summary.projectId)));
-    addressing.set(summary.sessionId, {
+    return {
       owner,
       forCode: new Set(ownerMayAllow ? [] : sensitive.map((request) => request.toolUseId)),
-    });
-  }
+    };
+  };
+  const resolved = await Promise.all(asking.map(resolve));
+  asking.forEach((summary, index) => addressing.set(summary.sessionId, resolved[index]!));
   return addressing;
 }
 

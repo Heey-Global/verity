@@ -318,9 +318,10 @@ export interface SessionSummary extends SessionRecord {
   /** The person the current turn runs for. Used to address the session's requests;
    *  the session list leaves it out. */
   requestInitiator?: string;
-  /** Session list only, per person: whether the session's questions, plans, mockups
-   *  and undescribed permission prompts are for the requester (ADR 0023). Absent
-   *  without accounts, where everything is for the one operator. */
+  /** Session list only, per person: whether the session's questions, plans and
+   *  mockups are for the requester (ADR 0023). A permission prompt the server cannot
+   *  describe stays unaddressed and is shown to everyone. Absent without accounts,
+   *  where everything is for the one operator. */
   addressedToViewer?: boolean;
   /** Cumulative token usage across the session's turns (§13a). */
   usage: UsageTotals;
