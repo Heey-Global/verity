@@ -23,7 +23,7 @@ it('shows all allowed choices alongside the exact request details', () => {
   );
 
   expect(screen.getByText('staging.example.com')).toBeTruthy();
-  expect(screen.getAllByText('Doppler · example / stg')).toHaveLength(2);
+  expect(screen.getByText('Doppler · example / stg')).toBeTruthy();
   expect(screen.getByText('Verity does not pass the secret value to the agent.')).toBeTruthy();
   fireEvent.press(screen.getByRole('button', { name: 'Allow once' }));
   fireEvent.press(screen.getByRole('button', { name: 'Allow this session' }));
@@ -59,8 +59,8 @@ it('shows the full command and injection warning before approval', () => {
     />,
   );
 
-  expect(screen.getAllByText('"gh" "api" "rate_limit"')).toHaveLength(2);
+  expect(screen.getByText('"gh" "api" "rate_limit"')).toBeTruthy();
   expect(screen.getByText('GITHUB_TOKEN')).toBeTruthy();
-  expect(screen.getByText(/Verity injects.*GH_TOKEN/)).toBeTruthy();
+  expect(screen.getByText('GITHUB_TOKEN as GH_TOKEN')).toBeTruthy();
   expect(screen.getByText('The command can read and share the full secret.')).toBeTruthy();
 });
