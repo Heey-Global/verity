@@ -301,6 +301,10 @@ export class SessionReducer {
           this.emitAgentEvent(seq, ts, event);
           break;
         }
+        if (event.changeSubmission) {
+          this.emitAgentEvent(seq, ts, event);
+          break;
+        }
         // Older servers persisted their internal approval instructions as chat notices.
         const legacyApproval =
           /^Secret tool approval ([a-f0-9-]{36}) was (approved|denied)\. Nothing was executed by answering the card\. (.+)$/.exec(

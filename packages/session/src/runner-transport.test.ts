@@ -79,6 +79,7 @@ const eventExamples: Record<AgentEvent['t'], AgentEvent> = {
     text: 'notice',
     role: 'agent',
     clientRequestId: 'request',
+    changeSubmission: { action: 'submitted', userId: 'user' },
     secretApproval: {
       id: 'approval-1',
       tool: 'verity_http_request',

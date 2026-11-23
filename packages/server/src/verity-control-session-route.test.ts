@@ -40,4 +40,32 @@ describe('Verity Control session route', () => {
       await rm(worktree, { recursive: true, force: true });
     }
   });
+
+  // A member's Control session would otherwise address its questions to the
+  // project's creator instead of to them.
+  it('records who opens a Control session in advanced mode', async () => {
+    const app = Fastify();
+    app.addHook('onRequest', async (request) => {
+      request.localUserId = 'mara';
+    });
+    const createSession = vi.fn(async () => undefined);
+    registerVerityControlSessionRoute(app, {
+      eventStore: { createSession } as unknown as EventStore,
+      defaultModel: 'test-model',
+      worktrees: { add: async () => '/wt/control', remove: vi.fn() },
+      makeBranch: (name) => name,
+      deleteSessionEverywhere: vi.fn(),
+      advancedModeEnabled: async () => true,
+      ensureControlProject: async () => ({ id: 'control' }) as never,
+    });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/verity-control/session' });
+      expect(response.statusCode, response.body).toBe(201);
+      expect(createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: 'control', createdByUserId: 'mara' }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
 });

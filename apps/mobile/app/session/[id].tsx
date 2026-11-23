@@ -26,6 +26,8 @@ import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/use
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
+import { ChangeSubmissionBar } from '../../components/session/ChangeSubmissionBar';
+import { LocalMergeBar } from '../../components/session/LocalMergeBar';
 import {
   VulnerabilityFixSheet,
   VulnerabilityStarterCard,
@@ -4708,6 +4710,14 @@ export const SessionChat = memo(function SessionChat({
           onSave={onSaveToProject}
         />
       ) : null}
+      <ChangeSubmissionBar
+        client={client}
+        sessionId={sessionId}
+        projectKind={settingsProjects.find((project) => project.id === projectId)?.kind}
+        pullRequestShown={visiblePullRequest !== undefined && visiblePullRequest !== null}
+        busy={working}
+        onOpenPullRequest={(prompt) => sendTurn(prompt)}
+      />
       {planning === 'active' && planningPlan != null ? (
         <PinnedPlan
           revision={planningRevision}
@@ -7645,92 +7655,6 @@ function PullRequestBar({
   );
 }
 
-/** Save a local session's work through the agent and then into the project base.
- *  The server checks the commit and merge preconditions. */
-function LocalMergeBar({
-  confirmHint,
-  branch,
-  base,
-  busy,
-  onSave,
-}: {
-  confirmHint: () => Promise<boolean>;
-  branch: string;
-  base: string;
-  busy: boolean;
-  onSave: UseBranches['saveToProject'];
-}) {
-  const { theme } = useUnistyles();
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const mounted = useRef(true);
-  useEffect(() => {
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  // A new branch (or base) is a new attempt: drop the previous rejection so a stale
-  // reason can't sit under a button that would now succeed.
-  useEffect(() => {
-    setError(undefined);
-  }, [branch, base]);
-
-  const save = (): void => {
-    if (saving || busy) return;
-    void (async () => {
-      setSaving(true);
-      setError(undefined);
-      const result = await onSave();
-      if (!mounted.current) return;
-      setSaving(false);
-      if (!result.ok) setError(result.message);
-      // The server runs the agent turn and local merge after accepting the request.
-    })();
-  };
-
-  return (
-    <SessionBar>
-      <View style={styles.prLocalMain}>
-        <Text style={styles.prTitle} numberOfLines={1}>
-          Changes from this session
-        </Text>
-        <Text style={styles.prSub} numberOfLines={1}>
-          Save them as a version in your project.
-        </Text>
-        {error !== undefined ? (
-          <Text style={styles.prError} numberOfLines={2}>
-            {error}
-          </Text>
-        ) : null}
-      </View>
-      <Pressable
-        style={({ pressed }) => [
-          styles.prMergeButton,
-          styles.prLocalMergeButton,
-          { backgroundColor: theme.colors.success },
-          saving || busy ? styles.prMergeButtonDisabled : null,
-          pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
-        ]}
-        onPress={() =>
-          void confirmHint().then((proceed) => {
-            if (proceed && mounted.current) save();
-          })
-        }
-        disabled={saving || busy}
-        accessibilityRole="button"
-        accessibilityState={{ disabled: saving || busy, busy: saving }}
-        accessibilityLabel="Save this session's changes as a version in your project"
-      >
-        {saving ? (
-          <ActivityIndicator color={theme.colors.onAction} />
-        ) : (
-          <Text style={styles.prMergeText}>Save to project</Text>
-        )}
-      </Pressable>
-    </SessionBar>
-  );
-}
-
 function InputBar({
   hasPlan,
   planning,
@@ -8754,29 +8678,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing.md,
     gap: theme.spacing.sm,
   },
-  /** The local merge bar has no status dot and nothing to open, so it carries the
-   *  padding the shared session target gives the PR row — without it the branch name sits
-   *  flush against the bar's border on one side and the Merge button on the other. */
-
-  prLocalMain: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 52,
-    gap: 1,
-    justifyContent: 'center',
-    paddingLeft: theme.spacing.md,
-    paddingRight: theme.spacing.sm,
-  },
-  prTitle: {
-    color: theme.colors.text,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.bold,
-  },
-  prSub: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
   prError: {
     color: theme.colors.attention,
     fontSize: theme.typography.footnote.fontSize,
@@ -8791,9 +8692,6 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.action,
-  },
-  prLocalMergeButton: {
-    width: 124,
   },
   prMergeButtonDisabled: {
     opacity: 0.45,
