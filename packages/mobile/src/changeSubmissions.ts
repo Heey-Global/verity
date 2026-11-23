@@ -27,6 +27,8 @@ export const sessionChangeSubmissionSchema = changeSubmissionSchema.optional().c
 const stateSchema = z.object({
   submission: changeSubmissionSchema.nullable(),
   viewerCanCode: z.boolean(),
+  /** Whether the viewer may submit; absent on a server that predates the flag. */
+  viewerCanSubmit: z.boolean().optional(),
   /** Whether the session changed anything the project lacks; absent when unknown. */
   hasChanges: z.boolean().optional(),
 });
@@ -70,8 +72,8 @@ export function changeSubmissionsClient(
 /**
  * What the project is called in submission text. No project field names what a
  * project builds yet, so every project reads as "the project"; a field such as a
- * website kind only has to be added here.
+ * website kind only has to take the project here.
  */
-export function projectNoun(_project?: { kind?: string } | null): string {
+export function projectNoun(): string {
   return 'the project';
 }

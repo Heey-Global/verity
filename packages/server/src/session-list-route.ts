@@ -6,11 +6,13 @@ import {
   submissionAddressedTo,
   type ChangeSubmissionStore,
   type ChangeSubmissionView,
+  type SubmissionListDeps,
 } from './change-submissions.js';
 import type { SessionSummary, SessionListEnvelope } from './server-types.js';
 import {
   addressedTo,
   addressRequests,
+  holdsCode,
   viewerCodeRights,
   type RequestAddressing,
   type RequestAddressingDeps,
@@ -39,7 +41,7 @@ export interface SessionListRouteDeps {
    *  request is for everyone, as for the single operator. */
   requestAddressing?: RequestAddressingDeps;
   /** Changes members submitted for review (ADR 0023). Absent → none listed. */
-  changeSubmissions?: ChangeSubmissionStore;
+  changeSubmissions?: SubmissionListDeps;
 }
 
 interface SessionListLoad {
@@ -131,13 +133,24 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
       deps.requestAddressing !== undefined && request.localUserId != null
         ? { holdsCode: viewerCodeRights(deps.requestAddressing, viewer) }
         : undefined;
+    const reviewers = new Map<string | null, Promise<boolean>>();
+    const reviewerRights = (store: ChangeSubmissionStore, projectId: string | null) => {
+      let held = reviewers.get(projectId);
+      if (held === undefined) {
+        held = holdsCode(store, viewer, projectId).catch(() => false);
+        reviewers.set(projectId, held);
+      }
+      return held;
+    };
     const submissionFor = async (
       summary: SessionSummary,
     ): Promise<Pick<SessionSummary, 'changeSubmission'>> => {
       const view = submissions.get(summary.sessionId);
       if (view === undefined) return {};
-      if (personal === undefined) return { changeSubmission: view };
-      const holds = await personal.holdsCode(summary.projectId);
+      if (personal === undefined || deps.changeSubmissions === undefined)
+        return { changeSubmission: view };
+      // Unlike a permission prompt, a review is only offered on confirmed Code.
+      const holds = await reviewerRights(deps.changeSubmissions.store, summary.projectId);
       return {
         changeSubmission: {
           ...view,

@@ -125,6 +125,7 @@ interface ChangeSubmissionsTable {
   submitted_by: string;
   submitted_at: ColumnType<Date, string | undefined, string>;
   revision: string | null;
+  pull_request_url: string | null;
   state: string;
   updated_at: ColumnType<Date, string | undefined, string>;
 }

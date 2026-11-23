@@ -77,3 +77,20 @@ it('stays hidden while the server cannot be read', async () => {
   await waitFor(() => expect(read).toHaveBeenCalled());
   expect(view.toJSON()).toBeNull();
 });
+
+it('says so when the agent did not get the request', async () => {
+  const { api } = client([
+    { submission: { status: 'waiting', submittedBy: mara, submittedAt: 1 }, viewerCanCode: true },
+  ]);
+  render(
+    <ChangeSubmissionBar
+      client={api}
+      sessionId="s1"
+      pullRequestShown={false}
+      busy={false}
+      onOpenPullRequest={jest.fn(async () => false)}
+    />,
+  );
+  fireEvent.press(await screen.findByText('Open PR'));
+  expect(await screen.findByText('The message to the agent was not sent. Try again.')).toBeTruthy();
+});

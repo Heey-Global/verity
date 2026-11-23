@@ -270,7 +270,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const { readSecretStatus } = installSessionList(app, ctx, {
     codexUsage,
     wikiMaintenanceSessions,
-    sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions },
+    sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions, sessionPrCache },
   });
 
   installProviderUsage(app, ctx, { claudeUsage, codexUsage });
@@ -440,7 +440,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     publish: publishSessionEvent,
     revision: async (session) =>
       (await branchesForSession(session))?.headRevision?.(session.worktree),
-    prPhase: async (session) => (await sessionPrCache.get(session))?.phase,
+    pullRequest: async (session) => (await sessionPrCache.get(session)) ?? undefined,
     hasChanges: async (session) => {
       const branches = await branchesForSession(session);
       if (!branches || session.projectId === null) return undefined;

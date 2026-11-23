@@ -96,7 +96,8 @@ describe('change submission routes', () => {
       if (typeof user === 'string') request.localUserId = user;
     });
     const published: AgentEvent[] = [];
-    let phase: PullRequestPhase | undefined;
+    let pr: { phase: PullRequestPhase; url: string } | undefined;
+    let hasChanges: boolean | undefined;
     registerChangeSubmissionRoutes(app, {
       store: ctx.store,
       publish: async (sessionId, event) => {
@@ -104,7 +105,8 @@ describe('change submission routes', () => {
         await ctx.store.appendEvent(sessionId, event);
       },
       revision: async () => 'abc123',
-      prPhase: async () => phase,
+      pullRequest: async () => pr,
+      hasChanges: async () => hasChanges,
     });
     const call = async (method: 'GET' | 'POST' | 'DELETE', user?: string) => {
       const response = await app.inject({
@@ -114,13 +116,24 @@ describe('change submission routes', () => {
       });
       return { status: response.statusCode, body: response.json<Record<string, unknown>>() };
     };
-    return { app, call, published, setPhase: (next: PullRequestPhase) => (phase = next) };
+    return {
+      app,
+      call,
+      published,
+      setPullRequest: (phase: PullRequestPhase, url = 'https://forge/pr/2') =>
+        (pr = { phase, url }),
+      setChanges: (next: boolean | undefined) => (hasChanges = next),
+    };
   };
 
   it('submits, reports who checks and adds, and records it in the history', async () => {
-    const { app, call, published, setPhase } = setup();
+    const { app, call, published, setPullRequest } = setup();
     try {
-      expect((await call('GET', 'mara')).body).toEqual({ submission: null, viewerCanCode: false });
+      expect((await call('GET', 'mara')).body).toEqual({
+        submission: null,
+        viewerCanCode: false,
+        viewerCanSubmit: true,
+      });
       expect((await call('POST', 'mara')).status).toBe(201);
       expect(published).toEqual([
         {
@@ -143,10 +156,40 @@ describe('change submission routes', () => {
       expect((await call('GET', 'mara')).body).toMatchObject({
         submission: { status: 'checking', checker: { id: 'alex', name: 'Alex' } },
       });
-      setPhase('open');
+      setPullRequest('open');
       expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'adding' } });
-      setPhase('merged');
+      setPullRequest('merged');
       expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'added' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('refuses what would mislead: Code holders, empty sessions, a second submission', async () => {
+    const { app, call, published, setChanges } = setup();
+    try {
+      // Someone with Code adds changes directly.
+      expect((await call('POST', 'alex')).status).toBe(409);
+      setChanges(false);
+      expect((await call('POST', 'mara')).status).toBe(409);
+      setChanges(true);
+      expect((await call('POST', 'mara')).status).toBe(201);
+      // Submitting again would ask every reviewer anew for the same changes.
+      expect((await call('POST', 'mara')).status).toBe(200);
+      expect(published).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not take a pull request from before the submission for these changes', async () => {
+    const { app, call, setPullRequest } = setup();
+    try {
+      setPullRequest('merged', 'https://forge/pr/1');
+      await call('POST', 'mara');
+      expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'waiting' } });
+      setPullRequest('open', 'https://forge/pr/2');
+      expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'adding' } });
     } finally {
       await app.close();
     }

@@ -404,8 +404,4 @@ export {
   storedMockupState,
 } from './session-mockups.js';
 export { isSessionLinkProject } from './project-session-links.js';
-export type {
-  ChangeSubmission,
-  ChangeSubmissionState,
-  ChangeSubmissionStore,
-} from './change-submissions.js';
+export type { ChangeSubmission, ChangeSubmissionState } from './change-submissions.js';

@@ -16,6 +16,7 @@ export const changeSubmissionsMigration: Migration = {
       submitted_by text not null references users(id) on delete cascade,
       submitted_at timestamptz not null default now(),
       revision text,
+      pull_request_url text,
       state text not null check (state in ('submitted', 'withdrawn', 'added')),
       updated_at timestamptz not null default now()
     )`.execute(db);
@@ -33,6 +34,8 @@ export interface ChangeSubmission {
   submittedAt: Date;
   /** The commit the session's branch was at when submitted, when it could be read. */
   revision: string | null;
+  /** A pull request the session already had when submitted; it is not this one's. */
+  pullRequestUrl: string | null;
   state: ChangeSubmissionState;
 }
 
@@ -44,6 +47,7 @@ export class ChangeSubmissionStore {
     sessionId: string;
     userId: string;
     revision?: string | undefined;
+    pullRequestUrl?: string | undefined;
   }): Promise<ChangeSubmission> {
     const row = await this.db
       .insertInto('change_submissions')
@@ -51,6 +55,7 @@ export class ChangeSubmissionStore {
         session_id: input.sessionId,
         submitted_by: input.userId,
         revision: input.revision ?? null,
+        pull_request_url: input.pullRequestUrl ?? null,
         state: 'submitted',
       })
       .onConflict((conflict) =>
@@ -58,6 +63,7 @@ export class ChangeSubmissionStore {
           submitted_by: input.userId,
           submitted_at: sql`now()`,
           revision: input.revision ?? null,
+          pull_request_url: input.pullRequestUrl ?? null,
           state: 'submitted',
           updated_at: sql`now()`,
         }),
@@ -101,32 +107,32 @@ export class ChangeSubmissionStore {
 
   /**
    * The people who started a turn in each session after its submission, first
-   * writer first: whoever with Code writes first is the one checking.
+   * writer first: whoever with Code writes first is the one checking. Compared in
+   * the database, so a prompt in the same millisecond keeps its true order.
    */
   async writersSince(
-    submissions: readonly Pick<ChangeSubmission, 'sessionId' | 'submittedAt'>[],
+    submissions: readonly Pick<ChangeSubmission, 'sessionId'>[],
   ): Promise<Map<string, string[]>> {
     const writers = new Map<string, string[]>();
     if (submissions.length === 0) return writers;
-    const since = new Map(submissions.map((s) => [s.sessionId, s.submittedAt.getTime()]));
     const rows = await this.db
-      .selectFrom('events')
+      .selectFrom('events as e')
+      .innerJoin('change_submissions as c', 'c.session_id', 'e.session_id')
       .select([
-        'session_id',
-        'created_at',
-        sql<string | null>`payload->'initiatedBy'->>'userId'`.as('user_id'),
+        'e.session_id',
+        sql<string | null>`e.payload->'initiatedBy'->>'userId'`.as('user_id'),
       ])
-      .where('session_id', 'in', [...since.keys()])
-      .where('type', '=', 'prompt')
       .where(
-        sql<boolean>`created_at > ${new Date(Math.min(...since.values())).toISOString()}::timestamptz`,
+        'e.session_id',
+        'in',
+        submissions.map((s) => s.sessionId),
       )
-      .where(sql<boolean>`payload->'initiatedBy'->>'userId' is not null`)
-      .orderBy('id')
+      .where('e.type', '=', 'prompt')
+      .whereRef('e.created_at', '>', 'c.submitted_at')
+      .orderBy('e.id')
       .execute();
     for (const row of rows) {
       if (row.user_id === null) continue;
-      if (row.created_at.getTime() <= (since.get(row.session_id) ?? Infinity)) continue;
       const list = writers.get(row.session_id) ?? [];
       if (!list.includes(row.user_id)) list.push(row.user_id);
       writers.set(row.session_id, list);
@@ -140,6 +146,7 @@ function fromRow(row: {
   submitted_by: string;
   submitted_at: Date;
   revision: string | null;
+  pull_request_url: string | null;
   state: string;
 }): ChangeSubmission {
   return {
@@ -147,6 +154,7 @@ function fromRow(row: {
     submittedBy: row.submitted_by,
     submittedAt: row.submitted_at,
     revision: row.revision,
+    pullRequestUrl: row.pull_request_url,
     state: row.state as ChangeSubmissionState,
   };
 }

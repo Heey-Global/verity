@@ -33,6 +33,8 @@ describe('change submission bar without Code', () => {
     // An older server cannot tell; offering is the safer mistake.
     expect(bar(editor(null))?.action?.kind).toBe('submit');
     expect(bar(editor(null, false))).toBeUndefined();
+    // A reader cannot submit; the button would only end in a refusal.
+    expect(bar({ ...editor(null, true), viewerCanSubmit: false })).toBeUndefined();
   });
 
   it('follows the submission until the changes are added', () => {
@@ -75,6 +77,15 @@ describe('change submission bar with Code', () => {
     expect(bar(developer(submitted({ status: 'checking' })), true)).toBeUndefined();
     expect(bar(developer(submitted({ status: 'adding' })))).toBeUndefined();
     expect(bar(developer(submitted({ status: 'added' })))).toBeUndefined();
+    // A local project has no pull requests; its save bar adds the changes.
+    expect(
+      changeSubmissionBar({
+        state: developer(submitted()),
+        pullRequestShown: false,
+        noun: 'the project',
+        local: true,
+      }),
+    ).toBeUndefined();
   });
 });
 

@@ -22,10 +22,13 @@ export function changeSubmissionBar(input: {
   pullRequestShown: boolean;
   /** What the project is called, e.g. "the project". */
   noun: string;
+  /** A local project adds changes with "Save to project", not a pull request. */
+  local?: boolean;
 }): ChangeSubmissionBarModel | undefined {
-  const { submission, viewerCanCode, hasChanges } = input.state;
+  const { submission, viewerCanCode, viewerCanSubmit, hasChanges } = input.state;
   if (viewerCanCode) {
-    if (submission === null || input.pullRequestShown) return undefined;
+    // The save bar already offers the one way to add a local project's changes.
+    if (submission === null || input.pullRequestShown || input.local === true) return undefined;
     if (submission.status !== 'waiting' && submission.status !== 'checking') return undefined;
     return {
       title: `${nameOf(submission.submittedBy, 'A member')} submitted changes`,
@@ -39,7 +42,7 @@ export function changeSubmissionBar(input: {
   if (submission === null) {
     // Nothing to hand over yet. Unknown counts as changed: offering a submission
     // that turns out empty costs less than hiding one that is not.
-    if (hasChanges === false) return undefined;
+    if (hasChanges === false || viewerCanSubmit === false) return undefined;
     return {
       title: 'Changes from this session',
       subtitle: `A developer checks them and adds them to ${input.noun}`,

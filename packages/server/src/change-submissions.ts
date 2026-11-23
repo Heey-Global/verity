@@ -3,7 +3,6 @@ import type { ChangeSubmission, EventStore, SessionRecord } from '@verity/store'
 import type { FastifyInstance } from 'fastify';
 
 import type { ServerContext } from './server-context.js';
-import type { SessionSummary } from './server-types.js';
 import { holdsCode } from './session-request-addressees.js';
 
 /**
@@ -34,6 +33,22 @@ export interface ChangeSubmissionView {
 
 export type PullRequestPhase = 'open' | 'merged' | 'closed';
 
+/** The session's pull request, as far as a submission's status needs it. */
+export interface SubmissionPullRequest {
+  phase: PullRequestPhase;
+  url?: string | undefined;
+}
+
+/** The session's pull request unless it predates the submission: a PR merged
+ *  before someone submitted new changes says nothing about those changes. */
+function pullRequestSince(
+  submission: Pick<ChangeSubmission, 'pullRequestUrl'>,
+  pr: SubmissionPullRequest | undefined,
+): PullRequestPhase | undefined {
+  if (pr === undefined) return undefined;
+  return pr.url !== undefined && pr.url === submission.pullRequestUrl ? undefined : pr.phase;
+}
+
 export function changeSubmissionStatus(input: {
   state: ChangeSubmission['state'];
   prPhase?: PullRequestPhase | undefined;
@@ -56,7 +71,7 @@ export async function describeSubmissions(
   entries: readonly {
     submission: ChangeSubmission;
     projectId: string | null;
-    prPhase?: PullRequestPhase | undefined;
+    pr?: SubmissionPullRequest | undefined;
   }[],
 ): Promise<Map<string, ChangeSubmissionView>> {
   const views = new Map<string, ChangeSubmissionView>();
@@ -92,8 +107,9 @@ export async function describeSubmissions(
     const name = names.get(id);
     return name === undefined ? { id } : { id, name };
   };
-  live.forEach(({ submission, prPhase }, index) => {
+  live.forEach(({ submission, pr }, index) => {
     const checker = checkers[index];
+    const prPhase = pullRequestSince(submission, pr);
     const status = changeSubmissionStatus({ state: submission.state, prPhase, checker });
     if (status === undefined) return;
     views.set(submission.sessionId, {
@@ -106,22 +122,34 @@ export async function describeSubmissions(
   return views;
 }
 
+/** Where listed sessions' open submissions stand, read once per list load. */
+export interface SubmissionListDeps {
+  store: ChangeSubmissionStore;
+  /** The session's pull request; read only for the few sessions with a submission. */
+  pullRequest?: (session: SessionRecord) => Promise<SubmissionPullRequest | null | undefined>;
+}
+
 /** The open submissions among listed sessions, described once per list load. */
 export async function openSubmissionViews(
-  store: ChangeSubmissionStore,
-  summaries: readonly Pick<SessionSummary, 'sessionId' | 'projectId' | 'pr'>[],
+  deps: SubmissionListDeps,
+  summaries: readonly SessionRecord[],
 ): Promise<Map<string, ChangeSubmissionView>> {
-  const open = await store.changeSubmissions.open(summaries.map((s) => s.sessionId));
+  const open = await deps.store.changeSubmissions.open(summaries.map((s) => s.sessionId));
   if (open.size === 0) return new Map();
-  return describeSubmissions(
-    store,
+  const entries = await Promise.all(
     summaries.flatMap((summary) => {
       const submission = open.get(summary.sessionId);
-      return submission === undefined
-        ? []
-        : [{ submission, projectId: summary.projectId, prPhase: summary.pr?.phase }];
+      if (submission === undefined) return [];
+      return [
+        (async () => ({
+          submission,
+          projectId: summary.projectId,
+          pr: (await deps.pullRequest?.(summary).catch(() => undefined)) ?? undefined,
+        }))(),
+      ];
     }),
   );
+  return describeSubmissions(deps.store, entries);
 }
 
 /**
@@ -142,8 +170,8 @@ export interface ChangeSubmissionRouteDeps {
   publish: (sessionId: string, event: AgentEvent) => Promise<unknown>;
   /** The commit the session's branch is at, when it can be read. */
   revision?: (session: SessionRecord) => Promise<string | undefined>;
-  /** The phase of the session's pull request, if it has one. */
-  prPhase?: (session: SessionRecord) => Promise<PullRequestPhase | undefined>;
+  /** The session's pull request, if it has one. */
+  pullRequest?: (session: SessionRecord) => Promise<SubmissionPullRequest | undefined>;
   /** Whether the session changed anything the project does not have yet. */
   hasChanges?: (session: SessionRecord) => Promise<boolean | undefined>;
 }
@@ -155,9 +183,9 @@ export function registerChangeSubmissionRoutes(
   const describe = async (session: SessionRecord) => {
     const submission = await deps.store.changeSubmissions.get(session.sessionId);
     if (submission === undefined) return null;
-    const prPhase = await deps.prPhase?.(session).catch(() => undefined);
+    const pr = await deps.pullRequest?.(session).catch(() => undefined);
     const views = await describeSubmissions(deps.store, [
-      { submission, projectId: session.projectId, prPhase },
+      { submission, projectId: session.projectId, pr },
     ]);
     return views.get(session.sessionId) ?? null;
   };
@@ -178,6 +206,10 @@ export function registerChangeSubmissionRoutes(
       ...(hasChanges === undefined ? {} : { hasChanges }),
       // Without accounts the one operator holds every right.
       viewerCanCode: viewer === null || (await holdsCode(deps.store, viewer, session.projectId)),
+      viewerCanSubmit:
+        viewer !== null &&
+        session.projectId !== null &&
+        (await deps.store.hasProjectPermission(viewer, session.projectId, 'execute')),
     };
   });
 
@@ -189,8 +221,28 @@ export function registerChangeSubmissionRoutes(
     if (viewer === null) {
       return reply.code(409).send({ error: 'Submitting changes needs member accounts.' });
     }
-    const revision = await deps.revision?.(session).catch(() => undefined);
-    await deps.store.changeSubmissions.submit({ sessionId: id, userId: viewer, revision });
+    // Whoever holds Code adds changes directly; there is nobody to hand them to.
+    if (await holdsCode(deps.store, viewer, session.projectId)) {
+      return reply.code(409).send({ error: 'You can add these changes yourself.' });
+    }
+    // A second submission of the same changes would ask everyone again.
+    if ((await deps.store.changeSubmissions.get(id))?.state === 'submitted') {
+      return reply.code(200).send({ submission: await describe(session) });
+    }
+    if ((await deps.hasChanges?.(session).catch(() => undefined)) === false) {
+      return reply.code(409).send({ error: 'This session has no changes to submit.' });
+    }
+    const [revision, pr] = await Promise.all([
+      deps.revision?.(session).catch(() => undefined),
+      deps.pullRequest?.(session).catch(() => undefined),
+    ]);
+    await deps.store.changeSubmissions.submit({
+      sessionId: id,
+      userId: viewer,
+      revision,
+      // A pull request that exists now is an earlier one, not these changes'.
+      pullRequestUrl: pr?.phase === 'open' ? undefined : pr?.url,
+    });
     await deps.publish(id, {
       t: 'notice',
       text: `${await nameOf(viewer)} submitted changes`,

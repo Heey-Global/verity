@@ -354,26 +354,28 @@ it('lists a submission for review to members with Code until one of them writes'
       },
     },
     changeSubmissions: {
-      changeSubmissions: {
-        open: async () =>
-          new Map([
-            [
-              's1',
-              {
-                sessionId: 's1',
-                submittedBy: 'mara',
-                submittedAt,
-                revision: null,
-                state: 'submitted',
-              },
-            ],
-          ]),
-        writersSince: async () => new Map([['s1', writers]]),
-      } as never,
-      isActiveAdministrator: async () => false,
-      hasProjectPermission: async (user: string, _project: string, permission: string) =>
-        permission === 'code' && (user === 'alex' || user === 'kim'),
-      userDisplayNames: async () => new Map([['mara', 'Mara']]),
+      store: {
+        changeSubmissions: {
+          open: async () =>
+            new Map([
+              [
+                's1',
+                {
+                  sessionId: 's1',
+                  submittedBy: 'mara',
+                  submittedAt,
+                  revision: null,
+                  state: 'submitted',
+                },
+              ],
+            ]),
+          writersSince: async () => new Map([['s1', writers]]),
+        } as never,
+        isActiveAdministrator: async () => false,
+        hasProjectPermission: async (user: string, _project: string, permission: string) =>
+          permission === 'code' && (user === 'alex' || user === 'kim'),
+        userDisplayNames: async () => new Map([['mara', 'Mara']]),
+      },
     },
   });
   const read = async (user: string) => {

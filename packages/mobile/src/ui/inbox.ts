@@ -421,7 +421,7 @@ function sessionItems(
       context: where,
       message:
         submission.checker === undefined
-          ? `Check them and add them to ${projectNoun(project)}.`
+          ? `Check them and add them to ${projectNoun()}.`
           : `You are checking them.`,
       actions: [open('Review')],
     });

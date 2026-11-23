@@ -35,13 +35,16 @@ export function ChangeSubmissionBar({
   projectKind?: string | undefined;
   pullRequestShown: boolean;
   busy: boolean;
-  /** Sends `prompt` to the session's agent as the viewer's message. */
-  onOpenPullRequest: (prompt: string) => Promise<unknown>;
+  /** Sends `prompt` to the session's agent as the viewer's message; false when refused. */
+  onOpenPullRequest: (prompt: string) => Promise<boolean>;
 }) {
   const [state, setState] = useState<ChangeSubmissionState | undefined>(undefined);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
+  // The session the bar shows now: a read for another one must not land here.
+  const current = useRef(sessionId);
+  current.current = sessionId;
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -53,7 +56,7 @@ export function ChangeSubmissionBar({
     async (signal?: AbortSignal) => {
       try {
         const next = await client.changeSubmissions.read(sessionId, signal);
-        if (mounted.current) setState(next);
+        if (mounted.current && current.current === sessionId) setState(next);
       } catch {
         // An older server has no submissions; a passing failure keeps the last state.
       }
@@ -75,7 +78,8 @@ export function ChangeSubmissionBar({
   const model = changeSubmissionBar({
     state,
     pullRequestShown,
-    noun: projectNoun(projectKind === undefined ? null : { kind: projectKind }),
+    noun: projectNoun(),
+    local: projectKind === 'local',
   });
   if (model === undefined) return null;
 
@@ -87,8 +91,11 @@ export function ChangeSubmissionBar({
       setError(undefined);
       try {
         if (kind === 'submit') await client.changeSubmissions.submit(sessionId);
-        else if (state.submission !== null)
-          await onOpenPullRequest(openPullRequestPrompt(state.submission.submittedBy));
+        else if (
+          state.submission !== null &&
+          !(await onOpenPullRequest(openPullRequestPrompt(state.submission.submittedBy)))
+        )
+          throw new Error('The message to the agent was not sent. Try again.');
         await load();
       } catch (caught) {
         if (mounted.current) setError(caught instanceof Error ? caught.message : String(caught));
