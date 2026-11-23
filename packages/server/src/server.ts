@@ -1,4 +1,5 @@
 import { installAssistantHandoffNotices } from './assistant-handoff-notify.js';
+import { installChangeSubmissions } from './change-submissions.js';
 import {
   startServerMessageProjection,
   createServerConductor,
@@ -435,6 +436,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     spawn: sessionCreate.spawn,
   });
   installVulnerabilityFix(app, ctx, { sessionCreate, sessionPrCache });
+  installChangeSubmissions(app, ctx, {
+    publish: publishSessionEvent,
+    revision: async (session) =>
+      (await branchesForSession(session))?.headRevision?.(session.worktree),
+    prPhase: async (session) => (await sessionPrCache.get(session))?.phase,
+  });
   installMeetingIntake(app, ctx, { attendeeMeetings, spawn: sessionCreate.spawn });
 
   installRepairRoutes(app, ctx);

@@ -44,7 +44,7 @@ function memoizedAdministrators(store: RequestAddressingDeps['store']): RightsSt
 
 /** Whether `userId` holds Code where `projectId` is; a session without a project
  *  is an administrator's. */
-async function holdsCode(
+export async function holdsCode(
   store: RightsStore,
   userId: string,
   projectId: string | null,

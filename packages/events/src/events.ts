@@ -388,6 +388,15 @@ export const agentEventSchema = z.discriminatedUnion('t', [
       .optional(),
     // Correlates a server-confirmed workflow notice with an optimistic local echo.
     clientRequestId: z.string().max(100).optional(),
+    // A member submitted the session's changes for review, withdrew them, or they
+    // were added. Current apps show a quiet history row; an older app ignores the
+    // field and shows `text` as a message, which still reads correctly.
+    changeSubmission: z
+      .object({
+        action: z.enum(['submitted', 'withdrawn', 'added']),
+        userId: z.string().min(1).optional(),
+      })
+      .optional(),
   }),
   z.object({
     // The operator's steering prompt for a turn — persisted by the conductor when

@@ -1,6 +1,12 @@
 import { measureLatencyPhase, type EventStore, type SessionRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import type { AttentionSignal } from './attention.js';
+import {
+  openSubmissionViews,
+  submissionAddressedTo,
+  type ChangeSubmissionStore,
+  type ChangeSubmissionView,
+} from './change-submissions.js';
 import type { SessionSummary, SessionListEnvelope } from './server-types.js';
 import {
   addressedTo,
@@ -32,11 +38,14 @@ export interface SessionListRouteDeps {
   /** Address each session's requests to a person (ADR 0023). Absent → every
    *  request is for everyone, as for the single operator. */
   requestAddressing?: RequestAddressingDeps;
+  /** Changes members submitted for review (ADR 0023). Absent → none listed. */
+  changeSubmissions?: ChangeSubmissionStore;
 }
 
 interface SessionListLoad {
   summaries: SessionSummary[];
   addressing: ReadonlyMap<string, RequestAddressing>;
+  submissions: ReadonlyMap<string, ChangeSubmissionView>;
 }
 
 export function registerSessionListRoute(app: FastifyInstance, deps: SessionListRouteDeps): void {
@@ -81,7 +90,14 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
           return new Map<string, RequestAddressing>();
         })
       : new Map<string, RequestAddressing>();
-    return { summaries, addressing };
+    // Like addressing, a failed read leaves the list up without submissions.
+    const submissions = deps.changeSubmissions
+      ? await openSubmissionViews(deps.changeSubmissions, summaries).catch((error: unknown) => {
+          app.log.warn({ err: error }, 'verity: could not read change submissions');
+          return new Map<string, ChangeSubmissionView>();
+        })
+      : new Map<string, ChangeSubmissionView>();
+    return { summaries, addressing, submissions };
   };
   const sharedLoad = (): Promise<SessionListLoad> => {
     if (inFlight !== undefined) return inFlight;
@@ -96,7 +112,7 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
   };
   app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
     const viewer = viewerId(request);
-    const [{ summaries: all, addressing }, views, scope] = await Promise.all([
+    const [{ summaries: all, addressing, submissions }, views, scope] = await Promise.all([
       sharedLoad(),
       deps.store.viewState.sessionViews(viewer),
       deps.visibleTo?.(viewer) ?? Promise.resolve({ all: true as const }),
@@ -115,6 +131,20 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
       deps.requestAddressing !== undefined && request.localUserId != null
         ? { holdsCode: viewerCodeRights(deps.requestAddressing, viewer) }
         : undefined;
+    const submissionFor = async (
+      summary: SessionSummary,
+    ): Promise<Pick<SessionSummary, 'changeSubmission'>> => {
+      const view = submissions.get(summary.sessionId);
+      if (view === undefined) return {};
+      if (personal === undefined) return { changeSubmission: view };
+      const holds = await personal.holdsCode(summary.projectId);
+      return {
+        changeSubmission: {
+          ...view,
+          addressedToViewer: submissionAddressedTo(viewer, view, holds),
+        },
+      };
+    };
     const summaries = await Promise.all(
       shared.map(
         async ({
@@ -133,6 +163,7 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
               : {}),
             lastSeenEventCount: view?.lastSeenEventCount ?? null,
             inboxDismissed: view?.inboxDismissed ?? [],
+            ...(await submissionFor(summary)),
             ...(personal === undefined
               ? {}
               : await addressedTo(

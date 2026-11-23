@@ -171,6 +171,7 @@ export function installSessionList(
       };
     },
     requestAddressing: { store: deps.eventStore },
+    changeSubmissions: deps.eventStore,
     prunePrSummaryCache,
     pruneBranchCache,
     summarizeSessions,

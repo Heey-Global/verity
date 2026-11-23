@@ -53,6 +53,8 @@ import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { recordSessionCreator, SessionPeopleStore } from './session-people.js';
+import { isSessionLinkProject } from './project-session-links.js';
+import { ChangeSubmissionStore } from './change-submissions.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
@@ -246,20 +248,6 @@ export class ProjectIdentityClaimConflict extends Error {
 /** Whether a project has no GitHub repository behind it (yet). */
 export function isLocalProject(project: Pick<ProjectRecord, 'kind'>): boolean {
   return project.kind === 'local';
-}
-
-/**
- * Whether a project's sessions can be linked and messaged. A sleeping project
- * qualifies: a linked message is an ordinary turn, and turn preparation wakes the
- * Sandbox before running it — the same states the turn route admits.
- */
-export function isSessionLinkProject(
-  project: Pick<ProjectRecord, 'kind' | 'state' | 'hiddenAt'>,
-): boolean {
-  return (
-    project.hiddenAt === null &&
-    (project.state === 'active' || project.state === 'sleeping' || project.state === 'waking')
-  );
 }
 
 /**
@@ -1542,6 +1530,7 @@ export class EventStore implements EventSink {
     this.sandboxRepairIntents = new SandboxRepairIntentStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
     this.sessionPeople = new SessionPeopleStore(db);
+    this.changeSubmissions = new ChangeSubmissionStore(db);
   }
 
   readonly capacityLeases: CapacityLeaseStore;
@@ -1570,6 +1559,8 @@ export class EventStore implements EventSink {
   readonly vulnerabilityScans: VulnerabilityScanStore;
   /** Who started each session, for addressing its requests. */
   readonly sessionPeople: SessionPeopleStore;
+  /** Session changes members without Code submitted for review. */
+  readonly changeSubmissions: ChangeSubmissionStore;
 
   async getAttendeeState<T>(id: string): Promise<T | undefined> {
     const result = await sql<{

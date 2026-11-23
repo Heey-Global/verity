@@ -1,3 +1,4 @@
+import type { ChangeSubmissionView } from './change-submissions.js';
 import type { AgentEvent, Attachment, RateLimitState, UsageTotals } from '@verity/events';
 import type {
   EventStore,
@@ -323,6 +324,9 @@ export interface SessionSummary extends SessionRecord {
    *  describe stays unaddressed and is shown to everyone. Absent without accounts,
    *  where everything is for the one operator. */
   addressedToViewer?: boolean;
+  /** Session list only: changes a member submitted here for review (ADR 0023), and,
+   *  per person, whether checking them waits on the requester. */
+  changeSubmission?: ChangeSubmissionView & { addressedToViewer?: boolean };
   /** Cumulative token usage across the session's turns (§13a). */
   usage: UsageTotals;
   /** Latest 5-hour rate-limit state observed in the session log, if any. */

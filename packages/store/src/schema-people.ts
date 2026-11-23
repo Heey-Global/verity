@@ -120,6 +120,15 @@ interface SessionCreatorsTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+interface ChangeSubmissionsTable {
+  session_id: string;
+  submitted_by: string;
+  submitted_at: ColumnType<Date, string | undefined, string>;
+  revision: string | null;
+  state: string;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
 interface ProjectSandboxesTable {
   project_id: string;
   user_id: string;
@@ -166,6 +175,7 @@ export interface PeopleDatabase {
   user_project_preferences: UserProjectPreferencesTable;
   session_user_models: SessionUserModelsTable;
   session_creators: SessionCreatorsTable;
+  change_submissions: ChangeSubmissionsTable;
   project_invitations: ProjectInvitationsTable;
   team_outbox: TeamOutboxTable;
   team_join_admissions: TeamJoinAdmissionsTable;
