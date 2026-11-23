@@ -47,6 +47,8 @@ export function ChangeSubmissionBar({
   const current = useRef(sessionId);
   current.current = sessionId;
   const unsupported = useRef(false);
+  // Two taps before a re-render must not ask the agent twice.
+  const inFlight = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -95,7 +97,8 @@ export function ChangeSubmissionBar({
   if (model === undefined) return null;
 
   const act = (): void => {
-    if (acting || busy || model.action === undefined) return;
+    if (inFlight.current || busy || model.action === undefined) return;
+    inFlight.current = true;
     const kind = model.action.kind;
     void (async () => {
       setActing(true);
@@ -111,6 +114,7 @@ export function ChangeSubmissionBar({
       } catch (caught) {
         if (mounted.current) setError(caught instanceof Error ? caught.message : String(caught));
       } finally {
+        inFlight.current = false;
         if (mounted.current) setActing(false);
       }
     })();

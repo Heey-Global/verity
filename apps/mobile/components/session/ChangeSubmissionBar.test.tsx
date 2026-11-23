@@ -94,3 +94,24 @@ it('says so when the agent did not get the request', async () => {
   fireEvent.press(await screen.findByText('Open PR'));
   expect(await screen.findByText('The message to the agent was not sent. Try again.')).toBeTruthy();
 });
+
+it('asks the agent once for two quick taps', async () => {
+  const { api } = client([
+    { submission: { status: 'waiting', submittedBy: mara, submittedAt: 1 }, viewerCanCode: true },
+  ]);
+  const onOpenPullRequest = jest.fn(async () => true);
+  render(
+    <ChangeSubmissionBar
+      client={api}
+      sessionId="s1"
+      pullRequestShown={false}
+      busy={false}
+      onOpenPullRequest={onOpenPullRequest}
+    />,
+  );
+  const button = await screen.findByText('Open PR');
+  fireEvent.press(button);
+  fireEvent.press(button);
+  await waitFor(() => expect(onOpenPullRequest).toHaveBeenCalled());
+  expect(onOpenPullRequest).toHaveBeenCalledTimes(1);
+});
