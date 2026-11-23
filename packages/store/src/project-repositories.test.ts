@@ -164,6 +164,13 @@ describe('project repository assignments', () => {
       ...pullRequest,
       state: 'closed',
     });
+    // Simulate a workspace migrated from a release that only wrote the legacy column.
+    await ctx.db
+      .updateTable('session_repository_workspaces')
+      .set({ pull_request_history: null })
+      .where('session_id', '=', 's')
+      .where('repository_id', '=', extra.id)
+      .execute();
     const second = { number: 8, head: 'feat/second', url: 'https://github.com/two/api/pull/8' };
     await ctx.store.recordRepositoryPullRequest('p', extra.id, second.head, second, 's');
     const sameNumberInDefault = { ...second, url: 'https://github.com/one/p/pull/8' };

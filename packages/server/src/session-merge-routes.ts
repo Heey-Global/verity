@@ -116,29 +116,29 @@ export function registerSessionMergeRoutes(
         reply.code(404);
         return { error: `session ${id} not found` };
       }
-      let target =
-        repositoryId === undefined
-          ? undefined
-          : (await deps.resolvePullRequests?.(session))?.find(
-              (row) => row.status.repository.id === repositoryId && row.status.number === number,
-            );
-      if (target === undefined && repositoryId === `default:${session.projectId}`) {
-        const legacy = await sessionPrStatus(session).catch(() => null);
-        if (legacy?.number === number)
-          target = (await deps.resolvePullRequests?.(session, legacy))?.find(
-            (row) => row.status.repository.id === repositoryId && row.status.number === number,
-          );
+      const findTarget = async (legacy?: PullRequestStatus | null) =>
+        (await deps.resolvePullRequests?.(session, legacy, undefined, repositoryId))?.find(
+          (row) => row.status.repository.id === repositoryId && row.status.number === number,
+        );
+      let target: Awaited<ReturnType<typeof findTarget>>;
+      if (repositoryId !== undefined) {
+        try {
+          target = await findTarget();
+          if (target === undefined && repositoryId === `default:${session.projectId}`) {
+            const legacy = await sessionPrStatus(session);
+            if (legacy?.number === number) target = await findTarget(legacy);
+          }
+        } catch {
+          reply.code(503);
+          return { code: 'merge_status_unavailable', error: 'pull request status is unavailable' };
+        }
       }
       if (repositoryId !== undefined && target === undefined) {
         reply.code(404);
         return { error: 'pull request is not associated with this session and repository' };
       }
       const readStatus = async () =>
-        target === undefined
-          ? sessionPrStatus(session)
-          : ((await deps.resolvePullRequests?.(session))?.find(
-              (row) => row.status.repository.id === repositoryId && row.status.number === number,
-            )?.status ?? null);
+        target === undefined ? sessionPrStatus(session) : ((await findTarget())?.status ?? null);
       if (target && deps.projectPullRequests?.defaultBranch && !target.recorded) {
         const base = await deps.projectPullRequests.defaultBranch(target.project).catch(() => null);
         if (!base) {

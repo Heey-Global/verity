@@ -95,7 +95,10 @@ export function branchesSnapshotWriter(
     cache.versions.delete(cache.versions.keys().next().value!);
   }
   return (value) => {
-    if (cache.versions.get(sessionId) === version) remember(cache, sessionId, value);
+    if (cache.versions.get(sessionId) !== version) return;
+    const previous = cache.snapshots.get(sessionId);
+    const pullRequests = value.pullRequests === null ? previous?.pullRequests : value.pullRequests;
+    remember(cache, sessionId, { ...value, pullRequests });
   };
 }
 
