@@ -288,6 +288,7 @@ import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import type { AttachAnchor } from '../../lib/attachMenu';
 import { AttachMenu } from '../../components/AttachMenu';
 import {
+  appendAttachments,
   attachRecentImages,
   captureImage,
   pickMeetingAudioAsset,
@@ -2853,16 +2854,14 @@ export const SessionChat = memo(function SessionChat({
   // Screen position of the composer's paperclip, so the attach menu docks to it.
   const [attachAnchor, setAttachAnchor] = useState<AttachAnchor | null>(null);
   // Merge a picker's result into `attachments`, capping at MAX_ATTACHMENTS. The
-  // picker fns throw a user-facing message on failure — a silent no-op would look
-  // like a dead button.
   const performPick = useCallback(
-    async (pick: (remaining: number) => Promise<AttachmentUpload[]>) => {
+    async (pick: (remaining: number) => Promise<AttachmentUpload[]>, keepBatch = false) => {
       const remaining = MAX_ATTACHMENTS_PER_TURN - attachments.length;
       if (remaining <= 0) return;
       try {
         const picked = await pick(remaining);
         if (picked.length === 0) return;
-        setAttachments((cur) => [...cur, ...picked].slice(0, MAX_ATTACHMENTS_PER_TURN));
+        setAttachments(appendAttachments(picked, MAX_ATTACHMENTS_PER_TURN, keepBatch));
       } catch (error) {
         Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
       }
@@ -3162,7 +3161,7 @@ export const SessionChat = memo(function SessionChat({
         try {
           const dropped = await readDroppedAttachments(files, remaining);
           if (dropped.length === 0) return;
-          setAttachments((current) => [...current, ...dropped].slice(0, MAX_ATTACHMENTS_PER_TURN));
+          setAttachments(appendAttachments(dropped, MAX_ATTACHMENTS_PER_TURN));
         } catch (error) {
           Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
         }
@@ -3330,7 +3329,7 @@ export const SessionChat = memo(function SessionChat({
     (ids: readonly string[]) => {
       setAttachMenuOpen(false);
       setAttachingRecent(true);
-      void performPick((remaining) => attachRecentImages(ids, remaining)).finally(() =>
+      void performPick((remaining) => attachRecentImages(ids, remaining), true).finally(() =>
         setAttachingRecent(false),
       );
     },
