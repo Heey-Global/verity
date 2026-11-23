@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react-native';
 
+import { darkTheme } from '../theme/tokens';
 import { SecretApprovalCard } from './SecretApprovalCard';
 
 const request = {
@@ -64,3 +65,24 @@ it('shows the full command and injection warning before approval', () => {
   expect(screen.getByText('GITHUB_TOKEN as GH_TOKEN')).toBeTruthy();
   expect(screen.getByText('The command can read and share the full secret.')).toBeTruthy();
 });
+
+it.each([undefined, 'once'] as const)(
+  'uses compact text for the approval card (%s)',
+  (decision) => {
+    render(<SecretApprovalCard request={request} decision={decision} />);
+
+    const { bodySmall, footnote, subtitle } = darkTheme.typography;
+    expect(screen.getByText('HTTP request')).toHaveStyle({ fontSize: bodySmall.fontSize });
+    expect(screen.getByText('HEALTH_TOKEN')).toHaveStyle({ fontSize: bodySmall.fontSize });
+    expect(screen.getByText('Doppler · example / stg')).toHaveStyle({
+      fontSize: footnote.fontSize,
+    });
+    if (decision) {
+      expect(screen.getByText('View request')).toHaveStyle({ fontSize: subtitle.fontSize });
+      fireEvent.press(screen.getByRole('button', { name: 'View request' }));
+    }
+    expect(screen.getByText('GET staging.example.com/health')).toHaveStyle({
+      fontSize: subtitle.fontSize,
+    });
+  },
+);
