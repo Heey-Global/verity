@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import {
+  createCachedProjectTokenMint,
   createGitHubAppProjectTokenMint,
   type GitHubRepositoryIdentity,
 } from './github-app-token.js';
@@ -221,6 +222,18 @@ describe('rename-stable project token mint', () => {
     expect(tokenRequests(gh.requests)).not.toContainEqual({ repository_ids: [4242] });
   });
 
+  it('fails closed when the stored name is bound to more than one repository', async () => {
+    const gh = github({ repositories: new Map([[4242, 'deep-ocr']]) });
+    const tokenMint = mint(gh.fetch, {
+      lookup: () => Promise.reject(new Error('bound to more than one GitHub repository')),
+      reconcile: () => Promise.resolve(),
+    });
+    await expect(tokenMint({ owner: 'heey-global', repo: 'deep-ocr' })).rejects.toThrow(
+      'bound to more than one',
+    );
+    expect(tokenRequests(gh.requests)).toEqual([]);
+  });
+
   it('keeps the name-only behaviour without an identity store', async () => {
     const gh = github({
       repositories: new Map([[4242, 'ocr-engine']]),
@@ -246,5 +259,20 @@ describe('rename-stable project token mint', () => {
     });
     await expect(tokenMint({ owner: 'heey-global', repo: 'deep-ocr' })).resolves.toBe('token-4242');
     expect(failures).toHaveLength(1);
+  });
+});
+
+describe('cached project token mint', () => {
+  it('never hands a token for one bound repository to another of the same name', async () => {
+    const minted: (string | null | undefined)[] = [];
+    const cached = createCachedProjectTokenMint((project) => {
+      minted.push(project.githubRepositoryId);
+      return Promise.resolve(`token-${String(project.githubRepositoryId)}`);
+    });
+    const name = { owner: 'heey-global', repo: 'deep-ocr' };
+    await expect(cached({ ...name, githubRepositoryId: '4242' })).resolves.toBe('token-4242');
+    await expect(cached({ ...name, githubRepositoryId: '9999' })).resolves.toBe('token-9999');
+    await expect(cached({ ...name, githubRepositoryId: '4242' })).resolves.toBe('token-4242');
+    expect(minted).toEqual(['4242', '9999']);
   });
 });

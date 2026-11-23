@@ -11,7 +11,7 @@ export const githubRepositoryIdentityMigration: Migration = {
   async up(db: Kysely<unknown>): Promise<void> {
     for (const table of ['projects', 'project_repositories']) {
       await sql`alter table ${sql.table(table)} add column github_repository_id text
-        check (github_repository_id ~ '^[1-9][0-9]{0,15}$')`.execute(db);
+        check (github_repository_id ~ '^[1-9][0-9]{0,14}$')`.execute(db);
       await sql`create index ${sql.id(`${table}_github_repository_id`)}
         on ${sql.table(table)}(github_repository_id) where github_repository_id is not null`.execute(
         db,

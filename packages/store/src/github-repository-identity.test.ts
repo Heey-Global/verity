@@ -138,6 +138,31 @@ describe('GitHub repository identity', () => {
     expect(await ctx.store.githubRepositories.lookup('heey-global', 'ocr-engine')).toBe('4242');
   });
 
+  it('refuses to pick between repositories bound under the same name', async () => {
+    await project('p', 'deep-ocr');
+    await ctx.store.githubRepositories.reconcile({ ...renamed, repo: 'deep-ocr' });
+    await ctx.store.addProjectRepository({
+      projectId: 'p',
+      name: 'other',
+      kind: 'github',
+      owner: 'other-owner',
+      repo: 'deep-ocr',
+    });
+    await ctx.db
+      .updateTable('project_repositories')
+      .set({ owner: 'heey-global', github_repository_id: '9999' })
+      .execute();
+    await expect(ctx.store.githubRepositories.lookup('heey-global', 'deep-ocr')).rejects.toThrow(
+      'bound to more than one GitHub repository',
+    );
+  });
+
+  it('rejects an ID that would not survive a JavaScript number', async () => {
+    await expect(
+      ctx.store.githubRepositories.reconcile({ ...renamed, id: '9007199254740993' }),
+    ).rejects.toThrow('invalid GitHub repository ID');
+  });
+
   it('adopts the placeholder the installation sync left under the new name', async () => {
     await project('p', 'deep-ocr');
     await ctx.store.githubRepositories.reconcile({ ...renamed, repo: 'deep-ocr' });

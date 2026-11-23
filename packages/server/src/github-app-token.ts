@@ -307,7 +307,7 @@ async function locateRenamedRepository(
   } catch {
     return undefined;
   }
-  const match = /^\/repositories\/([1-9][0-9]{0,15})$/u.exec(
+  const match = /^\/repositories\/([1-9][0-9]{0,14})$/u.exec(
     target.pathname.slice(new URL(apiBaseUrl).pathname.replace(/\/+$/, '').length),
   );
   return target.origin === new URL(apiBaseUrl).origin &&
@@ -375,6 +375,7 @@ export function createGitHubAppProjectTokenMint(
     const mintById = async (id: string): Promise<string | undefined> => {
       // Once the ID is known the name is never consulted again: a repository the
       // installation lost stays refused even if another one takes over its name.
+      if (!/^[1-9][0-9]{0,14}$/u.test(id)) throw new Error('invalid GitHub repository ID');
       const minted = await requestGitHubAppInstallationToken(opts, {
         repository_ids: [Number(id)],
         ...permissions,
@@ -476,7 +477,9 @@ export function createCachedProjectTokenMint(
       cache.clear();
       return undefined;
     }
-    const key = `${authority}\0${project.owner}/${project.repo}`;
+    // The recorded repository ID is part of the scope: a token minted for one bound
+    // repository is never handed to a caller of the same name bound to another.
+    const key = `${authority}\0${project.owner}/${project.repo}\0${project.githubRepositoryId ?? ''}`;
     const hit = cache.get(key);
     if (hit !== undefined && now() - hit.at < ttlMs) return Promise.resolve(hit.token);
     const existing = inflight.get(key);

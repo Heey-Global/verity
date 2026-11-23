@@ -22,7 +22,8 @@ export interface GitHubRepositoryReconciliation {
   renamedRepositoryProjectIds: string[];
 }
 
-const GITHUB_REPOSITORY_ID = /^[1-9][0-9]{0,15}$/u;
+/** At most 15 digits, so the ID always survives a round trip through a JS number. */
+const GITHUB_REPOSITORY_ID = /^[1-9][0-9]{0,14}$/u;
 const LEGACY_GITHUB_SCOPE = 'legacy-github';
 
 /**
@@ -38,8 +39,10 @@ const LEGACY_GITHUB_SCOPE = 'legacy-github';
 export class GitHubRepositoryIdentityStore {
   constructor(private readonly db: Kysely<Database>) {}
 
-  /** The recorded ID for repositories currently stored under `(owner, repo)`.
-   *  Undefined when none is recorded yet, or when rows disagree. */
+  /** The recorded ID for repositories currently stored under `(owner, repo)`, or
+   *  undefined when none is recorded yet. Throws when rows under that name are
+   *  bound to different repositories: which one a caller means is unknowable, and
+   *  falling back to the name would hand out whichever repository holds it now. */
   async lookup(owner: string, repo: string): Promise<string | undefined> {
     const o = owner.toLowerCase();
     const r = repo.toLowerCase();
@@ -52,7 +55,9 @@ export class GitHubRepositoryIdentityStore {
         where kind = 'github' and forge_connection_id is null and removed_at is null
           and lower(owner) = ${o} and lower(repo) = ${r} and github_repository_id is not null
     `.execute(this.db);
-    return rows.rows.length === 1 ? rows.rows[0]!.id : undefined;
+    if (rows.rows.length > 1)
+      throw new Error(`${o}/${r} is bound to more than one GitHub repository`);
+    return rows.rows[0]?.id;
   }
 
   /**
