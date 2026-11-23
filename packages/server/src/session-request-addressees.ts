@@ -21,10 +21,31 @@ export interface RequestAddressingDeps {
   store: Pick<EventStore, 'sessionPeople' | 'isActiveAdministrator' | 'hasProjectPermission'>;
 }
 
+type RightsStore = Pick<RequestAddressingDeps['store'], 'hasProjectPermission'> & {
+  isActiveAdministrator(userId: string): Promise<boolean>;
+};
+
+/** The store with each person's administrator role read once per list load. */
+function memoizedAdministrators(store: RequestAddressingDeps['store']): RightsStore {
+  const administrators = new Map<string, Promise<boolean>>();
+  return {
+    hasProjectPermission: (userId, projectId, permission) =>
+      store.hasProjectPermission(userId, projectId, permission),
+    isActiveAdministrator: (userId) => {
+      let known = administrators.get(userId);
+      if (known === undefined) {
+        known = store.isActiveAdministrator(userId);
+        administrators.set(userId, known);
+      }
+      return known;
+    },
+  };
+}
+
 /** Whether `userId` holds Code where `projectId` is; a session without a project
  *  is an administrator's. */
 async function holdsCode(
-  store: RequestAddressingDeps['store'],
+  store: RightsStore,
   userId: string,
   projectId: string | null,
 ): Promise<boolean> {
@@ -34,7 +55,7 @@ async function holdsCode(
 
 /** Whether `userId` is an active member who can see the session's project. */
 async function canRead(
-  store: RequestAddressingDeps['store'],
+  store: RightsStore,
   userId: string,
   projectId: string | null,
 ): Promise<boolean> {
@@ -64,6 +85,7 @@ export async function addressRequests(
   const addressing = new Map<string, RequestAddressing>();
   // Polled by every device: each person's rights are read once per project.
   const rights = new Map<string, Promise<boolean>>();
+  const store = memoizedAdministrators(deps.store);
   const cached = (
     kind: 'read' | 'code',
     owner: string,
@@ -73,9 +95,7 @@ export async function addressRequests(
     let held = rights.get(key);
     if (held === undefined) {
       held =
-        kind === 'code'
-          ? holdsCode(deps.store, owner, projectId)
-          : canRead(deps.store, owner, projectId);
+        kind === 'code' ? holdsCode(store, owner, projectId) : canRead(store, owner, projectId);
       rights.set(key, held);
     }
     return held;
@@ -134,16 +154,18 @@ export async function addressedTo(
   };
 }
 
-/** A per-request cache of the requester's Code rights by project. */
+/** A per-request cache of the requester's Code rights by project. A failed check
+ *  shows the prompt rather than failing the requester's whole list. */
 export function viewerCodeRights(
   deps: RequestAddressingDeps,
   viewer: string,
 ): (projectId: string | null) => Promise<boolean> {
   const known = new Map<string | null, Promise<boolean>>();
+  const store = memoizedAdministrators(deps.store);
   return (projectId) => {
     let held = known.get(projectId);
     if (held === undefined) {
-      held = holdsCode(deps.store, viewer, projectId);
+      held = holdsCode(store, viewer, projectId).catch(() => true);
       known.set(projectId, held);
     }
     return held;

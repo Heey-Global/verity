@@ -266,3 +266,60 @@ it('addresses requests to the person a turn runs for, and secret prompts to Code
     await app.close();
   }
 });
+
+it('keeps the list up and shows every request when a rights check fails', async () => {
+  // Addressing only narrows Home. A failing rights query that took the list down
+  // would leave every device without its sessions.
+  const app = Fastify();
+  app.addHook('onRequest', async (request) => {
+    request.localUserId = 'mara';
+  });
+  // Alex's rights read fine, so the secret prompt goes to Code holders; reading
+  // the requester's own rights then fails.
+  const rights =
+    (allowed: (permission?: string) => boolean) =>
+    async (user: string, _project?: string, permission?: string): Promise<boolean> => {
+      if (user === 'mara') throw new Error('offline');
+      return allowed(permission);
+    };
+  registerSessionListRoute(app, {
+    store: {
+      listSessions: async () => [],
+      linkedSessionIds: async () => new Set(),
+      sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async () => new Map() } as never,
+    },
+    summarizeSessions: async () =>
+      [
+        {
+          sessionId: 'turn',
+          projectId: 'p',
+          requestInitiator: 'alex',
+          pendingPermissions: ['secret'],
+          pendingPermissionRequests: [
+            { toolUseId: 'secret', tool: 'mcp__verity__verity_secret_run', riskClass: 'ask' },
+          ],
+        },
+      ] as unknown as SessionSummary[],
+    collectAttention: async () => [],
+    prunePrSummaryCache: () => {},
+    pruneBranchCache: () => {},
+    requestAddressing: {
+      store: {
+        sessionPeople: { owners: async () => new Map() } as never,
+        isActiveAdministrator: rights(() => false),
+        hasProjectPermission: rights((permission) => permission === 'read'),
+      },
+    },
+  });
+  try {
+    const result = await app.inject({ url: '/sessions' });
+    expect(result.statusCode).toBe(200);
+    const [session] = result.json<SessionSummary[]>();
+    expect(session?.addressedToViewer).toBe(false);
+    // Unknown rights show the prompt rather than hide it from someone who may allow it.
+    expect(session?.pendingPermissionRequests?.[0]?.addressedToViewer).toBe(true);
+  } finally {
+    await app.close();
+  }
+});
