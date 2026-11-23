@@ -102,7 +102,8 @@ export function branchesSnapshotWriter(
   return (value) => {
     if (cache.versions.get(sessionId) !== version) return;
     const previous = cache.snapshots.get(sessionId);
-    const pullRequests = value.pullRequests === null ? previous?.pullRequests : value.pullRequests;
+    const pullRequests =
+      value.pullRequests === null ? (previous?.pullRequests ?? null) : value.pullRequests;
     remember(cache, sessionId, { ...value, pullRequests });
   };
 }

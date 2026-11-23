@@ -160,8 +160,12 @@ export function registerSessionMergeRoutes(
         }
       }
       const approvedRevision = expectedHeadSha ?? target?.status.headSha;
+      let associationPersisted = target?.recorded === true;
       const readyForReset = async (branches: GitBranchService, worktree: string) => {
-        if (!target) return true;
+        // Without a scoped target there is no evidence that the attached ref is
+        // the merged PR's branch, even when it happens to point at the same SHA.
+        if (!target) return deps.projectPullRequests === undefined;
+        if (!associationPersisted) return false;
         if (
           !target.head ||
           !approvedRevision ||
@@ -181,26 +185,6 @@ export function registerSessionMergeRoutes(
             false
           )
             return false;
-          if (!target.recorded) {
-            const repository = target.status.repository;
-            if (repository.isDefault) {
-              await deps.eventStore.upsertSessionRepositoryWorkspace({
-                sessionId: id,
-                projectId: target.project.id,
-                repositoryId: repository.id,
-                worktree,
-                branch: target.head,
-              });
-            }
-            await deps.eventStore.recordRepositoryPullRequest(
-              target.project.id,
-              repository.id,
-              target.head,
-              { number, head: target.head, url: target.status.url },
-              id,
-              true,
-            );
-          }
           return true;
         } catch {
           return false;
@@ -371,6 +355,34 @@ export function registerSessionMergeRoutes(
         }
         reply.code(409);
         return { error: `pull request #${String(number)} could not be merged` };
+      }
+      if (target?.head && !target.recorded) {
+        try {
+          const repository = target.status.repository;
+          if (repository.isDefault) {
+            await deps.eventStore.upsertSessionRepositoryWorkspace({
+              sessionId: id,
+              projectId: target.project.id,
+              repositoryId: repository.id,
+              worktree: target.worktree,
+              branch: target.head,
+            });
+          }
+          await deps.eventStore.recordRepositoryPullRequest(
+            target.project.id,
+            repository.id,
+            target.head,
+            { number, head: target.head, url: target.status.url },
+            id,
+            true,
+          );
+          associationPersisted = true;
+        } catch (err) {
+          request.log.warn(
+            { err, sessionId: id },
+            'Could not persist merged pull request association',
+          );
+        }
       }
       const defaultCheckout = target?.status.repository.isDefault !== false;
       if (defaultCheckout) deps.beforePrCleanup?.(session);

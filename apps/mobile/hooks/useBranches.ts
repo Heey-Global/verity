@@ -96,7 +96,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     cached?.pullRequest ?? null,
   );
   const [repositoryPullRequests, setRepositoryPullRequests] = useState(
-    cached?.pullRequests ?? undefined,
+    cached?.pullRequests === null ? [] : cached?.pullRequests,
   );
   const [owner, setOwner] = useState<string | undefined>(cached?.owner);
   const [repo, setRepo] = useState<string | undefined>(cached?.repo);
@@ -149,7 +149,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     setPreviewable(cached?.previewable ?? []);
     setCurrentPr(cached?.currentPr ?? null);
     setPullRequest(cached?.pullRequest ?? null);
-    setRepositoryPullRequests(cached?.pullRequests ?? undefined);
+    setRepositoryPullRequests(cached?.pullRequests === null ? [] : cached?.pullRequests);
     setOwner(cached?.owner);
     setRepo(cached?.repo);
     setCodeHost(cached?.codeHost);
@@ -194,7 +194,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
             if (fresh()) {
               const pullRequests =
                 res.pullRequests === null
-                  ? (cachedBranches(client, sessionId)?.pullRequests ?? undefined)
+                  ? (cachedBranches(client, sessionId)?.pullRequests ?? [])
                   : res.pullRequests;
               publishSnapshot({ ...res, pullRequests });
               setCurrent(res.current);
