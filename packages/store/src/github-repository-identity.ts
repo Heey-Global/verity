@@ -5,7 +5,9 @@ import type { Database } from './schema.js';
 /** What GitHub reported for a repository Verity asked about by name or by ID. */
 export interface GitHubRepositoryObservation {
   /** The coordinates the caller used. Rows that still carry them and have no
-   *  recorded ID are bound to {@link id}: GitHub answered for exactly that name. */
+   *  recorded ID are bound to {@link id}: either GitHub answered for exactly that
+   *  name, or a row already bound to {@link id} carries it, in which case the
+   *  unbound rows are further projects registered under that same repository. */
   requestedOwner: string;
   requestedRepo: string;
   /** GitHub's numeric repository ID, as a decimal string. */

@@ -80,6 +80,33 @@ describe('installation sync across a GitHub rename', () => {
   });
 });
 
+describe('installation sync with a reused name', () => {
+  it('never applies a different repository’s state to a bound project', async () => {
+    await deepOcr();
+    const reconcile = (observation: GitHubRepositoryObservation) =>
+      ctx.store.githubRepositories.reconcile(observation);
+    await syncProjectsFromInstallation(
+      ctx.store,
+      installation([{ owner: 'heey-global', repo: 'deep-ocr', id: '4242' }]),
+      { reconcile },
+    );
+    // 4242 left the installation; an archived newcomer now answers to its old name.
+    await syncProjectsFromInstallation(
+      ctx.store,
+      {
+        listInstallationRepos: () =>
+          Promise.resolve([{ owner: 'heey-global', repo: 'deep-ocr', id: '9999', archived: true }]),
+      },
+      { reconcile },
+    );
+    expect(await ctx.store.getProject('p')).toMatchObject({
+      repo: 'deep-ocr',
+      githubRepositoryId: '4242',
+      archived: false,
+    });
+  });
+});
+
 describe('reconcileGitHubRepository', () => {
   const observation = {
     requestedOwner: 'heey-global',
