@@ -145,7 +145,7 @@ import {
   parseEgressReadiness,
   type SandboxEgressProbe,
 } from './sandbox-turn-readiness.js';
-import { CODEX_DEFAULT_MODEL, InMemoryEventBus, requestRunnerSupervisor } from '@verity/session';
+import { InMemoryEventBus, requestRunnerSupervisor } from '@verity/session';
 import {
   createPostgresDb,
   createSealableSecretCipher,
@@ -165,7 +165,7 @@ import { rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
+import { createEmbeddedModels, installEmbeddedModels } from './embedded-models.js';
 
 import { buildControlPlane } from './app.js';
 import {
@@ -204,14 +204,11 @@ import { createSigningCapabilityRegistry } from './signing-capability.js';
 import {
   type ProvisionerImpl,
   projectClonePath,
-  ensureOpenCodeSettingsMaterialized,
-  materializeOpenCodeSettings,
   type ProjectImageRefSource,
   type DevcontainerFeatureSource,
 } from './provisioner.js';
 import { ProjectSandboxLifecycleTelemetry } from './project-lifecycle-telemetry.js';
 import { trustedToolkitIdentity } from './runner-boundary-attestation.js';
-import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
@@ -456,64 +453,8 @@ export async function buildEmbeddedServer(
   const secretRoot =
     config.secretMaterializationRoot ??
     join(config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'), 'secrets');
-  // `<secretRoot>/opencode/opencode.json` is the file both control-plane Runner
-  // specs mount and `OPENCODE_CONFIG` names. Until now only an operator saving
-  // settings wrote it (`onOpenCodeSettingsChanged` below), which was enough while
-  // the only reader was a Sandbox — the provisioner materializes it as it composes
-  // the container. The Runner is not composed per turn: it is created once with the
-  // mount already in its spec, so a deployment that never saved OpenCode settings
-  // would hand OpenCode a config path with no file in it.
-  //
-  // At boot the write withholds only the credential-free fallback, and only when a
-  // file is already there: a sealed boot cannot tell "no provider configured" from
-  // "the settings are encrypted", and answering the second with the fallback would
-  // disable OpenCode until someone re-saved the settings.
-  // `ensureOpenCodeSettingsMaterialized` holds that rule and is tested on it. Unlock
-  // is unconditional — the settings are authoritative by then, including a provider
-  // that was removed. Reading settings can itself fail on a sealed store, so neither
-  // path may take the Server down with it.
-  const materializeOpenCodeConfig = async (reason: 'boot' | 'secret unlock'): Promise<void> => {
-    try {
-      const settings = await eventStore.getVeritySettings();
-      if (reason === 'boot') {
-        ensureOpenCodeSettingsMaterialized(settings, secretRoot, config.claudeConnectorPort);
-        return;
-      }
-      materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
-    } catch (error) {
-      console.warn(`verity: OpenCode configuration not materialized (${reason})`, error);
-    }
-  };
-  await materializeOpenCodeConfig('boot');
-  const configuredCodexModels =
-    config.codexEnabled === true ? (config.codexModels ?? [CODEX_DEFAULT_MODEL]) : [];
-  const codexModelCatalog =
-    config.codexEnabled === true && config.codexModels === undefined
-      ? startCodexModelCatalog({
-          fallback: configuredCodexModels,
-          // The Server has no project mTLS identity and must never materialize the
-          // subscription login merely to enumerate models. The binary's bundled
-          // catalog is credential-free and is refreshed after upgrades.
-          load: () => (config.codexBundledModelLoader ?? fetchCodexBundledModels)(),
-          onError: (error) =>
-            console.warn(
-              'verity: Codex model catalog refresh failed; keeping cached models',
-              error,
-            ),
-        })
-      : undefined;
-  if (codexModelCatalog !== undefined) await codexModelCatalog.refresh();
-  const openCodeModels = async (): Promise<string[]> => {
-    const settings = await eventStore.getVeritySettingsRaw();
-    if (
-      !settings?.opencodeBaseUrl?.trim() ||
-      !settings.opencodeApiKey?.trim() ||
-      !settings.opencodeModels?.trim()
-    ) {
-      return [];
-    }
-    return selectedOpenCodeModels(settings).map((model) => `verity/${model}`);
-  };
+  const models = await createEmbeddedModels({ config, eventStore, secretRoot });
+  const { materializeOpenCodeConfig, codexModelCatalog } = models;
 
   const { projectDocker, runtimeDocker, resolvePreviewUser } = createEmbeddedDocker(config);
   // Filled once the managed dev server manager exists, further down.
@@ -1370,21 +1311,7 @@ export async function buildEmbeddedServer(
     // With a dedicated internal listener (main.ts starts it and tags its sockets),
     // only it serves `/internal/*`; the public one 404s them. Omit → no gate.
     ...(config.internalPort !== undefined ? { internalPathGuard: requestArrivedInternally } : {}),
-    // `configuredCodexModels` stands in for the catalogue as well as for itself: the
-    // refresh timer only runs when `codexModels` was left unset, and that is precisely
-    // the case where this list falls back to `[CODEX_DEFAULT_MODEL]`. So a populated
-    // catalogue always has a non-empty list beside it, and this gate cannot drop one.
-    ...{
-      // Synchronous behind an async contract: the Codex catalogue is a cache the
-      // refresh timer fills, and the OpenCode half is the provider's discovered catalog,
-      // so neither half has anything to await since the transport migration. The
-      // signature stays a promise because it is the seam a live catalogue would
-      // reappear in.
-      listModels: async () => [
-        ...(codexModelCatalog?.list() ?? configuredCodexModels),
-        ...(await openCodeModels()),
-      ],
-    },
+    ...models.bindings,
     ...(config.logger !== undefined ? { logger: config.logger } : {}),
     ...(config.workspacesDir !== undefined ? { spawnWorktreeRoot: config.workspacesDir } : {}),
     ...(worktrees !== undefined ? { worktrees } : {}),
@@ -1649,9 +1576,7 @@ export async function buildEmbeddedServer(
       lastDockerGcReport = report;
     },
   });
-  if (codexModelCatalog !== undefined) {
-    app.addHook('onClose', () => codexModelCatalog.close());
-  }
+  installEmbeddedModels(app, models);
 
   projectRelayLifecycle = installEmbeddedProjectRelayRuntime({
     app,
