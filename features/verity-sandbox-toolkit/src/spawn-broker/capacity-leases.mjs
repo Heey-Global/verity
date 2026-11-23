@@ -4,7 +4,8 @@ import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-const ROOT = '/run/verity-capacity-leases';
+export const CAPACITY_LEASE_ROOT = '/run/verity-capacity-leases';
+const ROOT = CAPACITY_LEASE_ROOT;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 export function validateCapacityLeaseRequest(request) {
@@ -125,6 +126,15 @@ async function persist(root, path, value) {
       if (error.code !== 'ENOENT') throw error;
     });
   }
+}
+
+/** Agents hold leases through a read-only view of this directory. A confined
+ *  agent can only see it when it exists before launch, so the broker creates it
+ *  up front rather than on the first lease request. */
+export async function ensureCapacityLeaseRoot(options = {}) {
+  const root = options.capacityLeaseRoot ?? ROOT;
+  await rootDirectory(root, options.enforceRoot === false ? process.getuid() : 0);
+  return root;
 }
 
 /** Only the trusted broker controls these inodes. Missing evidence never releases capacity. */

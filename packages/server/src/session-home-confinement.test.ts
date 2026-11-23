@@ -1,7 +1,10 @@
 import { existsSync } from 'node:fs';
-import { agentLaunchSpec } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
-import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  agentLaunchSpec,
+  ensureCapacityLeaseRoot,
+} from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtemp, mkdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
@@ -297,3 +300,72 @@ OPENSSL_CONF=/etc/ssl/openssl.cnf ${process.execPath} -e 'console.log("node-star
     expect(run([], script, true).status).not.toBe(0);
   });
 }
+
+it('lets confined dependency installs hold the broker lease lock', async (context) => {
+  // The broker creates lease locks in its own directory. When normal agent
+  // confinement left it out, every managed install failed before starting.
+  const leases = join(root, 'capacity-leases');
+  await ensureCapacityLeaseRoot({ capacityLeaseRoot: leases, enforceRoot: false });
+  expect((await stat(leases)).mode & 0o777).toBe(0o755);
+  const lock = join(leases, '3f7f388a-6f7f-4746-a60e-ed2ac5b1e3a0.lock');
+  await writeFile(lock, '', { mode: 0o644 });
+  const spec = agentLaunchSpec(
+    { command: 'codex-acp', args: [], cwd: join(root, 'work'), managedHome: join(root, 'home') },
+    {
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      worktreeRoot: root,
+      env: {},
+      capacityLeaseRoot: leases,
+    },
+  );
+  const index = spec.args.indexOf(leases);
+  expect(index).toBeGreaterThan(0);
+  const extra = spec.args.slice(index - 1, index + 1);
+  expect(extra[0]).toBe('--read-root');
+  const probe = run([], 'exit 0', true);
+  if (probe.status !== 0) {
+    context.skip(`Mount isolation unavailable: ${probe.stderr.trim()}`);
+    return;
+  }
+  // Inside: take the shared holder, report it, and keep it while the outside
+  // proves the broker's exclusive probe sees it; writes stay refused.
+  const script = `set -eu
+exec 4<'${lock}'
+flock --shared --nonblock 4
+if touch '${leases}/forged.lock' 2>/dev/null; then exit 51; fi
+echo held
+sleep 2
+`;
+  const child = spawn(
+    binary,
+    [
+      '--root',
+      join(root, 'work'),
+      '--cwd',
+      join(root, 'work'),
+      '--loading',
+      'dynamic',
+      '--dynamic-root',
+      join(root, 'home'),
+      '--write-isolated',
+      ...extra,
+      '--',
+      '/bin/sh',
+      '-c',
+      script,
+    ],
+    { env: { ...process.env, VERITY_SCRIPT_SANDBOX_FORCE_MOUNT_NAMESPACE: '1' } },
+  );
+  let output = '';
+  child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
+  const exited = new Promise<number | null>((done) => child.once('close', done));
+  const end = Date.now() + 8000;
+  while (!output.includes('held') && Date.now() < end)
+    await new Promise((done) => setTimeout(done, 25));
+  expect(output).toContain('held');
+  expect(spawnSync('flock', ['--exclusive', '--nonblock', lock, 'true']).status).toBe(1);
+  expect(await exited).toBe(0);
+  expect(spawnSync('flock', ['--exclusive', '--nonblock', lock, 'true']).status).toBe(0);
+  expect(run([], `test -e '${lock}'`, true).status).not.toBe(0);
+});

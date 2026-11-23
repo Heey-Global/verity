@@ -258,7 +258,26 @@ export function recoveryBudget(gitDir, replacementTrees, newlyPreservedTrees) {
 const LEASE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
 const LEASE_ROOT = '/run/verity-capacity-leases';
 
-/** Bounded machine authorization; never print broker response bodies or capabilities. */
+// Explanations the Server composes from amounts and fixed text (see
+// dependency-capacity-route.ts). Any other response body stays unprinted.
+const SERVER_REASON =
+  /^(?:(?:Dependency capacity|Build storage admission|Storage reservation)[^\n]*|unauthorized|invalid dependency capacity request|session not found in this project)$/u;
+const bounded = (text) => {
+  const clean = String(text)
+    .replace(/[\p{Cc}\p{Cf}\s]+/gu, ' ')
+    .trim();
+  return clean.length > 400 ? `${clean.slice(0, 399)}…` : clean;
+};
+function serverReason(data) {
+  try {
+    const reason = JSON.parse(data)?.error;
+    return typeof reason === 'string' && SERVER_REASON.test(reason) ? bounded(reason) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Bounded machine authorization; never print capabilities or unrecognized broker bodies. */
 export async function dependencyStorageRequest(body, environment = process.env) {
   const memory = environment.VERITY_PROJECT_MEMORY_URL ?? '';
   if (!/\/internal\/project\/memory$/u.test(memory))
@@ -306,10 +325,12 @@ export async function dependencyStorageRequest(body, environment = process.env) 
         response.on('error', () => fail('Dependency capacity broker response failed.'));
         response.on('end', () => {
           clearTimeout(timer);
-          if ((response.statusCode ?? 500) >= 400 || (response.statusCode ?? 0) < 200)
+          if ((response.statusCode ?? 500) >= 400 || (response.statusCode ?? 0) < 200) {
+            const reason = serverReason(data);
             return fail(
-              `Dependency capacity broker refused admission (HTTP ${response.statusCode ?? 500}).`,
+              `Dependency capacity broker refused admission (HTTP ${response.statusCode ?? 500})${reason ? `: ${reason}` : '.'}`,
             );
+          }
           try {
             resolve(JSON.parse(data));
           } catch {
@@ -339,27 +360,75 @@ export async function flockCapacityDescriptor(fd) {
   if (code !== 0) throw new Error('Dependency capacity holder is unavailable.');
 }
 
-export async function holdCapacityLock(path) {
-  const id = path.slice(LEASE_ROOT.length + 1, -5);
-  if (!LEASE_ID.test(id) || path !== `${LEASE_ROOT}/${id}.lock`)
+/** Whether `uid` is how this process sees files of the broker's root.
+ *  The agent sandbox may run in a user namespace that maps only the agent's own
+ *  id (gVisor hosts use mount isolation instead of Landlock). There every file of
+ *  an unmapped owner, root included, appears as the overflow id. Files the agent
+ *  creates always carry its own mapped id, so it cannot forge that owner, and the
+ *  lease directory is a read-only view of the broker's. Where root is mapped,
+ *  only uid 0 counts. Unreadable mappings trust uid 0 alone. */
+export function rootOwned(uid, system = {}) {
+  if (uid === 0) return true;
+  try {
+    const map = system.uidMap ?? readFileSync('/proc/self/uid_map', 'utf8');
+    const ranges = map
+      .trim()
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/u).map(Number));
+    if (
+      ranges.length === 0 ||
+      !ranges.every((range) => range.length === 3 && range.every(Number.isSafeInteger))
+    )
+      return false;
+    if (ranges.some(([inside, , count]) => inside <= 0 && 0 < inside + count)) return false;
+    const overflow = Number(
+      system.overflowUid ?? readFileSync('/proc/sys/kernel/overflowuid', 'utf8').trim(),
+    );
+    return (
+      Number.isSafeInteger(overflow) &&
+      uid === overflow &&
+      !ranges.some(([inside, , count]) => inside <= overflow && overflow < inside + count)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function holdCapacityLock(path, system = {}) {
+  const root = system.root ?? LEASE_ROOT;
+  const trusted = (uid) => (system.rootOwned ?? rootOwned)(uid, system);
+  const id = path.slice(root.length + 1, -5);
+  if (!LEASE_ID.test(id) || path !== `${root}/${id}.lock`)
     throw new Error('Dependency capacity lock path is invalid.');
-  if (realpathSync(LEASE_ROOT) !== LEASE_ROOT)
-    throw new Error('Dependency capacity lock directory is unsafe.');
-  const parent = lstatSync(LEASE_ROOT);
-  if (!parent.isDirectory() || parent.uid !== 0 || parent.mode & 0o022)
-    throw new Error('Dependency capacity lock directory is untrusted.');
+  let resolved;
+  try {
+    resolved = realpathSync(root);
+  } catch (error) {
+    throw new Error(
+      `Dependency capacity lock directory is not visible to this session (${error.code ?? 'unreadable'}).`,
+      { cause: error },
+    );
+  }
+  if (resolved !== root) throw new Error('Dependency capacity lock directory is unsafe.');
+  const parent = lstatSync(root);
+  if (!parent.isDirectory() || !trusted(parent.uid) || parent.mode & 0o022)
+    throw new Error(
+      `Dependency capacity lock directory is untrusted (owner ${parent.uid}, mode ${(parent.mode & 0o7777).toString(8)}).`,
+    );
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const expected = lstatSync(path);
     const actual = fstatSync(fd);
     if (
       !actual.isFile() ||
-      actual.uid !== 0 ||
+      !trusted(actual.uid) ||
       actual.mode & 0o022 ||
       expected.dev !== actual.dev ||
       expected.ino !== actual.ino
     )
-      throw new Error('Dependency capacity lock identity is untrusted.');
+      throw new Error(
+        `Dependency capacity lock identity is untrusted (owner ${actual.uid}, mode ${(actual.mode & 0o7777).toString(8)}).`,
+      );
     await flockCapacityDescriptor(fd);
     const after = lstatSync(path);
     if (after.dev !== actual.dev || after.ino !== actual.ino)
@@ -369,6 +438,19 @@ export async function holdCapacityLock(path) {
     closeSync(fd);
     throw error;
   }
+}
+
+/** Names why admission failed without echoing anything that could carry a
+ *  credential: this module's own messages and filesystem error codes only. */
+export function admissionFailureReason(error) {
+  if (!(error instanceof Error)) return undefined;
+  if (/^Dependency capacity /u.test(error.message))
+    return bounded(error.message.replace(/\.$/u, ''));
+  if (typeof error.code === 'string' && /^E[A-Z0-9]+$/u.test(error.code))
+    return bounded(
+      `${typeof error.syscall === 'string' ? `${error.syscall} ` : ''}${error.code}${typeof error.path === 'string' && error.path.startsWith(`${LEASE_ROOT}/`) ? ` on ${error.path}` : ''}`,
+    );
+  return undefined;
 }
 
 /** A lease is mandatory for managed sessions; standalone tools retain local checks. */
@@ -394,9 +476,14 @@ export async function beginCapacityLease(kind, growth, options = {}) {
     let reply;
     try {
       reply = await request({ version: 1, id, action, ...body });
-    } catch {
+    } catch (error) {
       // Lost replies must consult the same id, never reserve a second allowance.
-      reply = await request({ version: 1, id, action: 'status' });
+      // When that cannot prove admission either, report the original refusal.
+      try {
+        return validate(await request({ version: 1, id, action: 'status' }), states);
+      } catch {
+        throw error;
+      }
     }
     return validate(reply, states);
   };
@@ -424,10 +511,16 @@ export async function beginCapacityLease(kind, growth, options = {}) {
         await settle();
       },
     };
-  } catch {
+  } catch (error) {
     holder?.close();
     await settle();
-    throw new Error('Dependency capacity admission failed; no additional dependency work started.');
+    const reason = admissionFailureReason(error);
+    // No cause: Node prints it for uncaught errors, and an unrecognized failure
+    // may carry broker text or credentials that the reason deliberately omits.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(
+      `Dependency capacity admission failed${reason ? ` (${reason})` : ''}; no additional dependency work started.`,
+    );
   }
 }
 
