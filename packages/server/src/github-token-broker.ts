@@ -37,7 +37,7 @@ interface GhTokenCapabilityBinding {
   repo: string;
   /** GitHub's rename-stable ID of the resolved repository, when the broker knows
    *  it from the project's current assignment. Never persisted with a capability. */
-  githubRepositoryId?: string | null;
+  githubRepositoryId?: string | null | undefined;
   /** Required for project-bound Unix-socket redemption. Omitted only for legacy
    *  TCP capabilities, which a project socket rejects. */
   containerGeneration?: string | undefined;

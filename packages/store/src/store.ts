@@ -281,8 +281,8 @@ export interface ProjectRecord {
   name: string;
   owner: string;
   repo: string;
-  /** GitHub's rename-stable repository ID, once learned; `null` otherwise. */
-  githubRepositoryId?: string | null;
+  /** GitHub's rename-stable repository ID, once learned; `null` = not yet; absent = not loaded. */
+  githubRepositoryId?: string | null | undefined;
   containerName: string;
   kind?: ProjectKind;
   forgeConnectionId?: string | null;
@@ -5649,7 +5649,7 @@ export class EventStore implements EventSink {
       name: row.name ?? defaultProjectName(row),
       owner: row.owner,
       repo: row.repo,
-      githubRepositoryId: row.github_repository_id ?? null,
+      githubRepositoryId: row.github_repository_id,
       containerName: row.container_name,
       kind: (row.kind ?? 'github') as ProjectKind,
       forgeConnectionId: row.forge_connection_id ?? null,

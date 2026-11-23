@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { followGitHubOrigin } from './clone-origin.js';
 import { realpath, rm, stat } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import {
@@ -18,6 +17,7 @@ import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
 import type { SessionStorage } from './session-storage.js';
+import { followGitHubOrigin } from './clone-origin.js';
 
 /** Why a module checkout could not be opened. A closed set, so the category can
  *  reach the sandbox and the log without carrying git output, URLs or paths. */

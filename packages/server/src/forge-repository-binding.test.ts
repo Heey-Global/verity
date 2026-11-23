@@ -55,9 +55,10 @@ describe('repository binding selection', () => {
     const bound = {
       ...base,
       listProjectRepositories: vi.fn(async () =>
-        repositories.map((repository) =>
-          repository.id === 'extra' ? { ...repository, githubRepositoryId: '4242' } : repository,
-        ),
+        repositories.map((repository) => ({
+          ...repository,
+          githubRepositoryId: repository.id === 'extra' ? '4242' : null,
+        })),
       ),
     } as unknown as EventStore;
     expect(

@@ -24,7 +24,7 @@ export async function resolveForgeRepositoryBinding(
         owner: repository.owner,
         repo: repository.repo,
         forgeConnectionId: repository.forgeConnectionId,
-        githubRepositoryId: repository.githubRepositoryId ?? null,
+        githubRepositoryId: repository.githubRepositoryId,
       }));
   }
   for (const repository of repositories) {
@@ -67,7 +67,7 @@ export async function resolveForgeRepositoryBinding(
         repo: repository.repo,
         forgeConnectionId: repository.forgeConnectionId,
         // The token follows the assigned repository by ID, not whatever holds its name.
-        githubRepositoryId: repository.githubRepositoryId ?? null,
+        githubRepositoryId: repository.githubRepositoryId,
       };
   }
   return undefined;
