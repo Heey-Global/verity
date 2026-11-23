@@ -6,6 +6,23 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.101.0](https://github.com/Heey-Global/verity/compare/v4.100.0...v4.101.0) (2026-11-23)
+
+
+### Features
+
+* **mobile:** recent images and connector switches in the composer's add menu ([#2812](https://github.com/Heey-Global/verity/issues/2812)) ([f74b5d8](https://github.com/Heey-Global/verity/commit/f74b5d83bf4e9d47c20368b757cefb2dedd41583))
+* **team:** add the project Code permission ([#2819](https://github.com/Heey-Global/verity/issues/2819)) ([dcf1a9d](https://github.com/Heey-Global/verity/commit/dcf1a9d1cfdf909c51e1fe7d3b6bc345ca6f170f))
+* **team:** address session requests to the person who asked ([#2840](https://github.com/Heey-Global/verity/issues/2840)) ([56ea677](https://github.com/Heey-Global/verity/commit/56ea677902c258a441d6cc44013cce234cf95db2))
+* **team:** hold agents and secret approvals to the Code permission ([#2828](https://github.com/Heey-Global/verity/issues/2828)) ([fc28c28](https://github.com/Heey-Global/verity/commit/fc28c28284d3df7bb8184864a9d28f822ade50c0))
+* **team:** require the Code permission to add changes to project code ([#2823](https://github.com/Heey-Global/verity/issues/2823)) ([db553e4](https://github.com/Heey-Global/verity/commit/db553e4ac80d6e613a5a8560ff6abfaf3b58ea6b))
+
+
+### Bug Fixes
+
+* **secrets:** streamline approval cards and continuation in chat ([#2825](https://github.com/Heey-Global/verity/issues/2825)) ([2a280d2](https://github.com/Heey-Global/verity/commit/2a280d2dbe595cb30c73316328bba91817aeb2f7))
+* **server:** admit dependency capacity broker requests ([#2844](https://github.com/Heey-Global/verity/issues/2844)) ([61977cb](https://github.com/Heey-Global/verity/commit/61977cb0b88efc325cb684cc09a6a896ece72ee5))
+
 ## [4.100.0](https://github.com/Heey-Global/verity/compare/v4.99.4...v4.100.0) (2026-11-22)
 
 
