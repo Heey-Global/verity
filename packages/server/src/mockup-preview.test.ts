@@ -39,3 +39,9 @@ it('keeps safe document attributes used by CSS and locale settings', () => {
   expect(preview).not.toContain('onload');
   expect(preview).not.toContain('Hidden tab title');
 });
+
+it('bounds parser work as well as rendered document depth', () => {
+  const nested = '<div>'.repeat(100);
+  expect(mockupPreviewDocument(nested)).not.toContain(nested);
+  expect(() => mockupPreviewDocument('<div>'.repeat(4097))).toThrow(/4096 elements/);
+});

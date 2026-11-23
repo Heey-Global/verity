@@ -16,7 +16,10 @@ const resourcePolicy = [
 
 export const mockupPreviewPolicy = `${resourcePolicy}; sandbox; frame-ancestors 'self'`;
 
+export class MockupPreviewLimitError extends Error {}
+
 const options: sanitizeHtml.IOptions = {
+  nestingLimit: 64,
   nonTextTags: ['script', 'style', 'textarea', 'option', 'xmp', 'title'],
   allowedTags: [
     ...sanitizeHtml.defaults.allowedTags,
@@ -60,10 +63,15 @@ function documentAttributes(attributes: Record<string, string>): string {
 }
 
 export function mockupPreviewDocument(html: string): string {
+  let tags = 0;
   let htmlAttributes = '';
   let bodyAttributes = '';
   const content = sanitizeHtml(html, {
     ...options,
+    // The parser still visits elements beyond the output nesting limit.
+    onOpenTag: () => {
+      if (++tags > 4096) throw new MockupPreviewLimitError('HTML mockup exceeds 4096 elements');
+    },
     transformTags: {
       ...options.transformTags,
       html: (tagName, attribs) => {

@@ -13,7 +13,7 @@ import {
 } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { MAX_HTML_MOCKUP_BYTES } from './mockup-preview.js';
+import { MAX_HTML_MOCKUP_BYTES, mockupPreviewDocument } from './mockup-preview.js';
 import { readWorktreeFile } from './worktree-file.js';
 
 const MAX_MOCKUP_SCREENS = 12;
@@ -46,6 +46,7 @@ function mockupHtml(bytes: Buffer): Pick<MockupScreenRecord, 'mediaType' | 'widt
   if (!/^\s*<!doctype html\s*>/iu.test(html)) {
     throw new Error('an HTML mockup must start with <!doctype html>');
   }
+  mockupPreviewDocument(html);
   // Viewport hints for clients that use a screen's intrinsic dimensions.
   return { mediaType: 'text/html', width: 840, height: 768 };
 }

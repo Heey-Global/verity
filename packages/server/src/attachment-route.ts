@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import {
   MAX_HTML_MOCKUP_BYTES,
+  MockupPreviewLimitError,
   mockupPreviewDocument,
   mockupPreviewPolicy,
 } from './mockup-preview.js';
@@ -54,12 +55,19 @@ export function registerAttachmentRoute(app: FastifyInstance, deps: AttachmentRo
     ) {
       return reply.code(404).send({ error: 'attachment not found' });
     }
+    let preview: string;
+    try {
+      preview = mockupPreviewDocument(blob.bytes.toString('utf8'));
+    } catch (error) {
+      if (!(error instanceof MockupPreviewLimitError)) throw error;
+      return reply.code(422).send({ error: error.message });
+    }
     return reply
       .type('text/html; charset=utf-8')
       .header('Cache-Control', 'no-store')
       .header('Content-Security-Policy', mockupPreviewPolicy)
       .header('Referrer-Policy', 'no-referrer')
       .header('X-Content-Type-Options', 'nosniff')
-      .send(mockupPreviewDocument(blob.bytes.toString('utf8')));
+      .send(preview);
   });
 }
