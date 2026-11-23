@@ -4,7 +4,7 @@ import {
   type SessionMockups,
   storedMockupState,
   mockupReview,
-  attachmentContentAddress,
+  attachmentStorageRecord,
 } from './session-mockups.js';
 import { findRecordedApprovalDecision } from './secret-approval-events.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
@@ -4415,14 +4415,13 @@ export class EventStore implements EventSink {
     base64Data: string,
     mockupSessionId?: string,
   ): Promise<string> {
-    const bytes = Buffer.from(base64Data, 'base64');
-    const hash = attachmentContentAddress(bytes, mockupSessionId);
+    const attachment = attachmentStorageRecord(base64Data, mediaType, mockupSessionId);
     await this.db
       .insertInto('attachments')
-      .values({ hash, media_type: mediaType, bytes })
+      .values(attachment)
       .onConflict((oc) => oc.column('hash').doNothing())
       .execute();
-    return hash;
+    return attachment.hash;
   }
 
   /** Read a stored blob; an optional byte ceiling filters it before transfer. */

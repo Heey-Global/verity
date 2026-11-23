@@ -12,6 +12,17 @@ export function attachmentContentAddress(bytes: Buffer, sessionId?: string): str
   return digest.toString('hex');
 }
 
+export function attachmentStorageRecord(base64Data: string, mediaType: string, sessionId?: string) {
+  const bytes = Buffer.from(base64Data, 'base64');
+  const ordinaryType =
+    mediaType === MOCKUP_HTML_ATTACHMENT ? 'application/octet-stream' : mediaType;
+  return {
+    hash: attachmentContentAddress(bytes, sessionId),
+    media_type: sessionId === undefined ? ordinaryType : MOCKUP_HTML_ATTACHMENT,
+    bytes,
+  };
+}
+
 // Mockup review state of a session: the screens an agent presented and the
 // reviewer's marks, as stored and as read back.
 

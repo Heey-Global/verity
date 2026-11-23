@@ -178,6 +178,15 @@ describe('presenting mockups', () => {
     expect(res.body).toBe(html);
   });
 
+  it('preserves generic uploads labeled with the reserved mockup MIME type', async () => {
+    const bytes = Buffer.from('use an ordinary attachment');
+    const hash = await store.putAttachment(MOCKUP_HTML_ATTACHMENT, bytes.toString('base64'));
+    const response = await app.inject(`/attachments/${hash}`);
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('application/octet-stream');
+    expect(response.rawPayload).toEqual(bytes);
+  });
+
   it('refuses to preview an oversized HTML attachment uploaded outside review', async () => {
     const bytes = Buffer.alloc(2 * 1024 * 1024 + 1);
     const hash = await store.putAttachment(MOCKUP_HTML_ATTACHMENT, bytes.toString('base64'), 's1');
