@@ -1,13 +1,20 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { mockupPreviewDocument, mockupPreviewPolicy } from './mockup-preview.js';
+import {
+  MAX_HTML_MOCKUP_BYTES,
+  mockupPreviewDocument,
+  mockupPreviewPolicy,
+} from './mockup-preview.js';
 
 const attachmentParams = z.object({
   hash: z.string().regex(/^[a-f0-9]{64}$/, 'invalid attachment id'),
 });
 
 export interface AttachmentRouteDeps {
-  getAttachment: (hash: string) => Promise<{ mediaType: string; bytes: Buffer } | undefined>;
+  getAttachment: (
+    hash: string,
+    maxBytes?: number,
+  ) => Promise<{ mediaType: string; bytes: Buffer } | undefined>;
 }
 
 /** HTML snapshots are only renderable through the isolated preview endpoint. */
@@ -30,9 +37,12 @@ export function registerAttachmentRoute(app: FastifyInstance, deps: AttachmentRo
     '/attachments/:hash',
     async (request, reply): Promise<Buffer | string | { error: string }> => {
       const { hash } = attachmentParams.parse(request.params);
-      const blob = await deps.getAttachment(hash);
       const preview = (request.query as { mockup?: string }).mockup === '1';
-      if (!blob || (preview && blob.mediaType !== 'text/html')) {
+      const blob = await deps.getAttachment(hash, preview ? MAX_HTML_MOCKUP_BYTES : undefined);
+      if (
+        !blob ||
+        (preview && (blob.mediaType !== 'text/html' || blob.bytes.length > MAX_HTML_MOCKUP_BYTES))
+      ) {
         reply.code(404);
         return { error: 'attachment not found' };
       }

@@ -1,5 +1,7 @@
 import sanitizeHtml from 'sanitize-html';
 
+export const MAX_HTML_MOCKUP_BYTES = 2 * 1024 * 1024;
+
 const resourcePolicy = [
   "default-src 'none'",
   "script-src 'none'",
@@ -16,7 +18,7 @@ export const mockupPreviewPolicy = `${resourcePolicy}; sandbox; frame-ancestors 
 
 const options: sanitizeHtml.IOptions = {
   allowedTags: [
-    ...sanitizeHtml.defaults.allowedTags.filter((tag) => tag !== 'a'),
+    ...sanitizeHtml.defaults.allowedTags,
     'button',
     'details',
     'figure',

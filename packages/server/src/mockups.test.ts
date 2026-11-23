@@ -145,7 +145,9 @@ beforeEach(async () => {
   mockups = createSessionMockups({ eventStore: store });
   app = Fastify();
   registerMockupRoutes(app, { mockups });
-  registerAttachmentRoute(app, { getAttachment: (hash) => store.getAttachment(hash) });
+  registerAttachmentRoute(app, {
+    getAttachment: (hash, maxBytes) => store.getAttachment(hash, maxBytes),
+  });
 });
 afterEach(async () => {
   await app.close();
@@ -174,6 +176,12 @@ describe('presenting mockups', () => {
     expect(res.headers['content-security-policy']).toBe("sandbox; default-src 'none'");
     expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.body).toBe(html);
+  });
+
+  it('refuses to preview an oversized HTML attachment uploaded outside review', async () => {
+    const bytes = Buffer.alloc(2 * 1024 * 1024 + 1);
+    const hash = await store.putAttachment('text/html', bytes.toString('base64'));
+    expect((await app.inject(`/attachments/${hash}?mockup=1`)).statusCode).toBe(404);
   });
 
   it('snapshots a mixed HTML and image round', async () => {

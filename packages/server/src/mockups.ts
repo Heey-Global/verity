@@ -7,11 +7,11 @@
 import type { EventStore, MockupScreenRecord, MockupVerdict, SessionMockups } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { MAX_HTML_MOCKUP_BYTES } from './mockup-preview.js';
 import { readWorktreeFile } from './worktree-file.js';
 
 const MAX_MOCKUP_SCREENS = 12;
 const MAX_MOCKUP_BYTES = 15 * 1024 * 1024;
-const MAX_HTML_MOCKUP_BYTES = 2 * 1024 * 1024;
 const screenName = z.string().trim().min(1).max(80);
 const screenPath = z.string().trim().min(1).max(1_000);
 

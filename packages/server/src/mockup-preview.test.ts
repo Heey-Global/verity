@@ -17,11 +17,11 @@ it('preserves local HTML controls, inline styles, and embedded images', () => {
 it('removes active content and keeps resource restrictions on the rendered document', () => {
   const preview = mockupPreviewDocument(`
     <link rel="stylesheet" href="https://example.test/theme.css">
-    <a href="https://example.test">External link</a>
+    <a class="nav-item" href="https://example.test">External link</a>
     <form action="https://example.test"><input type="file"></form>
     <img src="https://example.test/graphic.png" alt="External image" onload="init()">
     <script>init()</script>`);
-  expect(preview).toContain('External link');
+  expect(preview).toContain('<a class="nav-item">External link</a>');
   expect(preview).toContain('alt="External image"');
   expect(preview).not.toMatch(/example\.test|onload|<script|<form|type="file"/);
   expect(preview).toContain("default-src 'none'");
