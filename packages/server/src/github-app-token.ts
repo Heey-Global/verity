@@ -38,7 +38,7 @@ interface GitHubAppTokenResponse {
 }
 
 /** A failed installation-token request. The message names only the HTTP status. */
-export class GitHubAppTokenMintError extends Error {
+class GitHubAppTokenMintError extends Error {
   constructor(readonly status: number) {
     super(`GitHub App token mint failed: HTTP ${String(status)}`);
     this.name = 'GitHubAppTokenMintError';
@@ -46,7 +46,7 @@ export class GitHubAppTokenMintError extends Error {
 }
 
 /** A repository a minted token covers, as GitHub reported it. */
-export interface GitHubTokenRepository {
+interface GitHubTokenRepository {
   id: string;
   owner: string;
   repo: string;
