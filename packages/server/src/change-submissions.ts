@@ -304,9 +304,12 @@ export function registerChangeSubmissionRoutes(
       return reply.code(409).send({ error: 'Nothing is submitted in this session.' });
     }
     const viewer = request.localUserId ?? null;
+    // Without accounts nobody submits, so nobody withdraws either.
+    if (viewer === null) {
+      return reply.code(409).send({ error: 'Submitting changes needs member accounts.' });
+    }
     // The person who submitted withdraws; a member with Code may turn it down.
     if (
-      viewer !== null &&
       viewer !== submission.submittedBy &&
       !(await holdsCode(deps.store, viewer, session.projectId))
     ) {
@@ -326,7 +329,7 @@ export function registerChangeSubmissionRoutes(
     if (!(await deps.store.changeSubmissions.settle(id, 'withdrawn'))) {
       return reply.code(409).send({ error: 'Nothing is submitted in this session.' });
     }
-    const by = viewer ?? submission.submittedBy;
+    const by = viewer;
     await deps.publish(id, {
       t: 'notice',
       text:
