@@ -206,6 +206,23 @@ describe('presenting mockups', () => {
     expect((await store.getSession('s1'))?.mockupReview).toEqual(round);
   });
 
+  it('preserves a generic upload of the same bytes after HTML publication', async () => {
+    const html = '<!doctype html><title>Demo</title>';
+    writeFileSync(join(worktree, 'demo.html'), html);
+    const round = await mockups.present('s1', {
+      screens: [{ name: 'Demo', htmlPath: 'demo.html' }],
+    });
+    const generic = await store.putAttachment(
+      'application/octet-stream',
+      Buffer.from(html).toString('base64'),
+    );
+    expect(generic).not.toBe(round.screens[0]!.attachment);
+    expect(await store.getAttachment(generic)).toEqual({
+      mediaType: 'application/octet-stream',
+      bytes: Buffer.from(html),
+    });
+  });
+
   it.each([
     ['missing doctype', Buffer.from('<p>Draft</p>'), /doctype/],
     ['invalid UTF-8', Buffer.from([0xff]), /utf-8/i],

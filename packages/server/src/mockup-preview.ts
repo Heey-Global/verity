@@ -48,7 +48,7 @@ const options: sanitizeHtml.IOptions = {
 
 function documentAttributes(attributes: Record<string, string>): string {
   return Object.entries(attributes)
-    .filter(([name]) => /^(?:class|id|lang|dir|data-[a-z0-9_.:-]+)$/u.test(name))
+    .filter(([name]) => /^(?:class|id|lang|dir|style|data-[a-z0-9_.:-]+)$/u.test(name))
     .map(
       ([name, value]) =>
         ` ${name}="${value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}"`,

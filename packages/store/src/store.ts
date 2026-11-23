@@ -4410,14 +4410,14 @@ export class EventStore implements EventSink {
   }
 
   /**
-   * Store an immutable attachment. HTML uses a distinct hash namespace so generic
-   * uploads of the same bytes cannot determine whether it is previewable.
+   * Keep the legacy digest for generic uploads. Flipping a digest bit for HTML
+   * distinguishes identical bytes without adding a forgeable prefix to the input.
    */
   async putAttachment(mediaType: string, base64Data: string): Promise<string> {
     const bytes = Buffer.from(base64Data, 'base64');
-    const digest = createHash('sha256');
-    if (mediaType === 'text/html') digest.update('verity-html-attachment\0');
-    const hash = digest.update(bytes).digest('hex');
+    const digest = createHash('sha256').update(bytes).digest();
+    if (mediaType === 'text/html') digest[0] = digest[0]! ^ 0x80;
+    const hash = digest.toString('hex');
     await this.db
       .insertInto('attachments')
       .values({ hash, media_type: mediaType, bytes })

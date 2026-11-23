@@ -31,10 +31,10 @@ it('removes active content and keeps resource restrictions on the rendered docum
 
 it('keeps safe document attributes used by CSS and locale settings', () => {
   const preview = mockupPreviewDocument(
-    '<html lang="ar" dir="rtl" data-theme="dark"><head><style>html[data-theme="dark"] body.compact { color: white }</style></head><body class="compact" onload="init()">Draft</body></html>',
+    '<html lang="ar" dir="rtl" data-theme="dark" style="--spacing: 1rem"><head><style>html[data-theme="dark"] body.compact { color: white }</style></head><body class="compact" style="padding: var(--spacing)" onload="init()">Draft</body></html>',
   );
-  expect(preview).toContain('<html lang="ar" dir="rtl" data-theme="dark">');
-  expect(preview).toContain('<body class="compact">');
+  expect(preview).toContain('<html lang="ar" dir="rtl" data-theme="dark" style="--spacing: 1rem">');
+  expect(preview).toContain('<body class="compact" style="padding: var(--spacing)">');
   expect(preview).toContain('html[data-theme="dark"] body.compact');
   expect(preview).not.toContain('onload');
 });
