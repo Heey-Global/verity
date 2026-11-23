@@ -209,11 +209,17 @@ export class ProjectRepositoryStore {
     preserveWorkspaceBranch = false,
   ): Promise<void> {
     const entry = sql`${JSON.stringify(pullRequest)}::jsonb`;
-    const list = sql`coalesce(pull_request_history, '[]'::jsonb) ||
-      case when jsonb_typeof(pull_request) = 'object' and not coalesce(
-        pull_request_history @> jsonb_build_array(jsonb_build_object('number', pull_request->'number')),
-        false
-      ) then jsonb_build_array(pull_request) else '[]'::jsonb end`;
+    const list = sql`(
+      select coalesce(jsonb_agg(
+        case when pr->>'number' = pull_request->>'number' then pr || pull_request else pr end
+        order by position
+      ), '[]'::jsonb)
+      from jsonb_array_elements(coalesce(pull_request_history, '[]'::jsonb))
+        with ordinality as saved(pr, position)
+    ) || case when jsonb_typeof(pull_request) = 'object' and not coalesce(
+      pull_request_history @> jsonb_build_array(jsonb_build_object('number', pull_request->'number')),
+      false
+    ) then jsonb_build_array(pull_request) else '[]'::jsonb end`;
     const updated = sql`coalesce((
       select pr from jsonb_array_elements(${list}) as saved(pr)
       where pr->>'number' = (${entry})->>'number'

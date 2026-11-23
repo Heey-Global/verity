@@ -57,10 +57,13 @@ export function createSessionRepositoryPullRequests(
               ? { codeHost: { provider: 'forgejo' as const, baseUrl: connection.baseUrl } }
               : {}),
         };
+        const base = projectPullRequests.defaultBranch
+          ? await projectPullRequests.defaultBranch(target).catch(() => null)
+          : (repository.defaultBranch ?? 'main');
         const statuses = new Map<number, { status: PullRequestStatus; head?: string }>();
         for (const head of heads) {
           if (signal?.aborted) break;
-          if (!head || head === (repository.defaultBranch ?? 'main')) continue;
+          if (!head || base === null || head === base) continue;
           const status = await projectPullRequests.status(target, head).catch(() => null);
           if (status) statuses.set(status.number, { status, head });
         }

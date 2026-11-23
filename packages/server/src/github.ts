@@ -309,7 +309,11 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     createHash('sha256').update(token).digest('base64url');
   const emptyChecks = { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 };
 
-  const fetchJson = async (url: string, token: string): Promise<{ ok: boolean; body: unknown }> => {
+  const fetchJson = async (
+    url: string,
+    token: string,
+    allowMissing = false,
+  ): Promise<{ ok: boolean; body: unknown }> => {
     try {
       const responseKey = `${credentialId(token)}\0${url}`;
       const cachedResponse = responseCache.get(responseKey);
@@ -323,6 +327,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       if (res.status === 304 && cachedResponse !== undefined) {
         return { ok: true, body: cachedResponse.body };
       }
+      if (allowMissing && res.status === 404) return { ok: true, body: null };
       if (!res.ok) {
         rateLimitDeadline = Math.max(rateLimitDeadline, githubRetryDeadline(res, now()));
         return { ok: false, body: null };
@@ -578,6 +583,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
           ? `${pulls}?head=${head}&state=all&sort=updated&direction=desc&per_page=100`
           : `${pulls}/${number}`,
         token,
+        number !== undefined,
       );
       if (!res.ok) return { ok: false, status: null };
       const body = res.body;

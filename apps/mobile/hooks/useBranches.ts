@@ -190,13 +190,16 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
             const res = await (prefetched ??
               client.getBranches(sessionId, request.controller.signal));
             if (fresh()) {
-              publishSnapshot(res);
+              const pullRequests = res.workspaceMissing
+                ? res.pullRequests
+                : (res.pullRequests ?? cachedBranches(client, sessionId)?.pullRequests);
+              publishSnapshot({ ...res, pullRequests });
               setCurrent(res.current);
               setSwitchable(res.switchable);
               setPreviewable(res.previewable ?? []);
               setCurrentPr(res.currentPr ?? null);
               setPullRequest(res.pullRequest ?? null);
-              setRepositoryPullRequests(res.pullRequests);
+              setRepositoryPullRequests(pullRequests);
               setOwner(res.owner);
               setRepo(res.repo);
               setCodeHost(res.codeHost);

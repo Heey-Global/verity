@@ -371,7 +371,10 @@ export function registerSessionMergeRoutes(
         ? conductor.runExclusive.bind(conductor)
         : conductor.runWhenIdle.bind(conductor);
       await runCleanup(id, async () => {
-        let note = `Pull request #${String(number)} was merged.`;
+        const mergedPullRequest = target
+          ? `${target.status.repository.owner}/${target.status.repository.repo} #${number}`
+          : `#${number}`;
+        let note = `Pull request ${mergedPullRequest} was merged.`;
         try {
           const branches = await branchesForSession(session);
           const worktree = target?.worktree ?? session.worktree;
@@ -410,13 +413,13 @@ export function registerSessionMergeRoutes(
               // Purely informational — the reset already happened; the agent is not
               // instructed to do anything (the detached HEAD is the server's doing).
               if (!skipped)
-                note = `Pull request #${String(number)} was merged and your worktree has been reset to ${base} (detached at the merged commit)${deletedClause}.`;
+                note = `Pull request ${mergedPullRequest} was merged and your worktree has been reset to ${base} (detached at the merged commit)${deletedClause}.`;
             } catch {
               // Housekeeping is non-atomic (fetch → detach → delete the merged branch):
               // on failure the worktree MAY already be reset (only the branch delete
               // failed) or not (the fetch/checkout failed). We can't tell which here, so
               // word it neutrally — never falsely claim the reset did or didn't happen.
-              note = `Pull request #${String(number)} was merged, but the automatic worktree cleanup afterwards did not fully complete.`;
+              note = `Pull request ${mergedPullRequest} was merged, but the automatic worktree cleanup afterwards did not fully complete.`;
             }
           }
           if (projectCheckoutSyncFailed) {
