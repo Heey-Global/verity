@@ -97,20 +97,29 @@ export function useRecentImages(
         if (current !== generation.current) return;
         if (next.kind === 'ready') {
           const recentIds = new Set(next.images.map(({ id }) => id));
-          const overflow = latestSelection.current.filter(({ id }) => !recentIds.has(id));
-          const accessible = await Promise.all(
-            overflow.map(async (image) => {
-              try {
-                const info = await MediaLibrary.getAssetInfoAsync(image.id, {
-                  shouldDownloadFromNetwork: false,
-                });
-                return { id: image.id, uri: info.uri };
-              } catch {
-                return null;
-              }
-            }),
-          );
-          next.images.push(...accessible.filter((image) => image !== null));
+          const checked = new Map<string, RecentImage>();
+          let pending = latestSelection.current.filter(({ id }) => !recentIds.has(id));
+          while (pending.length > 0) {
+            await Promise.all(
+              pending.map(async ({ id }) => {
+                recentIds.add(id);
+                try {
+                  const info = await MediaLibrary.getAssetInfoAsync(id, {
+                    shouldDownloadFromNetwork: false,
+                  });
+                  checked.set(id, { id, uri: info.uri });
+                } catch {
+                  // Deleted assets and assets outside the current permission are unavailable.
+                }
+              }),
+            );
+            if (current !== generation.current) return;
+            pending = latestSelection.current.filter(({ id }) => !recentIds.has(id));
+          }
+          for (const { id } of latestSelection.current) {
+            const image = checked.get(id);
+            if (image) next.images.push(image);
+          }
         }
         if (current === generation.current) setState(next);
       })
