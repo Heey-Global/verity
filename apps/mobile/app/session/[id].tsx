@@ -7899,9 +7899,6 @@ the Claude app — it sits with the composer instead of the nav bar). */}
             </View>
             {/* Right: the persistent mic, then the Send/Stop slot. */}
             <View style={styles.actionRowRight}>
-              {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
-                dictation is tap-to-toggle; recording gets its own active treatment.
-                A separate button keeps it from ever "mutating" into Send/Stop. */}
               <MicButton
                 voiceState={voiceState}
                 autoMode={voiceAutoMode}
