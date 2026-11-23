@@ -2853,16 +2853,22 @@ export const SessionChat = memo(function SessionChat({
   // Screen position of the composer's paperclip, so the attach menu docks to it.
   const [attachAnchor, setAttachAnchor] = useState<AttachAnchor | null>(null);
   // Merge a picker's result into `attachments`, capping at MAX_ATTACHMENTS. The
+  const attachmentReadPending = useRef(false);
   const performPick = useCallback(
-    async (pick: (remaining: number) => Promise<AttachmentUpload[]>) => {
-      const remaining = MAX_ATTACHMENTS_PER_TURN - attachments.length;
-      if (remaining <= 0) return;
+    async (pick: (remaining: number) => Promise<AttachmentUpload[]>, cleanUpDrop = false) => {
+      const busy = attachmentReadPending.current;
+      const remaining = busy ? 0 : Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length);
+      if (busy)
+        Alert.alert('Could not attach', 'Wait for the current attachments to finish loading.');
+      if (remaining === 0 && !cleanUpDrop) return;
+      if (!busy) attachmentReadPending.current = true;
       try {
         const picked = await pick(remaining);
-        if (picked.length === 0) return;
-        setAttachments((current) => [...current, ...picked]);
+        if (picked.length > 0) setAttachments((current) => [...current, ...picked]);
       } catch (error) {
         Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!busy) attachmentReadPending.current = false;
       }
     },
     [attachments.length],
@@ -3152,21 +3158,10 @@ export const SessionChat = memo(function SessionChat({
   const onPickFiles = useCallback(() => choosePick((r) => pickFiles(r)), [choosePick]);
   const onDropFiles = useCallback(
     (files: Parameters<typeof readDroppedAttachments>[0]) => {
-      void (async () => {
-        // Unlike an interactive picker, native drop loading may finish after
-        // another attachment source has filled the remaining slots. Always run
-        // the reader so its `finally` removes every native temporary copy.
-        const remaining = Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length);
-        try {
-          const dropped = await readDroppedAttachments(files, remaining);
-          if (dropped.length === 0) return;
-          setAttachments((current) => [...current, ...dropped]);
-        } catch (error) {
-          Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
-        }
-      })();
+      // Read even with zero slots so native temporary copies are removed.
+      void performPick((remaining) => readDroppedAttachments(files, remaining), true);
     },
-    [attachments.length],
+    [performPick],
   );
   const onDropRejected = useCallback((errors: string[]) => {
     if (errors.length > 0) Alert.alert('Could not attach', errors.join('\n'));
