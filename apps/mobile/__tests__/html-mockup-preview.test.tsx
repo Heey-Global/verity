@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react-native';
+import { Platform } from 'react-native';
 
 import { HtmlMockupPreview } from '../components/session/HtmlMockupPreview';
 
@@ -25,7 +26,7 @@ it('loads the authorized preview into a local WebView without scripting or a bri
   expect(view.props).toMatchObject({
     source: { html: '<details><summary>Plans</summary></details>', baseUrl: 'about:blank' },
     javaScriptEnabled: false,
-    incognito: true,
+    incognito: Platform.OS === 'ios',
     sharedCookiesEnabled: false,
     allowFileAccess: false,
     allowFileAccessFromFileURLs: false,

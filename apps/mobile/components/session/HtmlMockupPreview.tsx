@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import WebView from 'react-native-webview';
 
 import { MockupPreviewStatus, useMockupPreviewDocument } from './mockupPreviewDocument';
@@ -17,7 +18,8 @@ export function HtmlMockupPreview({ attachment, name }: { attachment: string; na
       onRenderProcessGone={onError}
       javaScriptEnabled={false}
       domStorageEnabled={false}
-      incognito
+      // Android's incognito mode clears the process-wide WebView cookie jar.
+      incognito={Platform.OS === 'ios'}
       cacheEnabled={false}
       sharedCookiesEnabled={false}
       thirdPartyCookiesEnabled={false}
