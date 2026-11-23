@@ -217,6 +217,9 @@ For a web UI draft, save one self-contained UTF-8 HTML document per screen in
 the session worktree. Use an explicit `<!doctype html>` and
 `<html>`, `<head>` and `<body>` elements. For an existing web export, inline
 the compiled CSS in a `<style>` element and embed images and fonts as data URLs.
+For SVG illustrations and icons, encode the SVG file as a base64
+`data:image/svg+xml;base64,…` URL and use it in an `<img>` element. The
+preview removes inline `<svg>` markup.
 Use sample data and native controls such as `<details>`, checkboxes and radio
 buttons. CSS selectors like `:checked` can show different states based on
 your choices. The preview disables JavaScript and blocks external resources,
