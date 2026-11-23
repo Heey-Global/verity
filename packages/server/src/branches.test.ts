@@ -686,7 +686,7 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'agent/6c7016b5\n',
         'fetch origin +refs/heads/main:refs/remotes/origin/main': () => '',
-        'checkout --detach refs/remotes/origin/main': () => '',
+        'checkout --detach --no-overwrite-ignore refs/remotes/origin/main': () => '',
         // branchExists(feature) — show-ref against the repo succeeds.
         'show-ref --verify --quiet refs/heads/agent/6c7016b5': () => '',
         'branch -D agent/6c7016b5': () => '',
@@ -734,7 +734,7 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'feature/x\n',
         'fetch origin +refs/heads/develop:refs/remotes/origin/develop': () => '',
-        'checkout --detach refs/remotes/origin/develop': () => '',
+        'checkout --detach --no-overwrite-ignore refs/remotes/origin/develop': () => '',
         'show-ref --verify --quiet refs/heads/feature/x': () => '',
         'branch -D feature/x': () => '',
       });
@@ -760,7 +760,7 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'feat/child\n',
         'fetch origin +refs/heads/feat/parent:refs/remotes/origin/feat/parent': () => '',
-        'checkout --detach refs/remotes/origin/feat/parent': () => '',
+        'checkout --detach --no-overwrite-ignore refs/remotes/origin/feat/parent': () => '',
         'show-ref --verify --quiet refs/heads/feat/child': () => '',
         'branch -D feat/child': () => '',
       });
@@ -789,7 +789,7 @@ describe('createGitBranchService', () => {
         const { git, calls } = fakeGit({
           'rev-parse --abbrev-ref HEAD': () => `${on}\n`,
           'fetch origin +refs/heads/feat/parent:refs/remotes/origin/feat/parent': () => '',
-          'checkout --detach refs/remotes/origin/feat/parent': () => '',
+          'checkout --detach --no-overwrite-ignore refs/remotes/origin/feat/parent': () => '',
         });
         const svc = createGitBranchService({ repoDir: '/repo', git });
         expect(await svc.resetToMergedBase('/wt', { base: 'feat/parent' })).toEqual({
@@ -823,7 +823,7 @@ describe('createGitBranchService', () => {
         const { git, calls } = fakeGit({
           'rev-parse --abbrev-ref HEAD': () => 'feat/child\n',
           [`fetch origin +refs/heads/${base}:refs/remotes/origin/${base}`]: () => '',
-          [`checkout --detach refs/remotes/origin/${base}`]: () => '',
+          [`checkout --detach --no-overwrite-ignore refs/remotes/origin/${base}`]: () => '',
           'show-ref --verify --quiet refs/heads/feat/child': () => '',
           'branch -D feat/child': () => '',
         });
@@ -849,7 +849,7 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'main\n',
         'fetch origin +refs/heads/main:refs/remotes/origin/main': () => '',
-        'checkout --detach refs/remotes/origin/main': () => '',
+        'checkout --detach --no-overwrite-ignore refs/remotes/origin/main': () => '',
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
       expect(await svc.resetToMergedBase('/wt')).toEqual({ base: 'main' });
@@ -860,7 +860,7 @@ describe('createGitBranchService', () => {
       const { git, calls } = fakeGit({
         'rev-parse --abbrev-ref HEAD': () => 'a1b2c3d\n', // a short SHA, not a branch
         'fetch origin +refs/heads/main:refs/remotes/origin/main': () => '',
-        'checkout --detach refs/remotes/origin/main': () => '',
+        'checkout --detach --no-overwrite-ignore refs/remotes/origin/main': () => '',
         // branchExists(feature) — show-ref finds no such local ref (non-zero exit).
         'show-ref --verify --quiet refs/heads/a1b2c3d': fails(),
       });
@@ -877,7 +877,7 @@ describe('createGitBranchService', () => {
         'status --porcelain --untracked-files=no': () => ' M src/live.ts\n',
       });
       const svc = createGitBranchService({ repoDir: '/repo', git });
-      await expect(svc.resetToMergedBase('/wt')).resolves.toEqual({ base: 'main' });
+      await expect(svc.resetToMergedBase('/wt')).resolves.toEqual({ base: 'main', skipped: true });
       expect(calls.some((call) => call.includes('fetch'))).toBe(false);
       expect(calls.some((call) => call.includes('checkout'))).toBe(false);
     });
@@ -889,7 +889,7 @@ describe('createGitBranchService', () => {
         'show-ref --verify --quiet refs/heads/feat/live': () => '',
         'rev-parse refs/heads/feat/live': () => original,
         'fetch origin +refs/heads/main:refs/remotes/origin/main': () => '',
-        'checkout --detach refs/remotes/origin/main': () => '',
+        'checkout --detach --no-overwrite-ignore refs/remotes/origin/main': () => '',
         'update-ref -d refs/heads/feat/live': fails(),
         'rev-parse --verify refs/heads/feat/live': () => 'b'.repeat(40),
       });

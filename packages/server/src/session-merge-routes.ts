@@ -131,7 +131,7 @@ export function registerSessionMergeRoutes(
       if (selectedRepositoryId !== undefined) {
         try {
           target = await findTarget();
-          if (target === undefined && repositoryId === defaultRepositoryId) {
+          if (target === undefined && selectedRepositoryId === defaultRepositoryId) {
             const legacy = await sessionPrStatus(session);
             if (legacy?.number === number) target = await findTarget(legacy);
           }
