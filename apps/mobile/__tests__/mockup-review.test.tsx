@@ -78,7 +78,9 @@ it('switches viewport widths when there is room and marks the selected screen', 
   if (stage === undefined) throw new Error('Missing review stage layout handler');
   fireEvent(stage, 'layout', { nativeEvent: { layout: { width: 1024 } } });
   expect(screen.getByRole('button', { name: 'Desktop', selected: true })).toBeOnTheScreen();
+  expect(screen.getByTestId('mockup-preview-viewport')).toHaveStyle({ maxWidth: 1024 });
   fireEvent.press(screen.getByRole('button', { name: 'Phone' }));
+  expect(screen.getByTestId('mockup-preview-viewport')).toHaveStyle({ maxWidth: 393 });
   expect(screen.getByRole('button', { name: 'Phone', selected: true })).toBeOnTheScreen();
   expect(await screen.findByTestId(`embedded-session:${html.attachment}`)).toBeOnTheScreen();
 

@@ -77,4 +77,5 @@ configure({ asyncUtilTimeout: 10_000 });
 jest.mock('react-native-webview', () => ({
   __esModule: true,
   default: require('react-native').View,
+  WebView: require('react-native').View,
 }));

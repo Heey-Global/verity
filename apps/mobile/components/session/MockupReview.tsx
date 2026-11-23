@@ -437,9 +437,10 @@ export function MockupReviewSheet({
               {visible && current !== undefined ? (
                 isHtml ? (
                   <View
+                    testID="mockup-preview-viewport"
                     style={[
                       styles.htmlStage,
-                      { maxWidth: desktop && canPreviewDesktop ? 840 : 393 },
+                      { maxWidth: desktop && canPreviewDesktop ? width : 393 },
                     ]}
                   >
                     <HtmlMockupPreview
