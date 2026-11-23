@@ -441,6 +441,7 @@ describe('project page', () => {
       await act(async () => undefined);
       const loadsBefore = (client.getProject as jest.Mock).mock.calls.length;
       const input = screen.getByTestId('project-name-input');
+      expect(input.props.value).toBe('Verity Plattform');
       fireEvent.changeText(input, '  Verity Mobile  ');
       fireEvent(input, 'submitEditing');
       await waitFor(() =>
@@ -546,8 +547,10 @@ describe('project page', () => {
       const { client, updateProjectProfile } = managed('Agent workspace');
       render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
       fireEvent.press(await screen.findByLabelText('Description: Agent workspace'));
-      fireEvent.changeText(screen.getByTestId('project-line-input'), '');
-      fireEvent(screen.getByTestId('project-line-input'), 'submitEditing');
+      const input = screen.getByTestId('project-line-input');
+      expect(input.props.value).toBe('Agent workspace');
+      fireEvent.changeText(input, '');
+      fireEvent(input, 'submitEditing');
       await waitFor(() =>
         expect(updateProjectProfile).toHaveBeenCalledWith('p/1', { description: null }),
       );

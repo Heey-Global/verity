@@ -81,7 +81,9 @@ export function SecretApprovalCard({
                 : theme.colors.success
             }
           />
-          <Text variant="row">{isHttp ? 'HTTP request' : 'Command'}</Text>
+          <Text variant="bodySmall" style={styles.emphasis}>
+            {isHttp ? 'HTTP request' : 'Command'}
+          </Text>
         </View>
         <View style={styles.status}>
           <StatusTag
@@ -97,7 +99,7 @@ export function SecretApprovalCard({
       {destination === undefined ? (
         <>
           {source ? (
-            <Text variant="bodySmall" tone="muted" selectable>
+            <Text variant="footnote" tone="muted" selectable>
               {spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)}
             </Text>
           ) : null}
@@ -110,10 +112,10 @@ export function SecretApprovalCard({
               <Icon name="key" size={18} color={theme.colors.text} />
             </View>
             <View style={styles.nodeText}>
-              <Text variant="row" selectable numberOfLines={2}>
+              <Text variant="bodySmall" style={styles.emphasis} selectable numberOfLines={2}>
                 {spellOutBidiControls(aliases.join(', '))}
               </Text>
-              <Text variant="bodySmall" tone="muted" selectable numberOfLines={2}>
+              <Text variant="footnote" tone="muted" selectable numberOfLines={2}>
                 {source && !pending
                   ? spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)
                   : 'Doppler'}
@@ -126,11 +128,16 @@ export function SecretApprovalCard({
               <Icon name={isHttp ? 'globe' : 'terminal'} size={18} color={theme.colors.text} />
             </View>
             <View style={styles.nodeText}>
-              <Text variant={isHttp ? 'row' : 'code'} selectable numberOfLines={2}>
+              <Text
+                variant={isHttp ? 'bodySmall' : 'code'}
+                style={isHttp ? styles.emphasis : styles.compactCode}
+                selectable
+                numberOfLines={2}
+              >
                 {spellOutBidiControls(destination)}
               </Text>
               {http ? (
-                <Text variant="bodySmall" tone="muted" selectable numberOfLines={2}>
+                <Text variant="footnote" tone="muted" selectable numberOfLines={2}>
                   {transfer}
                 </Text>
               ) : null}
@@ -144,7 +151,7 @@ export function SecretApprovalCard({
             <Button
               label={expanded ? 'Hide details' : detailsLabel}
               variant="text"
-              size="compact"
+              size="small"
               icon={expanded ? 'chevron-up' : 'chevron-down'}
               onPress={() => setExpanded(!expanded)}
             />
@@ -157,29 +164,29 @@ export function SecretApprovalCard({
             >
               {http ? (
                 <>
-                  <Text variant="code" selectable>
+                  <Text variant="code" style={styles.compactCode} selectable>
                     {http.method} {http.host}
                     {http.path}
                   </Text>
                   {http.body !== null ? (
-                    <Text variant="code" selectable>
+                    <Text variant="code" style={styles.compactCode} selectable>
                       {spellOutBidiControls(http.body)}
                     </Text>
                   ) : null}
-                  <Text variant="bodySmall" selectable>
+                  <Text variant="subtitle" tone="default" selectable>
                     {brokeredAuthSentence(http)}
                   </Text>
                 </>
               ) : cli ? (
                 <>
-                  <Text variant="code" selectable>
+                  <Text variant="code" style={styles.compactCode} selectable>
                     {trustedCliCommandLine(cli)}
                   </Text>
-                  <Text variant="bodySmall" selectable>
+                  <Text variant="subtitle" tone="default" selectable>
                     {spellOutBidiControls(trustedCliInjectionSummary(cli))}
                   </Text>
                   {cli.entryScript ? (
-                    <Text variant="bodySmall" selectable>
+                    <Text variant="subtitle" tone="default" selectable>
                       {spellOutBidiControls(
                         `Entry script: ${cli.entryScript.path} (SHA-256 ${cli.entryScript.sha256}, ${cli.entryScript.loading} loading)`,
                       )}
@@ -188,7 +195,7 @@ export function SecretApprovalCard({
                 </>
               ) : null}
               {source ? (
-                <Text variant="bodySmall" tone="muted" selectable>
+                <Text variant="footnote" tone="muted" selectable>
                   {spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)}
                 </Text>
               ) : null}
@@ -197,7 +204,7 @@ export function SecretApprovalCard({
         </View>
       ) : null}
       {pending && cli ? (
-        <Text variant="bodySmall" tone="muted">
+        <Text variant="subtitle" tone="muted">
           The command can read and share the full secret.
         </Text>
       ) : null}
@@ -265,6 +272,11 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   title: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  emphasis: { fontFamily: theme.fonts.semibold },
+  compactCode: {
+    fontSize: theme.typography.subtitle.fontSize,
+    lineHeight: theme.typography.subtitle.lineHeight,
+  },
   status: { marginLeft: 'auto' },
   flow: {
     flexDirection: 'row',
