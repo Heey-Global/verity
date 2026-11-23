@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.95.2](https://github.com/Heey-Global/verity/compare/mobile-v1.95.1...mobile-v1.95.2) (2026-11-23)
+
+
+### Features
+
+* **team:** address session requests to the person who asked ([#2840](https://github.com/Heey-Global/verity/issues/2840)) ([56ea677](https://github.com/Heey-Global/verity/commit/56ea677902c258a441d6cc44013cce234cf95db2))
+
+
+### Bug Fixes
+
+* **secrets:** shorten approval cards and hide legacy chat notices ([#2842](https://github.com/Heey-Global/verity/issues/2842)) ([681fb88](https://github.com/Heey-Global/verity/commit/681fb88a4eb072fae1250e7627ecc22d1f6506af))
+
 ## [1.95.1](https://github.com/Heey-Global/verity/compare/mobile-v1.95.0...mobile-v1.95.1) (2026-11-22)
 
 
