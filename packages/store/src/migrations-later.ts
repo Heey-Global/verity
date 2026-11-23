@@ -690,13 +690,10 @@ migrations['0237_project_code_permission'] = projectCodePermissionMigration;
 
 migrations['0238_session_repository_pull_requests'] = {
   async up(db: Kysely<unknown>): Promise<void> {
-    await sql`update session_repository_workspaces
-      set pull_request = jsonb_build_array(pull_request)
-      where jsonb_typeof(pull_request) = 'object'`.execute(db);
+    await sql`alter table session_repository_workspaces
+      add column if not exists pull_request_history jsonb`.execute(db);
   },
-  async down(db: Kysely<unknown>): Promise<void> {
-    await sql`update session_repository_workspaces
-      set pull_request = pull_request -> -1
-      where jsonb_typeof(pull_request) = 'array'`.execute(db);
+  async down(): Promise<void> {
+    // The previous version ignores this column. Keeping it preserves history if reapplied.
   },
 };

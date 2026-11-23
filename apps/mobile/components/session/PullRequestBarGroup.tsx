@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import {
   providerName,
@@ -117,7 +117,7 @@ export function PullRequestBarGroup({
           />
         </SessionBarTarget>
       </SessionBar>
-      {expanded ? rows : null}
+      <View style={expanded ? undefined : styles.collapsed}>{rows}</View>
     </SessionBarStack>
   );
 }
@@ -363,6 +363,7 @@ function PullRequestBar({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  collapsed: { display: 'none' },
   blocked: {
     backgroundColor: tint(theme.colors.attention, 'neutral'),
     borderColor: tint(theme.colors.attention, 'border'),

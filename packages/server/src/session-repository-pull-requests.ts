@@ -23,7 +23,6 @@ export function createSessionRepositoryPullRequests(
         if (!worktree) return [];
         const target = projectForRepository(project, repository);
         const heads = new Set((await branches?.sessionBranches(worktree).catch(() => [])) ?? []);
-        if (workspace) heads.add(workspace.branch);
         const recorded = new Map<number, string>();
         for (const pr of workspace?.pullRequests ?? []) {
           if (
@@ -72,7 +71,6 @@ export function createSessionRepositoryPullRequests(
             // Legacy visibility can hide the old terminal row when editing resumes.
             // Keep independently recorded PRs unless their own status was hidden.
             if (
-              !recorded.has(number) ||
               (await eventStore.getSessionPrVisibility(session.sessionId, worktree, status.url))
                 ?.hidden
             )

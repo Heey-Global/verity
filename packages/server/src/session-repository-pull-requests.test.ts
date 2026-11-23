@@ -27,7 +27,7 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     getProject: async () => project,
     listProjectRepositories: async () => [site, api],
     listSessionRepositoryWorkspaces: async () => [
-      { repositoryId: 'api', worktree: '/api', branch: 'feat/api' },
+      { repositoryId: 'api', worktree: '/api', branch: 'feat/deleted' },
       {
         repositoryId: 'default:p',
         worktree: '/site',
@@ -40,16 +40,22 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
   const reset = vi.fn().mockResolvedValue({ base: 'main' });
   const branches = {
     sessionBranches: async (path: string) => [path === '/api' ? 'feat/api' : 'feat/site'],
-    current: async () => 'feat/api',
+    current: async (path: string) => (path === '/api' ? 'feat/api' : 'feat/site'),
     headRevision: async () => sha,
     isDirty: async () => false,
     resetToMergedBase: reset,
   } as unknown as GitBranchService;
   const mergePR = vi.fn().mockResolvedValue(true);
+  const hasOpenPullRequest = vi.fn().mockResolvedValue(false);
   const backend: ProjectPullRequestBackend = {
     list: vi.fn(),
     merge: mergePR,
-    status: async (target, _branch, number = 7): Promise<PullRequestStatus> => ({
+    hasOpenPullRequest,
+    status: async (
+      target,
+      branch,
+      number = branch === 'feat/deleted' ? 99 : 7,
+    ): Promise<PullRequestStatus> => ({
       number,
       url: `https://github.com/team/${target.repo}/pull/${number}`,
       title: 'Update',
@@ -75,6 +81,8 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
 
   const app = Fastify();
   const invalidate = vi.fn();
+  const beforePrCleanup = vi.fn();
+  const afterPrCleanup = vi.fn().mockResolvedValue(undefined);
   const legacyMerge = vi.fn();
   registerSessionMergeRoutes(app, {
     eventStore: store,
@@ -82,6 +90,8 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     projectPullRequests: backend,
     resolvePullRequests,
     invalidateBranchResource: invalidate,
+    beforePrCleanup,
+    afterPrCleanup,
     provisioner: undefined,
     branchPrStatus: undefined,
     branchPrStatusForBranches: undefined,
@@ -118,6 +128,20 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     expect(legacyMerge).not.toHaveBeenCalled();
     expect(reset).toHaveBeenCalledExactlyOnceWith('/api', { base: 'main' });
     expect(invalidate).toHaveBeenCalledWith('s');
+    reset.mockClear();
+    hasOpenPullRequest.mockResolvedValueOnce(true);
+    expect((await merge('api')).json()).toEqual({ merged: true });
+    expect(reset).not.toHaveBeenCalled();
+    hasOpenPullRequest.mockRejectedValueOnce(new Error('Forge unavailable'));
+    expect((await merge('api')).json()).toEqual({ merged: true });
+    expect(reset).not.toHaveBeenCalled();
+    expect(beforePrCleanup).not.toHaveBeenCalled();
+    expect((await merge('default:p')).json()).toEqual({ merged: true });
+    expect(beforePrCleanup).toHaveBeenCalledWith(session);
+    expect(afterPrCleanup).toHaveBeenCalledWith(
+      session,
+      expect.objectContaining({ number: 7, phase: 'merged' }),
+    );
   } finally {
     await app.close();
   }

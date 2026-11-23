@@ -80,7 +80,7 @@ export function createEmbeddedRepositoryPullRequests(
           if (pull.fork) continue;
           let timer: NodeJS.Timeout | undefined;
           const status = await Promise.race([
-            readProjectStatus(project, pull.branch, remember).catch(() => null),
+            readProjectStatus(project, pull.branch, remember, pull.number).catch(() => null),
             new Promise<null>((resolve) => {
               timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
             }),
@@ -97,6 +97,12 @@ export function createEmbeddedRepositoryPullRequests(
     },
     status: async (project, branch, number) =>
       readProjectStatus(project, branch, await isDefaultRepository(project), number),
+    hasOpenPullRequest: async (project, branch) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider) throw new Error('Pull request lookup unavailable');
+      const pull = await provider.repositoryOperations(project).findPullRequest({ head: branch });
+      return pull?.state === 'open';
+    },
     invalidate: async (project) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
       if (provider) invalidateStatus(await statusIdentity(project, provider));

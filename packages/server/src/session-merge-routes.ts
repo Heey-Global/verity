@@ -143,16 +143,9 @@ export function registerSessionMergeRoutes(
             (await branches.isDirty(worktree))
           )
             return false;
-          const rows = await deps.resolvePullRequests?.(session);
           return (
-            rows !== undefined &&
-            !rows.some(
-              (row) =>
-                row.status.repository.id === repositoryId &&
-                row.status.number !== number &&
-                row.status.phase === 'open' &&
-                row.head === target.head,
-            )
+            (await deps.projectPullRequests?.hasOpenPullRequest?.(target.project, target.head)) ===
+            false
           );
         } catch {
           return false;
@@ -324,8 +317,9 @@ export function registerSessionMergeRoutes(
         reply.code(409);
         return { error: `pull request #${String(number)} could not be merged` };
       }
-      if (!target) deps.beforePrCleanup?.(session);
-      else invalidate();
+      const defaultCheckout = target?.status.repository.isDefault !== false;
+      if (defaultCheckout) deps.beforePrCleanup?.(session);
+      if (target) invalidate();
       publishSummary({
         phase: 'merged',
         pipeline: 'success',
@@ -339,13 +333,11 @@ export function registerSessionMergeRoutes(
       let cleanupObserved = false;
       const finishCleanup = async (): Promise<void> => {
         cleanupObserved = true;
-        if (target) {
-          deps.invalidateBranchResource?.(id);
-          return;
-        }
-        await deps.afterPrCleanup?.(session, mergedPrStatus).catch((err: unknown) => {
-          request.log.warn({ err, sessionId: id }, 'Post-merge PR visibility update failed');
-        });
+        if (target) deps.invalidateBranchResource?.(id);
+        if (defaultCheckout)
+          await deps.afterPrCleanup?.(session, mergedPrStatus).catch((err: unknown) => {
+            request.log.warn({ err, sessionId: id }, 'Post-merge PR visibility update failed');
+          });
       };
       const runCleanup = target
         ? conductor.runExclusive.bind(conductor)
