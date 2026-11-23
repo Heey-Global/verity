@@ -25,6 +25,10 @@ export function createSessionRepositoryPullRequests(
   { eventStore, projectPullRequests }: Pick<ServerDeps, 'eventStore' | 'projectPullRequests'>,
   branchesForSession: (session: SessionRecord) => Promise<GitBranchService | undefined>,
 ) {
+  const unavailable = (row: ResolvedPullRequest): ResolvedPullRequest => ({
+    ...row,
+    status: { ...row.status, pipeline: 'unknown', mergeable: null, observationFailed: true },
+  });
   const previous = new Map<string, ResolvedPullRequest[]>();
   return async (
     session: SessionRecord,
@@ -36,11 +40,11 @@ export function createSessionRepositoryPullRequests(
     if (!session.projectId || !projectPullRequests) return undefined;
     const project = await eventStore.getProject(session.projectId);
     if (!project || project.kind === 'control_plane') return undefined;
-    const [repositories, workspaces, branches] = await Promise.all([
+    const [repositories, workspaces] = await Promise.all([
       eventStore.listProjectRepositories(project.id),
       eventStore.listSessionRepositoryWorkspaces(session.sessionId),
-      branchesForSession(session),
     ]);
+    let branchService: ReturnType<typeof branchesForSession> | undefined;
     const results = await Promise.all(
       repositories
         .filter((repo) => repositoryId === undefined || repo.id === repositoryId)
@@ -52,7 +56,6 @@ export function createSessionRepositoryPullRequests(
             const worktree = repository.isDefault ? session.worktree : workspace?.worktree;
             if (!worktree) return [];
             const target = projectForRepository(project, repository);
-            const heads = new Set((await branches?.sessionBranches(worktree, true)) ?? []);
             const recorded = new Map<number, string>();
             for (const pr of workspace?.pullRequests ?? []) {
               if (
@@ -88,27 +91,40 @@ export function createSessionRepositoryPullRequests(
             const readStatus = (head: string, number?: number) =>
               projectPullRequests.status(target, head, number);
             const statuses = new Map<number, { status: PullRequestStatus; head?: string }>();
+            const failed = new Set<number>();
+            let discoveryFailed = false;
             for (const [number, head] of recorded) {
               if (signal?.aborted) break;
               if (pullRequestNumber !== undefined && number !== pullRequestNumber) continue;
-              const status = await readStatus(head, number);
-              if (status?.number === number) statuses.set(number, { status, head });
+              try {
+                const status = await readStatus(head, number);
+                if (status?.number === number) statuses.set(number, { status, head });
+              } catch (err) {
+                if (repositoryId !== undefined) throw err;
+                failed.add(number);
+              }
             }
-            if (
-              base === null &&
-              (pullRequestNumber === undefined || !recorded.has(pullRequestNumber))
-            )
-              throw new Error('Repository base branch unavailable');
-            if (
-              base !== null &&
-              (pullRequestNumber === undefined || !recorded.has(pullRequestNumber))
-            ) {
-              for (const head of heads) {
-                if (signal?.aborted) break;
-                if (!head || head === base) continue;
-                const status = await readStatus(head, pullRequestNumber);
-                if (status && !statuses.has(status.number))
-                  statuses.set(status.number, { status, head });
+            if (pullRequestNumber === undefined || !recorded.has(pullRequestNumber)) {
+              try {
+                if (base === null) throw new Error('Repository base branch unavailable');
+                const branches = await (branchService ??= branchesForSession(session));
+                const heads = await branches?.sessionBranches(worktree, true);
+                if (!heads) throw new Error('Repository branch metadata unavailable');
+                for (const head of new Set(heads)) {
+                  if (signal?.aborted) break;
+                  if (!head || head === base) continue;
+                  try {
+                    const status = await readStatus(head, pullRequestNumber);
+                    if (status && !statuses.has(status.number))
+                      statuses.set(status.number, { status, head });
+                  } catch (err) {
+                    if (repositoryId !== undefined) throw err;
+                    discoveryFailed = true;
+                  }
+                }
+              } catch (err) {
+                if (repositoryId !== undefined) throw err;
+                discoveryFailed = true;
               }
             }
             if (repository.isDefault && legacy !== undefined) {
@@ -130,7 +146,7 @@ export function createSessionRepositoryPullRequests(
                   statuses.delete(number);
               }
             }
-            const rows = [...statuses.values()].map(({ status, head }) => ({
+            const rows: ResolvedPullRequest[] = [...statuses.values()].map(({ status, head }) => ({
               status: { ...status, repository: identity },
               head,
               recorded: recorded.has(status.number),
@@ -139,21 +155,21 @@ export function createSessionRepositoryPullRequests(
               project: target,
             }));
             if (repositoryId === undefined && !signal?.aborted) {
+              for (const row of previous.get(key) ?? []) {
+                const number = row.status.number;
+                if (
+                  !statuses.has(number) &&
+                  (failed.has(number) || (discoveryFailed && !recorded.has(number)))
+                )
+                  rows.push(unavailable(row));
+              }
               previous.set(key, rows);
               if (previous.size > 512) previous.delete(previous.keys().next().value!);
             }
             return rows;
           } catch (err) {
             if (repositoryId !== undefined) throw err;
-            return (previous.get(key) ?? []).map((row): ResolvedPullRequest => ({
-              ...row,
-              status: {
-                ...row.status,
-                pipeline: 'unknown',
-                mergeable: null,
-                observationFailed: true,
-              },
-            }));
+            return (previous.get(key) ?? []).map(unavailable);
           }
         }),
     );

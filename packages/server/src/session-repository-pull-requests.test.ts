@@ -200,6 +200,27 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
       mergeable: null,
       observationFailed: true,
     });
+    backend.defaultBranch = async () => 'main';
+    backend.status = async (...args) => {
+      if (args[2] === 8) throw new Error('Historical PR unavailable');
+      return statusFor(...args);
+    };
+    const sameRepository = await resolvePullRequests(session);
+    expect(sameRepository?.find(({ status }) => status.number === 8)?.status).toMatchObject({
+      observationFailed: true,
+      mergeable: null,
+    });
+    expect(
+      sameRepository?.find(({ status }) => status.repository.isDefault && status.number === 7)
+        ?.status.mergeable,
+    ).toBe(true);
+
+    backend.status = statusFor;
+    branches.sessionBranches = async () => {
+      throw new Error('Git unavailable');
+    };
+    const persisted = await resolvePullRequests(session, undefined, undefined, 'default:p', 8);
+    expect(persisted?.[0]?.status.number).toBe(8);
   } finally {
     await app.close();
   }

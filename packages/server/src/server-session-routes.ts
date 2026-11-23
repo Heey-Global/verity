@@ -1,3 +1,4 @@
+import type { PullRequestStatus } from './forge-provider.js';
 import { mayAllowPermission } from './permission-decision-authority.js';
 import { NO_PERSONAL_MODEL, personModelRefusal } from './turn-sandbox.js';
 import { isVulnerabilityWorkspace } from './vulnerability-project.js';
@@ -450,12 +451,50 @@ export function installSessionRoutes(
           return null;
         }),
       );
+      const readRepositoryPRs = (pullRequest?: PullRequestStatus | null) =>
+        readStage('pr', async () => {
+          const key = encodeURIComponent(session.sessionId);
+          let entry = repositoryPRReads.get(key);
+          if (!entry || entry.expires < Date.now()) {
+            const started: NonNullable<ReturnType<typeof repositoryPRReads.get>> = {
+              read: resolvePullRequests(session, pullRequest),
+              expires: Infinity,
+              waitingForResult: false,
+            };
+            repositoryPRReads.set(key, started);
+            if (repositoryPRReads.size > 512)
+              repositoryPRReads.delete(repositoryPRReads.keys().next().value!);
+            started.read = started.read
+              .catch((err: unknown) => {
+                request.log.warn(
+                  { err, sessionId: id },
+                  'Session repository pull requests unavailable',
+                );
+                return null;
+              })
+              .finally(() => {
+                started.expires = Date.now() + 5000;
+                if (started.waitingForResult && repositoryPRReads.get(key) === started)
+                  ctx.resources.refresh(`/sessions/${key}/branches`);
+              });
+            entry = started;
+          }
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          const budget = new Promise<null>((resolve) => {
+            timeout = setTimeout(() => {
+              entry.waitingForResult = true;
+              resolve(null);
+            }, 100);
+          });
+          return Promise.race([entry.read, budget]).finally(() => clearTimeout(timeout));
+        });
       if (branchState === null) {
         return {
           current: '',
           switchable: [],
           previewable: [],
           workspaceMissing: true,
+          pullRequests: (await readRepositoryPRs())?.map((row) => row.status) ?? null,
           currentPr: null,
           pullRequest: null,
         };
@@ -482,42 +521,7 @@ export function installSessionRoutes(
           : undefined;
       const pullRequest =
         rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
-      const pullRequests = await readStage('pr', async () => {
-        const key = encodeURIComponent(session.sessionId);
-        let entry = repositoryPRReads.get(key);
-        if (!entry || entry.expires < Date.now()) {
-          const started: NonNullable<ReturnType<typeof repositoryPRReads.get>> = {
-            read: resolvePullRequests(session, pullRequest),
-            expires: Infinity,
-            waitingForResult: false,
-          };
-          repositoryPRReads.set(key, started);
-          if (repositoryPRReads.size > 512)
-            repositoryPRReads.delete(repositoryPRReads.keys().next().value!);
-          started.read = started.read
-            .catch((err: unknown) => {
-              request.log.warn(
-                { err, sessionId: id },
-                'Session repository pull requests unavailable',
-              );
-              return null;
-            })
-            .finally(() => {
-              started.expires = Date.now() + 5000;
-              if (started.waitingForResult && repositoryPRReads.get(key) === started)
-                ctx.resources.refresh(`/sessions/${key}/branches`);
-            });
-          entry = started;
-        }
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        const budget = new Promise<null>((resolve) => {
-          timeout = setTimeout(() => {
-            entry.waitingForResult = true;
-            resolve(null);
-          }, 100);
-        });
-        return Promise.race([entry.read, budget]).finally(() => clearTimeout(timeout));
-      });
+      const pullRequests = await readRepositoryPRs(pullRequest);
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)
