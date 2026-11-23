@@ -17,6 +17,7 @@ export {
   rateLimitWindowSchema,
   resultTelemetrySchema,
   riskClassSchema,
+  secretApprovalSourceSchema,
   toolResultRefSchema,
   usageSchema,
 } from './events.js';

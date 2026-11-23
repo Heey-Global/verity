@@ -115,9 +115,12 @@ code files by hand, running vulnerability scans, and acting on QA and
 vulnerability findings. Reading the
 code working copy stays with read, because the agent shows its files in the
 conversation anyway. The agent's vulnerability tool already requires Code from
-the person behind a turn for anything beyond reading. The forge gateway is held
-to the same boundary in a later step; until then, an agent working for a member
-without Code can still push.
+the person behind a turn for anything beyond reading. The forge gateway holds
+agents to the same boundary: when the person a turn acts for lacks Code, it
+refuses pushes and pull-request and release writes, and the agent is told to
+leave the changes in the session for a member with Code. Allowing a secret or
+network permission prompt likewise requires Code; denying one stays with
+execute.
 
 **Project creation is build authority.** Creating a project provisions a
 sandbox and may build a repository-supplied `devcontainer.json` on the host's

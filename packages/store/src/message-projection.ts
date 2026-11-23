@@ -97,7 +97,7 @@ export async function projectMessageEvent(
   }
 
   await finalizeOpenMessage(db, sessionId);
-  if (event.t === 'prompt') {
+  if (event.t === 'prompt' && event.origin !== 'secret-approval') {
     await db
       .insertInto('messages')
       .values({

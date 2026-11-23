@@ -1,3 +1,4 @@
+import { findRecordedApprovalDecision } from './secret-approval-events.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 import { createStoredSessionLink } from './session-links.js';
@@ -1220,7 +1221,10 @@ export interface RunnerTurnOwnership {
  * caller passes it unchanged.
  */
 export interface EventSink {
-  appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }>;
+  appendEvent(
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing?: true }>;
   createSession(session: SessionInput): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
 }
@@ -4438,23 +4442,17 @@ export class EventStore implements EventSink {
    * milliseconds (`ts`), so the live fan-out can broadcast the real persist time
    * alongside `seq` (#32) — matching what the read paths surface.
    */
-  async appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }> {
+  async appendEvent(
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing?: true }> {
     if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
     const { type, payload } = await this.prepareEventRow(event);
-    // Takes the cross-process append lock like every other writer. Server generations
-    // overlap during reattach/cutover, so "the generation that writes a session's events
-    // is the generation that sweeps it" is a convention, not something the database
-    // enforces: a draining generation can still be streaming a live turn's output through
-    // here while the new one probes that same turn. An advisory lock only orders holders
-    // OF it, so an append that skipped it would be invisible to
-    // {@link appendEventForRunningTurn}'s predicate and still take the lower id — exactly
-    // the reversal that lock exists to rule out.
-    //
-    // READ COMMITTED takes a new snapshot per statement. Acquire the lock before
-    // the INSERT so a tombstone committed during lock contention is visible.
     const row = await this.withSessionEventAppend(sessionId, () =>
       this.db.transaction().execute(async (tx) => {
         await this.sessionEventAppendLock(tx, sessionId);
+        const existing = await findRecordedApprovalDecision(tx, sessionId, event);
+        if (existing) return { ...existing, existing: true as const };
         const result = await sql<{ id: number; created_at: Date }>`
           insert into events (session_id, type, payload)
           select ${sessionId}, ${type}, ${payload}::jsonb
@@ -4467,6 +4465,8 @@ export class EventStore implements EventSink {
         return inserted;
       }),
     );
+    if ('existing' in row)
+      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: true };
     this.enqueuePersistedMessageEvent(
       sessionId,
       Number(row.id),

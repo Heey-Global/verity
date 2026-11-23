@@ -120,4 +120,25 @@ describe('Session control routes', () => {
       attachments: [{ kind: 'image', mediaType: 'image/png', data: 'AAAA' }],
     });
   });
+
+  it('refuses to allow a prompt the requester may not allow, but lets them deny it', async () => {
+    const restricted = Fastify();
+    const mayAllowPermission = vi.fn(async () => false);
+    registerSessionControlRoutes(restricted, { ...deps, mayAllowPermission });
+    const allow = await restricted.inject({
+      method: 'POST',
+      url: '/sessions/s1/permissions/tool-1',
+      payload: { behavior: 'allow', scope: 'session' },
+    });
+    expect(allow.statusCode).toBe(403);
+    expect(deps.conductor.decidePermission).not.toHaveBeenCalled();
+    const deny = await restricted.inject({
+      method: 'POST',
+      url: '/sessions/s1/permissions/tool-1',
+      payload: { behavior: 'deny' },
+    });
+    expect(deny.statusCode).toBe(200);
+    expect(mayAllowPermission).toHaveBeenCalledOnce();
+    await restricted.close();
+  });
 });
