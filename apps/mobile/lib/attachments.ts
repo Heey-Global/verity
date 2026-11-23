@@ -306,19 +306,6 @@ export async function pickImagesFromLibrary(remaining: number): Promise<Attachme
   return picked;
 }
 
-// A confirmed recent batch stays in the draft even if another source filled
-// the remaining slots during encoding. The composer enforces the cap on Send.
-export function appendAttachments(
-  added: AttachmentUpload[],
-  maximum: number,
-  keepBatch = false,
-): (current: AttachmentUpload[]) => AttachmentUpload[] {
-  return (current) => [
-    ...current,
-    ...(keepBatch ? added : added.slice(0, Math.max(0, maximum - current.length))),
-  ];
-}
-
 export async function attachRecentImages(
   ids: readonly string[],
   remaining: number,

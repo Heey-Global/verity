@@ -288,7 +288,6 @@ import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import type { AttachAnchor } from '../../lib/attachMenu';
 import { AttachMenu } from '../../components/AttachMenu';
 import {
-  appendAttachments,
   attachRecentImages,
   captureImage,
   pickMeetingAudioAsset,
@@ -2855,13 +2854,13 @@ export const SessionChat = memo(function SessionChat({
   const [attachAnchor, setAttachAnchor] = useState<AttachAnchor | null>(null);
   // Merge a picker's result into `attachments`, capping at MAX_ATTACHMENTS. The
   const performPick = useCallback(
-    async (pick: (remaining: number) => Promise<AttachmentUpload[]>, keepBatch = false) => {
+    async (pick: (remaining: number) => Promise<AttachmentUpload[]>) => {
       const remaining = MAX_ATTACHMENTS_PER_TURN - attachments.length;
       if (remaining <= 0) return;
       try {
         const picked = await pick(remaining);
         if (picked.length === 0) return;
-        setAttachments(appendAttachments(picked, MAX_ATTACHMENTS_PER_TURN, keepBatch));
+        setAttachments((current) => [...current, ...picked]);
       } catch (error) {
         Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
       }
@@ -3161,7 +3160,7 @@ export const SessionChat = memo(function SessionChat({
         try {
           const dropped = await readDroppedAttachments(files, remaining);
           if (dropped.length === 0) return;
-          setAttachments(appendAttachments(dropped, MAX_ATTACHMENTS_PER_TURN));
+          setAttachments((current) => [...current, ...dropped]);
         } catch (error) {
           Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
         }
@@ -3329,7 +3328,7 @@ export const SessionChat = memo(function SessionChat({
     (ids: readonly string[]) => {
       setAttachMenuOpen(false);
       setAttachingRecent(true);
-      void performPick((remaining) => attachRecentImages(ids, remaining), true).finally(() =>
+      void performPick((remaining) => attachRecentImages(ids, remaining)).finally(() =>
         setAttachingRecent(false),
       );
     },
@@ -7898,6 +7897,7 @@ the Claude app — it sits with the composer instead of the nav bar). */}
               />
             </View>
             <View style={styles.actionRowRight}>
+              {attachingRecent && running && !dead ? <StopButton onStop={onStop} /> : null}
               <MicButton
                 voiceState={voiceState}
                 autoMode={voiceAutoMode}
@@ -7907,13 +7907,12 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                 onPauseCountdown={onPauseVoiceCountdown}
                 disabled={dead}
               />
-              {attachingRecent && (
+              {attachingRecent ? (
                 <ActivityIndicator
                   accessibilityLabel="Loading images"
                   color={theme.colors.action}
                 />
-              )}
-              {running && !canSend && !sending && !dead ? (
+              ) : running && !canSend && !sending && !dead ? (
                 <StopButton onStop={onStop} />
               ) : (
                 <Pressable
