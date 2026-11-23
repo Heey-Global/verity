@@ -79,6 +79,31 @@ describe('useBranches live updates', () => {
     jest.useRealTimers();
   });
 
+  it('receives delayed repository PRs without a primary checkout', async () => {
+    const initial: BranchList = {
+      current: '',
+      switchable: [],
+      workspaceMissing: true,
+      pullRequest: null,
+      pullRequests: null,
+    };
+    const row = {
+      ...branches().pullRequest!,
+      repository: { id: 'api', name: 'api', owner: 'example', repo: 'api', isDefault: false },
+    };
+    const getBranches = jest
+      .fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce({ ...initial, pullRequests: [row] });
+    const client = { getBranches } as unknown as VerityClient;
+    const { result } = renderHook(() => useBranches(client, 's'));
+    await act(async () => {});
+    expect(result.current.workspaceMissing).toBe(true);
+    expect(result.current.pullRequests).toEqual([]);
+    await changed();
+    expect(result.current.pullRequests).toEqual([row]);
+  });
+
   it('aborts the previous identity and ignores its late response', async () => {
     const old = deferred<BranchList>();
     const next = deferred<BranchList>();

@@ -281,8 +281,9 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     return () => subscription.remove();
   }, []);
 
+  const observeBranchUpdates = !workspaceMissing || repositoryPullRequests !== undefined;
   useEffect(() => {
-    if (!focused || !appActive || !enabled || workspaceMissing) return undefined;
+    if (!focused || !appActive || !enabled || !observeBranchUpdates) return undefined;
     const path = `/sessions/${encodeURIComponent(sessionId)}/branches`;
     // A prefetch from another client does not register this client's read observation.
     // Live hints queue a fresh read behind any request already in flight.
@@ -292,7 +293,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       (resourcePath) => resourcePath.split('?')[0] === path,
       [{ path }],
     );
-  }, [client, sessionId, load, focused, appActive, workspaceMissing, enabled]);
+  }, [client, sessionId, load, focused, appActive, observeBranchUpdates, enabled]);
 
   const refresh = useCallback(() => {
     // Focus always revalidates, so hidden refresh requests need no network work.
