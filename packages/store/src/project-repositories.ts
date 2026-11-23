@@ -15,6 +15,8 @@ export interface ProjectRepositoryRecord {
   defaultBranch: string | null;
   isDefault: boolean;
   removedAt: Date | null;
+  /** GitHub's rename-stable repository ID, once learned. */
+  githubRepositoryId?: string | null | undefined;
 }
 
 export interface AddProjectRepositoryInput {
@@ -60,6 +62,7 @@ export function defaultProjectRepository(project: ProjectRecord): ProjectReposit
     defaultBranch: null,
     isDefault: true,
     removedAt: null,
+    githubRepositoryId: project.githubRepositoryId,
   };
 }
 
@@ -76,6 +79,8 @@ export function projectForRepository(
     owner: repository.owner,
     repo: repository.repo,
     forgeConnectionId: repository.forgeConnectionId,
+    // Never let another repository inherit the default repository's GitHub ID.
+    githubRepositoryId: repository.githubRepositoryId,
   };
 }
 
@@ -91,6 +96,7 @@ function record(row: Selectable<ProjectRepositoriesTable>): ProjectRepositoryRec
     defaultBranch: row.default_branch,
     isDefault: false,
     removedAt: row.removed_at,
+    githubRepositoryId: row.github_repository_id,
   };
 }
 

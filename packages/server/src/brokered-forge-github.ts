@@ -133,7 +133,12 @@ async function collectJson(response: IncomingMessage): Promise<unknown> {
 }
 
 export function createGitHubForgeAdapter(options: {
-  mint(binding: { owner: string; repo: string }): Promise<string | undefined>;
+  /** `githubRepositoryId` scopes the token to the assigned repository by ID. */
+  mint(binding: {
+    owner: string;
+    repo: string;
+    githubRepositoryId?: string | null;
+  }): Promise<string | undefined>;
   /** The person's own user-to-server token (ADR 0023 §3); undefined when they
    *  have not authorized GitHub. GitHub limits it to their own permissions. */
   mintForUser?(userId: string): Promise<string | undefined>;
@@ -141,7 +146,7 @@ export function createGitHubForgeAdapter(options: {
    *  installation token — only the administrator, whose access it always was. */
   mayUseInstallationToken?(userId: string): Promise<boolean>;
   mintDiagnostic?(
-    binding: { owner: string; repo: string },
+    binding: { owner: string; repo: string; githubRepositoryId?: string | null },
     permission: 'statuses' | 'administration' | 'contents',
   ): Promise<string | undefined>;
   transport: BrokeredHttpStreamTransport;

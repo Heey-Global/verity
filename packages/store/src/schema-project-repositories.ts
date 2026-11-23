@@ -10,6 +10,8 @@ export interface ProjectRepositoriesTable {
   forge_connection_id: string | null;
   default_branch: string | null;
   removed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+  /** GitHub's rename-stable repository ID, once learned; NULL for other code hosts. */
+  github_repository_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export interface SessionRepositoryWorkspacesTable {

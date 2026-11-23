@@ -7,6 +7,7 @@ import {
 import type { ServerDeps } from './server-deps.js';
 import type { ProvisionerImpl } from './provisioner.js';
 import { syncProjectsFromInstallation } from './embedded-support.js';
+import { reconcileGitHubRepository } from './github-repository-rename.js';
 import { createProjectListCache, type ProjectListCache } from './project-list-cache.js';
 import { reconcileProjectContainerStates } from './project-state.js';
 
@@ -17,10 +18,24 @@ type FleetContext = {
   provisioner:
     | Pick<
         ProvisionerImpl,
-        'isProjectProvisioning' | 'recoverInterruptedSleep' | 'recoverInterruptedWake'
+        | 'isProjectProvisioning'
+        | 'recoverInterruptedSleep'
+        | 'recoverInterruptedWake'
+        | 'syncProjectCheckout'
       >
     | undefined;
 };
+
+/** Sync the installation's repositories, letting projects follow GitHub renames. */
+function syncInstallation(ctx: FleetContext, includeHidden = false): Promise<ProjectRecord[]> {
+  const { eventStore, installationService, provisioner } = ctx;
+  if (installationService === undefined) return eventStore.listProjects({ includeHidden });
+  return syncProjectsFromInstallation(eventStore, installationService, {
+    includeHidden,
+    reconcile: (observation) =>
+      reconcileGitHubRepository(eventStore, () => provisioner, observation),
+  });
+}
 
 export function createEmbeddedProjectList(ctx: FleetContext) {
   const { eventStore, installationService, docker, provisioner } = ctx;
@@ -33,7 +48,7 @@ export function createEmbeddedProjectList(ctx: FleetContext) {
       ? undefined
       : createProjectListCache(
           async () => {
-            const projects = await syncProjectsFromInstallation(eventStore, installationService);
+            const projects = await syncInstallation(ctx);
             const reconciled =
               docker !== undefined
                 ? reconcileProjectContainerStates(
@@ -104,9 +119,7 @@ export function createEmbeddedProjectFleetBindings(
           invalidateProjectList: () => projectList.invalidate(),
           listAvailableRepositories: async () => {
             if (hasMasterPassword && secretCipher.isSealed()) throw new SealedError();
-            return syncProjectsFromInstallation(eventStore, installationService, {
-              includeHidden: true,
-            });
+            return syncInstallation(ctx, true);
           },
         }
       : {}),

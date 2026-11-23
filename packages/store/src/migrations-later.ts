@@ -5,6 +5,7 @@ import { sessionMessageRecencyMigration } from './session-message-recency-migrat
 import { projectCodePermissionMigration } from './project-code-permission-migration.js';
 import { sessionCreatorMigration } from './session-creator-migration.js';
 import { changeSubmissionsMigration } from './change-submissions-migration.js';
+import { githubRepositoryIdentityMigration } from './github-repository-identity-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -702,3 +703,4 @@ migrations['0240_session_repository_pull_requests'] = {
     // The previous version ignores this column. Keeping it preserves history if reapplied.
   },
 };
+migrations['0241_github_repository_ids'] = githubRepositoryIdentityMigration;
