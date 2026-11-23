@@ -95,7 +95,9 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   const [pullRequest, setPullRequest] = useState<NonNullable<BranchList['pullRequest']> | null>(
     cached?.pullRequest ?? null,
   );
-  const [repositoryPullRequests, setRepositoryPullRequests] = useState(cached?.pullRequests);
+  const [repositoryPullRequests, setRepositoryPullRequests] = useState(
+    cached?.pullRequests ?? undefined,
+  );
   const [owner, setOwner] = useState<string | undefined>(cached?.owner);
   const [repo, setRepo] = useState<string | undefined>(cached?.repo);
   const [codeHost, setCodeHost] = useState<BranchList['codeHost']>(cached?.codeHost);
@@ -147,7 +149,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     setPreviewable(cached?.previewable ?? []);
     setCurrentPr(cached?.currentPr ?? null);
     setPullRequest(cached?.pullRequest ?? null);
-    setRepositoryPullRequests(cached?.pullRequests);
+    setRepositoryPullRequests(cached?.pullRequests ?? undefined);
     setOwner(cached?.owner);
     setRepo(cached?.repo);
     setCodeHost(cached?.codeHost);
@@ -190,9 +192,10 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
             const res = await (prefetched ??
               client.getBranches(sessionId, request.controller.signal));
             if (fresh()) {
-              const pullRequests = res.workspaceMissing
-                ? res.pullRequests
-                : (res.pullRequests ?? cachedBranches(client, sessionId)?.pullRequests);
+              const pullRequests =
+                res.pullRequests === null
+                  ? (cachedBranches(client, sessionId)?.pullRequests ?? undefined)
+                  : res.pullRequests;
               publishSnapshot({ ...res, pullRequests });
               setCurrent(res.current);
               setSwitchable(res.switchable);
@@ -330,7 +333,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
             (pr) => pr.repository.id === repositoryId && pr.repository.isDefault,
           );
         const merged = { phase: 'merged', mergeable: false, mergeState: undefined } as const;
-        const updateList = (list: SessionPullRequestStatus[] | undefined) =>
+        const updateList = (list: SessionPullRequestStatus[] | null | undefined) =>
           list?.map((pr) =>
             pr.number === number &&
             (repositoryId === undefined

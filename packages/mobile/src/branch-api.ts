@@ -86,7 +86,7 @@ export const branchListSchema = z.preprocess(
     // (no token/remote) — both render as "no PR chip", independent of the issue chip.
     currentPr: z.number().int().positive().nullable().optional(),
     pullRequest: pullRequestSchema.optional(),
-    pullRequests: z.array(sessionPullRequestStatusSchema).optional(),
+    pullRequests: z.array(sessionPullRequestStatusSchema).nullable().optional(),
     // The project repo's GitHub `owner`/`repo` (#161), from the server's `origin`-remote
     // parse — lets the header build tappable Issue/PR chip URLs. Both OPTIONAL: ABSENT =
     // older server OR no GitHub remote, in which case the chips stay non-tappable rather

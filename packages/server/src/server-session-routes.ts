@@ -127,6 +127,13 @@ export function installSessionRoutes(
     invalidateBranchCache,
     resolvePullRequests,
   } = sessionOverview;
+  const repositoryPRReads = new Map<
+    string,
+    {
+      read: Promise<Awaited<ReturnType<typeof resolvePullRequests>> | null>;
+      expires: number;
+    }
+  >();
   installCodeWorkspaces(app, ctx, { invalidateBranchCache });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
@@ -464,24 +471,34 @@ export function installSessionRoutes(
       const pullRequest =
         rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
       const pullRequests = await readStage('pr', async () => {
-        const controller = new AbortController();
+        const key = session.worktree;
+        let entry = repositoryPRReads.get(key);
+        if (!entry || entry.expires < Date.now()) {
+          const started: NonNullable<ReturnType<typeof repositoryPRReads.get>> = {
+            read: resolvePullRequests(session, pullRequest),
+            expires: Infinity,
+          };
+          repositoryPRReads.set(key, started);
+          if (repositoryPRReads.size > 512)
+            repositoryPRReads.delete(repositoryPRReads.keys().next().value!);
+          started.read = started.read
+            .catch((err: unknown) => {
+              request.log.warn(
+                { err, sessionId: id },
+                'Session repository pull requests unavailable',
+              );
+              return null;
+            })
+            .finally(() => {
+              started.expires = Date.now() + 5000;
+            });
+          entry = started;
+        }
         let timeout: ReturnType<typeof setTimeout> | undefined;
-        const budget = new Promise<undefined>((resolve) => {
-          timeout = setTimeout(() => {
-            controller.abort();
-            resolve(undefined);
-          }, 2000);
+        const budget = new Promise<null>((resolve) => {
+          timeout = setTimeout(() => resolve(null), 100);
         });
-        return Promise.race([
-          resolvePullRequests(session, pullRequest, controller.signal).catch((err: unknown) => {
-            request.log.warn(
-              { err, sessionId: id },
-              'Session repository pull requests unavailable',
-            );
-            return undefined;
-          }),
-          budget,
-        ]).finally(() => clearTimeout(timeout));
+        return Promise.race([entry.read, budget]).finally(() => clearTimeout(timeout));
       });
       const currentPr =
         pullRequest !== undefined
@@ -553,7 +570,7 @@ export function installSessionRoutes(
         ...(pullRequest !== undefined ? { pullRequest } : {}),
         ...(pullRequests === undefined
           ? {}
-          : { pullRequests: pullRequests.map(({ status }) => status) }),
+          : { pullRequests: pullRequests?.map(({ status }) => status) ?? null }),
         ...(identity !== null ? { owner: identity.owner, repo: identity.repo } : {}),
         ...(forgeHost !== null && forgeHost !== 'unknown'
           ? { codeHost: { provider: 'forgejo' as const, baseUrl: forgeHost.baseUrl } }

@@ -51,6 +51,7 @@ export function createEmbeddedRepositoryPullRequests(
       stored.repo === project.repo
     );
   };
+  const defaultBranches = new Map<string, { read: Promise<string>; expires: number }>();
   const projectPullRequests: ProjectPullRequestBackend = {
     list: async (project) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
@@ -98,9 +99,29 @@ export function createEmbeddedRepositoryPullRequests(
     status: async (project, branch, number) =>
       readProjectStatus(project, branch, await isDefaultRepository(project), number),
     defaultBranch: async (project) => {
-      const provider = await projectForgeProvider(eventStore, githubForge, project);
-      if (!provider) throw new Error('Repository base branch unavailable');
-      return provider.repositoryOperations(project).defaultBranch();
+      const key = JSON.stringify([
+        project.id,
+        project.kind,
+        project.forgeConnectionId,
+        project.owner,
+        project.repo,
+      ]);
+      const cached = defaultBranches.get(key);
+      const now = Date.now();
+      if (cached && cached.expires > now) return cached.read;
+      const read = (async () => {
+        const provider = await projectForgeProvider(eventStore, githubForge, project);
+        if (!provider) throw new Error('Repository base branch unavailable');
+        return provider.repositoryOperations(project).defaultBranch();
+      })();
+      const entry = { read, expires: now + 60_000 };
+      defaultBranches.set(key, entry);
+      while (defaultBranches.size > 512)
+        defaultBranches.delete(defaultBranches.keys().next().value!);
+      void read.catch(() => {
+        entry.expires = Math.min(entry.expires, Date.now() + 5_000);
+      });
+      return read;
     },
     hasOpenPullRequest: async (project, branch) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);

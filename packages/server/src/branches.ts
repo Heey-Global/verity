@@ -573,7 +573,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       if (named.length > 0) {
         const refs = await git([
           '-C',
-          opts.repoDir ?? worktreePath,
+          worktreePath,
           'for-each-ref',
           '--format=%(refname)',
           'refs/heads',
@@ -847,6 +847,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       ...untrustedRepo(worktreePath),
       'checkout',
       '--detach',
+      '--no-overwrite-ignore',
       remoteRef,
     ]);
     // Delete the merged local feature branch — only when it was a real local branch
