@@ -116,7 +116,7 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     invalidatePrSummaryAction: vi.fn(),
   });
   try {
-    const merge = (repositoryId: string) =>
+    const merge = (repositoryId?: string) =>
       app.inject({
         method: 'POST',
         url: '/sessions/s/pull-request/merge',
@@ -144,6 +144,11 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     expect((await merge('api')).json()).toEqual({ merged: true });
     expect(reset).not.toHaveBeenCalled();
     expect(beforePrCleanup).not.toHaveBeenCalled();
+    expect((await merge()).json()).toEqual({ merged: true });
+    expect(reset).toHaveBeenCalledWith('/site', {
+      base: 'main',
+      expectedHead: { branch: 'feat/site', sha },
+    });
     legacyOnly = true;
     expect((await merge('default:p')).json()).toEqual({ merged: true });
     expect(beforePrCleanup).toHaveBeenCalledWith(session);

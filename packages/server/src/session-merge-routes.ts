@@ -116,21 +116,33 @@ export function registerSessionMergeRoutes(
         reply.code(404);
         return { error: `session ${id} not found` };
       }
+      const defaultRepositoryId = `default:${session.projectId}`;
+      const selectedRepositoryId =
+        repositoryId ??
+        (deps.projectPullRequests && session.projectId ? defaultRepositoryId : undefined);
       const findTarget = async (legacy?: PullRequestStatus | null) =>
-        (await deps.resolvePullRequests?.(session, legacy, undefined, repositoryId, number))?.find(
-          (row) => row.status.repository.id === repositoryId && row.status.number === number,
+        (
+          await deps.resolvePullRequests?.(session, legacy, undefined, selectedRepositoryId, number)
+        )?.find(
+          (row) =>
+            row.status.repository.id === selectedRepositoryId && row.status.number === number,
         );
       let target: Awaited<ReturnType<typeof findTarget>>;
-      if (repositoryId !== undefined) {
+      if (selectedRepositoryId !== undefined) {
         try {
           target = await findTarget();
-          if (target === undefined && repositoryId === `default:${session.projectId}`) {
+          if (target === undefined && repositoryId === defaultRepositoryId) {
             const legacy = await sessionPrStatus(session);
             if (legacy?.number === number) target = await findTarget(legacy);
           }
         } catch {
-          reply.code(503);
-          return { code: 'merge_status_unavailable', error: 'pull request status is unavailable' };
+          if (repositoryId !== undefined) {
+            reply.code(503);
+            return {
+              code: 'merge_status_unavailable',
+              error: 'pull request status is unavailable',
+            };
+          }
         }
       }
       if (repositoryId !== undefined && target === undefined) {

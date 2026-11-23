@@ -140,7 +140,10 @@ export function installSessionRoutes(
     const [, collection, id, resource] = path.split('/');
     if (collection === 'sessions' && id && resource === 'branches') repositoryPRReads.delete(id);
   });
-  app.addHook('onClose', async () => stopRepositoryPRInvalidation());
+  app.addHook('onClose', (_instance, done) => {
+    stopRepositoryPRInvalidation();
+    done();
+  });
   installCodeWorkspaces(app, ctx, { invalidateBranchCache });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
