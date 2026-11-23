@@ -186,6 +186,20 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     expect(pending.statusCode).toBe(409);
     expect(pending.json()).toMatchObject({ code: 'merge_status_pending' });
     expect(mergePR).not.toHaveBeenCalled();
+    refreshed = false;
+    legacyOnly = false;
+    backend.defaultBranch = async (target) => {
+      if (target.repo === 'api') throw new Error('Module forge unavailable');
+      return 'main';
+    };
+    const partial = await resolvePullRequests(session);
+    expect(partial?.find((row) => row.status.repository.id === 'default:p')?.status.mergeable).toBe(
+      true,
+    );
+    expect(partial?.find((row) => row.status.repository.id === 'api')?.status).toMatchObject({
+      mergeable: null,
+      observationFailed: true,
+    });
   } finally {
     await app.close();
   }

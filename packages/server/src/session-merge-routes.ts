@@ -107,7 +107,11 @@ export function registerSessionMergeRoutes(
     async (request, reply): Promise<{ merged: true } | { error: string; code?: string }> => {
       const { id } = sessionParams.parse(request.params);
       const { number, expectedHeadSha, repositoryId } = mergePullRequestBody.parse(request.body);
-      if (repositoryId === undefined ? !deps.mergePr : !deps.projectPullRequests) {
+      if (
+        repositoryId === undefined
+          ? !deps.mergePr && !deps.projectPullRequests
+          : !deps.projectPullRequests
+      ) {
         reply.code(503);
         return { error: 'pull request merging is not configured' };
       }
@@ -146,6 +150,10 @@ export function registerSessionMergeRoutes(
       if (selectedRepositoryId !== undefined && target === undefined) {
         reply.code(404);
         return { error: 'pull request is not associated with this session and repository' };
+      }
+      if (!target && !deps.mergePr) {
+        reply.code(503);
+        return { error: 'pull request merging is not configured for this session' };
       }
       const readStatus = async () =>
         target === undefined ? sessionPrStatus(session) : ((await findTarget())?.status ?? null);
