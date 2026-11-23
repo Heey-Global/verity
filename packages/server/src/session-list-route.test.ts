@@ -169,11 +169,23 @@ it('addresses requests to the person a turn runs for, and secret prompts to Code
       ],
     },
     // No turn names anyone: the session's creator owns its requests.
-    { sessionId: 'idle', projectId: 'p', pendingPermissions: [] },
+    {
+      sessionId: 'idle',
+      projectId: 'p',
+      pendingPermissions: [],
+      openChoices: { question: 'Ship it?', options: [{ label: 'Yes' }] },
+    },
+    // Its turn ran for someone who has since left the project: the creator answers.
+    {
+      sessionId: 'left',
+      projectId: 'p',
+      requestInitiator: 'gone',
+      pendingPermissions: [],
+      openChoices: { question: 'Which?', options: [{ label: 'A' }] },
+    },
   ] as unknown as SessionSummary[];
-  const hasProjectPermission = vi.fn(
-    async (user: string, _project: string, permission: string) =>
-      permission === 'code' && user === 'alex',
+  const hasProjectPermission = vi.fn(async (user: string, _project: string, permission: string) =>
+    permission === 'read' ? user === 'alex' || user === 'mara' : user === 'alex',
   );
   registerSessionListRoute(app, {
     store: {
@@ -188,7 +200,13 @@ it('addresses requests to the person a turn runs for, and secret prompts to Code
     pruneBranchCache: () => {},
     requestAddressing: {
       store: {
-        sessionPeople: { owners: async () => new Map([['idle', 'alex']]) } as never,
+        sessionPeople: {
+          owners: async () =>
+            new Map([
+              ['idle', 'alex'],
+              ['left', 'mara'],
+            ]),
+        } as never,
         isActiveAdministrator: async () => false,
         hasProjectPermission,
       },
@@ -200,7 +218,7 @@ it('addresses requests to the person a turn runs for, and secret prompts to Code
       ...(user === undefined ? {} : { headers: { 'x-user': user } }),
     });
     return Object.fromEntries(
-      (result.json() as SessionSummary[]).map((s) => [
+      result.json<SessionSummary[]>().map((s) => [
         s.sessionId,
         {
           session: s.addressedToViewer,
@@ -214,15 +232,18 @@ it('addresses requests to the person a turn runs for, and secret prompts to Code
     expect(await read('mara')).toEqual({
       turn: { session: true, requests: [false, true], initiator: undefined },
       idle: { session: false, requests: undefined, initiator: undefined },
+      left: { session: true, requests: undefined, initiator: undefined },
     });
     expect(await read('alex')).toEqual({
       turn: { session: false, requests: [true, false], initiator: undefined },
       idle: { session: true, requests: undefined, initiator: undefined },
+      left: { session: false, requests: undefined, initiator: undefined },
     });
     // Without accounts there is one operator, and nothing is narrowed.
     expect(await read()).toEqual({
       turn: { session: undefined, requests: [undefined, undefined], initiator: undefined },
       idle: { session: undefined, requests: undefined, initiator: undefined },
+      left: { session: undefined, requests: undefined, initiator: undefined },
     });
   } finally {
     await app.close();

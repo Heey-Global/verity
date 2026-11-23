@@ -31,34 +31,70 @@ async function holdsCode(
   return projectId !== null && (await store.hasProjectPermission(userId, projectId, 'code'));
 }
 
+/** Whether `userId` is an active member who can see the session's project. */
+async function canRead(
+  store: RequestAddressingDeps['store'],
+  userId: string,
+  projectId: string | null,
+): Promise<boolean> {
+  if (await store.isActiveAdministrator(userId)) return true;
+  return projectId !== null && (await store.hasProjectPermission(userId, projectId, 'read'));
+}
+
+/** Whether the session waits on someone: a prompt, a question, a plan or mockups. */
+function hasOpenRequest(summary: SessionSummary): boolean {
+  return (
+    summary.pendingPermissions.length > 0 ||
+    summary.openChoices !== undefined ||
+    summary.status === 'awaiting_input' ||
+    summary.planning === 'active' ||
+    summary.mockupReview?.state === 'pending'
+  );
+}
+
 /** Address every session's requests once per list load, shared by all requesters. */
 export async function addressRequests(
   deps: RequestAddressingDeps,
   summaries: readonly SessionSummary[],
 ): Promise<Map<string, RequestAddressing>> {
-  const fallback = await deps.store.sessionPeople.owners(
-    summaries.filter((s) => s.requestInitiator === undefined).map((s) => s.sessionId),
-  );
+  // Only sessions that ask something need an owner; the others cost no query.
+  const asking = summaries.filter(hasOpenRequest);
+  const fallback = await deps.store.sessionPeople.owners(asking.map((s) => s.sessionId));
   const addressing = new Map<string, RequestAddressing>();
   // Polled by every device: each person's rights are read once per project.
   const rights = new Map<string, Promise<boolean>>();
-  const ownerHoldsCode = (owner: string, projectId: string | null) => {
-    const key = `${owner}\0${projectId ?? ''}`;
+  const cached = (
+    kind: 'read' | 'code',
+    owner: string,
+    projectId: string | null,
+  ): Promise<boolean> => {
+    const key = `${kind}\0${owner}\0${projectId ?? ''}`;
     let held = rights.get(key);
     if (held === undefined) {
-      held = holdsCode(deps.store, owner, projectId);
+      held =
+        kind === 'code'
+          ? holdsCode(deps.store, owner, projectId)
+          : canRead(deps.store, owner, projectId);
       rights.set(key, held);
     }
     return held;
   };
-  for (const summary of summaries) {
-    const owner = summary.requestInitiator ?? fallback.get(summary.sessionId) ?? null;
+  for (const summary of asking) {
+    // A person who left the project, or was deactivated, cannot answer: the next one
+    // in line does, and with nobody left the request is for everyone who sees it.
+    let owner: string | null = null;
+    for (const candidate of [summary.requestInitiator, fallback.get(summary.sessionId)]) {
+      if (candidate !== undefined && (await cached('read', candidate, summary.projectId))) {
+        owner = candidate;
+        break;
+      }
+    }
     const sensitive = (summary.pendingPermissionRequests ?? []).filter(
       (request) => classifyPermissionTool(request.tool) !== 'general',
     );
     const ownerMayAllow =
       sensitive.length === 0 ||
-      (owner !== null && (await ownerHoldsCode(owner, summary.projectId)));
+      (owner !== null && (await cached('code', owner, summary.projectId)));
     addressing.set(summary.sessionId, {
       owner,
       forCode: new Set(ownerMayAllow ? [] : sensitive.map((request) => request.toolUseId)),

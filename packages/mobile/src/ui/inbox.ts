@@ -268,8 +268,8 @@ function sessionItems(
   // A prompt the server could not describe (older server, linked-session approval)
   // still needs the operator; send them to the card instead of hiding it.
   const described = new Set(requests.map((request) => request.toolUseId));
+  // Unaddressed: the server cannot tell what it asks, so nor whom it is for.
   if (
-    mine &&
     session.permissionAwaitingInput === true &&
     (session.pendingPermissions ?? []).some((id) => !described.has(id))
   ) {
