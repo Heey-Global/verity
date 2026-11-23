@@ -453,19 +453,18 @@ export function registerSessionMergeRoutes(
               // between the pre-merge check and the merge itself would leave the
               // earlier answer describing a branch this PR did not merge into. This
               // reads GitHub rather than the pre-merge row because a successful merge
-              // drops the PR service's per-branch cache (`github.ts`); without that it
-              // would replay the very answer it is meant to re-check. The pre-merge
-              // value stands in when the PR no longer resolves — GitHub deletes the
-              // head branch this looks the PR up by.
+              // drops the PR service's per-branch cache. Scoped cleanup requires
+              // a confirmed destination because it may delete the feature ref.
               const settled = target?.head
                 ? await deps.projectPullRequests
                     ?.status(target.project, target.head, number)
                     .catch(() => null)
                 : await readStatus().catch(() => null);
-              const destination =
+              const confirmedBase =
                 settled?.number === number && settled.phase === 'merged'
-                  ? (settled.baseRef ?? mergedBaseRef)
-                  : mergedBaseRef;
+                  ? settled.baseRef
+                  : undefined;
+              const destination = target ? confirmedBase : (confirmedBase ?? mergedBaseRef);
               if (target && destination === undefined)
                 throw new Error('Merged PR destination is unavailable');
               const { base, deletedBranch, skipped } = await branches.resetToMergedBase(worktree, {

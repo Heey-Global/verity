@@ -49,7 +49,12 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     isDirty: async () => false,
     resetToMergedBase: reset,
   } as unknown as GitBranchService;
-  const mergePR = vi.fn().mockResolvedValue(true);
+  let merged = false;
+  let confirmDestination = true;
+  const mergePR = vi.fn().mockImplementation(() => {
+    merged = true;
+    return Promise.resolve(true);
+  });
   const hasOpenPullRequest = vi.fn().mockResolvedValue(false);
   const backend: ProjectPullRequestBackend = {
     list: vi.fn(),
@@ -63,7 +68,7 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
       number,
       url: `https://github.com/team/${target.repo}/pull/${number}`,
       title: 'Update',
-      phase: 'open',
+      phase: merged && confirmDestination ? 'merged' : 'open',
       pipeline: 'success',
       mergeable: true,
       baseRef: 'main',
@@ -116,12 +121,14 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     invalidatePrSummaryAction: vi.fn(),
   });
   try {
-    const merge = (repositoryId?: string) =>
-      app.inject({
+    const merge = (repositoryId?: string) => {
+      merged = false;
+      return app.inject({
         method: 'POST',
         url: '/sessions/s/pull-request/merge',
         payload: { number: 7, repositoryId, expectedHeadSha: sha },
       });
+    };
     expect((await merge('unassigned')).statusCode).toBe(404);
     expect(mergePR).not.toHaveBeenCalled();
     expect((await merge('api')).json()).toEqual({ merged: true });
@@ -137,6 +144,10 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     });
     expect(invalidate).toHaveBeenCalledWith('s');
     reset.mockClear();
+    confirmDestination = false;
+    expect((await merge('api')).json()).toEqual({ merged: true });
+    expect(reset).not.toHaveBeenCalled();
+    confirmDestination = true;
     hasOpenPullRequest.mockResolvedValueOnce(true);
     expect((await merge('api')).json()).toEqual({ merged: true });
     expect(reset).not.toHaveBeenCalled();
@@ -166,6 +177,7 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     expect(unverifiable.statusCode).toBe(503);
     expect(unverifiable.json()).toMatchObject({ code: 'merge_status_unavailable' });
     expect(mergePR).not.toHaveBeenCalled();
+    merged = false;
     backend.defaultBranch = async () => {
       throw new Error('Metadata unavailable');
     };
