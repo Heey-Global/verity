@@ -9,7 +9,7 @@ import { File as FsFile } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library/legacy';
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 
 /** An image upload's media type — the 4 types every vision backend accepts. */
 type ImageUploadMediaType = Extract<AttachmentUpload, { kind: 'image' }>['mediaType'];
@@ -311,8 +311,22 @@ export async function attachRecentImages(
   remaining: number,
 ): Promise<AttachmentUpload[]> {
   const attachments: AttachmentUpload[] = [];
+  const failures: unknown[] = [];
   for (const id of ids.slice(0, remaining)) {
-    attachments.push(...(await attachRecentImage(id)));
+    try {
+      attachments.push(...(await attachRecentImage(id)));
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    if (attachments.length === 0) throw failures[0];
+    Alert.alert(
+      'Could not attach',
+      failures.length === 1
+        ? 'One image could not be loaded.'
+        : `${String(failures.length)} images could not be loaded.`,
+    );
   }
   return attachments;
 }

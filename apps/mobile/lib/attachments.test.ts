@@ -38,7 +38,7 @@ jest.mock('expo-media-library/legacy', () => ({
 }));
 
 import { File as FsFile } from 'expo-file-system';
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 
 import {
   attachRecentImages,
@@ -135,6 +135,23 @@ describe('dragged attachments', () => {
       { kind: 'image', mediaType: 'image/png', data: 'c2Vjb25k' },
     ]);
     expect(mockGetAssetInfoAsync.mock.calls.map(([id]) => id)).toEqual(['first', 'second']);
+  });
+
+  it('keeps successful images and reports a failed image in the batch', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    try {
+      mockGetAssetInfoAsync
+        .mockRejectedValueOnce(new Error('Photo unavailable'))
+        .mockResolvedValueOnce({ localUri: 'file:///library/shot.png', filename: 'shot.png' });
+      mockManipulateAsync.mockResolvedValueOnce({ base64: 'c2Vjb25k' });
+
+      await expect(attachRecentImages(['first', 'second'], 2)).resolves.toEqual([
+        { kind: 'image', mediaType: 'image/png', data: 'c2Vjb25k' },
+      ]);
+      expect(alert).toHaveBeenCalledWith('Could not attach', 'One image could not be loaded.');
+    } finally {
+      alert.mockRestore();
+    }
   });
 
   it('transcodes an HEIC photo returned directly by the iPhone camera', async () => {

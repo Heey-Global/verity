@@ -74,17 +74,9 @@ export function AttachMenu({
       setSelected([]);
     }
   }, [visible]);
-  const recent = useRecentImages(visible);
-  const state = recent.state;
-  const latest = state.kind === 'ready' ? state.images : [];
-  const selection =
-    state.kind === 'ready'
-      ? selected.filter((image) => !state.limited || latest.some(({ id }) => id === image.id))
-      : [];
-  const images = [
-    ...latest,
-    ...selection.filter((image) => !latest.some(({ id }) => id === image.id)),
-  ];
+  const recent = useRecentImages(visible, selected);
+  const images = recent.state.kind === 'ready' ? recent.state.images : [];
+  const selection = selected.filter((image) => images.some(({ id }) => id === image.id));
   const attachable = selection.slice(0, remainingAttachments).map(({ id }) => id);
   const strip = recent.state.kind !== 'unavailable';
   const rows = attachMenuRows(
@@ -130,7 +122,6 @@ export function AttachMenu({
               {strip ? (
                 <RecentStrip
                   recent={recent}
-                  images={images}
                   onCapture={handlers.onCapturePhoto}
                   selected={attachable}
                   canSelectMore={attachable.length < remainingAttachments}
@@ -226,14 +217,12 @@ function CatalogStatus({ error }: { error: string | null }) {
 
 function RecentStrip({
   recent,
-  images,
   onCapture,
   selected,
   canSelectMore,
   onSelect,
 }: {
   recent: ReturnType<typeof useRecentImages>;
-  images: readonly RecentImage[];
   onCapture: () => void;
   selected: readonly string[];
   canSelectMore: boolean;
@@ -257,7 +246,7 @@ function RecentStrip({
         <Icon name="camera" size={24} color={theme.colors.textMuted} />
       </Pressable>
       {state.kind === 'ready'
-        ? images.map((image, index) => {
+        ? state.images.map((image, index) => {
             // Numbered in the order the images will be attached.
             const order = selected.indexOf(image.id) + 1;
             const checked = order > 0;

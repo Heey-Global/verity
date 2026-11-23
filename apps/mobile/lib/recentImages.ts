@@ -73,7 +73,10 @@ async function loadRecentImages(ask: boolean): Promise<RecentImages> {
 }
 
 /** Recent images while `active` (the menu is open), reloaded on library changes. */
-export function useRecentImages(active: boolean): {
+export function useRecentImages(
+  active: boolean,
+  selected: readonly RecentImage[],
+): {
   state: RecentImages;
   openSettings: () => void;
   manageLimited: () => void;
@@ -83,10 +86,32 @@ export function useRecentImages(active: boolean): {
   );
   // A slower earlier load must not overwrite the result of a later one.
   const generation = useRef(0);
+  const latestSelection = useRef(selected);
+  useEffect(() => {
+    latestSelection.current = selected;
+  }, [selected]);
   const reload = useCallback((ask: boolean) => {
     const current = ++generation.current;
     loadRecentImages(ask)
-      .then((next) => {
+      .then(async (next) => {
+        if (current !== generation.current) return;
+        if (next.kind === 'ready') {
+          const recentIds = new Set(next.images.map(({ id }) => id));
+          const overflow = latestSelection.current.filter(({ id }) => !recentIds.has(id));
+          const accessible = await Promise.all(
+            overflow.map(async (image) => {
+              try {
+                const info = await MediaLibrary.getAssetInfoAsync(image.id, {
+                  shouldDownloadFromNetwork: false,
+                });
+                return { id: image.id, uri: info.uri };
+              } catch {
+                return null;
+              }
+            }),
+          );
+          next.images.push(...accessible.filter((image) => image !== null));
+        }
         if (current === generation.current) setState(next);
       })
       // An unreadable library leaves the camera tile, not an alert, and not a
