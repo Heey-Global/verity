@@ -581,17 +581,28 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       );
       if (!res.ok) return { ok: false, status: null };
       const body = res.body;
+      const sourceMatches = (candidate: unknown, strict: boolean): boolean => {
+        if (candidate === null || typeof candidate !== 'object') return false;
+        const source = (candidate as { head?: { ref?: unknown; repo?: { full_name?: unknown } } })
+          .head;
+        const fullName = source?.repo?.full_name;
+        if (strict && (typeof fullName !== 'string' || source?.ref !== branch)) return false;
+        if (source && 'repo' in source && typeof fullName !== 'string') return false;
+        return (
+          (source?.ref === undefined || source.ref === branch) &&
+          (typeof fullName !== 'string' ||
+            fullName.toLowerCase() === `${id.owner}/${id.repo}`.toLowerCase())
+        );
+      };
+      const candidates: unknown[] = Array.isArray(body)
+        ? body.filter((candidate: unknown) => sourceMatches(candidate, false))
+        : [];
       const raw =
         number !== undefined
           ? body
-          : Array.isArray(body)
-            ? (body.find(
-                (candidate: unknown) =>
-                  candidate !== null &&
-                  typeof candidate === 'object' &&
-                  (candidate as Record<string, unknown>).state === 'open',
-              ) ?? body[0])
-            : undefined;
+          : (candidates.find(
+              (candidate) => (candidate as Record<string, unknown>).state === 'open',
+            ) ?? candidates[0]);
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
         return { ok: true, status: null };
       }
@@ -604,18 +615,8 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       const mergedAt = pr.merged_at;
       const mergeCommitSha = pr.merge_commit_sha;
       const headObj = pr.head;
-      if (number !== undefined) {
-        const source = headObj as
-          { ref?: unknown; repo?: { full_name?: unknown } } | null | undefined;
-        const fullName = source?.repo?.full_name;
-        if (
-          num !== number ||
-          source?.ref !== branch ||
-          typeof fullName !== 'string' ||
-          fullName.toLowerCase() !== `${id.owner}/${id.repo}`.toLowerCase()
-        )
-          return { ok: true, status: null };
-      }
+      if (number !== undefined && (num !== number || !sourceMatches(raw, true)))
+        return { ok: true, status: null };
       const sha =
         headObj !== null && typeof headObj === 'object' && !Array.isArray(headObj)
           ? (headObj as Record<string, unknown>).sha

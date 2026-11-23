@@ -97,6 +97,11 @@ export function createEmbeddedRepositoryPullRequests(
     },
     status: async (project, branch, number) =>
       readProjectStatus(project, branch, await isDefaultRepository(project), number),
+    defaultBranch: async (project) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider) throw new Error('Repository base branch unavailable');
+      return provider.repositoryOperations(project).defaultBranch();
+    },
     hasOpenPullRequest: async (project, branch) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
       if (!provider) throw new Error('Pull request lookup unavailable');

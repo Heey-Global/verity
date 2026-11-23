@@ -60,7 +60,7 @@ export function createSessionRepositoryPullRequests(
         const statuses = new Map<number, { status: PullRequestStatus; head?: string }>();
         for (const head of heads) {
           if (signal?.aborted) break;
-          if (!head) continue;
+          if (!head || head === (repository.defaultBranch ?? 'main')) continue;
           const status = await projectPullRequests.status(target, head).catch(() => null);
           if (status) statuses.set(status.number, { status, head });
         }
@@ -87,6 +87,7 @@ export function createSessionRepositoryPullRequests(
         return [...statuses.values()].map(({ status, head }) => ({
           status: { ...status, repository: identity },
           head,
+          recorded: recorded.has(status.number),
           worktree,
           project: target,
         }));

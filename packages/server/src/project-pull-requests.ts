@@ -31,6 +31,7 @@ export interface ProjectPullRequestBackend {
     branch: string,
     number?: number,
   ): Promise<PullRequestStatus | null>;
+  defaultBranch?(project: ProjectRecord): Promise<string>;
   hasOpenPullRequest?(project: ProjectRecord, branch: string): Promise<boolean>;
   invalidate?(project: ProjectRecord): Promise<void>;
   /** Merges at `expectedHeadSha`; permission refusals throw ForgeMergePermissionError. */

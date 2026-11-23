@@ -139,6 +139,27 @@ export function registerSessionMergeRoutes(
           : ((await deps.resolvePullRequests?.(session))?.find(
               (row) => row.status.repository.id === repositoryId && row.status.number === number,
             )?.status ?? null);
+      if (target && deps.projectPullRequests?.defaultBranch && !target.recorded) {
+        const base = await deps.projectPullRequests.defaultBranch(target.project).catch(() => null);
+        if (!base) {
+          reply.code(503);
+          return { error: 'repository base branch is temporarily unavailable' };
+        }
+        const onBase =
+          target.head === undefined
+            ? (
+                await deps.projectPullRequests
+                  .status(target.project, base, number)
+                  .catch(() => null)
+              )?.number === number
+            : target.head === base;
+        if (onBase) {
+          reply.code(409);
+          return {
+            error: 'a PR from the repository base branch needs a recorded session association',
+          };
+        }
+      }
       const approvedRevision = expectedHeadSha ?? target?.status.headSha;
       const readyForReset = async (branches: GitBranchService, worktree: string) => {
         if (!target) return true;
@@ -377,7 +398,7 @@ export function registerSessionMergeRoutes(
                 settled?.number === number && settled.phase === 'merged'
                   ? (settled.baseRef ?? mergedBaseRef)
                   : mergedBaseRef;
-              const { base, deletedBranch } = await branches.resetToMergedBase(worktree, {
+              const { base, deletedBranch, skipped } = await branches.resetToMergedBase(worktree, {
                 ...(destination === undefined ? {} : { base: destination }),
                 ...(target?.head && approvedRevision
                   ? { expectedHead: { branch: target.head, sha: approvedRevision } }
@@ -388,7 +409,8 @@ export function registerSessionMergeRoutes(
                 : '';
               // Purely informational — the reset already happened; the agent is not
               // instructed to do anything (the detached HEAD is the server's doing).
-              note = `Pull request #${String(number)} was merged and your worktree has been reset to ${base} (detached at the merged commit)${deletedClause}.`;
+              if (!skipped)
+                note = `Pull request #${String(number)} was merged and your worktree has been reset to ${base} (detached at the merged commit)${deletedClause}.`;
             } catch {
               // Housekeeping is non-atomic (fetch → detach → delete the merged branch):
               // on failure the worktree MAY already be reset (only the branch delete
