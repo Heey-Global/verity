@@ -4685,7 +4685,7 @@ export const SessionChat = memo(function SessionChat({
         codeHost={branches.codeHost}
         repositoryName={branches.repo}
       />
-      {visiblePullRequests.length === 0 &&
+      {!visiblePullRequests.some((pr) => pr.repository?.isDefault !== false) &&
       branches.localMergeHasChanges &&
       branches.localMergeBase !== undefined &&
       branches.current !== undefined &&

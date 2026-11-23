@@ -167,6 +167,21 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     };
     const recorded = await resolvePullRequests(session, undefined, undefined, 'default:p', 8);
     expect(recorded?.map(({ status }) => status.number)).toEqual([8]);
+    let refreshed = false;
+    backend.defaultBranch = async () => 'main';
+    backend.invalidate = async () => {
+      refreshed = true;
+    };
+    const statusFor = backend.status.bind(backend);
+    backend.status = async (...args) => {
+      const status = await statusFor(...args);
+      return refreshed && status ? { ...status, pipeline: 'running' } : status;
+    };
+    mergePR.mockClear();
+    const pending = await merge('api');
+    expect(pending.statusCode).toBe(409);
+    expect(pending.json()).toMatchObject({ code: 'merge_status_pending' });
+    expect(mergePR).not.toHaveBeenCalled();
   } finally {
     await app.close();
   }

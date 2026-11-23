@@ -247,7 +247,15 @@ export function registerSessionMergeRoutes(
         deps.branchPrStatus !== undefined ||
         deps.branchPrStatusForBranches !== undefined
       ) {
-        const current = target?.status ?? (await readStatus().catch(() => null));
+        const selection = target;
+        const backend = deps.projectPullRequests;
+        const current =
+          selection?.head && backend?.invalidate
+            ? await backend
+                .invalidate(selection.project)
+                .then(() => backend.status(selection.project, selection.head!, number))
+                .catch(() => null)
+            : (selection?.status ?? (await readStatus().catch(() => null)));
         if (current === null) {
           invalidate();
           reply.code(503);
