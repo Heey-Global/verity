@@ -62,20 +62,19 @@ export function connectorsSummary(access: GoogleMenuAccess): string {
 
 /**
  * The rows under the recent-image strip. Where the strip shows (native), its
- * camera tile replaces "Take photo"; Connectors require a centrally connected
- * Google account.
+ * camera tile replaces "Take photo".
  */
 export function attachMenuRows(
   handlers: AttachMenuHandlers,
   {
     meetingAudioEnabled = MEETING_AUDIO_ENABLED,
     recentStrip = false,
-    googleConnected = false,
-    googleAccess = {},
+    showConnectors = false,
+    googleAccess,
   }: {
     meetingAudioEnabled?: boolean;
     recentStrip?: boolean;
-    googleConnected?: boolean;
+    showConnectors?: boolean;
     googleAccess?: GoogleMenuAccess;
   } = {},
 ): AttachMenuRow[] {
@@ -96,13 +95,13 @@ export function attachMenuRows(
           { icon: 'mic' as IconName, label: 'Live Meeting', onPress: handlers.onLiveMeeting },
         ]
       : []),
-    ...(googleConnected
+    ...(showConnectors
       ? [
           { divider: true } as const,
           {
             icon: 'link' as IconName,
             label: 'Connectors',
-            detail: connectorsSummary(googleAccess),
+            detail: googleAccess ? connectorsSummary(googleAccess) : undefined,
             navigates: true,
             onPress: handlers.onOpenConnectors,
           },
