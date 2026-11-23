@@ -42,6 +42,7 @@ import {
   createEmbeddedWorktreeBindings,
   createEmbeddedWorktreeForge,
   createEmbeddedWorktreeStatus,
+  createEmbeddedProjectWorktrees,
   createEmbeddedWorktrees,
 } from './embedded-worktrees.js';
 import {
@@ -71,15 +72,11 @@ import {
   createEmbeddedRunnerIdentityPublisher,
 } from './embedded-control-plane-runner-identity.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
+import { refreshProjectGitHubToken } from './embedded-support.js';
 import {
-  rejectLatestImageRef,
-  publishedDevcontainerFeatureRef,
-  toolkitFeatureRefIsConfigured,
-  resolveToolkitFeatureRef,
-  readBundledDevcontainerFeature,
-  refreshProjectGitHubToken,
-  createProjectWorktreeFactory,
-} from './embedded-support.js';
+  createEmbeddedDefaultProjectImage,
+  prepareEmbeddedToolkitFeature,
+} from './embedded-image-sources.js';
 export {
   resolveInstallationListToken,
   resolveRepoWorktreeFetchAuthHeader,
@@ -135,7 +132,6 @@ import {
   installEmbeddedBuildStorage,
 } from './embedded-build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
-import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { ensureStarterProject } from './welcome-session.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
@@ -164,7 +160,6 @@ import {
 import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
 import { readFileSync, mkdirSync } from 'node:fs';
-import { rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -205,12 +200,7 @@ import { createEmbeddedSessionMaintenance } from './embedded-session-maintenance
 import { createEmbeddedShutdown } from './embedded-shutdown.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createSigningCapabilityRegistry } from './signing-capability.js';
-import {
-  type ProvisionerImpl,
-  projectClonePath,
-  type ProjectImageRefSource,
-  type DevcontainerFeatureSource,
-} from './provisioner.js';
+import { type ProvisionerImpl, projectClonePath } from './provisioner.js';
 import { ProjectSandboxLifecycleTelemetry } from './project-lifecycle-telemetry.js';
 import { trustedToolkitIdentity } from './runner-boundary-attestation.js';
 import { reportToolkitDrift } from './toolkit-drift.js';
@@ -229,7 +219,6 @@ import { projectEgressAvailability } from './project-egress-health.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
-import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
 import { createEmbeddedMatrix, installEmbeddedMatrix } from './embedded-matrix.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { createEmbeddedBackup } from './embedded-backup.js';
@@ -669,38 +658,9 @@ export async function buildEmbeddedServer(
   let claudeEgressServerName: string | undefined;
   let refreshProjectToken: ((project: ProjectRecord) => Promise<void>) | undefined;
   let projectTurnReconciler: ((projectId: string) => Promise<void>) | undefined;
-  let projectWorktrees: ReturnType<typeof createProjectWorktreeFactory> | undefined;
-  // `main.ts` always passes a resolver, so this is what an embedder that omits
-  // one gets. Shared with the last-resort fallback there rather than repeated:
-  // the two must name the same artifact, and the pair they replace drifted onto
-  // a sandbox image that no longer exists. Note this path is the ref VERBATIM —
-  // no resolver sits behind it to prefer a digest it resolved earlier, so an
-  // embedder that wants the stronger pin passes its own digest.
-  const defaultProjectImageSource = config.defaultProjectImage ?? DEFAULT_SANDBOX_IMAGE_FALLBACK;
-  const defaultProjectImage: ProjectImageRefSource =
-    typeof defaultProjectImageSource === 'function'
-      ? // Forward `forceRefresh` so the provision/recreate path can pin the CURRENT
-        // digest instead of the poll cache's; the zero-arg update poll passes none.
-        async (forceRefresh?: boolean) =>
-          rejectLatestImageRef(
-            await defaultProjectImageSource(forceRefresh),
-            'VERITY_DEFAULT_PROJECT_IMAGE',
-          )
-      : rejectLatestImageRef(defaultProjectImageSource, 'VERITY_DEFAULT_PROJECT_IMAGE');
-  // Pin the toolkit Feature to the version BAKED into this server image, resolved
-  // from GHCR under its BARE semver tag (never the `v`-prefixed visible-version
-  // tag, which is not a resolvable Feature manifest — that was the `…:v1.11.6`
-  // build failure). Off-server (dev/test) the bundle is absent → published ref.
-  const configuredDevcontainerFeatureRef = config.devcontainerFeatureRef;
-  // A ref handed over as a plain STRING is configuration by construction —
-  // nothing resolved it, a caller wrote it. Only the resolver-function form is
-  // ambiguous (`main.ts` uses it for both the operator's value and its own
-  // lookup), and only that form has to fall back to reading the environment.
-  const devcontainerFeatureRefConfigured =
-    config.devcontainerFeatureRefConfigured ??
-    (typeof configuredDevcontainerFeatureRef === 'string'
-      ? configuredDevcontainerFeatureRef.trim().length > 0
-      : toolkitFeatureRefIsConfigured());
+  let projectWorktrees: ReturnType<typeof createEmbeddedProjectWorktrees> | undefined;
+  const defaultProjectImage = createEmbeddedDefaultProjectImage(config);
+  const resolveDevcontainerFeature = prepareEmbeddedToolkitFeature(config);
   const imageReferences = createProjectImageReferences(db);
   const maintenanceImages = projectDocker
     ? new MaintenanceImages(projectDocker, imageReferences)
@@ -711,32 +671,7 @@ export async function buildEmbeddedServer(
     db,
     projectDocker,
   });
-  const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
-    typeof configuredDevcontainerFeatureRef === 'function'
-      ? async () =>
-          resolveToolkitFeatureRef(
-            readBundledDevcontainerFeature(),
-            publishedDevcontainerFeatureRef(await configuredDevcontainerFeatureRef()),
-            devcontainerFeatureRefConfigured,
-          )
-      : resolveToolkitFeatureRef(
-          readBundledDevcontainerFeature(),
-          publishedDevcontainerFeatureRef(configuredDevcontainerFeatureRef),
-          devcontainerFeatureRefConfigured,
-        );
-  const devcontainerFeature: DevcontainerFeatureSource | undefined =
-    selectedDevcontainerFeature === undefined
-      ? undefined
-      : async () =>
-          pinToolkitFeature(
-            releaseToolkitFeature(
-              typeof selectedDevcontainerFeature === 'function'
-                ? await selectedDevcontainerFeature()
-                : selectedDevcontainerFeature,
-              process.env.VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE,
-              devcontainerFeatureRefConfigured,
-            ),
-          );
+  const devcontainerFeature = resolveDevcontainerFeature();
   if (projectDocker !== undefined && config.hostCloneRoot) {
     if (config.dockerBaseUrl === undefined) {
       throw new Error('dockerBaseUrl is required when project Docker provisioning is configured');
@@ -766,31 +701,11 @@ export async function buildEmbeddedServer(
     // changes still invalidate the cache immediately.
     refreshProjectToken = (project: ProjectRecord): Promise<void> =>
       refreshProjectGitHubToken(project, cachedProjectTokenMint.strict);
-    // Session worktrees use their project's provider: GitHub App tokens or the
-    // current Forgejo connection token and CA. Neither credential is persisted
-    // in the clone or worktree.
-    projectWorktrees = createProjectWorktreeFactory(projectTokenMint, async (project) => {
-      const access = await forgeRepositoryAccess(project);
-      if (!access) throw new Error('Forgejo connection unavailable');
-      let caPath: string | undefined;
-      if (access.customCaPem) {
-        const directory = join(secretRoot, 'git');
-        mkdirSync(directory, { recursive: true, mode: 0o700 });
-        caPath = join(directory, `forge_ca.${project.forgeConnectionId ?? project.id}`);
-        const temporary = `${caPath}.${randomUUID()}.tmp`;
-        try {
-          await writeFile(temporary, access.customCaPem, { mode: 0o600 });
-          await rename(temporary, caPath);
-        } finally {
-          await rm(temporary, { force: true });
-        }
-      }
-      return {
-        url: access.url,
-        authorization: access.authorization,
-        ...(caPath ? { caPath } : {}),
-      };
-    });
+    projectWorktrees = createEmbeddedProjectWorktrees(
+      projectTokenMint,
+      forgeRepositoryAccess,
+      secretRoot,
+    );
     // Claude-egress identity material is refreshed on every issue/revoke and
     // projected to the standalone gateway. The provisioner uses the same service
     // to issue per-project client certificates and the deprovisioner revokes them.
