@@ -30,7 +30,7 @@ export function createSessionRepositoryPullRequests(
     status: { ...row.status, pipeline: 'unknown', mergeable: null, observationFailed: true },
   });
   const previous = new Map<string, ResolvedPullRequest[]>();
-  return async (
+  const resolve = async (
     session: SessionRecord,
     legacy?: PullRequestStatus | null,
     signal?: AbortSignal,
@@ -182,5 +182,34 @@ export function createSessionRepositoryPullRequests(
         }),
     );
     return results.flat();
+  };
+  return async (
+    session: SessionRecord,
+    legacy?: PullRequestStatus | null,
+    signal?: AbortSignal,
+    repositoryId?: string,
+    pullRequestNumber?: number,
+  ) => {
+    const deadline = new AbortController();
+    const readSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+    readSignal.throwIfAborted();
+    const timer = setTimeout(
+      () => deadline.abort(new Error('Repository pull request lookup timed out')),
+      15_000,
+    );
+    let onAbort: () => void = () => {};
+    const interrupted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(readSignal.reason);
+      readSignal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([
+        resolve(session, legacy, readSignal, repositoryId, pullRequestNumber),
+        interrupted,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      readSignal.removeEventListener('abort', onAbort);
+    }
   };
 }
