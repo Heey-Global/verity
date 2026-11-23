@@ -674,4 +674,37 @@ describe('requests addressed to someone else', () => {
       'permission:s1:secret',
     ]);
   });
+
+  it('leaves out mockups and an unstructured question for someone else', () => {
+    const waiting = (addressedToViewer?: boolean) => [
+      session('mockups', {
+        mockupReview: {
+          state: 'pending',
+          revision: 1,
+          screens: [
+            {
+              name: 'Home',
+              attachment: 'a'.repeat(64),
+              mediaType: 'image/png',
+              width: 1,
+              height: 1,
+              verdict: 'open',
+            },
+          ],
+        },
+        ...(addressedToViewer === undefined ? {} : { addressedToViewer }),
+      }),
+      // Awaiting an answer in prose, without a choices block.
+      session('prose', {
+        status: 'awaiting_input',
+        ...(addressedToViewer === undefined ? {} : { addressedToViewer }),
+      }),
+    ];
+    const keys = (sessions: SessionSummary[]) =>
+      inboxItems({ sessions, projects: [], now: NOW })
+        .map((item) => item.key)
+        .sort();
+    expect(keys(waiting(true))).toEqual(['mockups:mockups:1', 'question:prose']);
+    expect(keys(waiting(false))).toEqual([]);
+  });
 });

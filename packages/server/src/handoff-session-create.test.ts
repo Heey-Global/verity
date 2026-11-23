@@ -26,10 +26,10 @@ function creator(runningTurnInitiator: CreatorDeps['runningTurnInitiator']) {
     projectsBeingDeleted: new Set(),
     beginProjectSpawn: () => () => undefined,
     projectSettingsStore: () => ({ getProjectSettings: async () => undefined }) as never,
-    availableModels: async () => ({ models: ['m'], default: 'm' }) as never,
+    availableModels: async () => ({ models: ['m'], default: 'm' }),
     isProjectSessionModel: () => true,
     isConfiguredProjectSessionModel: async () => true,
-    makeBranch: (name) => name,
+    makeBranch: (name) => name ?? 'handoff',
     runningTurnInitiator,
   });
   return { create, createSession };
@@ -47,7 +47,7 @@ describe('handoff session creator', () => {
   // creator, and its questions appear on their Home instead.
   it('records the person the handing-off turn runs for as the creator', async () => {
     const initiator = vi.fn(async () => ({ userId: 'mara' }));
-    const { create, createSession } = creator(initiator as never);
+    const { create, createSession } = creator(initiator);
     await create(request);
     expect(initiator).toHaveBeenCalledWith('control', 'turn-1');
     expect(createSession).toHaveBeenCalledWith(
@@ -56,9 +56,9 @@ describe('handoff session creator', () => {
   });
 
   it('still creates the session when the person cannot be looked up', async () => {
-    const { create, createSession } = creator((() => {
+    const { create, createSession } = creator(() => {
       throw new Error('offline');
-    }) as never);
+    });
     await expect(create(request)).resolves.toEqual({ sessionId: expect.any(String) });
     expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ createdByUserId: null }));
   });
