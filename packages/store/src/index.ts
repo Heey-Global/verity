@@ -90,14 +90,7 @@ export {
   type SessionEventStats,
   type SessionRecord,
   type SessionPlanning,
-  type SessionMockupState,
   type ProjectDesignLevel,
-  type SessionMockupReview,
-  type SessionMockups,
-  type MockupScreenRecord,
-  type MockupVerdict,
-  storedMockupScreens,
-  storedMockupState,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
@@ -143,7 +136,6 @@ export {
   type ProjectKind,
   LOCAL_PROJECT_OWNER,
   isLocalProject,
-  isSessionLinkProject,
   isInstallationPlaceholder,
   ProjectIdentityClaimConflict,
   type SessionAutomationRecord,
@@ -402,3 +394,14 @@ export {
   type ProjectPermission,
   type TeamOutboxEntry,
 } from './project-team.js';
+export {
+  type SessionMockupState,
+  type SessionMockupReview,
+  type SessionMockups,
+  type MockupScreenRecord,
+  type MockupVerdict,
+  storedMockupScreens,
+  storedMockupState,
+} from './session-mockups.js';
+export { isSessionLinkProject } from './project-session-links.js';
+export type { ChangeSubmission, ChangeSubmissionState } from './change-submissions.js';

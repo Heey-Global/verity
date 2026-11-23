@@ -72,6 +72,20 @@ it('hydrates the binding for a pending request replayed from an older server', (
   expect(reducer.pendingPermission?.secretSource).toEqual(secretSource);
 });
 
+it('preserves a structured submission notice even when its text resembles a legacy approval', () => {
+  const reducer = new SessionReducer();
+  const id = '12345678-1234-1234-1234-123456789abc';
+  reducer.apply(1, { t: 'permission', id, tool: 'verity_secret_run', input: {}, riskClass: 'ask' });
+  const event = {
+    t: 'notice',
+    text: `Secret tool approval ${id} was denied. Nothing was executed by answering the card. Do not retry this operation without a new user instruction.`,
+    changeSubmission: { action: 'submitted', userId: 'author' },
+  } as const;
+  reducer.apply(2, event);
+  expect(reducer.pendingPermissionIds).toEqual([id]);
+  expect(reducer.messages).toEqual([expect.objectContaining({ kind: 'agent-event', event })]);
+});
+
 it('hides legacy broker chatter during replay while retaining errors and turn state', () => {
   const reducer = new SessionReducer();
   const id = '12345678-1234-1234-1234-123456789abc';

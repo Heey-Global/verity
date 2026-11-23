@@ -3,6 +3,8 @@ import { brokeredToolApprovalMigration } from './brokered-tool-approval-migratio
 import { projectQAMigration } from './project-qa-migration.js';
 import { sessionMessageRecencyMigration } from './session-message-recency-migration.js';
 import { projectCodePermissionMigration } from './project-code-permission-migration.js';
+import { sessionCreatorMigration } from './session-creator-migration.js';
+import { changeSubmissionsMigration } from './change-submissions-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -688,7 +690,10 @@ migrations['0236_session_message_recency_index'] = sessionMessageRecencyMigratio
 
 migrations['0237_project_code_permission'] = projectCodePermissionMigration;
 
-migrations['0238_session_repository_pull_requests'] = {
+migrations['0238_session_creators'] = sessionCreatorMigration;
+migrations['0239_change_submissions'] = changeSubmissionsMigration;
+
+migrations['0240_session_repository_pull_requests'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`alter table session_repository_workspaces
       add column if not exists pull_request_history jsonb`.execute(db);

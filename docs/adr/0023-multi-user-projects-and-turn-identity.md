@@ -283,6 +283,31 @@ credential approval on behalf of the initiator. Their message becomes a new
 turn under their own identity. Administrative cancellation is a separate,
 audited permission; it does not transfer execution authority.
 
+**Requests belong to the person who asked.** A turn's questions, plans,
+mockups and permission prompts are addressed to the person the turn runs for.
+Without a named person they go to whoever started the session; a session
+without a recorded creator, such as one from before creators were recorded or
+one Verity started on its own, falls back to the project's creator. When none
+of them can still read the project, the request is for every member. Home and the
+project overview list only the requests addressed to the viewer. The session
+itself still shows every request, and members who may execute can answer there.
+Allowing a secret or network prompt requires Code (section 1), so a prompt the
+person asking cannot allow, or one without a person, is addressed to every
+member with Code instead.
+A prompt the server cannot describe, such as a linked-session approval, stays
+unaddressed and appears for every member, because nobody can tell whom it is for.
+
+**Members without Code submit changes.** A member who may execute but not add
+changes to the project's code submits a session's changes instead. The
+submission records who submitted, when, and the commit the session was at; the
+history shows it as a quiet line. Where it stands is derived rather than
+stored: it waits for a developer until a member with Code writes in the
+session, is being checked by the first one who does, is being added while the
+session has an open pull request, and is added once that pull request is merged
+or the session is saved to a local project. Home offers the review to every
+member with Code until one of them writes, and then only to that person. The
+submitter, or a member with Code, can withdraw a submission.
+
 ### 3. Personal connections, with explicit shared-service exceptions
 
 Every connection has, per project, one of three states: _not applicable_,

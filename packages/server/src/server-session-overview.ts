@@ -36,6 +36,7 @@ import {
 import {
   openChoicesFromProjection,
   pendingPermissionRequestsFromProjection,
+  requestInitiatorFromProjection,
 } from './session-inbox-facts.js';
 import type { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import {
@@ -1180,6 +1181,7 @@ export function createServerSessionOverview({
       // Both absent in the common case, so a quiet session's summary is unchanged.
       ...(pendingPermissionRequests.length > 0 ? { pendingPermissionRequests } : {}),
       ...(openChoices !== undefined ? { openChoices } : {}),
+      ...withRequestInitiator(requestInitiatorFromProjection(events)),
       // Summed in SQL over the whole log rather than folded out of `events`: the
       // slice is on its way to being a bounded tail, and a total taken from a
       // tail would quietly shrink as a session got longer.
@@ -1233,4 +1235,8 @@ export function createServerSessionOverview({
     invalidatePrSummaryAction,
     invalidateBranchCache,
   };
+}
+
+function withRequestInitiator(userId: string | undefined): { requestInitiator?: string } {
+  return userId === undefined ? {} : { requestInitiator: userId };
 }
