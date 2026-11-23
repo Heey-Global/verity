@@ -862,6 +862,9 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       '--no-overwrite-ignore',
       remoteRef,
     ]);
+    // A scoped checkout can share refs with another worktree. Preserving the ref
+    // avoids a compare-and-delete racing with a checkout of that same revision.
+    if (expectedHead) return { base };
     // Delete the merged local feature branch — only when it was a real local branch
     // (not a base, not a detached/preview label). Both bases are excluded: the merge
     // target because the worktree now sits on it, and the project base because it is
