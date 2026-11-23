@@ -386,13 +386,17 @@ export function registerSessionMergeRoutes(
         try {
           const repository = target.status.repository;
           if (repository.isDefault) {
-            await deps.eventStore.upsertSessionRepositoryWorkspace({
-              sessionId: id,
-              projectId: target.project.id,
-              repositoryId: repository.id,
-              worktree: target.worktree,
-              branch: target.head,
-            });
+            const branch = await branchesForSession(session)
+              .then((branches) => branches?.current(target.worktree))
+              .catch(() => undefined);
+            if (branch && branch !== 'HEAD')
+              await deps.eventStore.upsertSessionRepositoryWorkspace({
+                sessionId: id,
+                projectId: target.project.id,
+                repositoryId: repository.id,
+                worktree: target.worktree,
+                branch,
+              });
           }
           await deps.eventStore.recordRepositoryPullRequest(
             target.project.id,
