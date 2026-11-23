@@ -183,6 +183,18 @@ it('addresses requests to the person a turn runs for, and secret prompts to Code
       pendingPermissions: [],
       openChoices: { question: 'Which?', options: [{ label: 'A' }] },
     },
+    // Nobody left to own it: general prompts are for everyone, a secret only for
+    // whoever can allow it.
+    {
+      sessionId: 'orphan',
+      projectId: 'p',
+      requestInitiator: 'gone',
+      pendingPermissions: ['secret', 'bash'],
+      pendingPermissionRequests: [
+        { toolUseId: 'secret', tool: 'mcp__verity__verity_secret_run', riskClass: 'ask' },
+        { toolUseId: 'bash', tool: 'Bash', riskClass: 'ask' },
+      ],
+    },
   ] as unknown as SessionSummary[];
   const hasProjectPermission = vi.fn(async (user: string, _project: string, permission: string) =>
     permission === 'read' ? user === 'alex' || user === 'mara' : user === 'alex',
@@ -233,17 +245,20 @@ it('addresses requests to the person a turn runs for, and secret prompts to Code
       turn: { session: true, requests: [false, true], initiator: undefined },
       idle: { session: false, requests: undefined, initiator: undefined },
       left: { session: true, requests: undefined, initiator: undefined },
+      orphan: { session: true, requests: [false, true], initiator: undefined },
     });
     expect(await read('alex')).toEqual({
       turn: { session: false, requests: [true, false], initiator: undefined },
       idle: { session: true, requests: undefined, initiator: undefined },
       left: { session: false, requests: undefined, initiator: undefined },
+      orphan: { session: true, requests: [true, true], initiator: undefined },
     });
     // Without accounts there is one operator, and nothing is narrowed.
     expect(await read()).toEqual({
       turn: { session: undefined, requests: [undefined, undefined], initiator: undefined },
       idle: { session: undefined, requests: undefined, initiator: undefined },
       left: { session: undefined, requests: undefined, initiator: undefined },
+      orphan: { session: undefined, requests: [undefined, undefined], initiator: undefined },
     });
   } finally {
     await app.close();

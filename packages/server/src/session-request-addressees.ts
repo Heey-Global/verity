@@ -10,7 +10,8 @@ import type { SessionSummary } from './server-types.js';
  * everyone with Code in the project instead.
  */
 export interface RequestAddressing {
-  /** Null when nobody is named: the request is then for everyone who sees it. */
+  /** Null when nobody is named: the request is then for everyone who sees it,
+   *  except a secret or network prompt, which stays with {@link forCode}. */
   owner: string | null;
   /** Permission prompts for everyone with Code rather than for the owner. */
   forCode: ReadonlySet<string>;

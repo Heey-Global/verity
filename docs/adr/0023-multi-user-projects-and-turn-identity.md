@@ -285,12 +285,15 @@ audited permission; it does not transfer execution authority.
 
 **Requests belong to the person who asked.** A turn's questions, plans,
 mockups and permission prompts are addressed to the person the turn runs for.
-Without a named person they go to whoever started the session; sessions from
-before creators were recorded fall back to the project's creator. Home and the
+Without a named person they go to whoever started the session; a session
+without a recorded creator, such as one from before creators were recorded or
+one Verity started on its own, falls back to the project's creator. When none
+of them can still read the project, the request is for every member. Home and the
 project overview list only the requests addressed to the viewer. The session
 itself still shows every request, and members who may execute can answer there.
 Allowing a secret or network prompt requires Code (section 1), so a prompt the
-person asking cannot allow is addressed to every member with Code instead.
+person asking cannot allow, or one without a person, is addressed to every
+member with Code instead.
 A prompt the server cannot describe, such as a linked-session approval, stays
 unaddressed and appears for every member, because nobody can tell whom it is for.
 
