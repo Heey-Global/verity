@@ -80,6 +80,18 @@ export function AttachMenu({
     );
   }, [remainingAttachments]);
   const recent = useRecentImages(visible, selected);
+  useEffect(() => {
+    const state = recent.state;
+    if (state.kind === 'denied') setSelected((current) => (current.length ? [] : current));
+    if (state.kind === 'ready') {
+      const available = new Set(state.images.map(({ id }) => id));
+      setSelected((current) =>
+        current.every(({ id }) => available.has(id))
+          ? current
+          : current.filter(({ id }) => available.has(id)),
+      );
+    }
+  }, [recent.state]);
   const images = recent.state.kind === 'ready' ? recent.state.images : [];
   const selection = selected.filter((image) => images.some(({ id }) => id === image.id));
   const attachable = selection.slice(0, remainingAttachments).map(({ id }) => id);
