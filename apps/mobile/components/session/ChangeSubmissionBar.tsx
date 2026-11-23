@@ -92,7 +92,8 @@ export function ChangeSubmissionBar({
     state,
     pullRequestShown,
     noun: projectNoun(),
-    local: projectKind === 'local',
+    // Until the project is known, a Code holder is not offered a pull request.
+    local: projectKind === undefined || projectKind === 'local',
   });
   if (model === undefined) return null;
 

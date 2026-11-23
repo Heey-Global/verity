@@ -27,6 +27,7 @@ it('lets a member without Code submit, then shows that it waits', async () => {
     <ChangeSubmissionBar
       client={api}
       sessionId="s1"
+      projectKind="github"
       pullRequestShown={false}
       busy={false}
       onOpenPullRequest={jest.fn()}
@@ -46,6 +47,7 @@ it('asks the agent for a pull request when a member with Code opens one', async 
     <ChangeSubmissionBar
       client={api}
       sessionId="s1"
+      projectKind="github"
       pullRequestShown={false}
       busy={false}
       onOpenPullRequest={onOpenPullRequest}
@@ -69,6 +71,7 @@ it('stays hidden while the server cannot be read', async () => {
     <ChangeSubmissionBar
       client={api}
       sessionId="s1"
+      projectKind="github"
       pullRequestShown={false}
       busy={false}
       onOpenPullRequest={jest.fn()}
@@ -86,6 +89,7 @@ it('says so when the agent did not get the request', async () => {
     <ChangeSubmissionBar
       client={api}
       sessionId="s1"
+      projectKind="github"
       pullRequestShown={false}
       busy={false}
       onOpenPullRequest={jest.fn(async () => false)}
@@ -104,6 +108,7 @@ it('asks the agent once for two quick taps', async () => {
     <ChangeSubmissionBar
       client={api}
       sessionId="s1"
+      projectKind="github"
       pullRequestShown={false}
       busy={false}
       onOpenPullRequest={onOpenPullRequest}

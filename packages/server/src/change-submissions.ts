@@ -115,18 +115,13 @@ export async function describeSubmissions(
     const name = names.get(id);
     return name === undefined ? { id } : { id, name };
   };
-  const settled: Promise<boolean>[] = [];
   live.forEach(({ submission, pr }, index) => {
     const checker = checkers[index];
     const prPhase = pullRequestSince(submission, pr);
     const status = changeSubmissionStatus({ state: submission.state, prPhase, checker });
+    // Reads never write: a merged pull request shows as added here, and only a
+    // member's next action stores it (see POST).
     if (status === undefined) return;
-    // A merged pull request ends the submission for good: the member can submit
-    // follow-up work, and nobody can withdraw what already landed.
-    if (status === 'added' && submission.state === 'submitted')
-      settled.push(
-        store.changeSubmissions.settle(submission.sessionId, 'added').catch(() => false),
-      );
     views.set(submission.sessionId, {
       status,
       submittedBy: person(submission.submittedBy),
@@ -134,7 +129,6 @@ export async function describeSubmissions(
       submittedAt: submission.submittedAt.getTime(),
     });
   });
-  await Promise.all(settled);
   return views;
 }
 
@@ -262,14 +256,24 @@ export function registerChangeSubmissionRoutes(
     if ((await deps.store.changeSubmissions.get(id))?.state === 'submitted') {
       const open = await describe(session);
       if (open?.status !== 'added') return reply.code(200).send({ submission: open });
+      await deps.store.changeSubmissions.settle(id, 'added');
     }
     if ((await deps.hasChanges?.(session).catch(() => undefined)) === false) {
       return reply.code(409).send({ error: 'This session has no changes to submit.' });
     }
+    let prUnread = false;
     const [revision, pr] = await Promise.all([
       deps.revision?.(session).catch(() => undefined),
-      deps.pullRequest?.(session).catch(() => undefined),
+      deps.pullRequest?.(session).catch(() => {
+        prUnread = true;
+        return undefined;
+      }),
     ]);
+    // Without knowing which pull request exists now, an earlier merged one could
+    // later read as these changes being added.
+    if (prUnread) {
+      return reply.code(503).send({ error: 'Could not read the pull request. Try again.' });
+    }
     const stored = await deps.store.changeSubmissions.submit({
       sessionId: id,
       userId: viewer,
@@ -293,7 +297,7 @@ export function registerChangeSubmissionRoutes(
     const session = await deps.store.getSession(id);
     if (session === undefined) return reply.code(404).send({ error: 'session not found' });
     const submission = await deps.store.changeSubmissions.get(id);
-    if (submission?.state !== 'submitted' || (await describe(session))?.status === 'added') {
+    if (submission?.state !== 'submitted') {
       return reply.code(409).send({ error: 'Nothing is submitted in this session.' });
     }
     const viewer = request.localUserId ?? null;
@@ -304,6 +308,10 @@ export function registerChangeSubmissionRoutes(
       !(await holdsCode(deps.store, viewer, session.projectId))
     ) {
       return reply.code(403).send({ error: 'Only the person who submitted can withdraw.' });
+    }
+    // What already landed cannot be taken back.
+    if ((await describe(session))?.status === 'added') {
+      return reply.code(409).send({ error: 'These changes were added already.' });
     }
     if (!(await deps.store.changeSubmissions.settle(id, 'withdrawn'))) {
       return reply.code(409).send({ error: 'Nothing is submitted in this session.' });

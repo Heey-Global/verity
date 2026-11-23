@@ -245,10 +245,32 @@ describe('change submission routes', () => {
       await call('POST', 'mara');
       setPullRequest('merged');
       expect((await call('DELETE', 'mara')).status).toBe(409);
-      expect((await ctx.store.changeSubmissions.get('s1'))?.state).toBe('added');
+      // Reading leaves the row alone; the member's next submission settles it.
+      expect((await ctx.store.changeSubmissions.get('s1'))?.state).toBe('submitted');
       setPullRequest('merged');
       expect((await call('POST', 'mara')).status).toBe(201);
       expect(published.filter((event) => event.t === 'notice')).toHaveLength(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('refuses to submit while the pull request cannot be read', async () => {
+    const app = Fastify();
+    app.addHook('onRequest', async (request) => {
+      request.localUserId = 'mara';
+    });
+    registerChangeSubmissionRoutes(app, {
+      store: ctx.store,
+      publish: vi.fn(),
+      pullRequest: async () => {
+        throw new Error('forge down');
+      },
+    });
+    try {
+      const response = await app.inject({ method: 'POST', url: '/sessions/s1/change-submission' });
+      expect(response.statusCode).toBe(503);
+      expect(await ctx.store.changeSubmissions.get('s1')).toBeUndefined();
     } finally {
       await app.close();
     }
