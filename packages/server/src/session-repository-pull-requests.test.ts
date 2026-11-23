@@ -35,6 +35,8 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
         pullRequests: [{ number: 8, head: 'feat/site' }],
       },
     ],
+    upsertSessionRepositoryWorkspace: vi.fn().mockResolvedValue(undefined),
+    recordRepositoryPullRequest: vi.fn().mockResolvedValue(undefined),
     appendPendingNote: vi.fn().mockResolvedValue(undefined),
   } as unknown as EventStore;
   const reset = vi.fn().mockResolvedValue({ base: 'main' });

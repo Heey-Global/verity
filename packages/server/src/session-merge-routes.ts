@@ -170,10 +170,32 @@ export function registerSessionMergeRoutes(
             (await branches.isDirty(worktree))
           )
             return false;
-          return (
-            (await deps.projectPullRequests?.hasOpenPullRequest?.(target.project, target.head)) ===
+          if (
+            (await deps.projectPullRequests?.hasOpenPullRequest?.(target.project, target.head)) !==
             false
-          );
+          )
+            return false;
+          if (!target.recorded) {
+            const repository = target.status.repository;
+            if (repository.isDefault) {
+              await deps.eventStore.upsertSessionRepositoryWorkspace({
+                sessionId: id,
+                projectId: target.project.id,
+                repositoryId: repository.id,
+                worktree,
+                branch: target.head,
+              });
+            }
+            await deps.eventStore.recordRepositoryPullRequest(
+              target.project.id,
+              repository.id,
+              target.head,
+              { number, head: target.head, url: target.status.url },
+              id,
+              true,
+            );
+          }
+          return true;
         } catch {
           return false;
         }
