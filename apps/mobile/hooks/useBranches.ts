@@ -4,6 +4,7 @@ import {
   type VerityClient,
   type BranchList,
   type BranchSwitchRequest,
+  type SessionPullRequestStatus,
   publishPullRequestStatusMutation,
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
@@ -19,6 +20,10 @@ import {
 } from '../lib/branchesPrefetch';
 import { hasLocalSaveChanges } from '../lib/localSaveVisibility';
 
+export type BranchPullRequest = NonNullable<BranchList['pullRequest']> & {
+  repository?: SessionPullRequestStatus['repository'];
+};
+
 export interface UseBranches {
   /** The branch currently checked out in the session's worktree (undefined until loaded). */
   current: string | undefined;
@@ -32,6 +37,7 @@ export interface UseBranches {
    * when this is a number — independent of the branch-derived issue chip. */
   currentPr: number | null;
   pullRequest: NonNullable<BranchList['pullRequest']> | null;
+  pullRequests: BranchPullRequest[];
   /** The project repo's GitHub `owner`/`repo` (#161), from the server's `origin`-remote
    * parse — used to build tappable Issue/PR chip URLs. Both undefined when the server
    * is older OR there's no GitHub remote, in which case the chips stay non-tappable. */
@@ -58,6 +64,8 @@ export interface UseBranches {
   ) => Promise<{ ok: true } | { ok: false; dirty: boolean; message: string }>;
   mergePullRequest: (
     number: number,
+    repositoryId?: string,
+    expectedHeadSha?: string,
   ) => Promise<
     { ok: true } | { ok: false; message: string; permissionDenied?: boolean; retryable?: boolean }
   >;
@@ -87,6 +95,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   const [pullRequest, setPullRequest] = useState<NonNullable<BranchList['pullRequest']> | null>(
     cached?.pullRequest ?? null,
   );
+  const [repositoryPullRequests, setRepositoryPullRequests] = useState(cached?.pullRequests);
   const [owner, setOwner] = useState<string | undefined>(cached?.owner);
   const [repo, setRepo] = useState<string | undefined>(cached?.repo);
   const [codeHost, setCodeHost] = useState<BranchList['codeHost']>(cached?.codeHost);
@@ -138,6 +147,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     setPreviewable(cached?.previewable ?? []);
     setCurrentPr(cached?.currentPr ?? null);
     setPullRequest(cached?.pullRequest ?? null);
+    setRepositoryPullRequests(cached?.pullRequests);
     setOwner(cached?.owner);
     setRepo(cached?.repo);
     setCodeHost(cached?.codeHost);
@@ -180,12 +190,23 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
             const res = await (prefetched ??
               client.getBranches(sessionId, request.controller.signal));
             if (fresh()) {
+              const pullRequests =
+                res.pullRequests === null
+                  ? (cachedBranches(client, sessionId)?.pullRequests ?? null)
+                  : res.pullRequests;
               publishSnapshot(res);
               setCurrent(res.current);
               setSwitchable(res.switchable);
               setPreviewable(res.previewable ?? []);
               setCurrentPr(res.currentPr ?? null);
               setPullRequest(res.pullRequest ?? null);
+              setRepositoryPullRequests(
+                res.pullRequests === null
+                  ? (pullRequests?.map((row) =>
+                      row.phase === 'open' ? { ...row, mergeable: null, pipeline: 'unknown' } : row,
+                    ) ?? null)
+                  : pullRequests,
+              );
               setOwner(res.owner);
               setRepo(res.repo);
               setCodeHost(res.codeHost);
@@ -260,8 +281,9 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     return () => subscription.remove();
   }, []);
 
+  const observeBranchUpdates = !workspaceMissing || repositoryPullRequests !== undefined;
   useEffect(() => {
-    if (!focused || !appActive || !enabled || workspaceMissing) return undefined;
+    if (!focused || !appActive || !enabled || !observeBranchUpdates) return undefined;
     const path = `/sessions/${encodeURIComponent(sessionId)}/branches`;
     // A prefetch from another client does not register this client's read observation.
     // Live hints queue a fresh read behind any request already in flight.
@@ -271,7 +293,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       (resourcePath) => resourcePath.split('?')[0] === path,
       [{ path }],
     );
-  }, [client, sessionId, load, focused, appActive, workspaceMissing, enabled]);
+  }, [client, sessionId, load, focused, appActive, observeBranchUpdates, enabled]);
 
   const refresh = useCallback(() => {
     // Focus always revalidates, so hidden refresh requests need no network work.
@@ -304,33 +326,52 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   );
 
   const mergePullRequest = useCallback<UseBranches['mergePullRequest']>(
-    async (number) => {
+    async (number, repositoryId, expectedHeadSha) => {
       try {
-        await client.mergePullRequest(sessionId, number);
+        await (repositoryId === undefined && expectedHeadSha === undefined
+          ? client.mergePullRequest(sessionId, number)
+          : client.mergePullRequest(sessionId, number, expectedHeadSha, repositoryId));
         const snapshot = cachedBranches(client, sessionId);
+        const isDefault =
+          repositoryId === undefined ||
+          snapshot?.pullRequests?.some(
+            (pr) => pr.repository.id === repositoryId && pr.repository.isDefault,
+          );
+        const merged = { phase: 'merged', mergeable: false, mergeState: undefined } as const;
+        const updateList = (list: SessionPullRequestStatus[] | null | undefined) =>
+          list?.map((pr) =>
+            pr.number === number &&
+            (repositoryId === undefined
+              ? pr.repository.isDefault
+              : pr.repository.id === repositoryId)
+              ? { ...pr, ...merged }
+              : pr,
+          );
         invalidateBranches(client, sessionId);
         reqId.current += 1;
-        if (snapshot?.pullRequest?.number === number) {
+        if (snapshot !== undefined) {
           rememberBranches(client, sessionId, {
             ...snapshot,
-            pullRequest: {
-              ...snapshot.pullRequest,
-              phase: 'merged',
-              mergeable: false,
-              mergeState: undefined,
-            },
+            pullRequest:
+              isDefault && snapshot.pullRequest?.number === number
+                ? { ...snapshot.pullRequest, ...merged }
+                : snapshot.pullRequest,
+            pullRequests: updateList(snapshot.pullRequests),
           });
         }
-        setPullRequest((current) =>
-          current?.number === number
-            ? { ...current, phase: 'merged', mergeable: false, mergeState: undefined }
-            : current,
-        );
-        publishPullRequestStatusMutation({
-          sessionId,
-          number,
-          pr: { phase: 'merged', pipeline: 'success', mergeable: false },
-        });
+        setRepositoryPullRequests(updateList);
+        if (isDefault) {
+          setPullRequest((current) =>
+            current?.number === number ? { ...current, ...merged } : current,
+          );
+          publishPullRequestStatusMutation({
+            sessionId,
+            number,
+            pr: { phase: 'merged', pipeline: 'success', mergeable: false },
+          });
+        } else {
+          publishPullRequestStatusMutation({ sessionId });
+        }
         await load();
         return { ok: true };
       } catch (err) {
@@ -370,6 +411,15 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     previewable,
     currentPr,
     pullRequest,
+    pullRequests:
+      repositoryPullRequests ??
+      (pullRequest === null
+        ? []
+        : [
+            repositoryPullRequests === null && pullRequest.phase === 'open'
+              ? { ...pullRequest, mergeable: null, pipeline: 'unknown' }
+              : pullRequest,
+          ]),
     owner,
     repo,
     codeHost,

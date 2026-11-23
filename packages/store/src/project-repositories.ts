@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Selectable } from 'kysely';
-import type { Database, ProjectRepositoriesTable } from './schema.js';
+import type { Database } from './schema.js';
+import type { ProjectRepositoriesTable } from './schema-project-repositories.js';
 import type { ProjectKind, ProjectRecord } from './store.js';
 
 export interface ProjectRepositoryRecord {
@@ -37,6 +38,16 @@ export interface SessionRepositoryWorkspaceRecord {
   branch: string;
   createdAt: Date;
   pullRequest?: unknown;
+  pullRequests?: unknown[];
+}
+
+function workspacePullRequests(value: unknown, history: unknown) {
+  const list: unknown[] = Array.isArray(history) ? history : [];
+  const numberOf = (entry: unknown) =>
+    entry && typeof entry === 'object' && 'number' in entry ? entry.number : undefined;
+  const merged =
+    value == null ? list : [...list.filter((pr) => numberOf(pr) !== numberOf(value)), value];
+  return { pullRequest: value, pullRequests: merged };
 }
 
 export function defaultProjectRepository(project: ProjectRecord): ProjectRepositoryRecord {
@@ -195,6 +206,60 @@ export class ProjectRepositoryStore {
     });
   }
 
+  async recordPullRequest(
+    projectId: string,
+    repositoryId: string,
+    branch: string,
+    pullRequest: unknown,
+    sessionId?: string,
+    preserveWorkspaceBranch = false,
+  ): Promise<void> {
+    const entry = sql`${JSON.stringify(pullRequest)}::jsonb`;
+    const list = sql`(
+      select coalesce(jsonb_agg(
+        case when pr->>'number' = pull_request->>'number' then pr || pull_request else pr end
+        order by position
+      ), '[]'::jsonb)
+      from jsonb_array_elements(coalesce(pull_request_history, '[]'::jsonb))
+        with ordinality as saved(pr, position)
+    ) || case when jsonb_typeof(pull_request) = 'object' and not coalesce(
+      pull_request_history @> jsonb_build_array(jsonb_build_object('number', pull_request->'number')),
+      false
+    ) then jsonb_build_array(pull_request) else '[]'::jsonb end`;
+    const updated = sql`coalesce((
+      select pr from jsonb_array_elements(${list}) as saved(pr)
+      where pr->>'number' = (${entry})->>'number'
+      limit 1
+    ), '{}'::jsonb) || ${entry}`;
+    let query = this.db
+      .updateTable('session_repository_workspaces')
+      .set({
+        pull_request: updated,
+        pull_request_history: sql`(
+          select coalesce(jsonb_agg(pr order by position), '[]'::jsonb)
+          from jsonb_array_elements(${list}) with ordinality as saved(pr, position)
+          where pr->>'number' is distinct from (${entry})->>'number'
+        ) || jsonb_build_array(${updated})`,
+        ...(preserveWorkspaceBranch ? {} : { branch }),
+      })
+      .where('project_id', '=', projectId)
+      .where('repository_id', '=', repositoryId);
+    query =
+      sessionId === undefined
+        ? query.where('branch', '=', branch)
+        : query.where('session_id', '=', sessionId);
+    await query.execute();
+  }
+
+  async workspaceSessionId(worktree: string): Promise<string | undefined> {
+    const row = await this.db
+      .selectFrom('session_repository_workspaces')
+      .select('session_id')
+      .where('worktree', '=', worktree)
+      .executeTakeFirst();
+    return row?.session_id;
+  }
+
   async listWorkspaces(sessionId: string): Promise<SessionRepositoryWorkspaceRecord[]> {
     const rows = await this.db
       .selectFrom('session_repository_workspaces')
@@ -209,7 +274,7 @@ export class ProjectRepositoryStore {
       worktree: row.worktree,
       branch: row.branch,
       createdAt: row.created_at,
-      pullRequest: row.pull_request,
+      ...workspacePullRequests(row.pull_request, row.pull_request_history),
     }));
   }
 
@@ -265,7 +330,7 @@ export class ProjectRepositoryStore {
         worktree: row.worktree,
         branch: row.branch,
         createdAt: row.created_at,
-        pullRequest: row.pull_request,
+        ...workspacePullRequests(row.pull_request, row.pull_request_history),
       };
     });
   }

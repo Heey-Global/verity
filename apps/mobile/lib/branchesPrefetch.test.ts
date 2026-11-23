@@ -1,4 +1,9 @@
-import type { BranchList, SessionSummary, VerityClient } from '@verity/mobile';
+import {
+  branchListSchema,
+  type BranchList,
+  type SessionSummary,
+  type VerityClient,
+} from '@verity/mobile';
 
 import {
   cachedBranches,
@@ -101,6 +106,45 @@ describe('branches prefetch', () => {
       pr: { phase: 'merged', pipeline: 'success', mergeable: false },
     } as SessionSummary);
     expect(cachedBranches(client, 's')?.pullRequest?.phase).toBe('merged');
+  });
+
+  it('keeps Merge disabled when an overview seeds an unavailable PR observation', () => {
+    const client = {} as VerityClient;
+    const pullRequest = {
+      number: 42,
+      title: 'Known',
+      url: 'https://github.com/example/repo/pull/42',
+      phase: 'open',
+      pipeline: 'success',
+      mergeable: true,
+      checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+    } as const;
+    const row = {
+      ...pullRequest,
+      repository: {
+        id: 'default:p',
+        name: 'repo',
+        owner: 'example',
+        repo: 'repo',
+        isDefault: true,
+      },
+    };
+    rememberBranches(client, 's', { ...branches, pullRequest, pullRequests: [row] });
+    branchesSnapshotWriter(
+      client,
+      's',
+    )(
+      branchListSchema.parse({
+        ...branches,
+        pullRequest,
+        pullRequests: [{ ...row, observationFailed: true, pipeline: 'unknown', mergeable: null }],
+      }),
+    );
+    seedSessionBranches(client, { sessionId: 's', pullRequest } as SessionSummary);
+    expect(cachedBranches(client, 's')?.pullRequests?.[0]).toMatchObject({
+      mergeable: null,
+      pipeline: 'unknown',
+    });
   });
 
   it('disowns a speculative read that predates the overview snapshot', async () => {

@@ -78,6 +78,7 @@ export interface ForgePullRequestView {
   state: 'open' | 'closed' | 'merged';
   /** True while the forge treats it as a draft (GitHub draft, Forgejo `WIP:` title). */
   draft: boolean;
+  headRepository?: string | null;
   head: string;
   base: string;
   body: string;
@@ -319,7 +320,7 @@ export interface ForgePrService {
   /** Compact status for the PR whose head is `branch`, or null if absent. Bound
    * readers may throw on unavailable observations; status caches provide safe
    * degraded results. Includes title, URL and check-run counts for the head SHA. */
-  prStatusForBranch(branch: string): Promise<PullRequestStatus | null>;
+  prStatusForBranch(branch: string, number?: number): Promise<PullRequestStatus | null>;
   /**
    * The PR that best represents a session spanning SEVERAL branches (issue: the PR
    * bar stays empty when a session's PR is on a branch other than its worktree HEAD).
