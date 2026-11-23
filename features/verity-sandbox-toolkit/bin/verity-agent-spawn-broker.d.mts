@@ -333,6 +333,11 @@ export interface CapacityLeaseRequest {
   operationId: string;
   generation: string;
 }
+/** Create the broker-owned lease directory so agent confinement can expose it. */
+export function ensureCapacityLeaseRoot(options?: {
+  capacityLeaseRoot?: string;
+  enforceRoot?: boolean;
+}): Promise<string>;
 export function capacityLeaseRequest(
   request: CapacityLeaseRequest,
   options?: {
