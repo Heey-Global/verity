@@ -254,6 +254,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           identity: () => Promise.resolve(ref),
           asyncToken: (owner, repo) =>
             (opts.repositoryStatusTokenMint ?? opts.projectTokenMint)({ owner, repo }),
+          mergeToken: (owner, repo) => opts.projectTokenMint({ owner, repo }),
           failureCooldownFor: prFailureCooldownFor,
           responseCache,
           ...repositoryStatusFetch,

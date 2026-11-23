@@ -78,6 +78,8 @@ export interface GitHubPrServiceOptions {
   token?: GitHubTokenSource | undefined;
   /** Async GitHub token provider, used when no sync token resolves. */
   asyncToken?: ((owner: string, repo: string) => Promise<string | undefined>) | undefined;
+  /** Optional write credential for services that poll with a read-only token. */
+  mergeToken?: GitHubPrServiceOptions['asyncToken'];
   /** Injected git runner (tests); defaults to the real `git`. */
   git?: GitOutput;
   /** Injected fetch (tests); defaults to the global `fetch`. */
@@ -869,14 +871,15 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     async mergePr(number: number, expectedHeadSha?: string): Promise<boolean> {
       const id = await identity();
       let token: string | undefined;
-      if (id !== null && opts.asyncToken !== undefined) {
+      const mint = opts.mergeToken ?? opts.asyncToken;
+      if (id !== null && mint !== undefined) {
         try {
-          token = await opts.asyncToken(id.owner, id.repo);
+          token = await mint(id.owner, id.repo);
         } catch {
           // Fall through to the explicitly configured legacy token source.
         }
       }
-      token ??= resolveToken();
+      if (opts.mergeToken === undefined) token ??= resolveToken();
       if (token === undefined || id === null || !Number.isInteger(number) || number <= 0) {
         return false;
       }
