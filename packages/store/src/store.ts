@@ -4410,14 +4410,14 @@ export class EventStore implements EventSink {
   }
 
   /**
-   * Store an image blob from its base64 payload, content-addressed by the SHA-256
-   * of the decoded bytes. Idempotent: a re-upload of identical bytes is a no-op
-   * (ON CONFLICT DO NOTHING), so the same image dedupes to one row. Returns the
-   * hash — the `id` a `prompt` event references and the client fetches by.
+   * Store an immutable attachment. HTML uses a distinct hash namespace so generic
+   * uploads of the same bytes cannot determine whether it is previewable.
    */
   async putAttachment(mediaType: string, base64Data: string): Promise<string> {
     const bytes = Buffer.from(base64Data, 'base64');
-    const hash = createHash('sha256').update(bytes).digest('hex');
+    const digest = createHash('sha256');
+    if (mediaType === 'text/html') digest.update('verity-html-attachment\0');
+    const hash = digest.update(bytes).digest('hex');
     await this.db
       .insertInto('attachments')
       .values({ hash, media_type: mediaType, bytes })

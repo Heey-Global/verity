@@ -181,6 +181,10 @@ describe('presenting mockups', () => {
       '<!doctype html><html><head><title>Demo</title></head><body>Original</body></html>';
     const path = join(worktree, 'demo.html');
     writeFileSync(path, html);
+    const generic = await store.putAttachment(
+      'application/octet-stream',
+      Buffer.from(html).toString('base64'),
+    );
     const request = presentMockupsRequestSchema.parse({
       screens: [
         { name: 'Demo', htmlPath: 'demo.html' },
@@ -189,6 +193,11 @@ describe('presenting mockups', () => {
     });
     const round = await mockups.present('s1', request);
     writeFileSync(path, html.replace('Original', 'Changed'));
+    const htmlAttachment = round.screens[0]!.attachment;
+    expect(htmlAttachment).not.toBe(generic);
+    const preview = await app.inject(`/attachments/${htmlAttachment}?mockup=1`);
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body).toContain('Original');
     expect(round.screens.map((screen) => screen.mediaType)).toEqual(['text/html', 'image/png']);
     expect(await store.getAttachment(round.screens[0]!.attachment)).toEqual({
       mediaType: 'text/html',

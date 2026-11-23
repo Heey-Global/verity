@@ -19,6 +19,8 @@ import {
   type TaskRecord,
 } from '@verity/store';
 
+import { attachmentDownloadHeaders } from './attachment-route.js';
+
 /** Mirrors the legacy-administrator fallback the HTTP MCP connection routes use:
  *  deployments without the auth gate have one implicit user. */
 const legacyAdministratorId = '00000000-0000-4000-8000-000000000001';
@@ -255,10 +257,7 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
       return reply.code(404).send({ error: 'attachment not found' });
     const blob = await deps.eventStore.getAttachment(hash);
     if (blob === undefined) return reply.code(404).send({ error: 'attachment not found' });
-    return reply
-      .header('Content-Type', blob.mediaType)
-      .header('Cache-Control', 'private, max-age=31536000, immutable')
-      .send(blob.bytes);
+    return attachmentDownloadHeaders(reply, blob.mediaType).send(blob.bytes);
   });
 
   app.get('/tasks', async (request) => {

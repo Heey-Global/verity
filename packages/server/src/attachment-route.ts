@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { mockupPreviewDocument, mockupPreviewPolicy } from './mockup-preview.js';
 
@@ -8,6 +8,20 @@ const attachmentParams = z.object({
 
 export interface AttachmentRouteDeps {
   getAttachment: (hash: string) => Promise<{ mediaType: string; bytes: Buffer } | undefined>;
+}
+
+/** HTML snapshots are only renderable through the isolated preview endpoint. */
+export function attachmentDownloadHeaders(reply: FastifyReply, mediaType: string): FastifyReply {
+  reply
+    .header('Content-Type', mediaType)
+    .header('Cache-Control', 'private, max-age=31536000, immutable');
+  if (mediaType.split(';', 1)[0]?.trim().toLowerCase() === 'text/html') {
+    reply
+      .header('Content-Disposition', 'attachment; filename="mockup.html"')
+      .header('Content-Security-Policy', "sandbox; default-src 'none'")
+      .header('X-Content-Type-Options', 'nosniff');
+  }
+  return reply;
 }
 
 /** Registers immutable reads for content-addressed session attachments. */
@@ -31,17 +45,7 @@ export function registerAttachmentRoute(app: FastifyInstance, deps: AttachmentRo
           .header('X-Content-Type-Options', 'nosniff');
         return mockupPreviewDocument(blob.bytes.toString('utf8'));
       }
-      reply
-        .header('Content-Type', blob.mediaType)
-        .header('Cache-Control', 'private, max-age=31536000, immutable');
-      if (blob.mediaType === 'text/html') {
-        // The raw snapshot is a download. A direct visit must
-        // never execute the document on the API origin.
-        reply
-          .header('Content-Disposition', 'attachment; filename="mockup.html"')
-          .header('Content-Security-Policy', "sandbox; default-src 'none'")
-          .header('X-Content-Type-Options', 'nosniff');
-      }
+      attachmentDownloadHeaders(reply, blob.mediaType);
       return blob.bytes;
     },
   );

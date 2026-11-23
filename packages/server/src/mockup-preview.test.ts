@@ -28,3 +28,13 @@ it('removes active content and keeps resource restrictions on the rendered docum
   expect(preview).toContain("script-src 'none'");
   expect(mockupPreviewPolicy).toMatch(/; sandbox; frame-ancestors 'self'$/);
 });
+
+it('keeps safe document attributes used by CSS and locale settings', () => {
+  const preview = mockupPreviewDocument(
+    '<html lang="ar" dir="rtl" data-theme="dark"><head><style>html[data-theme="dark"] body.compact { color: white }</style></head><body class="compact" onload="init()">Draft</body></html>',
+  );
+  expect(preview).toContain('<html lang="ar" dir="rtl" data-theme="dark">');
+  expect(preview).toContain('<body class="compact">');
+  expect(preview).toContain('html[data-theme="dark"] body.compact');
+  expect(preview).not.toContain('onload');
+});

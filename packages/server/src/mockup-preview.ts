@@ -46,7 +46,32 @@ const options: sanitizeHtml.IOptions = {
   },
 };
 
+function documentAttributes(attributes: Record<string, string>): string {
+  return Object.entries(attributes)
+    .filter(([name]) => /^(?:class|id|lang|dir|data-[a-z0-9_.:-]+)$/u.test(name))
+    .map(
+      ([name, value]) =>
+        ` ${name}="${value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}"`,
+    )
+    .join('');
+}
+
 export function mockupPreviewDocument(html: string): string {
-  const content = sanitizeHtml(html, options);
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${resourcePolicy}"></head><body>${content}</body></html>`;
+  let htmlAttributes = '';
+  let bodyAttributes = '';
+  const content = sanitizeHtml(html, {
+    ...options,
+    transformTags: {
+      ...options.transformTags,
+      html: (tagName, attribs) => {
+        htmlAttributes = documentAttributes(attribs);
+        return { tagName, attribs };
+      },
+      body: (tagName, attribs) => {
+        bodyAttributes = documentAttributes(attribs);
+        return { tagName, attribs };
+      },
+    },
+  });
+  return `<!doctype html><html${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${resourcePolicy}"></head><body${bodyAttributes}>${content}</body></html>`;
 }

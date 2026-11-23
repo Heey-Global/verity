@@ -11,7 +11,7 @@ export type SessionMockupState = 'pending' | 'revising' | 'approved';
  *  round stays as it was reviewed even when the agent rewrites the file later. */
 export interface MockupScreenRecord {
   name: string;
-  /** SHA-256 of the artifact in the attachment store. */
+  /** Content address of the artifact in the attachment store. */
   attachment: string;
   mediaType: 'image/png' | 'image/jpeg' | 'text/html';
   width: number;
