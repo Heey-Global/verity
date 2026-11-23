@@ -551,7 +551,10 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
         ),
       );
     }
-    const here = await current(worktreePath);
+    // Repository association requires an attached ref, not a display label inferred from a detached commit.
+    const here = includeConfiguredBase
+      ? await attachedBranch(worktreePath, git)
+      : await current(worktreePath);
     let extra: string[] = [];
     try {
       // The worktree's OWN HEAD reflog records every checkout that happened here — a
@@ -592,7 +595,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     } catch {
       // No reflog / git error → just the current branch (single-branch behavior).
     }
-    return [here, ...extra];
+    return here === undefined ? extra : [here, ...extra];
   }
 
   async function isDirty(worktreePath: string): Promise<boolean> {

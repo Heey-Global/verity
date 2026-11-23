@@ -78,8 +78,8 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
   );
   const rows = await resolvePullRequests(session);
   expect(rows?.map(({ status }) => [status.repository.id, status.number])).toEqual([
-    ['default:p', 7],
     ['default:p', 8],
+    ['default:p', 7],
     ['api', 7],
   ]);
 
@@ -157,6 +157,11 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
     expect(unverifiable.statusCode).toBe(503);
     expect(unverifiable.json()).toMatchObject({ code: 'merge_status_unavailable' });
     expect(mergePR).not.toHaveBeenCalled();
+    backend.defaultBranch = async () => {
+      throw new Error('Metadata unavailable');
+    };
+    const recorded = await resolvePullRequests(session, undefined, undefined, 'default:p', 8);
+    expect(recorded?.map(({ status }) => status.number)).toEqual([8]);
   } finally {
     await app.close();
   }

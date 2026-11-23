@@ -117,7 +117,7 @@ export function registerSessionMergeRoutes(
         return { error: `session ${id} not found` };
       }
       const findTarget = async (legacy?: PullRequestStatus | null) =>
-        (await deps.resolvePullRequests?.(session, legacy, undefined, repositoryId))?.find(
+        (await deps.resolvePullRequests?.(session, legacy, undefined, repositoryId, number))?.find(
           (row) => row.status.repository.id === repositoryId && row.status.number === number,
         );
       let target: Awaited<ReturnType<typeof findTarget>>;
@@ -162,7 +162,13 @@ export function registerSessionMergeRoutes(
       const approvedRevision = expectedHeadSha ?? target?.status.headSha;
       const readyForReset = async (branches: GitBranchService, worktree: string) => {
         if (!target) return true;
-        if (!target.head || !approvedRevision || target.head === target.defaultBranch) return false;
+        if (
+          !target.head ||
+          !approvedRevision ||
+          target.defaultBranch === null ||
+          target.head === target.defaultBranch
+        )
+          return false;
         try {
           if (
             (await branches.current(worktree)) !== target.head ||

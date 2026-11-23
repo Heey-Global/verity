@@ -12,6 +12,7 @@ export function createSessionRepositoryPullRequests(
     legacy?: PullRequestStatus | null,
     signal?: AbortSignal,
     repositoryId?: string,
+    pullRequestNumber?: number,
   ) => {
     if (!session.projectId || !projectPullRequests) return undefined;
     const project = await eventStore.getProject(session.projectId);
@@ -65,27 +66,31 @@ export function createSessionRepositoryPullRequests(
           const base = projectPullRequests.defaultBranch
             ? await projectPullRequests.defaultBranch(target).catch(() => null)
             : (repository.defaultBranch ?? 'main');
-          if (base === null) {
-            if (repositoryId !== undefined) throw new Error('Repository base branch unavailable');
-            return [];
-          }
           const readStatus = (head: string, number?: number) =>
             projectPullRequests.status(target, head, number).catch((err: unknown) => {
               if (repositoryId !== undefined) throw err;
               return null;
             });
           const statuses = new Map<number, { status: PullRequestStatus; head?: string }>();
-          for (const head of heads) {
-            if (signal?.aborted) break;
-            if (!head || head === base) continue;
-            const status = await readStatus(head);
-            if (status) statuses.set(status.number, { status, head });
-          }
           for (const [number, head] of recorded) {
             if (signal?.aborted) break;
-            if (statuses.has(number)) continue;
+            if (pullRequestNumber !== undefined && number !== pullRequestNumber) continue;
             const status = await readStatus(head, number);
             if (status?.number === number) statuses.set(number, { status, head });
+          }
+          if (base === null && pullRequestNumber !== undefined && !recorded.has(pullRequestNumber))
+            throw new Error('Repository base branch unavailable');
+          if (
+            base !== null &&
+            (pullRequestNumber === undefined || !recorded.has(pullRequestNumber))
+          ) {
+            for (const head of heads) {
+              if (signal?.aborted) break;
+              if (!head || head === base) continue;
+              const status = await readStatus(head, pullRequestNumber);
+              if (status && !statuses.has(status.number))
+                statuses.set(status.number, { status, head });
+            }
           }
           if (repository.isDefault && legacy !== undefined) {
             if (legacy && !statuses.has(legacy.number))
