@@ -7655,8 +7655,6 @@ function PullRequestBar({
   );
 }
 
-/** Save a local session's work through the agent and then into the project base.
- *  The server checks the commit and merge preconditions. */
 function InputBar({
   hasPlan,
   planning,

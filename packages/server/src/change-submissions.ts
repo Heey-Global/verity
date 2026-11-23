@@ -213,17 +213,26 @@ export function registerChangeSubmissionRoutes(
     const session = await deps.store.getSession(id);
     if (session === undefined) return reply.code(404).send({ error: 'session not found' });
     const viewer = request.localUserId ?? null;
-    const hasChanges = await deps.hasChanges?.(session).catch(() => undefined);
+    // Without accounts the one operator holds every right and nobody submits.
+    if (viewer === null) {
+      return { submission: null, viewerCanCode: true, viewerCanSubmit: false, shared: false };
+    }
+    const viewerCanCode = await holdsCode(deps.store, viewer, session.projectId);
+    const viewerCanSubmit =
+      !viewerCanCode &&
+      session.projectId !== null &&
+      (await deps.store.hasProjectPermission(viewer, session.projectId, 'execute'));
+    // Only someone who could submit needs to know whether there is anything to submit.
+    const hasChanges = viewerCanSubmit
+      ? await deps.hasChanges?.(session).catch(() => undefined)
+      : undefined;
     return {
       submission: await describe(session),
       // Absent when unreadable; the app then offers submitting anyway.
       ...(hasChanges === undefined ? {} : { hasChanges }),
-      // Without accounts the one operator holds every right.
-      viewerCanCode: viewer === null || (await holdsCode(deps.store, viewer, session.projectId)),
-      viewerCanSubmit:
-        viewer !== null &&
-        session.projectId !== null &&
-        (await deps.store.hasProjectPermission(viewer, session.projectId, 'execute')),
+      viewerCanCode,
+      viewerCanSubmit,
+      shared: true,
     };
   });
 

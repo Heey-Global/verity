@@ -29,6 +29,8 @@ const stateSchema = z.object({
   viewerCanCode: z.boolean(),
   /** Whether the viewer may submit; absent on a server that predates the flag. */
   viewerCanSubmit: z.boolean().optional(),
+  /** False without member accounts, where nothing is ever submitted. */
+  shared: z.boolean().optional(),
   /** Whether the session changed anything the project lacks; absent when unknown. */
   hasChanges: z.boolean().optional(),
 });

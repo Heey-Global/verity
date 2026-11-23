@@ -4,7 +4,7 @@ import { projectQAMigration } from './project-qa-migration.js';
 import { sessionMessageRecencyMigration } from './session-message-recency-migration.js';
 import { projectCodePermissionMigration } from './project-code-permission-migration.js';
 import { sessionCreatorMigration } from './session-creator-migration.js';
-import { changeSubmissionsMigration } from './change-submissions.js';
+import { changeSubmissionsMigration } from './change-submissions-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 

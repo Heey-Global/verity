@@ -5,7 +5,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import type { UseBranches } from '../../hooks/useBranches';
 import { SessionBar } from '../ui/SessionBar';
 
-/** The bar that saves a local project's session changes as a version. */
+/** Save a local session's work through the agent and then into the project base.
+ *  The server checks the commit and merge preconditions. */
 export function LocalMergeBar({
   confirmHint,
   branch,

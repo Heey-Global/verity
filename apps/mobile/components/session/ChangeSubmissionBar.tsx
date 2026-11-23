@@ -59,6 +59,8 @@ export function ChangeSubmissionBar({
       try {
         const next = await client.changeSubmissions.read(sessionId, signal);
         if (mounted.current && current.current === sessionId) setState(next);
+        // Without member accounts nothing will ever be submitted here.
+        if (next.shared === false) unsupported.current = true;
       } catch (caught) {
         // An older server has no submissions: stop asking. A passing failure keeps
         // the last state.

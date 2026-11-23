@@ -444,6 +444,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     hasChanges: async (session) => {
       const branches = await branchesForSession(session);
       if (!branches || session.projectId === null) return undefined;
+      // A local project has no remote base to compare with; unknown offers submitting.
+      if ((await deps.eventStore.getProject(session.projectId))?.kind === 'local') return undefined;
       const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
         session.projectId,
       );

@@ -133,6 +133,14 @@ describe('change submission routes', () => {
         submission: null,
         viewerCanCode: false,
         viewerCanSubmit: true,
+        shared: true,
+      });
+      // Without accounts the app can stop asking: nobody will ever submit.
+      expect((await call('GET')).body).toEqual({
+        submission: null,
+        viewerCanCode: true,
+        viewerCanSubmit: false,
+        shared: false,
       });
       expect((await call('POST', 'mara')).status).toBe(201);
       expect(published).toEqual([
