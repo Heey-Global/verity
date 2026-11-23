@@ -1,3 +1,4 @@
+import { File } from 'expo-file-system';
 // The attach menu's recent-image strip: the newest library images, screenshots
 // first, kept current while the menu is open so a screenshot taken meanwhile
 // shows up at the front. Attaching stays a deliberate tap; nothing here attaches.
@@ -108,6 +109,9 @@ export function useRecentImages(
                     shouldDownloadFromNetwork: false,
                   });
                   checked.set(id, { id, uri: info.uri });
+                  // Expo exports a temporary paired video when looking up a Live Photo.
+                  const pairedUri = info.pairedVideoAsset?.uri;
+                  if (pairedUri?.startsWith('file://')) new File(pairedUri).delete();
                 } catch {
                   // Deleted assets and assets outside the current permission are unavailable.
                 }

@@ -4774,6 +4774,7 @@ export const SessionChat = memo(function SessionChat({
         onSend={onSend}
         canSend={canSend}
         sending={sending}
+        attachingRecent={attachingRecent}
         // "Working" = the reconciled model signal (`state.working`): server-authoritative
         // `busy` (which already counts open background tasks) OR the reducer's eager
         // `session.running` while it's running AHEAD of the poll on a fresh turn. Unlike
@@ -7661,6 +7662,7 @@ function InputBar({
   onSend,
   canSend,
   sending,
+  attachingRecent,
   running,
   activityAnimating,
   onStop,
@@ -7703,6 +7705,7 @@ function InputBar({
   onSend: () => void;
   canSend: boolean;
   sending: boolean;
+  attachingRecent: boolean;
   /** A turn is in flight (#79) — the empty-field action button becomes Stop. */
   running: boolean;
   /** Work is progressing; awaiting user input can still keep Stop available. */
@@ -7908,14 +7911,14 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                 onPauseCountdown={onPauseVoiceCountdown}
                 disabled={dead}
               />
-              {running && !canSend && !sending && !dead ? (
-                // Empty field while a turn runs → Stop is available, while the top
-                // activity line carries the "agent is working" cue.
+              {attachingRecent ? (
+                <ActivityIndicator
+                  accessibilityLabel="Loading images"
+                  color={theme.colors.action}
+                />
+              ) : running && !canSend && !sending && !dead ? (
                 <StopButton onStop={onStop} />
               ) : (
-                // Otherwise the Send button — active when there's something to send,
-                // greyed when idle/empty or dead. Sending while a turn runs queues/steers
-                // it, so Send keeps priority over Stop whenever the field is sendable.
                 <Pressable
                   style={[styles.sendButton, canSend ? null : styles.sendButtonDisabled]}
                   onPress={onSend}
