@@ -224,22 +224,22 @@ it('holds a shared lock on a trusted broker lease and refuses agent-owned ones',
   const id = '3f7f388a-6f7f-4746-a60e-ed2ac5b1e3a0';
   const lock = join(root, `${id}.lock`);
   writeFileSync(lock, '', { mode: 0o644 });
-  spawnSync('chmod', ['755', root]);
+  spawnSync('chmod', ['711', root]);
   const result = await probe(`
     const held=await s.holdCapacityLock(${JSON.stringify(lock)},{root:${JSON.stringify(root)},rootOwned:()=>true});
     const {spawnSync}=await import('node:child_process');
     console.log(spawnSync('flock',['--exclusive','--nonblock',${JSON.stringify(lock)},'true']).status);
     held.close();
     console.log(spawnSync('flock',['--exclusive','--nonblock',${JSON.stringify(lock)},'true']).status);
-    try{await s.holdCapacityLock(${JSON.stringify(lock)},{root:${JSON.stringify(root)}})}catch(error){console.log(error.message)}
+    // Default trust: a directory the caller owns is never the broker's. Running
+    // as root, the caller's files are root's, so the root-owner case is the stand-in.
+    try{await s.holdCapacityLock(${JSON.stringify(lock)},{root:${JSON.stringify(root)},
+      ...(process.getuid()===0?{rootOwned:()=>false}:{})})}catch(error){console.log(error.message)}
   `);
-  const uid = process.getuid!();
   expect(result.split('\n')).toEqual([
     '1',
     '0',
-    uid === 0
-      ? 'Dependency capacity lock directory is untrusted (owner 0, mode 755).'
-      : `Dependency capacity lock directory is untrusted (owner ${uid}, mode 755).`,
+    `Dependency capacity lock directory is untrusted (owner ${process.getuid!()}, mode 711).`,
   ]);
 });
 

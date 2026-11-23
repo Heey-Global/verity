@@ -306,7 +306,9 @@ it('lets confined dependency installs hold the broker lease lock', async (contex
   // confinement left it out, every managed install failed before starting.
   const leases = join(root, 'capacity-leases');
   await ensureCapacityLeaseRoot({ capacityLeaseRoot: leases, enforceRoot: false });
-  expect((await stat(leases)).mode & 0o777).toBe(0o755);
+  // Search without read for everyone but root: agents open only the lock path
+  // their broker reply names and cannot enumerate other sessions' leases.
+  expect((await stat(leases)).mode & 0o777).toBe(0o711);
   const lock = join(leases, '3f7f388a-6f7f-4746-a60e-ed2ac5b1e3a0.lock');
   await writeFile(lock, '', { mode: 0o644 });
   const spec = agentLaunchSpec(

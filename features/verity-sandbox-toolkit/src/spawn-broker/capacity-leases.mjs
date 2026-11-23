@@ -53,7 +53,7 @@ async function flock(handle, wait = false) {
   });
 }
 async function rootDirectory(root, uid) {
-  await mkdir(root, { mode: 0o755 }).catch((error) => {
+  await mkdir(root, { mode: 0o711 }).catch((error) => {
     if (error.code !== 'EEXIST') throw error;
   });
   const info = await lstat(root);
@@ -75,7 +75,10 @@ async function rootDirectory(root, uid) {
     const opened = await directory.stat();
     if (opened.dev !== info.dev || opened.ino !== info.ino)
       throw new Error('capacity directory changed');
-    await directory.chmod(0o755);
+    // Agents see this directory read-only. Search without read lets each open
+    // only the random lock path its broker reply named, never list or hold the
+    // leases of other sessions.
+    await directory.chmod(0o711);
   } finally {
     await directory.close();
   }

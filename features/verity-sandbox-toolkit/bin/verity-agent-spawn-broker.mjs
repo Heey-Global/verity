@@ -37,7 +37,7 @@ async function flock(handle, wait = false) {
   });
 }
 async function rootDirectory(root, uid) {
-  await mkdir(root, { mode: 493 }).catch((error) => {
+  await mkdir(root, { mode: 457 }).catch((error) => {
     if (error.code !== "EEXIST") throw error;
   });
   const info = await lstat(root);
@@ -51,7 +51,7 @@ async function rootDirectory(root, uid) {
     const opened = await directory.stat();
     if (opened.dev !== info.dev || opened.ino !== info.ino)
       throw new Error("capacity directory changed");
-    await directory.chmod(493);
+    await directory.chmod(457);
   } finally {
     await directory.close();
   }
