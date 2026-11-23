@@ -72,6 +72,7 @@ export interface SessionRoutesWiring {
     | 'withPrVisibility'
     | 'invalidatePrSummaryAction'
     | 'invalidateBranchCache'
+    | 'resolvePullRequests'
   >;
   beginProjectSpawn: (projectId: string) => () => void;
   pushFirePoints: PushFirePoints | undefined;
@@ -124,6 +125,7 @@ export function installSessionRoutes(
     withPrVisibility,
     invalidatePrSummaryAction,
     invalidateBranchCache,
+    resolvePullRequests,
   } = sessionOverview;
   installCodeWorkspaces(app, ctx, { invalidateBranchCache });
 
@@ -461,6 +463,7 @@ export function installSessionRoutes(
           : undefined;
       const pullRequest =
         rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
+      const pullRequests = await resolvePullRequests(session, pullRequest);
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)
@@ -529,6 +532,9 @@ export function installSessionRoutes(
         previewable,
         ...(currentPr !== undefined ? { currentPr } : {}),
         ...(pullRequest !== undefined ? { pullRequest } : {}),
+        ...(pullRequests === undefined
+          ? {}
+          : { pullRequests: pullRequests.map(({ status }) => status) }),
         ...(identity !== null ? { owner: identity.owner, repo: identity.repo } : {}),
         ...(forgeHost !== null && forgeHost !== 'unknown'
           ? { codeHost: { provider: 'forgejo' as const, baseUrl: forgeHost.baseUrl } }
@@ -541,6 +547,10 @@ export function installSessionRoutes(
   const { mergeLocalSession } = registerSessionMergeRoutes(app, {
     eventStore: deps.eventStore,
     mergePr: deps.mergePr,
+    projectPullRequests: deps.projectPullRequests,
+    resolvePullRequests,
+    invalidateBranchResource: (id) =>
+      ctx.resources.invalidate(`/sessions/${encodeURIComponent(id)}/branches`),
     provisioner: deps.provisioner,
     branchPrStatus: deps.branchPrStatus,
     branchPrStatusForBranches: deps.branchPrStatusForBranches,

@@ -95,8 +95,12 @@ export function createEmbeddedRepositoryPullRequests(
         pulls: rows.map((pull, index) => ({ ...pull, status: statuses[index] ?? null })),
       };
     },
-    status: async (project, branch) =>
-      readProjectStatus(project, branch, await isDefaultRepository(project)),
+    status: async (project, branch, number) =>
+      readProjectStatus(project, branch, await isDefaultRepository(project), number),
+    invalidate: async (project) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (provider) invalidateStatus(await statusIdentity(project, provider));
+    },
     merge: async (project, number, expectedHeadSha) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
       if (!provider?.repositoryPrService) return false;

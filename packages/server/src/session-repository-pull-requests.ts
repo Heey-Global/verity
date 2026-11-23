@@ -1,0 +1,92 @@
+import { projectForRepository, type SessionRecord } from '@verity/store';
+import type { GitBranchService } from './branches.js';
+import type { PullRequestStatus } from './forge-provider.js';
+import type { ServerDeps } from './server-deps.js';
+
+export function createSessionRepositoryPullRequests(
+  { eventStore, projectPullRequests }: Pick<ServerDeps, 'eventStore' | 'projectPullRequests'>,
+  branchesForSession: (session: SessionRecord) => Promise<GitBranchService | undefined>,
+) {
+  return async (session: SessionRecord, legacy?: PullRequestStatus | null) => {
+    if (!session.projectId || !projectPullRequests) return undefined;
+    const project = await eventStore.getProject(session.projectId);
+    if (!project || project.kind === 'local' || project.kind === 'control_plane') return undefined;
+    const [repositories, workspaces, branches] = await Promise.all([
+      eventStore.listProjectRepositories(project.id),
+      eventStore.listSessionRepositoryWorkspaces(session.sessionId),
+      branchesForSession(session),
+    ]);
+    const results = await Promise.all(
+      repositories.map(async (repository) => {
+        const workspace = workspaces.find((row) => row.repositoryId === repository.id);
+        const worktree = repository.isDefault ? session.worktree : workspace?.worktree;
+        if (!worktree) return [];
+        const target = projectForRepository(project, repository);
+        const heads = new Set((await branches?.sessionBranches(worktree).catch(() => [])) ?? []);
+        if (workspace) heads.add(workspace.branch);
+        const recorded = new Map<number, string>();
+        for (const pr of workspace?.pullRequests ?? []) {
+          if (
+            typeof pr !== 'object' ||
+            pr === null ||
+            !('head' in pr) ||
+            typeof pr.head !== 'string' ||
+            !('number' in pr) ||
+            typeof pr.number !== 'number'
+          )
+            continue;
+          recorded.set(pr.number, pr.head);
+        }
+        const connection =
+          repository.kind === 'forgejo' && repository.forgeConnectionId
+            ? await eventStore.forgeConnections.get(repository.forgeConnectionId)
+            : undefined;
+        const identity = {
+          id: repository.id,
+          name: repository.name,
+          owner: repository.owner,
+          repo: repository.repo,
+          isDefault: repository.isDefault,
+          ...(repository.kind === 'github'
+            ? { codeHost: { provider: 'github' as const, baseUrl: 'https://github.com' } }
+            : connection
+              ? { codeHost: { provider: 'forgejo' as const, baseUrl: connection.baseUrl } }
+              : {}),
+        };
+        const statuses = new Map<number, { status: PullRequestStatus; head?: string }>();
+        for (const head of heads) {
+          if (!head) continue;
+          const status = await projectPullRequests.status(target, head).catch(() => null);
+          if (status) statuses.set(status.number, { status, head });
+        }
+        for (const [number, head] of recorded) {
+          if (statuses.has(number)) continue;
+          const status = await projectPullRequests.status(target, head, number).catch(() => null);
+          if (status?.number === number) statuses.set(number, { status, head });
+        }
+        if (repository.isDefault && legacy !== undefined) {
+          if (legacy && !statuses.has(legacy.number))
+            statuses.set(legacy.number, { status: legacy });
+          for (const [number, { status }] of statuses) {
+            if (status.phase === 'open' || number === legacy?.number) continue;
+            // Legacy visibility can hide the old terminal row when editing resumes.
+            // Keep independently recorded PRs unless their own status was hidden.
+            if (
+              !recorded.has(number) ||
+              (await eventStore.getSessionPrVisibility(session.sessionId, worktree, status.url))
+                ?.hidden
+            )
+              statuses.delete(number);
+          }
+        }
+        return [...statuses.values()].map(({ status, head }) => ({
+          status: { ...status, repository: identity },
+          head,
+          worktree,
+          project: target,
+        }));
+      }),
+    );
+    return results.flat();
+  };
+}

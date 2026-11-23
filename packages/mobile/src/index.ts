@@ -373,6 +373,7 @@ export {
   agentLoginProviderSchema,
   agentLoginSchema,
   branchListSchema,
+  type SessionPullRequestStatus,
   branchSwitchedSchema,
   modelListSchema,
   sessionDirectorySchema,

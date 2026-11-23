@@ -568,6 +568,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     id: GitHubIdentity,
     branch: string,
     token: string,
+    number?: number,
   ): Promise<{ ok: boolean; status: PullRequestStatus | null }> => {
     try {
       const head = encodeURIComponent(`${id.owner}:${branch}`);
@@ -580,13 +581,20 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       if (!Array.isArray(body) || body.length === 0) return { ok: true, status: null };
       const rows: unknown[] = body;
       const raw =
-        rows.find(
-          (candidate) =>
-            candidate !== null &&
-            typeof candidate === 'object' &&
-            !Array.isArray(candidate) &&
-            (candidate as Record<string, unknown>).state === 'open',
-        ) ?? rows[0];
+        number !== undefined
+          ? rows.find(
+              (candidate) =>
+                candidate !== null &&
+                typeof candidate === 'object' &&
+                (candidate as Record<string, unknown>).number === number,
+            )
+          : (rows.find(
+              (candidate) =>
+                candidate !== null &&
+                typeof candidate === 'object' &&
+                !Array.isArray(candidate) &&
+                (candidate as Record<string, unknown>).state === 'open',
+            ) ?? rows[0]);
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
         return { ok: true, status: null };
       }
@@ -684,7 +692,10 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     }
   };
 
-  const prStatusForBranch = async (branch: string): Promise<PullRequestStatus | null> => {
+  const prStatusForBranch = async (
+    branch: string,
+    number?: number,
+  ): Promise<PullRequestStatus | null> => {
     if (branch === '') return null;
     const id = await identity();
     if (id === null) return null;
@@ -711,7 +722,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     const credential =
       token === undefined ? (lastCredential ?? 'unavailable') : credentialId(token);
     if (token !== undefined) lastCredential = credential;
-    const cacheKey = `${credential}\0${branch}`;
+    const cacheKey = `${credential}\0${branch}${number === undefined ? '' : `\0${number}`}`;
     const cached = cache.get(cacheKey);
     const unavailableCachedStatus = (): PullRequestStatus | null => {
       if (cached?.status === undefined || cached.status === null) {
@@ -777,7 +788,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
         const ttl = cached.status === null ? negativeTtlMs : ttlMs;
         if (now() - cached.at < ttl) return cached.status;
       }
-      const result = await lookup(id, branch, token);
+      const result = await lookup(id, branch, token, number);
       if (rateLimitDeadline > now())
         rateLimitCooldown.until = Math.max(rateLimitCooldown.until, rateLimitDeadline);
       else rateLimitDeadline = 0;

@@ -183,7 +183,7 @@ export function createForgejoForgeProvider(options: {
     boundRef?: ForgeRepoRef,
     observationScope?: object,
   ): ForgePrService => {
-    const lookup = async (branch: string) => {
+    const lookup = async (branch: string, number?: number) => {
       try {
         const ref = boundRef ?? (await options.identityFor(repoDir)());
         if (!ref) return null;
@@ -201,6 +201,7 @@ export function createForgejoForgeProvider(options: {
             const pull = pulls
               .filter(
                 (row) =>
+                  (number === undefined || row.number === number) &&
                   row.head.ref === branch &&
                   row.head.repo?.full_name?.toLowerCase() ===
                     `${ref.owner}/${ref.repo}`.toLowerCase(),

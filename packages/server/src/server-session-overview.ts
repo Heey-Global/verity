@@ -1,3 +1,4 @@
+import { createSessionRepositoryPullRequests } from './session-repository-pull-requests.js';
 import { aggregateUsage, type AgentEvent, type RateLimitState } from '@verity/events';
 import { worktreeExists } from '@verity/session';
 import type { SequencedEvent, SessionProjectionFacts, SessionRecord } from '@verity/store';
@@ -19,6 +20,7 @@ import { startPullRequestReadyMonitor, type PushSessionContext } from './pr-read
 import { projectClonePath } from './provisioner.js';
 import { type PushFirePoints } from './push-fire-points.js';
 import { type PushRouter } from './push-router.js';
+import type { PrRepairTurns } from './server-pr-repair.js';
 import type { ServerDeps } from './server-deps.js';
 import type { ActivityProjection, SessionPrSummary, SessionSummary } from './server-types.js';
 import { createPrBackgroundPolicy } from './pr-background-policy.js';
@@ -55,10 +57,7 @@ export interface ServerSessionOverviewOptions {
   resources: Pick<ResourceObserver, 'invalidate'>;
   reconcileSessionRepairs: (projectId: string) => Promise<void>;
   sessionsBeingReaped: ReadonlySet<string>;
-  maybeDispatchPrRepairTurns: (
-    session: SessionRecord,
-    pr: PullRequestStatus | null | undefined,
-  ) => Promise<void>;
+  maybeDispatchPrRepairTurns: PrRepairTurns['maybeDispatchPrRepairTurns'];
   pushRouter: PushRouter | undefined;
   pushFirePoints: PushFirePoints | undefined;
   describePushSession: (session: SessionRecord) => Promise<PushSessionContext>;
@@ -73,6 +72,7 @@ export interface ServerSessionOverview {
   compactPr: (status: PullRequestStatus | null) => SessionPrSummary | null;
   applyPrSummaryAction: (session: SessionRecord, pr: SessionPrSummary | null) => void;
   sessionPrCache: ReturnType<typeof createSessionPrCache>;
+  resolvePullRequests: ReturnType<typeof createSessionRepositoryPullRequests>;
   sessionPrStatus: (session: SessionRecord, current?: string) => Promise<PullRequestStatus | null>;
   summarizeSessions: (sessions: readonly SessionRecord[]) => Promise<SessionSummary[]>;
   emptyProjectionFacts: () => SessionProjectionFacts;
@@ -461,6 +461,22 @@ export function createServerSessionOverview({
     }
     return null;
   };
+  const resolvePullRequests = createSessionRepositoryPullRequests(deps, branchesForSession);
+  const observedPullRequests = new Map<string, string>();
+  const observePullRequests = async (session: SessionRecord) => {
+    const rows = await resolvePullRequests(session);
+    if (!rows) return rows;
+    const snapshot = JSON.stringify(
+      rows
+        .map(({ status }) => status)
+        .sort((a, b) => a.repository.id.localeCompare(b.repository.id) || a.number - b.number),
+    );
+    if (observedPullRequests.get(session.worktree) !== snapshot) {
+      observedPullRequests.set(session.worktree, snapshot);
+      resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
+    }
+    return rows;
+  };
   const prCleanupPending = new Set<string>();
   const prVisibilityWrites = new Map<string, Promise<void>>();
   const withPrVisibility = async <T>(
@@ -563,18 +579,39 @@ export function createServerSessionOverview({
         await reconcileSessionRepairs(projectId);
       const live = new Set(allSessions.map((session) => session.worktree));
       backgroundPr.prune(live);
+      for (const worktree of observedPullRequests.keys())
+        if (!live.has(worktree)) observedPullRequests.delete(worktree);
       sessionPrCache.prune(live);
       prunePrSummaryCache(live);
       pruneBranchCache(live);
       for (const session of sessions) {
         if (prRepairStopped) break;
-        if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
+        if (
+          sessionsBeingReaped.has(session.sessionId) ||
+          (!deps.projectPullRequests && !sessionPrCache.isDue(session, true))
+        )
           continue;
         // Near quota exhaustion background discovery yields to agents and open apps.
         if (session.projectId && (await deferForgeReads(session.projectId))) continue;
         try {
           if (!(await worktreeExists(session.worktree))) continue;
-          await maybeDispatchPrRepairTurns(session, await backgroundPrStatus(session));
+          const primary = await backgroundPrStatus(session);
+          await maybeDispatchPrRepairTurns(session, primary);
+          const rows = await observePullRequests(session);
+          for (const row of rows ?? []) {
+            const pr = row.status;
+            if (pr.repository.isDefault && pr.number === primary?.number) continue;
+            await maybeDispatchPrRepairTurns(session, pr, {
+              repositoryId: pr.repository.id,
+              isDefault: pr.repository.isDefault,
+              host: row.project.kind === 'forgejo' ? 'Forgejo' : 'GitHub',
+              read: async (current) =>
+                (await resolvePullRequests(current))?.find(
+                  ({ status }) =>
+                    status.repository.id === pr.repository.id && status.number === pr.number,
+                )?.status ?? null,
+            });
+          }
         } catch (err) {
           app.log.warn({ err, sessionId: session.sessionId }, 'background PR repair check failed');
         }
@@ -587,7 +624,12 @@ export function createServerSessionOverview({
     return prRepairSweep;
   };
   app.addHook('onReady', () => {
-    if (deps.branchPrStatus === undefined && deps.branchPrStatusForBranches === undefined) return;
+    if (
+      !deps.projectPullRequests &&
+      deps.branchPrStatus === undefined &&
+      deps.branchPrStatusForBranches === undefined
+    )
+      return;
     prRepairTimer = setInterval(
       () => void sweepPrRepairs(),
       deps.pullRequestRepairPollMs ?? 30_000,
@@ -1163,6 +1205,7 @@ export function createServerSessionOverview({
     applyPrSummaryAction,
     sessionPrCache,
     sessionPrStatus,
+    resolvePullRequests,
     summarizeSessions,
     emptyProjectionFacts,
     projectionEventsFor,

@@ -687,3 +687,16 @@ migrations['0235_dependency_capacity_leases'] = capacityLeasesMigration;
 migrations['0236_session_message_recency_index'] = sessionMessageRecencyMigration;
 
 migrations['0237_project_code_permission'] = projectCodePermissionMigration;
+
+migrations['0238_session_repository_pull_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`update session_repository_workspaces
+      set pull_request = jsonb_build_array(pull_request)
+      where jsonb_typeof(pull_request) = 'object'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`update session_repository_workspaces
+      set pull_request = pull_request -> -1
+      where jsonb_typeof(pull_request) = 'array'`.execute(db);
+  },
+};

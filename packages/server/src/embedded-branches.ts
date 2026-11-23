@@ -24,9 +24,20 @@ export function createEmbeddedBranches(
     EmbeddedServerConfig,
     'repoDir' | 'hostCloneRoot' | 'dockerBaseUrl' | 'controlPlaneRunner' | 'dataVolume'
   >,
-  eventStore: Pick<EventStore, 'listSessions' | 'getProject'>,
+  eventStore: Pick<
+    EventStore,
+    'listSessions' | 'getProject' | 'sessionRepositoryWorkspaceSessionId'
+  >,
   runtime: EmbeddedBranchRuntime,
 ) {
+  const sessionForWorktree = async (worktree: string | undefined) => {
+    if (!worktree) return undefined;
+    const sessions = await eventStore.listSessions();
+    const primary = sessions.find((session) => session.worktree === worktree);
+    if (primary) return primary;
+    const owner = await eventStore.sessionRepositoryWorkspaceSessionId(worktree);
+    return sessions.find((session) => session.sessionId === owner);
+  };
   // Branch switcher for each session's worktree (#91). A dev checkout may provide
   // one global repo root; the multi-project runner deliberately sets VERITY_REPO_DIR=''
   // and instead resolves repo-wide git operations through each session worktree.
@@ -40,9 +51,7 @@ export function createEmbeddedBranches(
                 withGit: async (worktree, operation) => {
                   const docker = runtime.projectDocker;
                   if (!docker) throw new Error('Project Docker runtime is unavailable');
-                  const session = (await eventStore.listSessions()).find(
-                    (s) => s.worktree === worktree,
-                  );
+                  const session = await sessionForWorktree(worktree);
                   if (!session) throw new Error('Git requires persistent session context');
                   const project = await eventStore.getProject(
                     session.projectId ?? CONTROL_PLANE_PROJECT_ID,
@@ -99,9 +108,7 @@ export function createEmbeddedBranches(
                   // Repository helpers must run with the same privileges as the agent.
                   const index = args.indexOf('-C');
                   const path = index < 0 ? undefined : args[index + 1];
-                  const session = (await eventStore.listSessions()).find(
-                    (row) => row.worktree === path,
-                  );
+                  const session = await sessionForWorktree(path);
                   const projectDocker = runtime.projectDocker;
                   if (!session || !projectDocker)
                     throw new Error('Git operation has no project session context');

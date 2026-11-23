@@ -35,6 +35,12 @@ export interface SessionRepositoryWorkspaceRecord {
   branch: string;
   createdAt: Date;
   pullRequest?: unknown;
+  pullRequests?: unknown[];
+}
+
+function workspacePullRequests(value: unknown) {
+  const list: unknown[] = Array.isArray(value) ? value : value == null ? [] : [value];
+  return { pullRequest: list.at(-1) ?? null, pullRequests: list };
 }
 
 export function defaultProjectRepository(project: ProjectRecord): ProjectRepositoryRecord {
@@ -189,6 +195,50 @@ export class ProjectRepositoryStore {
     });
   }
 
+  async recordPullRequest(
+    projectId: string,
+    repositoryId: string,
+    branch: string,
+    pullRequest: unknown,
+    sessionId?: string,
+  ): Promise<void> {
+    const entry = sql`${JSON.stringify(pullRequest)}::jsonb`;
+    const list = sql`case jsonb_typeof(pull_request)
+      when 'array' then pull_request
+      when 'object' then jsonb_build_array(pull_request)
+      else '[]'::jsonb end`;
+    let query = this.db
+      .updateTable('session_repository_workspaces')
+      .set({
+        pull_request: sql`(
+          select coalesce(jsonb_agg(pr order by position), '[]'::jsonb)
+          from jsonb_array_elements(${list}) with ordinality as saved(pr, position)
+          where pr->>'number' is distinct from (${entry})->>'number'
+        ) || jsonb_build_array(coalesce((
+          select pr from jsonb_array_elements(${list}) as saved(pr)
+          where pr->>'number' = (${entry})->>'number'
+          limit 1
+        ), '{}'::jsonb) || ${entry})`,
+        branch,
+      })
+      .where('project_id', '=', projectId)
+      .where('repository_id', '=', repositoryId);
+    query =
+      sessionId === undefined
+        ? query.where('branch', '=', branch)
+        : query.where('session_id', '=', sessionId);
+    await query.execute();
+  }
+
+  async workspaceSessionId(worktree: string): Promise<string | undefined> {
+    const row = await this.db
+      .selectFrom('session_repository_workspaces')
+      .select('session_id')
+      .where('worktree', '=', worktree)
+      .executeTakeFirst();
+    return row?.session_id;
+  }
+
   async listWorkspaces(sessionId: string): Promise<SessionRepositoryWorkspaceRecord[]> {
     const rows = await this.db
       .selectFrom('session_repository_workspaces')
@@ -203,7 +253,7 @@ export class ProjectRepositoryStore {
       worktree: row.worktree,
       branch: row.branch,
       createdAt: row.created_at,
-      pullRequest: row.pull_request,
+      ...workspacePullRequests(row.pull_request),
     }));
   }
 
@@ -259,7 +309,7 @@ export class ProjectRepositoryStore {
         worktree: row.worktree,
         branch: row.branch,
         createdAt: row.created_at,
-        pullRequest: row.pull_request,
+        ...workspacePullRequests(row.pull_request),
       };
     });
   }

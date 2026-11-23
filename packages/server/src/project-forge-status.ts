@@ -29,6 +29,7 @@ export function createProjectForgeStatusReader(
     project: ProjectRecord,
     branch: string,
     remember = true,
+    number?: number,
   ): Promise<PullRequestStatus | null> => {
     if (project.kind === 'local' || project.kind === 'control_plane') return null;
     const provider = await providerFor(project);
@@ -39,8 +40,11 @@ export function createProjectForgeStatusReader(
       scopes.set(project.id, identity);
       while (scopes.size > 4096) scopes.delete(scopes.keys().next().value!);
     }
-    return shared.read(identity, branch, (observationScope) =>
-      provider.repositoryPrService!(project, observationScope).prStatusForBranch(branch),
+    return shared.read(
+      identity,
+      number === undefined ? branch : `${branch}\0${number}`,
+      (observationScope) =>
+        provider.repositoryPrService!(project, observationScope).prStatusForBranch(branch, number),
     );
   };
   return {

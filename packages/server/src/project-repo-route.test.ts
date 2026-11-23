@@ -65,6 +65,8 @@ afterEach(async () => {
 function setup(options: {
   store?: ProjectRepoRouteDeps['store'];
   getSession?: ProjectRepoRouteDeps['getSession'];
+  repositorySessionBranches?: ProjectRepoRouteDeps['repositorySessionBranches'];
+  pullRequestChanged?: ProjectRepoRouteDeps['pullRequestChanged'];
   currentRepositoryBranch?: ProjectRepoRouteDeps['currentRepositoryBranch'];
   kind?: ProjectRecord['kind'];
   ops?: ForgeRepositoryOperations;
@@ -107,6 +109,10 @@ function setup(options: {
     getProject: async () => project(options.kind ?? 'forgejo'),
     repositoryFor,
     ...(options.store ? { store: options.store } : {}),
+    ...(options.repositorySessionBranches
+      ? { repositorySessionBranches: options.repositorySessionBranches }
+      : {}),
+    ...(options.pullRequestChanged ? { pullRequestChanged: options.pullRequestChanged } : {}),
     ...(options.getSession ? { getSession: options.getSession } : {}),
     ...(options.openRepository ? { openRepository: options.openRepository } : {}),
     ...(options.currentRepositoryBranch
@@ -429,6 +435,30 @@ it('does not associate a viewed PR from another branch with the active workspace
   });
   expect((await call({ action: 'pr.view', number: 7, sessionId: 'session' })).statusCode).toBe(200);
   expect(remember).not.toHaveBeenCalled();
+});
+
+it('records and invalidates a created PR for a previous branch of the session', async () => {
+  const remember = vi.fn();
+  const changed = vi.fn();
+  const { call } = setup({
+    ops: operations({ createPullRequest: vi.fn().mockResolvedValue(pull) }),
+    getSession: vi.fn().mockResolvedValue({ projectId: 'p', worktree: '/wt' }),
+    currentRepositoryBranch: vi.fn().mockResolvedValue('other-branch'),
+    repositorySessionBranches: vi.fn().mockResolvedValue([pull.head]),
+    pullRequestChanged: changed,
+    store: {
+      getProjectRepository: vi.fn(),
+      listProjectRepositories: vi.fn(),
+      recordRepositoryPullRequest: remember,
+      upsertSessionRepositoryWorkspace: vi.fn(),
+    },
+  });
+  expect(
+    (await call({ action: 'pr.create', head: pull.head, title: 'Fix', sessionId: 'session' }))
+      .statusCode,
+  ).toBe(200);
+  expect(remember).toHaveBeenCalledWith('p', 'default:p', pull.head, pull, 'session');
+  expect(changed).toHaveBeenCalledWith('session', expect.objectContaining({ id: 'p' }));
 });
 
 it('shares default-repository PR creation while recording each calling session', async () => {

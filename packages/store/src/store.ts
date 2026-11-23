@@ -1327,28 +1327,16 @@ export class EventStore implements EventSink {
     );
   }
 
-  async recordRepositoryPullRequest(
-    projectId: string,
-    repositoryId: string,
-    branch: string,
-    pullRequest: unknown,
-    sessionId?: string,
-  ): Promise<void> {
-    let query = this.db
-      .updateTable('session_repository_workspaces')
-      .set({
-        pull_request: sql`case when pull_request->>'number' = (${JSON.stringify(pullRequest)}::jsonb)->>'number'
-          then pull_request || ${JSON.stringify(pullRequest)}::jsonb
-          else ${JSON.stringify(pullRequest)}::jsonb end`,
-        branch,
-      })
-      .where('project_id', '=', projectId)
-      .where('repository_id', '=', repositoryId);
-    query =
-      sessionId === undefined
-        ? query.where('branch', '=', branch)
-        : query.where('session_id', '=', sessionId);
-    await query.execute();
+  recordRepositoryPullRequest(...args: Parameters<ProjectRepositoryStore['recordPullRequest']>) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).recordPullRequest(
+      ...args,
+    );
+  }
+
+  sessionRepositoryWorkspaceSessionId(worktree: string) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).workspaceSessionId(
+      worktree,
+    );
   }
 
   listSessionRepositoryWorkspaces(sessionId: string) {

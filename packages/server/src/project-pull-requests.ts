@@ -26,7 +26,12 @@ export interface ProjectPullRequestBackend {
   /** Every open pull request; throws when the list itself cannot be read. */
   list(project: ProjectRecord): Promise<{ webUrl: string; pulls: DiscoveredPullRequest[] }>;
   /** Fresh status of the pull request whose head is `branch`. */
-  status(project: ProjectRecord, branch: string): Promise<PullRequestStatus | null>;
+  status(
+    project: ProjectRecord,
+    branch: string,
+    number?: number,
+  ): Promise<PullRequestStatus | null>;
+  invalidate?(project: ProjectRecord): Promise<void>;
   /** Merges at `expectedHeadSha`; permission refusals throw ForgeMergePermissionError. */
   merge(project: ProjectRecord, number: number, expectedHeadSha: string): Promise<boolean>;
 }

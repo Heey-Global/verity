@@ -239,6 +239,17 @@ describe('useBranches live updates', () => {
     },
   );
 
+  it('uses the legacy PR snapshot when the server omits the list', async () => {
+    const client = {
+      getBranches: jest.fn().mockResolvedValue(branches()),
+    } as unknown as VerityClient;
+    const legacy = branches();
+    rememberBranches(client, 's', legacy);
+    const hook = renderHook(() => useBranches(client, 's'));
+    expect(hook.result.current.pullRequests).toEqual([legacy.pullRequest]);
+    await advance(0);
+  });
+
   it('updates cached merge state immediately while revalidation is pending', async () => {
     const slow = deferred<BranchList>();
     const client = {

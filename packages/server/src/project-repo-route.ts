@@ -35,6 +35,8 @@ export interface ProjectRepoRouteDeps {
     repositoryId: string,
   ) => Promise<string | undefined>;
   getSession?: EventStore['getSession'];
+  repositorySessionBranches?: (sessionId: string, repositoryId: string) => Promise<string[]>;
+  pullRequestChanged?: (sessionId: string, project: ProjectRecord) => Promise<void>;
   getProject: (projectId: string) => Promise<ProjectRecord | undefined>;
   /** Undefined when the project has no usable code host (local, or connection gone). */
   repositoryFor: (project: ProjectRecord) => Promise<ProjectRepository | undefined>;
@@ -172,7 +174,13 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
       const actualBranch = sessionId
         ? await deps.currentRepositoryBranch?.(sessionId, selectedId ?? `default:${project.id}`)
         : undefined;
-      if (sessionId && deps.currentRepositoryBranch && actualBranch !== pr.head) return pr;
+      const repositoryId = selectedId ?? `default:${project.id}`;
+      const belongsToSession =
+        sessionId !== undefined &&
+        (actualBranch === pr.head ||
+          (await deps.repositorySessionBranches?.(sessionId, repositoryId))?.includes(pr.head) ===
+            true);
+      if (sessionId && deps.currentRepositoryBranch && !belongsToSession) return pr;
       if (sessionId && (selectedId === undefined || selectedId === `default:${project.id}`)) {
         const session = await deps.getSession?.(sessionId);
         if (session?.projectId === project.id)
@@ -192,8 +200,9 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
           ...pr,
           ...(dependsOn === undefined ? {} : { dependsOn }),
         },
-        actualBranch === pr.head ? sessionId : undefined,
+        belongsToSession ? sessionId : undefined,
       );
+      if (sessionId && belongsToSession) await deps.pullRequestChanged?.(sessionId, project);
       return pr;
     };
     const body = parsed.data;
