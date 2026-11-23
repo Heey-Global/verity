@@ -1,7 +1,10 @@
 import { createEmbeddedConductor } from './embedded-conductor.js';
 import { createEmbeddedAudit, createEmbeddedAuditBindings } from './embedded-audit.js';
 import { createEmbeddedProjectRuntimeBindings } from './embedded-project-runtime.js';
-import { createEmbeddedSecretUnlock } from './embedded-secret-unlock.js';
+import {
+  activateEmbeddedSecretHandoff,
+  createEmbeddedSecretUnlock,
+} from './embedded-secret-unlock.js';
 import {
   installEmbeddedLocalPreviewRecovery,
   installEmbeddedPublicPreviewRecovery,
@@ -199,6 +202,7 @@ import {
 
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
 import { createEmbeddedSessionMaintenance } from './embedded-session-maintenance.js';
+import { createEmbeddedShutdown } from './embedded-shutdown.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createSigningCapabilityRegistry } from './signing-capability.js';
 import {
@@ -226,7 +230,6 @@ import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
 import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
-import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { createEmbeddedMatrix, installEmbeddedMatrix } from './embedded-matrix.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { createEmbeddedBackup } from './embedded-backup.js';
@@ -1465,27 +1468,13 @@ export async function buildEmbeddedServer(
     authRegistry,
     dopplerCredentialFor,
   });
-  // Adopt the handed-off key (ADR 0008 D8) only now that everything is built.
-  // Every component above was therefore constructed against a sealed store, the
-  // way it is on an interactive boot, and the key goes in through the same door
-  // an operator unlock uses — the very callback `onSecretUnlocked` runs.
-  if (handedOffKeyMaterial !== undefined) {
-    await adoptHandedOffSecretKey({
-      cipher: secretCipher,
-      material: handedOffKeyMaterial,
-      activate: async () => {
-        await projectAgentGatewayIdentity();
-        // The candidate constructed every component against a sealed store, so the
-        // Runner identity publish was deferred exactly as on an interactive boot.
-        // This callback IS the update path's unlock — carry it out here too, or the
-        // promoted Server runs without Runner identity until some later turn
-        // happens to refresh it. Best-effort for the same reason the boot path is:
-        // a certificate must never cost the key handover it rides in on.
-        await publishRunnerIdentity('key handover');
-        await codexModelCatalog?.refresh();
-      },
-    });
-  }
+  await activateEmbeddedSecretHandoff({
+    secretCipher,
+    handedOffKeyMaterial,
+    projectAgentGatewayIdentity,
+    publishRunnerIdentity,
+    codexModelCatalog,
+  });
   // A sealed credentials read triggers feature revocation. Wait for key handover;
   // interactive boots start the client through onSecretUnlocked instead.
   if (!secretCipher.isSealed()) uplinkControl?.start();
@@ -1602,9 +1591,6 @@ export async function buildEmbeddedServer(
   // guaranteed to receive the handle that can stop this walk.
   const transcriptSweep = sessionMaintenance.start();
   sessionCleanupWorker?.start();
-  // Latch so a double SIGINT/SIGTERM (or any repeat call) coalesces onto one
-  // teardown instead of double-closing the app/db.
-  let closing: Promise<void> | undefined;
   return {
     app,
     ...(embeddedSecretJobs !== undefined ? { secretJobs: embeddedSecretJobs } : {}),
@@ -1612,19 +1598,17 @@ export async function buildEmbeddedServer(
     secretKeyHandoff: {
       exportKeyMaterial: () => secretCipher.exportKeyMaterial(),
     },
-    close: (options = {}) =>
-      (closing ??= (async () => {
-        // Latched by the first close call, matching the coalesced teardown below.
-        // Only standby quiescence is a handoff; SIGTERM and administrative stops
-        // retain destructive relay/capability cleanup.
-        preserveProjectRelaysOnClose = options.preserveProjectRelays === true;
-        googleSlidesTool.close();
-        await stopAgentGatewayCredentialProjection();
-        await stopRunnerSupervisorReconciler();
-        await agentGatewaySynchronizer?.close();
-        await app.close();
-        await sessionMaintenance.close();
-        await db.destroy();
-      })()),
+    close: createEmbeddedShutdown({
+      closeGoogleSlides: () => googleSlidesTool.close(),
+      stopAgentGatewayCredentialProjection,
+      stopRunnerSupervisorReconciler,
+      closeAgentGatewaySynchronizer: () => agentGatewaySynchronizer?.close(),
+      closeApp: () => app.close(),
+      closeSessionMaintenance: () => sessionMaintenance.close(),
+      destroyDatabase: () => db.destroy(),
+      setPreserveProjectRelays: (preserve) => {
+        preserveProjectRelaysOnClose = preserve;
+      },
+    }),
   };
 }
