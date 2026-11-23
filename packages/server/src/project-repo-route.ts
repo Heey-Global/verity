@@ -167,6 +167,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
     if (repository === undefined)
       return reply.code(503).send({ error: 'the code host connection is unavailable' });
     const ops = repository.operations;
+    const body = parsed.data;
     const remember = async (
       pr: Awaited<ReturnType<typeof ops.createPullRequest>>,
       dependsOn?: string[],
@@ -176,6 +177,10 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
         pr.headRepository?.toLowerCase() !== `${project.owner}/${project.repo}`.toLowerCase()
       )
         return pr;
+      if (sessionId || body.action !== 'pr.create') {
+        const defaultBranch = await ops.defaultBranch().catch(() => undefined);
+        if (defaultBranch === undefined || pr.head === defaultBranch) return pr;
+      }
       const actualBranch = sessionId
         ? await deps.currentRepositoryBranch?.(sessionId, selectedId ?? `default:${project.id}`)
         : undefined;
@@ -211,11 +216,6 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
       if (sessionId && belongsToSession) await deps.pullRequestChanged?.(sessionId, project);
       return pr;
     };
-    const rememberExisting = async (pr: Awaited<ReturnType<typeof ops.createPullRequest>>) => {
-      const defaultBranch = await ops.defaultBranch().catch(() => undefined);
-      return defaultBranch === undefined || pr.head === defaultBranch ? pr : remember(pr);
-    };
-    const body = parsed.data;
     try {
       switch (body.action) {
         case 'pr.create': {
@@ -261,14 +261,14 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
           );
           if (found === null) return reply.code(404).send({ error: 'no pull request found' });
           if (body.action === 'pr.view')
-            return { host: repository.hostName, pullRequest: await rememberExisting(found) };
+            return { host: repository.hostName, pullRequest: await remember(found) };
           if (found.state !== 'open')
             return reply
               .code(409)
               .send({ error: `pull request #${found.number} is ${found.state}` });
           return {
             host: repository.hostName,
-            pullRequest: await rememberExisting(await ops.markPullRequestReady(found.number)),
+            pullRequest: await remember(await ops.markPullRequestReady(found.number)),
           };
         }
         case 'issue.list': {

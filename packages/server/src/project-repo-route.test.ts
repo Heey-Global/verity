@@ -437,7 +437,7 @@ it('does not associate a viewed PR from another branch with the active workspace
   expect(remember).not.toHaveBeenCalled();
 });
 
-it('marks a PR from the default branch ready without associating it with the session', async () => {
+it('does not associate an existing default-branch PR with the session', async () => {
   const shared = { ...pull, head: 'main' };
   const remember = vi.fn();
   const markPullRequestReady = vi.fn().mockResolvedValue(shared);
@@ -461,6 +461,11 @@ it('marks a PR from the default branch ready without associating it with the ses
     200,
   );
   expect(markPullRequestReady).toHaveBeenCalledWith(7);
+  expect(
+    (await call({ action: 'pr.create', title: 'Retry', head: 'main', sessionId: 'session' }))
+      .statusCode,
+  ).toBe(200);
+  expect((await call({ action: 'pr.view', number: 7, sessionId: 'session' })).statusCode).toBe(200);
   expect(remember).not.toHaveBeenCalled();
 });
 
