@@ -17,7 +17,7 @@ import { holdsCode } from './session-request-addressees.js';
  */
 export type ChangeSubmissionStatus = 'waiting' | 'checking' | 'adding' | 'added';
 
-export interface ChangeSubmissionPerson {
+interface ChangeSubmissionPerson {
   id: string;
   /** Absent when the person chose no display name. */
   name?: string;
@@ -34,7 +34,7 @@ export interface ChangeSubmissionView {
 export type PullRequestPhase = 'open' | 'merged' | 'closed';
 
 /** The session's pull request, as far as a submission's status needs it. */
-export interface SubmissionPullRequest {
+interface SubmissionPullRequest {
   phase: PullRequestPhase;
   url?: string | undefined;
   headSha?: string | undefined;
@@ -75,7 +75,7 @@ export type ChangeSubmissionStore = Pick<
 >;
 
 /** Describes submissions, reading who wrote since and their rights once per call. */
-export async function describeSubmissions(
+async function describeSubmissions(
   store: ChangeSubmissionStore,
   entries: readonly {
     submission: ChangeSubmission;

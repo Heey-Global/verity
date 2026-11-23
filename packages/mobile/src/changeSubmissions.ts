@@ -9,7 +9,7 @@ import type { TransportRequestInit } from './api.js';
 const personSchema = z.object({ id: z.string().min(1), name: z.string().optional() });
 export type ChangeSubmissionPerson = z.infer<typeof personSchema>;
 
-export const changeSubmissionSchema = z.object({
+const changeSubmissionSchema = z.object({
   status: z.enum(['waiting', 'checking', 'adding', 'added']),
   submittedBy: personSchema,
   /** The first member with Code who wrote in the session after the submission. */
