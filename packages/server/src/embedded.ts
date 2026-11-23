@@ -33,6 +33,7 @@ import { createEmbeddedSecretJobs, installEmbeddedSecretJobs } from './embedded-
 import {
   createEmbeddedUplink,
   createEmbeddedUplinkBindings,
+  installEmbeddedTeamOutbox,
   createEmbeddedTeamSharingBindings,
 } from './embedded-uplink.js';
 import { createEmbeddedDocker } from './embedded-docker.js';
@@ -64,7 +65,10 @@ import { createEmbeddedPreviewMutations } from './embedded-preview-mutations.js'
 import { createEmbeddedProvisioning } from './embedded-provisioning.js';
 import type { DeprovisionerImpl } from './deprovisioner.js';
 import { MaintenanceImages } from './maintenance-image.js';
-import { installPersonalSandboxSleep } from './personal-sandbox-sleep.js';
+import {
+  installEmbeddedPersonalSandboxSleep,
+  startEmbeddedStarterProject,
+} from './embedded-project-startup.js';
 import { resolveTurnSandbox } from './turn-sandbox.js';
 import { sandboxIdentity, sandboxNetworkName } from './sandbox-identity.js';
 import {
@@ -133,7 +137,6 @@ import {
 } from './embedded-build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
-import { ensureStarterProject } from './welcome-session.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
@@ -217,7 +220,6 @@ import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
-import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
 import { createEmbeddedMatrix, installEmbeddedMatrix } from './embedded-matrix.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
@@ -820,10 +822,7 @@ export async function buildEmbeddedServer(
     }));
   }
 
-  // Hoisted so the runner-transport factory (ADR 0006 Stage 2.2-prep) can close
-  // over the SAME bus instance the control plane's WS subscribers/Conductor use —
-  // events the FileTailRunnerClient republishes off the tailed event file must
-  // reach the exact bus the live stream reads from, not a second instance.
+  // Runner transport and the control plane share the event bus for live streams.
   const bus = new InMemoryEventBus();
   // Declared before discovery, whose scans feed its orphan sweep.
   let managedDevServerManager: ManagedDevServerManager | undefined;
@@ -1403,14 +1402,7 @@ export async function buildEmbeddedServer(
     },
   });
   await installEmbeddedTrustedCli(app, { trustedCliOutput });
-  // A person's own sandbox sleeps once nothing needs it (ADR 0023 §4), so a
-  // member's container uses memory only while that member works.
-  installPersonalSandboxSleep(app, {
-    store: eventStore,
-    hasRunningServersFor: async (projectId, userId) =>
-      managedDevServerManager?.hasRunningServersFor(projectId, userId),
-    sleepSandbox: () => provisioner?.sleepPersonalSandbox?.bind(provisioner),
-  });
+  installEmbeddedPersonalSandboxSleep(app, eventStore, managedDevServerManager, provisioner);
   installEmbeddedBuildStorage(app, { config, buildStorage, provisioner, dependencyCapacity });
   installEmbeddedDockerExecDiagnostics(app);
   app.addHook('onClose', () => listenerDiscovery?.close());
@@ -1420,30 +1412,9 @@ export async function buildEmbeddedServer(
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
   void listenerDiscovery?.reconcile();
-  // A fresh installation provisions its starter project now, so the sandbox image
-  // is pulled while the operator is still onboarding (see welcome-session.ts).
-  const starterProvisioner = provisioner;
-  if (starterProvisioner !== undefined) {
-    void ensureStarterProject({
-      store: eventStore,
-      provision: (projectId) =>
-        starterProvisioner.provision(projectId, {
-          initiator: { kind: 'system', trigger: 'welcome_project' },
-        }),
-      log: app.log,
-    });
-  }
+  startEmbeddedStarterProject(app, eventStore, provisioner);
   app.addHook('onClose', () => claudeCredentialSync.close());
-  if (uplinkControl !== undefined) {
-    // Deliver queued team changes to Uplink once it negotiated team v1.
-    installTeamOutbox(app, {
-      team: eventStore.projectTeam,
-      uplink: uplinkControl,
-      identityKey: () => config.devicePairing?.identity().identityKey,
-      log: app.log,
-      isSealed: (error) => error instanceof SealedError,
-    });
-  }
+  installEmbeddedTeamOutbox(app, eventStore.projectTeam, uplinkControl, config.devicePairing);
   let preserveProjectRelaysOnClose = false;
   app.addHook('onClose', () =>
     preserveProjectRelaysOnClose
