@@ -104,7 +104,11 @@ export function branchesSnapshotWriter(
     if (cache.versions.get(sessionId) !== version) return;
     const previous = cache.snapshots.get(sessionId);
     const pullRequests =
-      value.pullRequests === null ? (previous?.pullRequests ?? null) : value.pullRequests;
+      value.pullRequests === null
+        ? (previous?.pullRequests?.map((row) =>
+            row.phase === 'open' ? { ...row, mergeable: null, pipeline: 'unknown' as const } : row,
+          ) ?? null)
+        : value.pullRequests;
     remember(cache, sessionId, { ...value, pullRequests });
   };
 }

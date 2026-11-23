@@ -97,7 +97,7 @@ export function createEmbeddedRepositoryPullRequests(
       };
     },
     status: async (project, branch, number) =>
-      readProjectStatus(project, branch, await isDefaultRepository(project), number),
+      readProjectStatus(project, branch, await isDefaultRepository(project), number, true),
     defaultBranch: async (project) => {
       const key = JSON.stringify([
         project.id,

@@ -458,6 +458,8 @@ export function registerSessionMergeRoutes(
                 settled?.number === number && settled.phase === 'merged'
                   ? (settled.baseRef ?? mergedBaseRef)
                   : mergedBaseRef;
+              if (target && destination === undefined)
+                throw new Error('Merged PR destination is unavailable');
               const { base, deletedBranch, skipped } = await branches.resetToMergedBase(worktree, {
                 ...(destination === undefined ? {} : { base: destination }),
                 ...(target?.head && approvedRevision

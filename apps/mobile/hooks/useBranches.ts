@@ -194,7 +194,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
                 res.pullRequests === null
                   ? (cachedBranches(client, sessionId)?.pullRequests ?? null)
                   : res.pullRequests;
-              publishSnapshot({ ...res, pullRequests });
+              publishSnapshot(res);
               setCurrent(res.current);
               setSwitchable(res.switchable);
               setPreviewable(res.previewable ?? []);

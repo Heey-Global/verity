@@ -67,10 +67,7 @@ export function createSessionRepositoryPullRequests(
             ? await projectPullRequests.defaultBranch(target).catch(() => null)
             : (repository.defaultBranch ?? 'main');
           const readStatus = (head: string, number?: number) =>
-            projectPullRequests.status(target, head, number).catch((err: unknown) => {
-              if (repositoryId !== undefined) throw err;
-              return null;
-            });
+            projectPullRequests.status(target, head, number);
           const statuses = new Map<number, { status: PullRequestStatus; head?: string }>();
           for (const [number, head] of recorded) {
             if (signal?.aborted) break;
@@ -78,7 +75,10 @@ export function createSessionRepositoryPullRequests(
             const status = await readStatus(head, number);
             if (status?.number === number) statuses.set(number, { status, head });
           }
-          if (base === null && pullRequestNumber !== undefined && !recorded.has(pullRequestNumber))
+          if (
+            base === null &&
+            (pullRequestNumber === undefined || !recorded.has(pullRequestNumber))
+          )
             throw new Error('Repository base branch unavailable');
           if (
             base !== null &&

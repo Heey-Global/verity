@@ -30,10 +30,14 @@ export function createProjectForgeStatusReader(
     branch: string,
     remember = true,
     number?: number,
+    reportUnavailable = false,
   ): Promise<PullRequestStatus | null> => {
     if (project.kind === 'local' || project.kind === 'control_plane') return null;
     const provider = await providerFor(project);
-    if (!provider?.repositoryPrService) return null;
+    if (!provider?.repositoryPrService) {
+      if (reportUnavailable) throw new Error('Forge pull request status unavailable');
+      return null;
+    }
     const identity = await statusIdentity(project, provider);
     if (remember) {
       scopes.delete(project.id);
@@ -45,6 +49,7 @@ export function createProjectForgeStatusReader(
       number === undefined ? branch : `${branch}\0${number}`,
       (observationScope) =>
         provider.repositoryPrService!(project, observationScope).prStatusForBranch(branch, number),
+      reportUnavailable,
     );
   };
   return {

@@ -68,6 +68,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       id: ForgeStatusIdentity,
       branch: string,
       load: (observationScope: object) => Promise<PullRequestStatus | null>,
+      reportUnavailable = false,
     ): Promise<PullRequestStatus | null> {
       const scopeKey = scope(id);
       let observation = scopes.get(scopeKey);
@@ -77,13 +78,19 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       }
       const generation = observation;
       const branchKey = `${scope(id)}:branch:${branch}`;
-      const key = branchKey;
+      const key = reportUnavailable ? `${branchKey}\0report-unavailable` : branchKey;
       const headKey = branchKey.split('\0')[0]!;
       const epoch = branchEpochs.get(headKey) ?? 0;
       const running = pending.get(key);
       if (running) return running;
       const previous = entries.get(key);
-      if (previous && now() < previous.nextReadAt) return structuredClone(previous.value);
+      const check = (value: PullRequestStatus | null, failures: number) => {
+        if (reportUnavailable && value === null && failures > 0)
+          throw new Error('Forge pull request status unavailable');
+        return value;
+      };
+      if (previous && now() < previous.nextReadAt)
+        return structuredClone(check(previous.value, previous.failures));
       generation.readers++;
       pruneScopes();
       const read = (async () => {
@@ -123,7 +130,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
         entries.set(key, entry);
         // Bound retained data even when projects or branches disappear.
         while (entries.size > 4096) entries.delete(entries.keys().next().value!);
-        return value;
+        return check(value, failures);
       })();
       pending.set(key, read);
       try {
