@@ -21,7 +21,7 @@ it('records who started a session, so its requests are theirs', async () => {
     const created = await asMara.inject({ method: 'POST', url: '/sessions', payload: {} });
     expect(created.statusCode, created.body).toBe(201);
     const { sessionId } = created.json<{ sessionId: string }>();
-    expect((await ctx.store.sessionPeople.owners([sessionId])).get(sessionId)).toBe('mara');
+    expect((await ctx.store.sessionPeople.owners([sessionId])).get(sessionId)).toEqual(['mara']);
   } finally {
     await asMara.close();
   }
