@@ -52,6 +52,7 @@ export function createGitHubRepositoryOperations(options: {
   project: Pick<ProjectRecord, 'owner' | 'repo'>;
   /** Repository-scoped installation token; undefined when GitHub is not configured. */
   token: () => Promise<string | undefined>;
+  metadataToken?: () => Promise<string | undefined>;
   fetch?: HttpFetch;
 }): ForgeRepositoryOperations {
   const { project } = options;
@@ -63,8 +64,9 @@ export function createGitHubRepositoryOperations(options: {
     action: string,
     path: string,
     init: { method?: string; body?: unknown } = {},
+    mintToken = options.token,
   ): Promise<T> => {
-    const token = await options.token();
+    const token = await mintToken();
     if (!token) throw new ForgeOperationError(`${action}: GitHub is not connected`, 502);
     let response;
     try {
@@ -122,7 +124,12 @@ export function createGitHubRepositoryOperations(options: {
         path,
       ),
     defaultBranch: async () => {
-      const repo = await request<{ default_branch?: string }>('repository', repoPath);
+      const repo = await request<{ default_branch?: string }>(
+        'repository',
+        repoPath,
+        {},
+        options.metadataToken,
+      );
       if (!repo.default_branch)
         throw new ForgeOperationError('repository has no default branch', 409);
       return repo.default_branch;

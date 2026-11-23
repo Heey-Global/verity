@@ -315,6 +315,11 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
       createGitHubRepositoryOperations({
         project,
         token: () => opts.projectTokenMint({ owner: project.owner, repo: project.repo }),
+        metadataToken: () =>
+          (opts.repositoryStatusTokenMint ?? opts.projectTokenMint)({
+            owner: project.owner,
+            repo: project.repo,
+          }),
         ...fetchOpt,
       }),
     listRepositories: () => installation.listInstallationRepos(),

@@ -21,6 +21,21 @@ type ResolvedPullRequest = {
   project: ProjectRecord;
 };
 
+async function untilAborted<T>(read: Promise<T>, signal: AbortSignal): Promise<T> {
+  let rejectRead: (reason: unknown) => void = () => {};
+  const onAbort = () => rejectRead(signal.reason);
+  const interrupted = new Promise<never>((_, reject) => {
+    rejectRead = reject;
+  });
+  signal.addEventListener('abort', onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  try {
+    return await Promise.race([read, interrupted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 export function createSessionRepositoryPullRequests(
   { eventStore, projectPullRequests }: Pick<ServerDeps, 'eventStore' | 'projectPullRequests'>,
   branchesForSession: (session: SessionRecord) => Promise<GitBranchService | undefined>,
@@ -32,25 +47,28 @@ export function createSessionRepositoryPullRequests(
   const previous = new Map<string, ResolvedPullRequest[]>();
   const resolve = async (
     session: SessionRecord,
-    legacy?: PullRequestStatus | null,
-    signal?: AbortSignal,
+    legacy: PullRequestStatus | null | undefined,
+    signal: AbortSignal,
     repositoryId?: string,
     pullRequestNumber?: number,
   ) => {
     if (!session.projectId || !projectPullRequests) return undefined;
-    const project = await eventStore.getProject(session.projectId);
+    const project = await untilAborted(eventStore.getProject(session.projectId), signal);
     if (!project || project.kind === 'control_plane') return undefined;
-    const [repositories, workspaces] = await Promise.all([
-      eventStore.listProjectRepositories(project.id),
-      eventStore.listSessionRepositoryWorkspaces(session.sessionId),
-    ]);
+    const [repositories, workspaces] = await untilAborted(
+      Promise.all([
+        eventStore.listProjectRepositories(project.id),
+        eventStore.listSessionRepositoryWorkspaces(session.sessionId),
+      ]),
+      signal,
+    );
     let branchService: ReturnType<typeof branchesForSession> | undefined;
     const results = await Promise.all(
       repositories
         .filter((repo) => repositoryId === undefined || repo.id === repositoryId)
         .map(async (repository) => {
           const key = JSON.stringify([session.sessionId, repository.id]);
-          try {
+          const readRepository = async () => {
             if (repository.kind !== 'github' && repository.kind !== 'forgejo') return [];
             const workspace = workspaces.find((row) => row.repositoryId === repository.id);
             const worktree = repository.isDefault ? session.worktree : workspace?.worktree;
@@ -175,6 +193,9 @@ export function createSessionRepositoryPullRequests(
               if (previous.size > 512) previous.delete(previous.keys().next().value!);
             }
             return rows;
+          };
+          try {
+            return await untilAborted(readRepository(), signal);
           } catch (err) {
             if (repositoryId !== undefined) throw err;
             return (previous.get(key) ?? []).map(unavailable);
@@ -197,19 +218,10 @@ export function createSessionRepositoryPullRequests(
       () => deadline.abort(new Error('Repository pull request lookup timed out')),
       15_000,
     );
-    let onAbort: () => void = () => {};
-    const interrupted = new Promise<never>((_, reject) => {
-      onAbort = () => reject(readSignal.reason);
-      readSignal.addEventListener('abort', onAbort, { once: true });
-    });
     try {
-      return await Promise.race([
-        resolve(session, legacy, readSignal, repositoryId, pullRequestNumber),
-        interrupted,
-      ]);
+      return await resolve(session, legacy, readSignal, repositoryId, pullRequestNumber);
     } finally {
       clearTimeout(timer);
-      readSignal.removeEventListener('abort', onAbort);
     }
   };
 }
