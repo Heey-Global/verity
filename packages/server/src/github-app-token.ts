@@ -383,8 +383,13 @@ export function createGitHubAppProjectTokenMint(
       if (minted !== undefined) await record(minted.repositories, id);
       return minted?.token;
     };
+    // A record speaks for itself: `null` means that project is not bound yet and
+    // learns its own ID by name. Only a caller holding bare coordinates (no field
+    // at all) borrows the ID recorded for the repository stored under that name.
     const knownId =
-      project.githubRepositoryId ?? (await identity?.lookup(requested.owner, requested.repo));
+      project.githubRepositoryId === undefined
+        ? await identity?.lookup(requested.owner, requested.repo)
+        : project.githubRepositoryId;
     if (knownId) return mintById(knownId);
     try {
       const minted = await requestGitHubAppInstallationToken(opts, {

@@ -901,8 +901,10 @@ export async function syncProjectsFromInstallation(
     if (r.id !== undefined && current !== undefined && !current.githubRepositoryId)
       await reconcile({ requestedOwner: owner, requestedRepo: repo, id: r.id, owner, repo });
     // A different repository now answers to a name a bound project still carries:
-    // it is not that project, so none of its state (archive, naming) is applied
-    // to it. It gets its own placeholder once the bound project has moved on.
+    // it is not that project, so none of its state (archive, naming) is applied to
+    // it. Its placeholder appears once the bound project follows a rename; if the
+    // bound repository left the installation instead, the newcomer can still be
+    // added explicitly and takes the next instance of the name.
     if (r.id !== undefined && current?.githubRepositoryId && current.githubRepositoryId !== r.id)
       continue;
     const legacyNames = [`dev-${owner}--${repo}`, `dev-${owner}-${repo}`];

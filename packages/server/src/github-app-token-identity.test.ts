@@ -133,6 +133,38 @@ describe('rename-stable project token mint', () => {
     expect(known.observations).toEqual([]);
   });
 
+  it('lets an unbound project learn its own ID instead of borrowing one by name', async () => {
+    // Another project under `deep-ocr` is bound to 4242, which was renamed away; a
+    // newcomer (9999) now holds the name and has a project of its own.
+    const gh = github({
+      repositories: new Map([
+        [4242, 'ocr-engine'],
+        [9999, 'deep-ocr'],
+      ]),
+    });
+    const known = identity({ 'heey-global/deep-ocr': '4242' });
+    await expect(
+      mint(
+        gh.fetch,
+        known.store,
+      )({
+        owner: 'heey-global',
+        repo: 'deep-ocr',
+        githubRepositoryId: null,
+      }),
+    ).resolves.toBe('token-9999');
+    expect(tokenRequests(gh.requests)).toEqual([{ repositories: ['deep-ocr'] }]);
+    expect(known.observations).toEqual([
+      {
+        requestedOwner: 'heey-global',
+        requestedRepo: 'deep-ocr',
+        id: '9999',
+        owner: 'heey-global',
+        repo: 'deep-ocr',
+      },
+    ]);
+  });
+
   it('learns the ID from the first token minted by name', async () => {
     const gh = github({ repositories: new Map([[4242, 'deep-ocr']]) });
     const known = identity();
