@@ -403,8 +403,6 @@ function sessionItems(
     });
   }
 
-  // Merge-ready only when the session's own merge button would offer Merge.
-  const pr = session.pullRequest;
   // Submitted changes wait on everyone with Code until one of them writes in the
   // session; the server then addresses them to that person alone (ADR 0023).
   const submission = session.changeSubmission;
@@ -431,6 +429,8 @@ function sessionItems(
     });
   }
 
+  // Merge-ready only when the session's own merge button would offer Merge.
+  const pr = session.pullRequest;
   if (flags.includes('merge_ready') && pr) {
     const button = pullRequestMergeButton(pr, { merging: false, mergeRejected: false });
     items.push({

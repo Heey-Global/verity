@@ -190,10 +190,12 @@ export function registerChangeSubmissionRoutes(
   app: FastifyInstance,
   deps: ChangeSubmissionRouteDeps,
 ): void {
-  const describe = async (session: SessionRecord) => {
+  /** `strict` lets a failed pull request read through instead of reading as none. */
+  const describe = async (session: SessionRecord, strict = false) => {
     const submission = await deps.store.changeSubmissions.get(session.sessionId);
     if (submission === undefined) return null;
-    const pr = await deps.pullRequest?.(session).catch(() => undefined);
+    const read = deps.pullRequest?.(session);
+    const pr = strict ? await read : await read?.catch(() => undefined);
     const views = await describeSubmissions(deps.store, [
       { submission, projectId: session.projectId, pr },
     ]);
@@ -309,8 +311,15 @@ export function registerChangeSubmissionRoutes(
     ) {
       return reply.code(403).send({ error: 'Only the person who submitted can withdraw.' });
     }
-    // What already landed cannot be taken back.
-    if ((await describe(session))?.status === 'added') {
+    // What already landed cannot be taken back, and without the pull request it
+    // is unknown whether it did.
+    let current: ChangeSubmissionView | null;
+    try {
+      current = await describe(session, true);
+    } catch {
+      return reply.code(503).send({ error: 'Could not read the pull request. Try again.' });
+    }
+    if (current?.status === 'added') {
       return reply.code(409).send({ error: 'These changes were added already.' });
     }
     if (!(await deps.store.changeSubmissions.settle(id, 'withdrawn'))) {

@@ -255,7 +255,7 @@ describe('change submission routes', () => {
     }
   });
 
-  it('refuses to submit while the pull request cannot be read', async () => {
+  it('refuses to submit or withdraw while the pull request cannot be read', async () => {
     const app = Fastify();
     app.addHook('onRequest', async (request) => {
       request.localUserId = 'mara';
@@ -271,6 +271,14 @@ describe('change submission routes', () => {
       const response = await app.inject({ method: 'POST', url: '/sessions/s1/change-submission' });
       expect(response.statusCode).toBe(503);
       expect(await ctx.store.changeSubmissions.get('s1')).toBeUndefined();
+      // Nor withdraw: the changes may have landed already.
+      await ctx.store.changeSubmissions.submit({ sessionId: 's1', userId: 'mara' });
+      const withdrawal = await app.inject({
+        method: 'DELETE',
+        url: '/sessions/s1/change-submission',
+      });
+      expect(withdrawal.statusCode).toBe(503);
+      expect((await ctx.store.changeSubmissions.get('s1'))?.state).toBe('submitted');
     } finally {
       await app.close();
     }

@@ -449,7 +449,10 @@ export function registerSessionMergeRoutes(
     }
     const { base, branch } = merged;
     // Saving adds submitted changes to the project; their submission is done.
-    await deps.eventStore.changeSubmissions.settle(id, 'added').catch(() => false);
+    await deps.eventStore.changeSubmissions.settle(id, 'added').catch((error: unknown) => {
+      app.log.warn({ err: error }, 'verity: could not settle the submitted changes');
+      return false;
+    });
     // The merge itself has landed; what follows is worktree housekeeping that
     // detaches HEAD and drops the merged branch, so it must never run beside a live
     // turn. Unlike the merge it does not have to happen now, so it waits for idle
