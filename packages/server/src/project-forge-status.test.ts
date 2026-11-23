@@ -131,3 +131,11 @@ it('keeps healthy GitHub PRs without CI fresh through the production reader', as
     await vi.advanceTimersByTimeAsync(15_001);
   }
 });
+
+it('distinguishes a cold failed observation from a confirmed miss', async () => {
+  const { reader, project, json } = fixture();
+  json.mockRejectedValueOnce(new Error('forge temporarily unavailable'));
+  const read = () => reader.readProjectStatus(project, 'feature', true, undefined, true);
+  await expect(read()).rejects.toThrow('Forge pull request status unavailable');
+  await expect(read()).rejects.toThrow('Forge pull request status unavailable');
+});

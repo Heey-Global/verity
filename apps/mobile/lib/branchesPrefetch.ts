@@ -79,6 +79,18 @@ export function seedSessionBranches(client: VerityClient, session: SessionSummar
     current: session.branch ?? cached?.current ?? '',
     currentPr: pullRequest?.number ?? null,
     pullRequest,
+    pullRequests:
+      cached?.pullRequests?.flatMap((row) => {
+        if (!row.repository.isDefault || row.url !== (known?.url ?? cached?.pullRequest?.url))
+          return [row];
+        if (!pullRequest) return [];
+        const updated = { ...row, ...pullRequest };
+        return [
+          row.observationFailed && updated.phase === 'open'
+            ? { ...updated, mergeable: null, pipeline: 'unknown', observationFailed: true }
+            : updated,
+        ];
+      }) ?? cached?.pullRequests,
   });
 }
 
@@ -95,7 +107,17 @@ export function branchesSnapshotWriter(
     cache.versions.delete(cache.versions.keys().next().value!);
   }
   return (value) => {
-    if (cache.versions.get(sessionId) === version) remember(cache, sessionId, value);
+    if (cache.versions.get(sessionId) !== version) return;
+    const previous = cache.snapshots.get(sessionId);
+    const pullRequests =
+      value.pullRequests === null
+        ? (previous?.pullRequests?.map((row) =>
+            row.phase === 'open'
+              ? { ...row, mergeable: null, pipeline: 'unknown' as const, observationFailed: true }
+              : row,
+          ) ?? null)
+        : value.pullRequests;
+    remember(cache, sessionId, value.pullRequests === null ? { ...value, pullRequests } : value);
   };
 }
 

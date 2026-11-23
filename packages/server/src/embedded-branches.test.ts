@@ -8,7 +8,11 @@ it('defers runtime reads until a branch operation and observes later initializat
   const listSessions = vi.fn(async () => []);
   const branches = createEmbeddedBranches(
     { hostCloneRoot: '/clones', dockerBaseUrl: 'http://docker.test' },
-    { listSessions, getProject: async () => undefined },
+    {
+      listSessions,
+      getProject: async () => undefined,
+      sessionRepositoryWorkspaceSessionId: async () => undefined,
+    },
     {
       get projectDocker() {
         return readDocker();

@@ -51,6 +51,7 @@ export function createEmbeddedRepositoryPullRequests(
       stored.repo === project.repo
     );
   };
+  const defaultBranches = new Map<string, { read: Promise<string>; expires: number }>();
   const projectPullRequests: ProjectPullRequestBackend = {
     list: async (project) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
@@ -80,7 +81,7 @@ export function createEmbeddedRepositoryPullRequests(
           if (pull.fork) continue;
           let timer: NodeJS.Timeout | undefined;
           const status = await Promise.race([
-            readProjectStatus(project, pull.branch, remember).catch(() => null),
+            readProjectStatus(project, pull.branch, remember, pull.number).catch(() => null),
             new Promise<null>((resolve) => {
               timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
             }),
@@ -95,8 +96,43 @@ export function createEmbeddedRepositoryPullRequests(
         pulls: rows.map((pull, index) => ({ ...pull, status: statuses[index] ?? null })),
       };
     },
-    status: async (project, branch) =>
-      readProjectStatus(project, branch, await isDefaultRepository(project)),
+    status: async (project, branch, number) =>
+      readProjectStatus(project, branch, await isDefaultRepository(project), number, true),
+    defaultBranch: async (project) => {
+      const key = JSON.stringify([
+        project.id,
+        project.kind,
+        project.forgeConnectionId,
+        project.owner,
+        project.repo,
+      ]);
+      const cached = defaultBranches.get(key);
+      const now = Date.now();
+      if (cached && cached.expires > now) return cached.read;
+      const read = (async () => {
+        const provider = await projectForgeProvider(eventStore, githubForge, project);
+        if (!provider) throw new Error('Repository base branch unavailable');
+        return provider.repositoryOperations(project).defaultBranch();
+      })();
+      const entry = { read, expires: now + 60_000 };
+      defaultBranches.set(key, entry);
+      while (defaultBranches.size > 512)
+        defaultBranches.delete(defaultBranches.keys().next().value!);
+      void read.catch(() => {
+        entry.expires = Math.min(entry.expires, Date.now() + 5_000);
+      });
+      return read;
+    },
+    hasOpenPullRequest: async (project, branch) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider) throw new Error('Pull request lookup unavailable');
+      const pull = await provider.repositoryOperations(project).findPullRequest({ head: branch });
+      return pull?.state === 'open';
+    },
+    invalidate: async (project) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (provider) invalidateStatus(await statusIdentity(project, provider));
+    },
     merge: async (project, number, expectedHeadSha) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
       if (!provider?.repositoryPrService) return false;
@@ -203,7 +239,7 @@ export function createEmbeddedRepositoryAnalysisBindings(ctx: {
       const statuses = [];
       for (const pull of page.pulls) {
         if (pull.fork) continue;
-        const status = await readProjectStatus(project, pull.branch);
+        const status = await readProjectStatus(project, pull.branch, true, pull.number);
         if (status && status.number === pull.number && status.headSha === pull.sha)
           statuses.push({ branch: pull.branch, status });
         else await eventStore.repairs.invalidateObservation(project.id, `pr:${pull.number}`);
@@ -227,7 +263,12 @@ export function createEmbeddedRepositoryAnalysisBindings(ctx: {
           await eventStore.repairs.retireResource(project.id, incident.resource);
           continue;
         }
-        const status = await readProjectStatus(project, evidence.branch);
+        const status = await readProjectStatus(
+          project,
+          evidence.branch,
+          true,
+          Number(incident.resource.slice(3)),
+        );
         const discovered = page.pulls.find((p) => `pr:${p.number}` === incident.resource);
         if (
           status &&

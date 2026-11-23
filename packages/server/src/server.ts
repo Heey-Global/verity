@@ -253,6 +253,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     withPrVisibility,
     invalidatePrSummaryAction,
     invalidateBranchCache,
+    resolvePullRequests,
   } = createServerSessionOverview({
     conductor,
     deps,
@@ -284,7 +285,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // Declared further down; read only when a request arrives.
     availableModels: () => availableModels(),
   });
-  installRepositoryTools(app, ctx);
+  installRepositoryTools(app, ctx, branchesForSession);
   installUserContext(app, ctx);
   installPeople(ctx, { agentLogin, persistPersonal, administratorAccounts });
   installProjectContext(app, ctx);
@@ -505,6 +506,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       withPrVisibility,
       invalidatePrSummaryAction,
       invalidateBranchCache,
+      resolvePullRequests,
     },
     beginProjectSpawn,
     pushFirePoints,

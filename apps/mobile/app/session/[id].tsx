@@ -25,7 +25,6 @@ import { useSessionCollaboration } from '../../hooks/useSessionCollaboration';
 import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/useServerConnection';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
-import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
 import { ChangeSubmissionBar } from '../../components/session/ChangeSubmissionBar';
 import { LocalMergeBar } from '../../components/session/LocalMergeBar';
 import {
@@ -45,7 +44,7 @@ import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
 import { meetingSavedCard, latestMeetingCards } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
 import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
-import { CodeHostIcon } from '../../components/CodeHostIcon';
+import { PullRequestBarGroup } from '../../components/session/PullRequestBarGroup';
 import { useFeatureHint } from '../../components/FeatureHint';
 import { appendHelpQuestion } from '../../lib/featureHints';
 import {
@@ -73,7 +72,6 @@ import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
 import { ActionMenu } from '../../components/ActionMenu';
-import { SlowSpinner } from '../../components/SlowSpinner';
 // Session chat screen: the live transcript for one Claude Code session plus the
 // operator input bar. Binds @verity/mobile's headless SessionModel via useSession
 // (live WS stream → reducer → Message[]) and renders each canonical message kind
@@ -137,8 +135,6 @@ import {
   groupRows,
   reconcileTranscriptRows,
   withPlanningSnapshot,
-  pullRequestMergeButton,
-  pullRequestStatusText,
   modelRateLimited,
   modelDisplayName,
   excludedAgentsNote,
@@ -169,7 +165,6 @@ import {
   toolCallView,
   planHeadline,
   type PlanView,
-  type PullRequestBlockReason,
   trustedCliUnlockCandidate,
   type FrozenTranscriptTail,
   type GmailSessionConnection,
@@ -265,7 +260,7 @@ import {
 } from '../../hardwareKeyboard';
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
 import { useSessionPreviewReads } from '../../hooks/useSessionPreviewReads';
-import { type UseBranches, useBranches } from '../../hooks/useBranches';
+import { type BranchPullRequest, type UseBranches, useBranches } from '../../hooks/useBranches';
 import { shouldShowPullRequest } from '../../lib/pullRequestVisibility';
 import { useModels } from '../../hooks/useModels';
 import { useAttachmentMenuAnchor } from '../../hooks/useAttachmentMenuAnchor';
@@ -1103,26 +1098,22 @@ export const SessionChat = memo(function SessionChat({
       active = false;
     };
   }, []);
-  const pullRequestKey = branches.pullRequest
-    ? `${sessionId}:${String(branches.pullRequest.number)}:${branches.pullRequest.phase}`
-    : null;
-  const pullRequestDismissed =
-    branches.pullRequest?.phase !== 'open' &&
-    pullRequestKey !== null &&
-    dismissedPullRequests.store.has(pullRequestKey);
-  const visiblePullRequest = shouldShowPullRequest(
-    branches.pullRequest?.phase,
-    pullRequestBarReady,
-    pullRequestDismissed,
-  )
-    ? branches.pullRequest
-    : null;
-  const dismissPullRequest = useCallback(() => {
-    if (pullRequestKey === null) return;
-    dismissedPullRequests.store.add(pullRequestKey);
+  const pullRequestKey = (pr: BranchPullRequest) =>
+    [sessionId, ...(pr.repository ? [pr.repository.id] : []), pr.number, pr.phase].join(':');
+  const visiblePullRequests = branches.pullRequests.filter((pr) =>
+    shouldShowPullRequest(
+      pr.phase,
+      pullRequestBarReady,
+      dismissedPullRequests.store.has(pullRequestKey(pr)) ||
+        (pr.repository?.isDefault === true &&
+          dismissedPullRequests.store.has([sessionId, pr.number, pr.phase].join(':'))),
+    ),
+  );
+  const dismissPullRequest = (pr: BranchPullRequest) => {
+    dismissedPullRequests.store.add(pullRequestKey(pr));
     dismissedPullRequests.persist();
     bumpPullRequestBarVersion((version) => version + 1);
-  }, [pullRequestKey]);
+  };
   // When the live branch diverges from the load-once branch list (an external/agent
   // checkout the switcher didn't initiate), refresh the list so its rows AND the PR
   // chip track the new branch too. Converges in one step (refresh makes them match),
@@ -2747,12 +2738,12 @@ export const SessionChat = memo(function SessionChat({
       ? scrollToLatest(true)
       : openLinkedSession(entry);
   const onMergePullRequest = useCallback<UseBranches['mergePullRequest']>(
-    (number) => {
+    (number, repositoryId, expectedHeadSha) => {
       // Merging dispatches a server-authored transcript turn for both success and
       // rejection. Treat the button press like sending a prompt: return to the live
       // edge now and keep following until that notification arrives.
       scrollToLatest(true);
-      return branches.mergePullRequest(number);
+      return branches.mergePullRequest(number, repositoryId, expectedHeadSha);
     },
     [branches.mergePullRequest, scrollToLatest],
   );
@@ -4672,18 +4663,17 @@ export const SessionChat = memo(function SessionChat({
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
-      {visiblePullRequest ? (
-        <PullRequestBar
-          key={visiblePullRequest.number}
-          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
-          pullRequest={visiblePullRequest}
-          onMerge={onMergePullRequest}
-          onRefresh={branchesRefresh}
-          onDismiss={visiblePullRequest.phase === 'open' ? undefined : dismissPullRequest}
-          codeHost={branches.codeHost}
-        />
-      ) : null}
-      {!visiblePullRequest &&
+      <PullRequestBarGroup
+        key={sessionId}
+        confirmHint={() => featureHint.confirm('review-and-pull-requests')}
+        pullRequests={visiblePullRequests}
+        onMerge={onMergePullRequest}
+        onRefresh={branchesRefresh}
+        onDismiss={dismissPullRequest}
+        codeHost={branches.codeHost}
+        repositoryName={branches.repo}
+      />
+      {!visiblePullRequests.some((pr) => pr.repository?.isDefault !== false) &&
       branches.localMergeHasChanges &&
       branches.localMergeBase !== undefined &&
       branches.current !== undefined &&
@@ -4701,7 +4691,7 @@ export const SessionChat = memo(function SessionChat({
         client={client}
         sessionId={sessionId}
         projectKind={settingsProjects.find((project) => project.id === projectId)?.kind}
-        pullRequestShown={visiblePullRequest !== undefined && visiblePullRequest !== null}
+        pullRequestShown={visiblePullRequests.some((pr) => pr.repository?.isDefault !== false)}
         busy={working}
         onOpenPullRequest={(prompt) => sendTurn(prompt)}
       />
@@ -7418,234 +7408,6 @@ function QueuedMessages({
   );
 }
 
-function PullRequestBar({
-  confirmHint,
-  pullRequest,
-  onMerge,
-  onRefresh,
-  onDismiss,
-  codeHost,
-}: {
-  confirmHint: () => Promise<boolean>;
-  pullRequest: NonNullable<UseBranches['pullRequest']>;
-  /** Absent for GitHub; the bar names and marks the host it opens. */
-  codeHost: UseBranches['codeHost'];
-  onMerge: UseBranches['mergePullRequest'];
-  onRefresh: () => void;
-  onDismiss?: () => void;
-}) {
-  const { theme } = useUnistyles();
-  const [merging, setMerging] = useState(false);
-  const [opening, setOpening] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [mergePermissionDenied, setMergePermissionDenied] = useState(false);
-  const [mergeRetryable, setMergeRetryable] = useState(false);
-  const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
-  const mounted = useRef(true);
-  const { checks } = pullRequest;
-  const pullRequestStateKey = [
-    pullRequest.number,
-    pullRequest.headSha ?? pullRequest.updatedAt ?? 'unknown',
-    pullRequest.phase,
-    pullRequest.pipeline,
-    checks.completed,
-    checks.total,
-    checks.failed,
-    checks.pending,
-    pullRequest.mergeable === true
-      ? 'mergeable'
-      : pullRequest.mergeable === false
-        ? 'blocked'
-        : 'unknown',
-    pullRequest.mergeState ?? 'no-state',
-    String(pullRequest.viewerCanMerge),
-  ].join(':');
-  const pending = pullRequest.pipeline === 'running' || pullRequest.pipeline === 'pending';
-  const mergeRejected = !pending && mergeRejectedFor === pullRequestStateKey && error !== undefined;
-  const visibleError = mergeRejected && !mergeRetryable ? error : undefined;
-  const merged = pullRequest.phase === 'merged';
-  const checksText = pullRequestStatusText(pullRequest);
-  // One verdict drives the dot and the button, so they cannot disagree. A conflicting
-  // PR reads `unknown` with zero checks (GitHub builds no merge ref for it), and
-  // `mergeable: null` right after a push means "still computing", not blocked — both
-  // are resolved inside `pullRequestMergeButton`.
-  const button = pullRequestMergeButton(
-    mergeRejected && mergePermissionDenied
-      ? { ...pullRequest, viewerCanMerge: false }
-      : pullRequest,
-    { merging, mergeRejected, mergeRetryable: mergeRejected && mergeRetryable },
-  );
-  const mergeButtonEnabled = button.kind === 'merge';
-  // Static on purpose: the waiting states show their spinner on the button, and a
-  // second animation beside it only competed with it.
-  const statusColor =
-    button.kind === 'blocked' || (button.kind === 'closed' && pullRequest.pipeline === 'failure')
-      ? theme.colors.attention
-      : button.kind === 'waiting'
-        ? theme.colors.textFaint
-        : button.kind === 'refresh'
-          ? theme.colors.attention
-          : theme.colors.success;
-  const conflictTarget = pullRequest.baseRef ?? 'the base branch';
-  const prNumber = String(pullRequest.number);
-  const blockedLabels: Record<PullRequestBlockReason, string> = {
-    permission: `A maintainer must merge pull request ${prNumber}`,
-    rejected: `Merge blocked because the forge rejected pull request ${prNumber}`,
-    conflict: `Merge blocked because pull request ${prNumber} conflicts with ${conflictTarget}`,
-    ci_failed: `Merge blocked because CI failed for pull request ${prNumber}`,
-    blocked: `Merge blocked for pull request ${prNumber}`,
-  };
-  const buttonLabel =
-    button.kind === 'blocked'
-      ? blockedLabels[button.reason]
-      : button.kind === 'refresh'
-        ? `Refresh status of pull request ${prNumber}`
-        : button.kind === 'waiting'
-          ? `Merge unavailable for pull request ${prNumber}: ${checksText}`
-          : button.kind === 'closed'
-            ? `Pull request ${prNumber} is ${pullRequest.phase}`
-            : `Merge pull request ${prNumber}`;
-
-  useEffect(() => {
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (mergeRejectedFor === undefined) return;
-    if (!pending && mergeRejectedFor === pullRequestStateKey) return;
-    setMergeRejectedFor(undefined);
-    setError(undefined);
-  }, [mergeRejectedFor, pending, pullRequestStateKey]);
-
-  const merge = (): void => {
-    if (!mergeButtonEnabled) return;
-    void (async () => {
-      setMerging(true);
-      setError(undefined);
-      setMergeRejectedFor(undefined);
-      if (!(await confirmHint())) {
-        if (mounted.current) setMerging(false);
-        return;
-      }
-      if (!mounted.current) return;
-      const result = await onMerge(pullRequest.number);
-      if (!mounted.current) return;
-      setMerging(false);
-      if (!result.ok) {
-        setError(result.message);
-        setMergePermissionDenied(result.permissionDenied === true);
-        setMergeRetryable(result.retryable === true);
-        setMergeRejectedFor(pullRequestStateKey);
-        return;
-      }
-      // On success there's nothing more to do client-side: onMerge already
-      // refreshed the branch/PR state, and the post-merge worktree reset +
-      // agent notification happen server-side.
-    })();
-  };
-
-  return (
-    <SessionBar pressed={opening}>
-      <SessionBarTarget
-        onPressIn={() => setOpening(true)}
-        onPressOut={() => setOpening(false)}
-        onPress={() =>
-          void confirmHint().then((proceed) => {
-            if (proceed && mounted.current)
-              void Linking.openURL(pullRequest.url).catch(() => undefined);
-          })
-        }
-        accessibilityRole="link"
-        accessibilityLabel={`Open pull request ${String(pullRequest.number)} on ${providerName(codeHost?.provider ?? 'github')}`}
-      >
-        <SessionBarContent
-          color={statusColor}
-          title={`PR #${pullRequest.number} · ${pullRequest.title}`}
-          subtitle={`${merged ? 'merged' : pullRequest.phase} · ${checksText}`}
-        >
-          {visibleError ? (
-            <Text style={styles.prError} numberOfLines={1}>
-              {visibleError}
-            </Text>
-          ) : null}
-        </SessionBarContent>
-        <CodeHostIcon
-          provider={codeHost?.provider ?? 'github'}
-          size={16}
-          color={theme.colors.textMuted}
-        />
-      </SessionBarTarget>
-      {onDismiss ? (
-        <Pressable
-          style={({ pressed }) => [
-            styles.prDismissButton,
-            pressed ? styles.prDismissButtonPressed : null,
-          ]}
-          onPress={() =>
-            void confirmHint().then((proceed) => {
-              if (proceed && mounted.current) onDismiss();
-            })
-          }
-          accessibilityRole="button"
-          accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
-        >
-          <Text style={styles.prDismissText}>×</Text>
-        </Pressable>
-      ) : (
-        <Pressable
-          style={({ pressed }) => [
-            styles.prMergeButton,
-            button.kind === 'merge' || button.kind === 'merging'
-              ? { backgroundColor: theme.colors.success }
-              : button.kind === 'blocked'
-                ? { backgroundColor: theme.colors.attention }
-                : button.kind === 'waiting'
-                  ? styles.prMergeButtonWaiting
-                  : styles.prMergeButtonOutline,
-            pressed && (mergeButtonEnabled || button.kind === 'refresh')
-              ? styles.prMergeButtonPressed
-              : null,
-          ]}
-          onPress={
-            button.kind === 'refresh'
-              ? () =>
-                  void confirmHint().then((proceed) => {
-                    if (proceed && mounted.current) {
-                      setMergeRejectedFor(undefined);
-                      setError(undefined);
-                      onRefresh();
-                    }
-                  })
-              : merge
-          }
-          disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
-          accessibilityRole="button"
-          accessibilityState={{
-            disabled: !mergeButtonEnabled && button.kind !== 'refresh',
-            busy: button.kind === 'merging' || button.kind === 'waiting',
-          }}
-          accessibilityLabel={buttonLabel}
-        >
-          {button.kind === 'merging' ? (
-            <ActivityIndicator color={theme.colors.onAction} />
-          ) : button.kind === 'waiting' ? (
-            <View style={styles.prMergeWaiting}>
-              <SlowSpinner color={theme.colors.textMuted} />
-              <Text style={styles.prMergeWaitingText}>{button.label}</Text>
-            </View>
-          ) : button.kind === 'closed' ? null : (
-            <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
-              {button.label}
-            </Text>
-          )}
-        </Pressable>
-      )}
-    </SessionBar>
-  );
-}
-
 function InputBar({
   hasPlan,
   planning,
@@ -8667,75 +8429,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     gap: theme.spacing.sm,
-  },
-  prError: {
-    color: theme.colors.attention,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  prMergeButton: {
-    minWidth: 78,
-    height: 36,
-    paddingHorizontal: theme.spacing.sm,
-    marginRight: theme.spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.action,
-  },
-  prMergeButtonDisabled: {
-    opacity: 0.45,
-  },
-  prMergeButtonPressed: {
-    opacity: 0.8,
-  },
-  prMergeButtonWaiting: {
-    // Same surface as the bar behind it would read as bare text, so the waiting button
-    // gets the stronger border tone as fill plus a visible edge to stay a button.
-    backgroundColor: theme.colors.border,
-    borderWidth: 1,
-    borderColor: theme.colors.textFaint,
-  },
-  prMergeButtonOutline: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: theme.colors.textMuted,
-  },
-  prMergeText: {
-    color: theme.colors.onAction,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.bold,
-  },
-  prMergeWaiting: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-  },
-  prMergeWaitingText: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  prRefreshText: {
-    color: theme.colors.text,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  prDismissButton: {
-    width: 36,
-    height: 36,
-    marginRight: theme.spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  prDismissButtonPressed: {
-    opacity: 0.55,
-  },
-  prDismissText: {
-    color: theme.colors.textFaint,
-    fontSize: theme.typography.title.fontSize,
-    lineHeight: 24 * theme.fontScale,
-    fontFamily: theme.fonts.regular,
   },
   queuedBubbleRow: {
     alignItems: 'flex-end',

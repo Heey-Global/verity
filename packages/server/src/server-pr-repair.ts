@@ -1,3 +1,5 @@
+import { pullRequestResource } from './project-pull-requests.js';
+import { appendExternalPromptData } from '@verity/events';
 import { sessionPermitsBackgroundPr } from './pr-background-policy.js';
 import { type SessionRecord } from '@verity/store';
 import { type PullRequestStatus } from './forge-provider.js';
@@ -21,12 +23,26 @@ export interface PrRepairWiring {
   sessionPrStatus: (session: SessionRecord) => Promise<PullRequestStatus | null>;
 }
 
+interface RepairRepository {
+  repositoryId: string;
+  isDefault: boolean;
+  host: string;
+  read: (session: SessionRecord) => Promise<PullRequestStatus | null>;
+}
+
+function repairResource(number: number, repository?: RepairRepository): string {
+  return repository
+    ? pullRequestResource({ id: repository.repositoryId, isDefault: repository.isDefault }, number)
+    : `pr:${number}`;
+}
+
 /** What the session overview and repair supervision use from the repair turns. */
 export interface PrRepairTurns {
   reconcileSessionRepairs: (projectId: string) => Promise<void>;
   maybeDispatchPrRepairTurns: (
     session: SessionRecord,
     pr: PullRequestStatus | null | undefined,
+    repository?: RepairRepository,
   ) => Promise<void>;
   repairTerminated: (sessionId: string, dispatchId: string) => Promise<boolean>;
   /** Durable repair dispatches being prepared, which reconciliation must not settle. */
@@ -135,11 +151,15 @@ export function createPrRepairTurns(
     session: SessionRecord,
     pr: PullRequestStatus,
     repair: PullRequestRepairKind,
+    repository?: RepairRepository,
   ): Promise<void> => {
     if (!repair.applies(pr) || !(await sessionPermitsBackgroundPr(deps.eventStore, session)))
       return;
     const { sessionId } = session;
-    const scheduledMarker = `${repair.id}:${repair.key(sessionId, pr)}`;
+    const readStatus = repository?.read ?? sessionPrStatus;
+    const markerFor = (status: PullRequestStatus) =>
+      `${repair.id}:${repository && !repository.isDefault ? `${repository.repositoryId}:` : ''}${repair.key(sessionId, status)}`;
+    const scheduledMarker = markerFor(pr);
     if (scheduledPrRepairTurns.has(scheduledMarker)) return;
     scheduledPrRepairTurns.add(scheduledMarker);
     try {
@@ -169,8 +189,13 @@ export function createPrRepairTurns(
           const currentSession = await deps.eventStore.getSession(sessionId);
           if (!currentSession || currentSession.projectId !== session.projectId) return;
           if (!(await sessionPermitsBackgroundPr(deps.eventStore, currentSession))) return;
-          const latest = await sessionPrStatus(currentSession).catch(() => null);
-          if (latest === null || !repair.applies(latest)) return;
+          const latest = await readStatus(currentSession).catch(() => null);
+          if (
+            latest === null ||
+            !repair.applies(latest) ||
+            (repository && latest.number !== pr.number)
+          )
+            return;
           const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
           if (
             currentSession.planning === 'active' ||
@@ -190,7 +215,7 @@ export function createPrRepairTurns(
           if (session.projectId !== null && latest.phase === 'open' && latest.headSha) {
             const origin = await deps.eventStore.repairs.registerSessionOrigin(
               session.projectId,
-              `pr:${latest.number}`,
+              repairResource(latest.number, repository),
               sessionId,
             );
             if (origin !== sessionId) {
@@ -207,7 +232,7 @@ export function createPrRepairTurns(
             }
             await reconcileSessionRepairs(session.projectId);
           }
-          marker = `${repair.id}:${repair.key(sessionId, latest)}`;
+          marker = markerFor(latest);
           const projectRepair = session.projectId !== null && latest.phase === 'open';
           const fresh =
             projectRepair || (await deps.eventStore.markSessionAutomation(sessionId, marker));
@@ -222,7 +247,7 @@ export function createPrRepairTurns(
             }
             const incident = await deps.eventStore.repairs.observe(
               session.projectId,
-              `pr:${latest.number}`,
+              repairResource(latest.number, repository),
               latest.headSha,
               JSON.stringify({ observedAt: new Date().toISOString(), status: latest }),
             );
@@ -234,7 +259,7 @@ export function createPrRepairTurns(
             if (!claim?.dispatch_id) {
               const budgetUsed = await deps.eventStore.repairs.budgetUsed(
                 session.projectId,
-                `pr:${latest.number}`,
+                repairResource(latest.number, repository),
               );
               const incidents = await deps.eventStore.repairs.incidents(session.projectId);
               const observed = incidents.find((row) => row.id === incident.id);
@@ -269,9 +294,16 @@ export function createPrRepairTurns(
             return;
           }
           dispatchAttempted = true;
+          const prompt = repair.prompt(latest, repository?.host ?? (await codeHostName(session)));
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
-            repair.prompt(latest, await codeHostName(session)),
+            repository
+              ? appendExternalPromptData(
+                  `${prompt}\n\nUse the indicated repository checkout for this pull request.`,
+                  'Pull request repository',
+                  { id: repository.repositoryId, url: latest.url },
+                )
+              : prompt,
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
@@ -286,7 +318,7 @@ export function createPrRepairTurns(
                         !(await canExecuteAs(initiatedBy?.userId, current.projectId))
                       )
                         return false;
-                      const observed = await sessionPrStatus(current);
+                      const observed = await readStatus(current);
                       return (
                         observed !== null &&
                         repair.applies(observed) &&
@@ -335,10 +367,11 @@ export function createPrRepairTurns(
   const maybeDispatchPrRepairTurns = async (
     session: SessionRecord,
     pr: PullRequestStatus | null | undefined,
+    repository?: RepairRepository,
   ): Promise<void> => {
     if (pr === null || pr === undefined) return;
     if (session.projectId !== null) {
-      const resource = `pr:${pr.number}`;
+      const resource = repairResource(pr.number, repository);
       if (pr.phase === 'open') {
         await deps.eventStore.repairs.registerSessionOrigin(
           session.projectId,
@@ -371,14 +404,14 @@ export function createPrRepairTurns(
       } else await deps.eventStore.repairs.retireResource(session.projectId, resource);
     }
     if (MERGE_CONFLICT_REPAIR.applies(pr)) {
-      await maybeDispatchPrRepairTurn(session, pr, MERGE_CONFLICT_REPAIR);
+      await maybeDispatchPrRepairTurn(session, pr, MERGE_CONFLICT_REPAIR, repository);
       return;
     }
     if (POST_MERGE_ACTIONS_FAILURE_REVIEW.applies(pr)) {
-      await maybeDispatchPrRepairTurn(session, pr, POST_MERGE_ACTIONS_FAILURE_REVIEW);
+      await maybeDispatchPrRepairTurn(session, pr, POST_MERGE_ACTIONS_FAILURE_REVIEW, repository);
       return;
     }
-    await maybeDispatchPrRepairTurn(session, pr, CI_FAILURE_REPAIR);
+    await maybeDispatchPrRepairTurn(session, pr, CI_FAILURE_REPAIR, repository);
   };
   return {
     reconcileSessionRepairs,

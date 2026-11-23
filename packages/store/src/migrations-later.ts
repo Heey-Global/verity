@@ -692,3 +692,13 @@ migrations['0237_project_code_permission'] = projectCodePermissionMigration;
 
 migrations['0238_session_creators'] = sessionCreatorMigration;
 migrations['0239_change_submissions'] = changeSubmissionsMigration;
+
+migrations['0240_session_repository_pull_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table session_repository_workspaces
+      add column if not exists pull_request_history jsonb`.execute(db);
+  },
+  async down(): Promise<void> {
+    // The previous version ignores this column. Keeping it preserves history if reapplied.
+  },
+};
