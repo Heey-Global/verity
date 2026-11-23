@@ -7897,7 +7897,6 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                 textStyle={styles.inputEngineChipText}
               />
             </View>
-            {/* Right: the persistent mic, then the Send/Stop slot. */}
             <View style={styles.actionRowRight}>
               <MicButton
                 voiceState={voiceState}
@@ -7908,12 +7907,13 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                 onPauseCountdown={onPauseVoiceCountdown}
                 disabled={dead}
               />
-              {attachingRecent ? (
+              {attachingRecent && (
                 <ActivityIndicator
                   accessibilityLabel="Loading images"
                   color={theme.colors.action}
                 />
-              ) : running && !canSend && !sending && !dead ? (
+              )}
+              {running && !canSend && !sending && !dead ? (
                 <StopButton onStop={onStop} />
               ) : (
                 <Pressable

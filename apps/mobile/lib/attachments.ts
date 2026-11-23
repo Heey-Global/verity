@@ -348,6 +348,14 @@ export async function attachRecentImages(
  * carrying over source metadata. Keep PNG lossless while it fits the limit. */
 async function attachRecentImage(assetId: string): Promise<AttachmentUpload[]> {
   const info = await MediaLibrary.getAssetInfoAsync(assetId, { shouldDownloadFromNetwork: true });
+  const pairedUri = info.pairedVideoAsset?.uri;
+  if (pairedUri?.startsWith('file://')) {
+    try {
+      new FsFile(pairedUri).delete();
+    } catch {
+      // A temporary paired video is unnecessary for the still image upload.
+    }
+  }
   const uri = info.localUri;
   if (!uri) throw new Error('This photo is not available on this device right now.');
   if (/\.png$/i.test(info.filename)) {
