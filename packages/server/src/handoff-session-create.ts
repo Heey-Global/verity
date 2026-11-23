@@ -112,6 +112,12 @@ export function createHandoffSessionCreator({
             ...worktreeOpts,
           });
         await deps.refreshProjectToken?.(project);
+        // Attribution only addresses the session's requests; a failed lookup leaves
+        // them with the project's creator instead of failing the handoff.
+        const createdByUserId = caller
+          ? ((await runningTurnInitiator(caller.sessionId, caller.turnId).catch(() => undefined))
+              ?.userId ?? null)
+          : null;
         const worktree = await provisioner.add(makeBranch(name));
         try {
           await deps.eventStore.createSession({
@@ -120,9 +126,7 @@ export function createHandoffSessionCreator({
             worktree,
             model: selectedModel,
             name,
-            createdByUserId: caller
-              ? ((await runningTurnInitiator(caller.sessionId, caller.turnId))?.userId ?? null)
-              : null,
+            createdByUserId,
           });
         } catch (error) {
           await provisioner.remove(worktree).catch(() => undefined);

@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-/** The unanswered `verity:choices` block of a session's current turn. */
+/**
+ * The current turn's unanswered `verity:choices` block, as the session list
+ * carries it. Options keep the agent's labels verbatim: a label is what is sent
+ * as the answer. A block that no longer parses (a newer server, a malformed
+ * option) reads as "no open question" rather than failing the whole list.
+ */
 export const openChoicesSchema = z.object({
   question: z.string().optional(),
   options: z

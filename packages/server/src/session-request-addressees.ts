@@ -40,6 +40,17 @@ export async function addressRequests(
     summaries.filter((s) => s.requestInitiator === undefined).map((s) => s.sessionId),
   );
   const addressing = new Map<string, RequestAddressing>();
+  // Polled by every device: each person's rights are read once per project.
+  const rights = new Map<string, Promise<boolean>>();
+  const ownerHoldsCode = (owner: string, projectId: string | null) => {
+    const key = `${owner}\0${projectId ?? ''}`;
+    let held = rights.get(key);
+    if (held === undefined) {
+      held = holdsCode(deps.store, owner, projectId);
+      rights.set(key, held);
+    }
+    return held;
+  };
   for (const summary of summaries) {
     const owner = summary.requestInitiator ?? fallback.get(summary.sessionId) ?? null;
     const sensitive = (summary.pendingPermissionRequests ?? []).filter(
@@ -47,7 +58,7 @@ export async function addressRequests(
     );
     const ownerMayAllow =
       sensitive.length === 0 ||
-      (owner !== null && (await holdsCode(deps.store, owner, summary.projectId)));
+      (owner !== null && (await ownerHoldsCode(owner, summary.projectId)));
     addressing.set(summary.sessionId, {
       owner,
       forCode: new Set(ownerMayAllow ? [] : sensitive.map((request) => request.toolUseId)),

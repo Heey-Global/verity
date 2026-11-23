@@ -64,4 +64,15 @@ describe('session owners', () => {
     await ctx.db.deleteFrom('users').where('id', '=', 'mara').execute();
     expect((await ctx.store.sessionPeople.owners(['mine'])).get('mine')).toBe('owner');
   });
+
+  it('creates a session for an identity without a user row, leaving it to the project creator', async () => {
+    await ctx.store.createSession({
+      sessionId: 'service',
+      worktree: '/wt/service',
+      model: 'm',
+      projectId: 'p1',
+      createdByUserId: 'not-a-user',
+    });
+    expect((await ctx.store.sessionPeople.owners(['service'])).get('service')).toBe('owner');
+  });
 });

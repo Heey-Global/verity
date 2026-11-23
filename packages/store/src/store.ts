@@ -52,7 +52,7 @@ import { QAAssignmentStore } from './qa-assignments.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
-import { SessionPeopleStore } from './session-people.js';
+import { recordSessionCreator, SessionPeopleStore } from './session-people.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
@@ -1989,10 +1989,7 @@ export class EventStore implements EventSink {
       }
       await tx.insertInto('sessions').values(values).execute();
       if (session.createdByUserId)
-        await tx
-          .insertInto('session_creators')
-          .values({ session_id: session.sessionId, user_id: session.createdByUserId })
-          .execute();
+        await recordSessionCreator(tx, session.sessionId, session.createdByUserId);
     };
     if (this.db.isTransaction) await insert(this.db);
     else await this.db.transaction().execute(insert);

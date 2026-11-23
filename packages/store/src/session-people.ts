@@ -28,3 +28,17 @@ export class SessionPeopleStore {
     );
   }
 }
+
+/**
+ * Record who started a session, inside its creation transaction. Only a known
+ * person is recorded: an identity without a user row leaves the session with its
+ * project's creator rather than failing its creation.
+ */
+export async function recordSessionCreator(
+  db: Kysely<Database>,
+  sessionId: string,
+  userId: string,
+): Promise<void> {
+  await sql`insert into session_creators (session_id, user_id)
+    select ${sessionId}, id from users where id = ${userId}`.execute(db);
+}

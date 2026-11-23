@@ -277,12 +277,6 @@ export const attentionSignalSchema = z.object({
 });
 export type AttentionSignal = z.infer<typeof attentionSignalSchema>;
 
-/**
- * The current turn's unanswered `verity:choices` block, as the session list
- * carries it. Options keep the agent's labels verbatim: a label is what is sent
- * as the answer. A block that no longer parses (a newer server, a malformed
- * option) reads as "no open question" rather than failing the whole list.
- */
 /** A mockup review: the screens the agent presented, each marked approved,
  * discarded or still open. An older server's `comment` reads as discarded, as the
  * server itself reads it. A value this build does not understand reads as absent
