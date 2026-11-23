@@ -5,7 +5,7 @@ import {
   secretGrantScopes,
   spellOutBidiControls,
   trustedCliCommandLine,
-  trustedCliRiskSentence,
+  trustedCliInjectionSummary,
   trustedCliSummary,
   type PendingPermission,
   type StandingSecretGrantScope,
@@ -54,18 +54,9 @@ export function SecretApprovalCard({
     ? [http.secretAlias]
     : (cli?.secrets.map((secret) => secret.secretAlias) ?? []);
   const source = request.secretSource;
-  const destination = http?.host ?? (cli ? trustedCliCommandLine(cli) : undefined);
+  const destination = http?.host ?? cli?.executable.split('/').pop();
   const detailsLabel = isHttp ? 'View request' : 'View command';
-  const firstSecret = cli?.secrets[0];
-  const transfer = http
-    ? http.auth.kind === 'jwt'
-      ? 'Signed JWT'
-      : 'For authentication'
-    : cli?.secrets.length === 1 && firstSecret
-      ? firstSecret.injection === 'file'
-        ? `File via ${firstSecret.env}`
-        : `As ${firstSecret.env}`
-      : 'Secret injection';
+  const transfer = http?.auth.kind === 'jwt' ? 'Signed JWT' : 'For authentication';
   return (
     <Card stacked attention={pending}>
       <View
@@ -123,7 +114,7 @@ export function SecretApprovalCard({
                 {spellOutBidiControls(aliases.join(', '))}
               </Text>
               <Text variant="bodySmall" tone="muted" selectable numberOfLines={2}>
-                {source
+                {source && !pending
                   ? spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)
                   : 'Doppler'}
               </Text>
@@ -136,11 +127,13 @@ export function SecretApprovalCard({
             </View>
             <View style={styles.nodeText}>
               <Text variant={isHttp ? 'row' : 'code'} selectable numberOfLines={2}>
-                {destination}
+                {spellOutBidiControls(destination)}
               </Text>
-              <Text variant="bodySmall" tone="muted" selectable numberOfLines={2}>
-                {spellOutBidiControls(transfer)}
-              </Text>
+              {http ? (
+                <Text variant="bodySmall" tone="muted" selectable numberOfLines={2}>
+                  {transfer}
+                </Text>
+              ) : null}
             </View>
           </View>
         </View>
@@ -183,8 +176,15 @@ export function SecretApprovalCard({
                     {trustedCliCommandLine(cli)}
                   </Text>
                   <Text variant="bodySmall" selectable>
-                    {spellOutBidiControls(trustedCliRiskSentence(cli))}
+                    {spellOutBidiControls(trustedCliInjectionSummary(cli))}
                   </Text>
+                  {cli.entryScript ? (
+                    <Text variant="bodySmall" selectable>
+                      {spellOutBidiControls(
+                        `Entry script: ${cli.entryScript.path} (SHA-256 ${cli.entryScript.sha256}, ${cli.entryScript.loading} loading)`,
+                      )}
+                    </Text>
+                  ) : null}
                 </>
               ) : null}
               {source ? (
@@ -245,7 +245,7 @@ export function SecretApprovalCard({
           ) : null}
         </>
       ) : null}
-      {pending ? (
+      {pending && !cli ? (
         <View style={styles.note}>
           <Icon name="shield" size={14} color={theme.colors.textMuted} />
           <Text variant="footnote" tone="muted" style={styles.noteText}>

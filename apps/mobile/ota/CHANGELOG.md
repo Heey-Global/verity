@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.95.1](https://github.com/Heey-Global/verity/compare/mobile-v1.95.0...mobile-v1.95.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **secrets:** streamline approval cards and continuation in chat ([#2825](https://github.com/Heey-Global/verity/issues/2825)) ([2a280d2](https://github.com/Heey-Global/verity/commit/2a280d2dbe595cb30c73316328bba91817aeb2f7))
+
 ## [1.94.8](https://github.com/Heey-Global/verity/compare/mobile-v1.94.7...mobile-v1.94.8) (2026-11-22)
 
 

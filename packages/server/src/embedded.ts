@@ -69,7 +69,6 @@ import {
 } from './embedded-control-plane-runner-identity.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import {
-  SWEEP_SHUTDOWN_WAIT_MS,
   rejectLatestImageRef,
   publishedDevcontainerFeatureRef,
   toolkitFeatureRefIsConfigured,
@@ -140,7 +139,6 @@ import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
 import { ListenerDiscovery } from './listener-discovery.js';
-import { getDockerExecDiagnostics } from './docker-exec-diagnostics.js';
 export { parsePort } from './deployment-port.js';
 import {
   classifyProbeError,
@@ -162,16 +160,18 @@ import {
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFileSync, mkdirSync } from 'node:fs';
+import { rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
 import { buildControlPlane } from './app.js';
-import { createEmbeddedRuntimeDiagnostics } from './embedded-runtime-diagnostics.js';
+import {
+  createEmbeddedRuntimeDiagnostics,
+  installEmbeddedDockerExecDiagnostics,
+} from './embedded-runtime-diagnostics.js';
 import {
   createEmbeddedProjectList,
   createEmbeddedProjectFleetBindings,
@@ -198,7 +198,7 @@ import {
 } from './embedded-session-cleanup.js';
 
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
-import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
+import { createEmbeddedSessionMaintenance } from './embedded-session-maintenance.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createSigningCapabilityRegistry } from './signing-capability.js';
 import {
@@ -230,7 +230,7 @@ import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
 import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
-import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
+import { createEmbeddedMatrix, installEmbeddedMatrix } from './embedded-matrix.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { createEmbeddedBackup } from './embedded-backup.js';
 
@@ -1211,13 +1211,7 @@ export async function buildEmbeddedServer(
     provisioner,
   });
 
-  const managedMatrixControl = existsSync('/run/verity-updater/control');
-  let matrixActivationDone = false;
-  const activateMatrixIfConfigured = async (): Promise<void> => {
-    if (!managedMatrixControl || matrixActivationDone) return;
-    if ((await eventStore.integrations.matrixConfigSummary()) === null) return;
-    matrixActivationDone = await notifyManagedMatrixConfigured();
-  };
+  const matrix = createEmbeddedMatrix({ integrations: eventStore.integrations });
 
   const backup = await createEmbeddedBackup({ config, projectDocker, eventStore });
   let lastDockerGcReport: DockerGcReport | undefined;
@@ -1247,18 +1241,7 @@ export async function buildEmbeddedServer(
     ...(sessionStorage ? { sessionStorage } : {}),
     eventStore,
     ...(backup ? { backup } : {}),
-    ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
-    matrixConnectorToken: async () => {
-      try {
-        return (
-          await readFile('/run/verity-updater/control/matrix/connector-token', 'utf8')
-        ).trim();
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
-          return process.env.VERITY_MATRIX_CONNECTOR_TOKEN;
-        throw error;
-      }
-    },
+    ...matrix.bindings,
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
     ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
@@ -1529,67 +1512,18 @@ export async function buildEmbeddedServer(
   startCloneConfigSweep(config.hostCloneRoot, Boolean(durableServerRoot), (event, msg) =>
     app.log.warn(event, msg),
   );
-  if (managedMatrixControl) {
-    const retryMatrixActivation = async (): Promise<void> => {
-      try {
-        await activateMatrixIfConfigured();
-      } catch (error) {
-        app.log.warn({ err: error }, 'Matrix connector activation will retry');
-      }
-    };
-    void retryMatrixActivation();
-    const matrixActivationTimer = setInterval(() => void retryMatrixActivation(), 10_000);
-    matrixActivationTimer.unref?.();
-    app.addHook('onClose', () => clearInterval(matrixActivationTimer));
-  }
+  installEmbeddedMatrix(app, matrix);
   // Bind before any unlock or startup can dial, so handshake diagnostics use pino.
   uplinkLog.bind(app.log);
-  // One-time reconciliation of backend transcripts left by sessions that no longer
-  // exist (see `session-artifact-sweep.ts`). Deleting a session now takes its
-  // transcripts with it, but everything deleted BEFORE that fix left its files behind
-  // and no future delete can reach them — those sessions are gone from the store. It is
-  // also the backstop for the one case the delete path cannot cover: a backend switch
-  // leaves claude's `subagents/` tree in place (it is the only copy while the session
-  // lives), so the tree of a displaced binding is collected once the session it belongs
-  // to is deleted and its worktree stops being live.
-  //
-  // Not awaited into the boot: a start must not wait on a directory walk, and nothing
-  // downstream depends on the outcome. What IS handed back on the server object is the
-  // store-read phase alone ({@link EmbeddedServer.transcriptSweep}), so a caller that
-  // closes immediately — a test, a one-shot CLI run — settles those two queries before
-  // `destroy()` without also waiting out the walk behind them. Blocking a SIGTERM on a
-  // full walk of a large volume is how a graceful shutdown becomes a SIGKILL, and the
-  // walk touches nothing that shutdown tears down. Not on a timer either: the ongoing
-  // case is handled at the delete itself, so once per start is enough.
-  const sweepMode = config.transcriptSweep ?? 'on';
-  let transcriptSweep: Promise<void> | undefined;
-  let transcriptSweepWalk: Promise<SweepResult | undefined> | undefined;
-  // Aborted by `close()`, which then waits for the walk to notice. Without it a caller
-  // that closes the server and tears its data root down is racing a delete loop over that
-  // same root — `main.ts` never sees it because it exits immediately after, but this is a
-  // public entry point and not every caller does.
-  const sweepAbort = new AbortController();
-  /**
-   * Started only once the rest of the build has succeeded — see the call site.
-   *
-   * Nothing here depends on where it is defined; what matters is that the walk is not
-   * running while `buildEmbeddedServer` can still throw. A rejected build hands the caller
-   * no server, so nobody holds {@link sweepAbort} or the walk promise, and a delete loop
-   * over `runners/` would carry on under a boot that failed.
-   */
-  const startTranscriptSweep = (): void => {
-    if (dataVolumeRoot === undefined || sweepMode === 'off') return;
-    const sweep = startOrphanTranscriptSweep({
-      runnersRoot: join(dataVolumeRoot, 'runners'),
-      dryRun: sweepMode === 'dry',
-      store: eventStore,
-      sessionSandboxCwd,
-      signal: sweepAbort.signal,
-      log: app.log,
-    });
-    transcriptSweep = sweep.storeReads;
-    transcriptSweepWalk = sweep.walk;
-  };
+  const sessionMaintenance = createEmbeddedSessionMaintenance({
+    config,
+    dataVolumeRoot,
+    eventStore,
+    sessionSandboxCwd,
+    log: app.log,
+    cleanupAbort,
+    sessionCleanupWorker,
+  });
 
   app.addHook('onClose', async () => {
     maintenanceImages?.abort();
@@ -1647,20 +1581,7 @@ export async function buildEmbeddedServer(
     sleepSandbox: () => provisioner?.sleepPersonalSandbox?.bind(provisioner),
   });
   installEmbeddedBuildStorage(app, { config, buildStorage, provisioner, dependencyCapacity });
-  // Fixed-purpose counters exclude command arguments, environment values and identities.
-  let previousDockerExecCounts = getDockerExecDiagnostics();
-  const dockerExecDiagnosticTimer = setInterval(() => {
-    const current = getDockerExecDiagnostics();
-    if (
-      current.started === previousDockerExecCounts.started &&
-      current.active === previousDockerExecCounts.active
-    )
-      return;
-    previousDockerExecCounts = current;
-    app.log.info({ dockerExec: current }, 'verity: docker exec activity diagnostic');
-  }, 60_000);
-  dockerExecDiagnosticTimer.unref();
-  app.addHook('onClose', () => clearInterval(dockerExecDiagnosticTimer));
+  installEmbeddedDockerExecDiagnostics(app);
   app.addHook('onClose', () => listenerDiscovery?.close());
   app.addHook('onClose', () => projectEgress?.close());
   app.addHook('onClose', stopSystemInventory);
@@ -1754,7 +1675,7 @@ export async function buildEmbeddedServer(
   // Last thing before the server object exists, because from here on the only way out is
   // the `return` below: everything that could still have thrown has run, so the caller is
   // guaranteed to receive the handle that can stop this walk.
-  startTranscriptSweep();
+  const transcriptSweep = sessionMaintenance.start();
   sessionCleanupWorker?.start();
   // Latch so a double SIGINT/SIGTERM (or any repeat call) coalesces onto one
   // teardown instead of double-closing the app/db.
@@ -1762,8 +1683,7 @@ export async function buildEmbeddedServer(
   return {
     app,
     ...(embeddedSecretJobs !== undefined ? { secretJobs: embeddedSecretJobs } : {}),
-    ...(transcriptSweep !== undefined ? { transcriptSweep } : {}),
-    ...(transcriptSweepWalk !== undefined ? { transcriptSweepWalk } : {}),
+    ...transcriptSweep,
     secretKeyHandoff: {
       exportKeyMaterial: () => secretCipher.exportKeyMaterial(),
     },
@@ -1778,32 +1698,7 @@ export async function buildEmbeddedServer(
         await stopRunnerSupervisorReconciler();
         await agentGatewaySynchronizer?.close();
         await app.close();
-        // The sweep, settled before the database goes: a short-lived process (a test, a
-        // one-shot run) can otherwise reach `destroy()` with its two store reads still in
-        // flight — and, worse, hand control back to a caller that tears down the data root
-        // while the walk is still calling `rm` inside it.
-        //
-        // So the walk is told to stop rather than left to run: it checks between directory
-        // entries and between deletes, and returns a partial result the next boot's sweep
-        // completes. Waiting for it then costs one in-flight `fs` call, not a full volume
-        // walk — blocking a SIGTERM on THAT is how a graceful shutdown becomes a SIGKILL.
-        //
-        // Bounded even so, and the bound is what makes this a strong guarantee only in the
-        // normal case: if the timer wins, `close` resolves with the walk still somewhere
-        // inside a call that never came back, so a caller that then removes the data root
-        // is back to racing it. That is the wedged-volume case, where every other option —
-        // waiting forever, and the SIGKILL that follows — is worse. The store reads are
-        // full-table scans issued at boot and get the same treatment: giving up and
-        // destroying under them costs at worst one logged query error on a process that is
-        // exiting anyway. `ref: false` so the losing timer cannot itself hold the process
-        // open for the rest of the window.
-        sweepAbort.abort();
-        cleanupAbort.abort();
-        sessionCleanupWorker?.stop();
-        await Promise.race([
-          Promise.all([transcriptSweep, transcriptSweepWalk, sessionCleanupWorker?.settled()]),
-          delay(SWEEP_SHUTDOWN_WAIT_MS, undefined, { ref: false }),
-        ]);
+        await sessionMaintenance.close();
         await db.destroy();
       })()),
   };

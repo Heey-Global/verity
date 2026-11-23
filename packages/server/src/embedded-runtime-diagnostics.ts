@@ -1,3 +1,5 @@
+import type { FastifyInstance } from 'fastify';
+import { getDockerExecDiagnostics } from './docker-exec-diagnostics.js';
 import { hostname } from 'node:os';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import type { BuildStorage } from './build-storage.js';
@@ -73,4 +75,21 @@ export function createEmbeddedRuntimeDiagnostics(ctx: {
     },
     projectBuildFailure: (projectId) => provisioner?.lastBuildFailure(projectId),
   });
+}
+
+export function installEmbeddedDockerExecDiagnostics(app: FastifyInstance): void {
+  // Fixed-purpose counters exclude command arguments, environment values and identities.
+  let previousDockerExecCounts = getDockerExecDiagnostics();
+  const dockerExecDiagnosticTimer = setInterval(() => {
+    const current = getDockerExecDiagnostics();
+    if (
+      current.started === previousDockerExecCounts.started &&
+      current.active === previousDockerExecCounts.active
+    )
+      return;
+    previousDockerExecCounts = current;
+    app.log.info({ dockerExec: current }, 'verity: docker exec activity diagnostic');
+  }, 60_000);
+  dockerExecDiagnosticTimer.unref();
+  app.addHook('onClose', () => clearInterval(dockerExecDiagnosticTimer));
 }
