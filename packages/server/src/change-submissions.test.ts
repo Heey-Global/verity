@@ -178,6 +178,13 @@ describe('change submission routes', () => {
     try {
       // Someone with Code adds changes directly.
       expect((await call('POST', 'alex')).status).toBe(409);
+      // A reader may look but not hand changes on.
+      await ctx.db
+        .updateTable('project_memberships')
+        .set({ can_execute: false })
+        .where('user_id', '=', 'sam')
+        .execute();
+      expect((await call('POST', 'sam')).status).toBe(403);
       setChanges(false);
       expect((await call('POST', 'mara')).status).toBe(409);
       setChanges(true);
@@ -216,6 +223,20 @@ describe('change submission routes', () => {
     }
   });
 
+  it('counts a pull request that already carries the submitted commit', async () => {
+    const { app, call, setPullRequest } = setup();
+    try {
+      // The agent pushed the submitted commit before the submission; merging it
+      // without another push still adds these changes.
+      setPullRequest('open', 'https://forge/pr/4', 'abc123');
+      await call('POST', 'mara');
+      setPullRequest('merged', 'https://forge/pr/4', 'abc123');
+      expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'added' } });
+    } finally {
+      await app.close();
+    }
+  });
+
   // Merged changes are done: the member must be able to submit follow-up work,
   // and nobody can take back what already landed.
   it('settles a submission whose pull request merged', async () => {
@@ -249,6 +270,7 @@ describe('change submission routes', () => {
       expect((await call('DELETE', 'mara')).status).toBe(409);
       await call('POST', 'mara');
       expect((await call('DELETE', 'alex')).status).toBe(200);
+      expect(published.at(-1)).toMatchObject({ text: 'Alex turned down the submitted changes' });
     } finally {
       await app.close();
     }

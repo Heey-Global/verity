@@ -43,15 +43,17 @@ export interface SubmissionPullRequest {
 /** The session's pull request unless it predates the submission: a PR merged
  *  before someone submitted new changes says nothing about those changes. */
 function pullRequestSince(
-  submission: Pick<ChangeSubmission, 'pullRequestUrl' | 'pullRequestHead'>,
+  submission: Pick<ChangeSubmission, 'pullRequestUrl' | 'pullRequestHead' | 'revision'>,
   pr: SubmissionPullRequest | undefined,
 ): PullRequestPhase | undefined {
   if (pr === undefined) return undefined;
-  // The same pull request counts once someone pushed to it after the submission.
+  // The same pull request counts once someone pushed to it after the submission,
+  // or when it already carries exactly the submitted commit.
   const earlier =
     pr.url !== undefined &&
     pr.url === submission.pullRequestUrl &&
-    (pr.headSha === undefined || pr.headSha === submission.pullRequestHead);
+    pr.headSha === submission.pullRequestHead &&
+    (pr.headSha === undefined || pr.headSha !== submission.revision);
   return earlier ? undefined : pr.phase;
 }
 
@@ -248,6 +250,13 @@ export function registerChangeSubmissionRoutes(
     if (await holdsCode(deps.store, viewer, session.projectId)) {
       return reply.code(409).send({ error: 'You can add these changes yourself.' });
     }
+    // The same rule as `viewerCanSubmit`, not only the route policy in front.
+    if (
+      session.projectId === null ||
+      !(await deps.store.hasProjectPermission(viewer, session.projectId, 'execute'))
+    ) {
+      return reply.code(403).send({ error: 'Only members who may edit can submit changes.' });
+    }
     // A second submission of the same changes would ask everyone again; one whose
     // changes were added already is done and makes room for new ones.
     if ((await deps.store.changeSubmissions.get(id))?.state === 'submitted') {
@@ -302,7 +311,10 @@ export function registerChangeSubmissionRoutes(
     const by = viewer ?? submission.submittedBy;
     await deps.publish(id, {
       t: 'notice',
-      text: `${await nameOf(by)} withdrew the submitted changes`,
+      text:
+        by === submission.submittedBy
+          ? `${await nameOf(by)} withdrew the submitted changes`
+          : `${await nameOf(by)} turned down the submitted changes`,
       changeSubmission: { action: 'withdrawn', userId: by },
     });
     return { submission: null };

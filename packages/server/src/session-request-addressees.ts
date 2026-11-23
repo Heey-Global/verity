@@ -109,7 +109,7 @@ export async function addressRequests(
       summary.requestInitiator,
       ...(fallback.get(summary.sessionId) ?? []),
     ]) {
-      if (candidate !== undefined && (await cached('read', candidate, summary.projectId))) {
+      if (candidate != null && (await cached('read', candidate, summary.projectId))) {
         owner = candidate;
         break;
       }

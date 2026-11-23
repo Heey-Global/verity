@@ -70,7 +70,10 @@ export function ChangeSubmissionBar({
     [client, sessionId],
   );
   useEffect(() => {
+    // A new session is asked afresh: an earlier refusal or error was another's.
     setState(undefined);
+    setError(undefined);
+    unsupported.current = false;
     const controller = new AbortController();
     void load(controller.signal);
     const timer = setInterval(() => {
