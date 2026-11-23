@@ -606,7 +606,15 @@ export function createServerSessionOverview({
               isDefault: pr.repository.isDefault,
               host: row.project.kind === 'forgejo' ? 'Forgejo' : 'GitHub',
               read: async (current) =>
-                (await resolvePullRequests(current))?.find(
+                (
+                  await resolvePullRequests(
+                    current,
+                    undefined,
+                    undefined,
+                    pr.repository.id,
+                    pr.number,
+                  )
+                )?.find(
                   ({ status }) =>
                     status.repository.id === pr.repository.id && status.number === pr.number,
                 )?.status ?? null,

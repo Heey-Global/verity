@@ -599,7 +599,8 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
   }
 
   async function isDirty(worktreePath: string): Promise<boolean> {
-    const out = await git(['-C', worktreePath, 'status', '--porcelain']);
+    const read = (runner: GitOutput) => runner(['-C', worktreePath, 'status', '--porcelain']);
+    const out = await (opts.withGit ? opts.withGit(worktreePath, read) : read(git));
     return out.trim().length > 0;
   }
 

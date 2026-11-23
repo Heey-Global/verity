@@ -95,9 +95,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   const [pullRequest, setPullRequest] = useState<NonNullable<BranchList['pullRequest']> | null>(
     cached?.pullRequest ?? null,
   );
-  const [repositoryPullRequests, setRepositoryPullRequests] = useState(
-    cached?.pullRequests === null ? [] : cached?.pullRequests,
-  );
+  const [repositoryPullRequests, setRepositoryPullRequests] = useState(cached?.pullRequests);
   const [owner, setOwner] = useState<string | undefined>(cached?.owner);
   const [repo, setRepo] = useState<string | undefined>(cached?.repo);
   const [codeHost, setCodeHost] = useState<BranchList['codeHost']>(cached?.codeHost);
@@ -149,7 +147,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     setPreviewable(cached?.previewable ?? []);
     setCurrentPr(cached?.currentPr ?? null);
     setPullRequest(cached?.pullRequest ?? null);
-    setRepositoryPullRequests(cached?.pullRequests === null ? [] : cached?.pullRequests);
+    setRepositoryPullRequests(cached?.pullRequests);
     setOwner(cached?.owner);
     setRepo(cached?.repo);
     setCodeHost(cached?.codeHost);
@@ -194,7 +192,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
             if (fresh()) {
               const pullRequests =
                 res.pullRequests === null
-                  ? (cachedBranches(client, sessionId)?.pullRequests ?? [])
+                  ? (cachedBranches(client, sessionId)?.pullRequests ?? null)
                   : res.pullRequests;
               publishSnapshot({ ...res, pullRequests });
               setCurrent(res.current);
@@ -406,7 +404,15 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     previewable,
     currentPr,
     pullRequest,
-    pullRequests: repositoryPullRequests ?? (pullRequest === null ? [] : [pullRequest]),
+    pullRequests:
+      repositoryPullRequests ??
+      (pullRequest === null
+        ? []
+        : [
+            repositoryPullRequests === null && pullRequest.phase === 'open'
+              ? { ...pullRequest, mergeable: null, pipeline: 'unknown' }
+              : pullRequest,
+          ]),
     owner,
     repo,
     codeHost,
