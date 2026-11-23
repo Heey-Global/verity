@@ -1,4 +1,3 @@
-import { useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
@@ -8,8 +7,7 @@ import { Text } from '../ui';
 
 type PreviewDocument = { attachment: string; sessionId: string; html: string | null };
 
-export function useMockupPreviewDocument(attachment: string) {
-  const { id: sessionId } = useLocalSearchParams<{ id: string }>();
+export function useMockupPreviewDocument(sessionId: string, attachment: string) {
   const [document, setDocument] = useState<PreviewDocument | undefined>();
   useEffect(() => {
     const controller = new AbortController();

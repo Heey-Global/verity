@@ -593,19 +593,14 @@ interface SessionActions {
   decidingPlanning: boolean;
   /** The plan card's "Implement plan": the tap itself is the operator's approval. */
   implementPlan: (revision?: number) => void;
-  /** The mockup review, so a presented round shows the current verdicts. */
+  sessionId: string;
   mockupReview: MockupReview | undefined;
-  /** Open the full-screen mockup review at a screen. */
   openMockups: (screen?: string) => void;
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
 
-// Bookmark state (#bookmarks), provided once by `SessionChat` so a deep transcript
-// row (`<AgentMarkdown>`) can toggle its own message's bookmark without threading a
-// callback through `renderRow`. Null outside a provider — the affordance renders
-// nothing rather than crashing (never happens in practice; the FlashList is always
-// wrapped).
+// Transcript rows use this context for bookmark actions.
 const BookmarksContext = createContext<Bookmarks | null>(null);
 
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
@@ -3534,6 +3529,7 @@ export const SessionChat = memo(function SessionChat({
       planningPlan,
       decidingPlanning,
       implementPlan,
+      sessionId,
       mockupReview,
       openMockups,
     }),
@@ -3553,6 +3549,7 @@ export const SessionChat = memo(function SessionChat({
       planningPlan,
       decidingPlanning,
       implementPlan,
+      sessionId,
       mockupReview,
       openMockups,
     ],
@@ -4732,6 +4729,7 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       <MockupReviewSheet
         key={mockupReview?.revision}
+        sessionId={sessionId}
         visible={mockupSheet !== null && mockupReview !== undefined}
         screens={mockupReview?.screens ?? []}
         title={planTitle(planningPlan) ?? 'Mockups'}
@@ -5672,12 +5670,13 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   const expandable = Boolean(view.subtitle) || Boolean(view.preview) || Boolean(skillBody);
   const actions = useContext(SessionActionsContext);
   const round = mockupRoundView(message.tool, actions?.mockupReview);
-  if (round)
+  if (round && actions)
     return (
       <MockupPager
+        sessionId={actions.sessionId}
         screens={round.screens}
         current={round.current}
-        onOpen={(name) => actions?.openMockups(name)}
+        onOpen={(name) => actions.openMockups(name)}
       />
     );
   const assignment = qaAssignmentView(message.tool);

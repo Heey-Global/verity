@@ -134,10 +134,12 @@ function pageOf(event: NativeSyntheticEvent<NativeScrollEvent>, width: number): 
  * opens the full-screen review at that screen while the round is under review.
  */
 export function MockupPager({
+  sessionId,
   screens,
   current,
   onOpen,
 }: {
+  sessionId: string;
   screens: readonly MockupScreenView[];
   /** False for a round a later presentation replaced. */
   current: boolean;
@@ -209,6 +211,7 @@ export function MockupPager({
       {screens.length > 1 ? <PageDots count={screens.length} index={index} /> : null}
       {archivedScreen !== undefined ? (
         <MockupReviewSheet
+          sessionId={sessionId}
           visible
           screens={screens}
           title="Mockups"
@@ -324,6 +327,7 @@ export function MockupReviewBar({ view, onReview }: { view: MockupBarView; onRev
  * The screens keep the order they were presented in.
  */
 export function MockupReviewSheet({
+  sessionId,
   visible,
   screens,
   title,
@@ -334,6 +338,7 @@ export function MockupReviewSheet({
   onComplete,
   onClose,
 }: {
+  sessionId: string;
   visible: boolean;
   screens: readonly MockupScreenView[];
   /** The plan's title, shown under the screen name. */
@@ -438,6 +443,7 @@ export function MockupReviewSheet({
                     ]}
                   >
                     <HtmlMockupPreview
+                      sessionId={sessionId}
                       key={current.attachment}
                       attachment={current.attachment}
                       name={current.name}

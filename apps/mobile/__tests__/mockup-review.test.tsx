@@ -7,8 +7,10 @@ jest.mock('../hooks/useAttachmentImageSource', () => ({
 }));
 
 jest.mock('../components/session/HtmlMockupPreview', () => ({
-  HtmlMockupPreview: ({ attachment }: { attachment: string }) =>
-    require('react').createElement(require('react-native').View, { testID: attachment }),
+  HtmlMockupPreview: ({ sessionId, attachment }: { sessionId: string; attachment: string }) =>
+    require('react').createElement(require('react-native').View, {
+      testID: `${sessionId}:${attachment}`,
+    }),
 }));
 
 import { MockupPager, MockupReviewSheet } from '../components/session/MockupReview';
@@ -30,27 +32,35 @@ const image: MockupScreenView = {
 };
 
 it('describes an active HTML screen in chat without adding another review entry', () => {
-  render(<MockupPager screens={[html]} current onOpen={jest.fn()} />);
+  render(<MockupPager sessionId="embedded-session" screens={[html]} current onOpen={jest.fn()} />);
 
   expect(screen.getByText('Interactive mockup')).toBeOnTheScreen();
   expect(screen.queryByRole('button')).toBeNull();
-  expect(screen.queryByTestId(html.attachment)).toBeNull();
+  expect(screen.queryByTestId(`embedded-session:${html.attachment}`)).toBeNull();
 });
 
-it('opens the archived HTML attachment without allowing marks', () => {
-  render(<MockupPager screens={[html]} current={false} onOpen={jest.fn()} />);
+it('opens the archived HTML attachment without allowing marks', async () => {
+  render(
+    <MockupPager
+      sessionId="embedded-session"
+      screens={[html]}
+      current={false}
+      onOpen={jest.fn()}
+    />,
+  );
 
   fireEvent.press(screen.getByRole('button', { name: 'View Pricing mockup' }));
 
-  expect(screen.getByTestId(html.attachment)).toBeOnTheScreen();
+  expect(await screen.findByTestId(`embedded-session:${html.attachment}`)).toBeOnTheScreen();
   expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'End review' })).toBeNull();
 });
 
-it('switches viewport widths when there is room and marks the selected screen', () => {
+it('switches viewport widths when there is room and marks the selected screen', async () => {
   const onDecide = jest.fn().mockResolvedValue(true);
   const sheet = render(
     <MockupReviewSheet
+      sessionId="embedded-session"
       visible
       screens={[html, image]}
       title="Mockups"
@@ -70,13 +80,13 @@ it('switches viewport widths when there is room and marks the selected screen', 
   expect(screen.getByRole('button', { name: 'Desktop', selected: true })).toBeOnTheScreen();
   fireEvent.press(screen.getByRole('button', { name: 'Phone' }));
   expect(screen.getByRole('button', { name: 'Phone', selected: true })).toBeOnTheScreen();
-  expect(screen.getByTestId(html.attachment)).toBeOnTheScreen();
+  expect(await screen.findByTestId(`embedded-session:${html.attachment}`)).toBeOnTheScreen();
 
   fireEvent.press(screen.getByRole('button', { name: 'Approve' }));
   expect(onDecide).toHaveBeenLastCalledWith(html.name, { verdict: 'approved' });
 
   fireEvent.press(screen.getByRole('button', { name: 'Next screen' }));
-  expect(screen.queryByTestId(html.attachment)).toBeNull();
+  expect(screen.queryByTestId(`embedded-session:${html.attachment}`)).toBeNull();
   expect(screen.getByLabelText('Screenshot mockup')).toBeOnTheScreen();
   fireEvent.press(screen.getByRole('button', { name: 'Discard' }));
   expect(onDecide).toHaveBeenLastCalledWith(image.name, { verdict: 'discarded' });

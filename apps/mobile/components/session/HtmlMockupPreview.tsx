@@ -3,8 +3,16 @@ import WebView from 'react-native-webview';
 
 import { MockupPreviewStatus, useMockupPreviewDocument } from './mockupPreviewDocument';
 
-export function HtmlMockupPreview({ attachment, name }: { attachment: string; name: string }) {
-  const { html, onError } = useMockupPreviewDocument(attachment);
+export function HtmlMockupPreview({
+  sessionId,
+  attachment,
+  name,
+}: {
+  sessionId: string;
+  attachment: string;
+  name: string;
+}) {
+  const { html, onError } = useMockupPreviewDocument(sessionId, attachment);
   if (typeof html !== 'string') return <MockupPreviewStatus loading={html === undefined} />;
 
   return (

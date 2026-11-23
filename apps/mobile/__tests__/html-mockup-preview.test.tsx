@@ -8,8 +8,6 @@ const mockGetDocument = jest.fn(
     '<details><summary>Plans</summary></details>',
 );
 
-jest.mock('expo-router', () => ({ useLocalSearchParams: () => ({ id: 'session' }) }));
-
 jest.mock('../lib/client', () => ({
   createVerityClient: () => ({ getMockupPreviewDocument: mockGetDocument }),
 }));
@@ -19,10 +17,16 @@ jest.mock('react-native-webview', () => ({
 }));
 
 it('loads the authorized preview into a local WebView without scripting or a bridge', async () => {
-  const preview = render(<HtmlMockupPreview attachment="saved-screen" name="Pricing" />);
+  const preview = render(
+    <HtmlMockupPreview sessionId="embedded-session" attachment="saved-screen" name="Pricing" />,
+  );
   const view = await screen.findByLabelText('Pricing mockup');
 
-  expect(mockGetDocument).toHaveBeenCalledWith('session', 'saved-screen', expect.any(AbortSignal));
+  expect(mockGetDocument).toHaveBeenCalledWith(
+    'embedded-session',
+    'saved-screen',
+    expect.any(AbortSignal),
+  );
   expect(view.props).toMatchObject({
     source: { html: '<details><summary>Plans</summary></details>', baseUrl: 'about:blank' },
     javaScriptEnabled: false,
@@ -45,7 +49,13 @@ it('loads the authorized preview into a local WebView without scripting or a bri
 
 it('shows an unavailable state when the preview cannot be fetched', async () => {
   mockGetDocument.mockRejectedValueOnce(new Error('Unauthorized'));
-  render(<HtmlMockupPreview attachment="unavailable-screen" name="Missing" />);
+  render(
+    <HtmlMockupPreview
+      sessionId="embedded-session"
+      attachment="unavailable-screen"
+      name="Missing"
+    />,
+  );
   expect(await screen.findByText('The mockup could not be loaded.')).toBeOnTheScreen();
   expect(screen.queryByLabelText('Missing mockup')).toBeNull();
 });
