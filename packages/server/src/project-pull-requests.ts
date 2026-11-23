@@ -98,7 +98,10 @@ function isRenovateAuthor(author: string | undefined): boolean {
 
 /** The key a fix session is registered under, shared with CI repair for the default
  *  repository so a manual fix and an automatic repair never work on one PR at once. */
-function pullRequestResource(repository: ProjectRepositoryRecord, number: number): string {
+export function pullRequestResource(
+  repository: Pick<ProjectRepositoryRecord, 'id' | 'isDefault'>,
+  number: number,
+): string {
   return repository.isDefault
     ? `pr:${String(number)}`
     : `repo:${repository.id}:pr:${String(number)}`;

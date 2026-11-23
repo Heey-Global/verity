@@ -287,7 +287,7 @@ export interface GitBranchService {
    */
   resetToMergedBase(
     worktreePath: string,
-    opts?: { base?: string },
+    opts?: { base?: string; expectedHead?: { branch: string; sha: string } },
   ): Promise<{ base: string; deletedBranch?: string }>;
   /**
    * Merge a session branch into the project's base branch WITHOUT GitHub — the
@@ -785,7 +785,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
 
   async function resetToMergedBase(
     worktreePath: string,
-    opts: { base?: string } = {},
+    opts: { base?: string; expectedHead?: { branch: string; sha: string } } = {},
   ): Promise<{ base: string; deletedBranch?: string }> {
     // The branch the merge actually landed on. It reaches argv of the commands
     // below, so an argument is checked against git's ref grammar first — every
@@ -808,6 +808,9 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       feature !== base && feature !== baseBranch && (await branchExists(worktreePath, feature))
         ? (await git(['-C', worktreePath, 'rev-parse', `refs/heads/${feature}`])).trim()
         : undefined;
+    const expectedHead = opts.expectedHead;
+    if (expectedHead && (feature !== expectedHead.branch || featureTip !== expectedHead.sha))
+      return { base };
     // An idle observation can race a new turn. Refuse before changing HEAD when
     // tracked work has appeared, and let the unforced checkout below enforce the
     // same invariant across the remaining window.
@@ -828,6 +831,12 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       'origin',
       `+refs/heads/${base}:${remoteRef}`,
     ]);
+    if (
+      expectedHead &&
+      ((await attachedBranch(worktreePath, git)) !== expectedHead.branch ||
+        (await git(['-C', worktreePath, 'rev-parse', 'HEAD'])).trim() !== expectedHead.sha)
+    )
+      return { base };
     // Detach onto the merged tip: never claims the `base` branch name (so it can't
     // block a parallel worktree), and `-f` discards the merged feature branch's now
     // stale working tree. `current()` still reports "<base>" for this detached HEAD

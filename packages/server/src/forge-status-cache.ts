@@ -17,7 +17,6 @@ interface Entry {
 export function createForgeStatusCache(now: () => number = Date.now) {
   const entries = new Map<string, Entry>();
   const pending = new Map<string, Promise<PullRequestStatus | null>>();
-  const aliases = new Map<string, string>();
   // Branch-scoped invalidations advance an epoch so a read already in flight when
   // its branch was invalidated cannot store its (possibly pre-activity) result.
   const branchEpochs = new Map<string, number>();
@@ -36,7 +35,6 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       scopes.delete(key);
       const prefix = `${key}:`;
       for (const entry of entries.keys()) if (entry.startsWith(prefix)) entries.delete(entry);
-      for (const alias of aliases.keys()) if (alias.startsWith(prefix)) aliases.delete(alias);
       if (scopes.size <= 4096) break;
     }
   };
@@ -79,7 +77,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       }
       const generation = observation;
       const branchKey = `${scope(id)}:branch:${branch}`;
-      const key = aliases.get(branchKey) ?? branchKey;
+      const key = branchKey;
       const headKey = branchKey.split('\0')[0]!;
       const epoch = branchEpochs.get(headKey) ?? 0;
       const running = pending.get(key);
@@ -123,14 +121,8 @@ export function createForgeStatusCache(now: () => number = Date.now) {
         if (!generation.valid) return unknown(value);
         if ((branchEpochs.get(headKey) ?? 0) !== epoch) return value;
         entries.set(key, entry);
-        if (value) {
-          const prKey = `${scope(id)}:pr:${value.number}`;
-          aliases.set(branchKey, prKey);
-          entries.set(prKey, entry);
-        }
         // Bound retained data even when projects or branches disappear.
         while (entries.size > 4096) entries.delete(entries.keys().next().value!);
-        while (aliases.size > 4096) aliases.delete(aliases.keys().next().value!);
         return value;
       })();
       pending.set(key, read);
@@ -150,7 +142,6 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       const prefix = `${scopeKey}:`;
       for (const key of pending.keys()) if (key.startsWith(prefix)) pending.delete(key);
       for (const key of entries.keys()) if (key.startsWith(prefix)) entries.delete(key);
-      for (const key of aliases.keys()) if (key.startsWith(prefix)) aliases.delete(key);
     },
     /**
      * Forget only the given branches of one repository. Activity in one session
@@ -162,9 +153,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       for (const branch of branches) {
         const branchKey = `${scopeKey}:branch:${branch}`;
         const numbered = new Set(
-          [...aliases.keys(), ...pending.keys(), ...entries.keys()].filter((key) =>
-            key.startsWith(`${branchKey}\0`),
-          ),
+          [...pending.keys(), ...entries.keys()].filter((key) => key.startsWith(`${branchKey}\0`)),
         );
         const keys = [branchKey, ...numbered];
         const nextEpoch = (branchEpochs.get(branchKey) ?? 0) + 1;
@@ -172,14 +161,8 @@ export function createForgeStatusCache(now: () => number = Date.now) {
         branchEpochs.delete(branchKey);
         branchEpochs.set(branchKey, nextEpoch);
         for (const key of keys) {
-          const prKey = aliases.get(key);
-          if (prKey !== undefined) {
-            pending.delete(prKey);
-            entries.delete(prKey);
-          }
           pending.delete(key);
           entries.delete(key);
-          aliases.delete(key);
         }
       }
       while (branchEpochs.size > 4096) branchEpochs.delete(branchEpochs.keys().next().value!);

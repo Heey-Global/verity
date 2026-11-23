@@ -317,7 +317,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   const mergePullRequest = useCallback<UseBranches['mergePullRequest']>(
     async (number, repositoryId, expectedHeadSha) => {
       try {
-        await (repositoryId === undefined
+        await (repositoryId === undefined && expectedHeadSha === undefined
           ? client.mergePullRequest(sessionId, number)
           : client.mergePullRequest(sessionId, number, expectedHeadSha, repositoryId));
         const snapshot = cachedBranches(client, sessionId);

@@ -1,3 +1,4 @@
+import { pullRequestResource } from './project-pull-requests.js';
 import { appendExternalPromptData } from '@verity/events';
 import { sessionPermitsBackgroundPr } from './pr-background-policy.js';
 import { type SessionRecord } from '@verity/store';
@@ -30,8 +31,8 @@ interface RepairRepository {
 }
 
 function repairResource(number: number, repository?: RepairRepository): string {
-  return repository && !repository.isDefault
-    ? `repository:${repository.repositoryId}:pr:${number}`
+  return repository
+    ? pullRequestResource({ id: repository.repositoryId, isDefault: repository.isDefault }, number)
     : `pr:${number}`;
 }
 

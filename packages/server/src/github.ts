@@ -571,30 +571,27 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     number?: number,
   ): Promise<{ ok: boolean; status: PullRequestStatus | null }> => {
     try {
+      const pulls = `https://api.github.com/repos/${id.owner}/${id.repo}/pulls`;
       const head = encodeURIComponent(`${id.owner}:${branch}`);
-      const url =
-        `https://api.github.com/repos/${id.owner}/${id.repo}/pulls` +
-        `?head=${head}&state=all&sort=updated&direction=desc&per_page=100`;
-      const res = await fetchJson(url, token);
+      const res = await fetchJson(
+        number === undefined
+          ? `${pulls}?head=${head}&state=all&sort=updated&direction=desc&per_page=100`
+          : `${pulls}/${number}`,
+        token,
+      );
       if (!res.ok) return { ok: false, status: null };
       const body = res.body;
-      if (!Array.isArray(body) || body.length === 0) return { ok: true, status: null };
-      const rows: unknown[] = body;
       const raw =
         number !== undefined
-          ? rows.find(
-              (candidate) =>
-                candidate !== null &&
-                typeof candidate === 'object' &&
-                (candidate as Record<string, unknown>).number === number,
-            )
-          : (rows.find(
-              (candidate) =>
-                candidate !== null &&
-                typeof candidate === 'object' &&
-                !Array.isArray(candidate) &&
-                (candidate as Record<string, unknown>).state === 'open',
-            ) ?? rows[0]);
+          ? body
+          : Array.isArray(body)
+            ? (body.find(
+                (candidate: unknown) =>
+                  candidate !== null &&
+                  typeof candidate === 'object' &&
+                  (candidate as Record<string, unknown>).state === 'open',
+              ) ?? body[0])
+            : undefined;
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
         return { ok: true, status: null };
       }
@@ -607,6 +604,18 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       const mergedAt = pr.merged_at;
       const mergeCommitSha = pr.merge_commit_sha;
       const headObj = pr.head;
+      if (number !== undefined) {
+        const source = headObj as
+          { ref?: unknown; repo?: { full_name?: unknown } } | null | undefined;
+        const fullName = source?.repo?.full_name;
+        if (
+          num !== number ||
+          source?.ref !== branch ||
+          typeof fullName !== 'string' ||
+          fullName.toLowerCase() !== `${id.owner}/${id.repo}`.toLowerCase()
+        )
+          return { ok: true, status: null };
+      }
       const sha =
         headObj !== null && typeof headObj === 'object' && !Array.isArray(headObj)
           ? (headObj as Record<string, unknown>).sha

@@ -43,13 +43,15 @@ export function SessionBar({
 export function SessionBarStack({
   children,
   collapsed,
+  grouped,
 }: {
   children: ReactNode;
   collapsed: boolean;
+  grouped: boolean;
 }) {
   return (
-    <View style={styles.wrap}>
-      <View style={styles.stack}>{children}</View>
+    <View style={grouped ? styles.wrap : undefined}>
+      <View style={grouped ? styles.stack : undefined}>{children}</View>
       {collapsed ? (
         <>
           <View style={[styles.edge, styles.firstEdge]} />

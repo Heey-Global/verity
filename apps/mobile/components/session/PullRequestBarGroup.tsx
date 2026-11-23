@@ -59,7 +59,6 @@ export function PullRequestBarGroup({
       onDismiss={pr.phase === 'open' ? undefined : () => onDismiss(pr)}
     />
   ));
-  if (!grouped) return rows[0];
   const first =
     sorted.find((pr) => priority(pr) === 0) ??
     sorted.find((pr) => priority(pr) === 2) ??
@@ -77,47 +76,49 @@ export function PullRequestBarGroup({
   );
   const title = `${sorted.length} pull requests${summary ? ` · ${summary}` : ''}`;
   return (
-    <SessionBarStack collapsed={!expanded}>
-      <SessionBar inset first>
-        <SessionBarTarget
-          onPress={() => setExpanded((value) => !value)}
-          expanded={expanded}
-          accessibilityLabel={`${title}. ${refs.join(', ')}`}
-        >
-          <SessionBarContent
-            color={colorFor(
-              first,
-              pullRequestMergeButton(first, initialMergeState).kind,
-              theme.colors,
-            )}
-            title={title}
-            subtitle={sorted.map((pr, index) => (
-              <Text key={pr.url} variant="footnote" tone="muted">
-                {index > 0 ? '   ' : ''}
-                <Text
-                  variant="footnote"
-                  style={{
-                    color: colorFor(
-                      pr,
-                      pullRequestMergeButton(pr, initialMergeState).kind,
-                      theme.colors,
-                    ),
-                  }}
-                >
-                  {'● '}
+    <SessionBarStack grouped={grouped} collapsed={grouped && !expanded}>
+      {grouped ? (
+        <SessionBar inset first>
+          <SessionBarTarget
+            onPress={() => setExpanded((value) => !value)}
+            expanded={expanded}
+            accessibilityLabel={`${title}. ${refs.join(', ')}`}
+          >
+            <SessionBarContent
+              color={colorFor(
+                first,
+                pullRequestMergeButton(first, initialMergeState).kind,
+                theme.colors,
+              )}
+              title={title}
+              subtitle={sorted.map((pr, index) => (
+                <Text key={pr.url} variant="footnote" tone="muted">
+                  {index > 0 ? '   ' : ''}
+                  <Text
+                    variant="footnote"
+                    style={{
+                      color: colorFor(
+                        pr,
+                        pullRequestMergeButton(pr, initialMergeState).kind,
+                        theme.colors,
+                      ),
+                    }}
+                  >
+                    {'● '}
+                  </Text>
+                  {refs[index]}
                 </Text>
-                {refs[index]}
-              </Text>
-            ))}
-          />
-          <Icon
-            name={expanded ? 'chevron-up' : 'chevron-down'}
-            size={18}
-            color={theme.colors.textMuted}
-          />
-        </SessionBarTarget>
-      </SessionBar>
-      <View style={expanded ? undefined : styles.collapsed}>{rows}</View>
+              ))}
+            />
+            <Icon
+              name={expanded ? 'chevron-up' : 'chevron-down'}
+              size={18}
+              color={theme.colors.textMuted}
+            />
+          </SessionBarTarget>
+        </SessionBar>
+      ) : null}
+      <View style={grouped && !expanded ? styles.collapsed : undefined}>{rows}</View>
     </SessionBarStack>
   );
 }

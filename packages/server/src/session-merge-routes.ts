@@ -368,15 +368,21 @@ export function registerSessionMergeRoutes(
               // would replay the very answer it is meant to re-check. The pre-merge
               // value stands in when the PR no longer resolves — GitHub deletes the
               // head branch this looks the PR up by.
-              const settled = await readStatus().catch(() => null);
-              const target =
+              const settled = target?.head
+                ? await deps.projectPullRequests
+                    ?.status(target.project, target.head, number)
+                    .catch(() => null)
+                : await readStatus().catch(() => null);
+              const destination =
                 settled?.number === number && settled.phase === 'merged'
                   ? (settled.baseRef ?? mergedBaseRef)
                   : mergedBaseRef;
-              const { base, deletedBranch } = await branches.resetToMergedBase(
-                worktree,
-                target === undefined ? {} : { base: target },
-              );
+              const { base, deletedBranch } = await branches.resetToMergedBase(worktree, {
+                ...(destination === undefined ? {} : { base: destination }),
+                ...(target?.head && approvedRevision
+                  ? { expectedHead: { branch: target.head, sha: approvedRevision } }
+                  : {}),
+              });
               const deletedClause = deletedBranch
                 ? ` and the merged local branch "${deletedBranch}" was deleted`
                 : '';

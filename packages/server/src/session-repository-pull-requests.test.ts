@@ -129,7 +129,10 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
       sha,
     );
     expect(legacyMerge).not.toHaveBeenCalled();
-    expect(reset).toHaveBeenCalledExactlyOnceWith('/api', { base: 'main' });
+    expect(reset).toHaveBeenCalledExactlyOnceWith('/api', {
+      base: 'main',
+      expectedHead: { branch: 'feat/api', sha },
+    });
     expect(invalidate).toHaveBeenCalledWith('s');
     reset.mockClear();
     hasOpenPullRequest.mockResolvedValueOnce(true);
