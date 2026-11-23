@@ -1,4 +1,5 @@
 import { installAssistantHandoffNotices } from './assistant-handoff-notify.js';
+import { installChangeSubmissions } from './change-submissions.js';
 import {
   startServerMessageProjection,
   createServerConductor,
@@ -269,7 +270,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const { readSecretStatus } = installSessionList(app, ctx, {
     codexUsage,
     wikiMaintenanceSessions,
-    sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions },
+    sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions, sessionPrCache },
   });
 
   installProviderUsage(app, ctx, { claudeUsage, codexUsage });
@@ -435,6 +436,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     spawn: sessionCreate.spawn,
   });
   installVulnerabilityFix(app, ctx, { sessionCreate, sessionPrCache });
+  installChangeSubmissions(app, ctx, {
+    publish: publishSessionEvent,
+    // Uncommitted work is not in HEAD, so HEAD is not what was submitted.
+    revision: async (session) => {
+      const branches = await branchesForSession(session);
+      if (!branches || (await branches.isDirty(session.worktree))) return undefined;
+      return branches.headRevision?.(session.worktree);
+    },
+    pullRequest: async (session) => (await sessionPrCache.get(session)) ?? undefined,
+    freshPullRequest: async (session) => {
+      const status = await sessionPrStatus(session);
+      if (status?.observationFailed === true) throw new Error('pull request unavailable');
+      return status ?? undefined;
+    },
+    hasChanges: async (session) => {
+      const branches = await branchesForSession(session);
+      if (!branches || session.projectId === null) return undefined;
+      // A local project has no remote base to compare with; unknown offers submitting.
+      if ((await deps.eventStore.getProject(session.projectId))?.kind === 'local') return undefined;
+      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
+        session.projectId,
+      );
+      const base = `origin/${settings?.defaultBranch ?? 'main'}`;
+      return branches.hasProjectChanges(session.worktree, base);
+    },
+  });
   installMeetingIntake(app, ctx, { attendeeMeetings, spawn: sessionCreate.spawn });
 
   installRepairRoutes(app, ctx);

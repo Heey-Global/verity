@@ -323,3 +323,77 @@ it('keeps the list up and shows every request when a rights check fails', async 
     await app.close();
   }
 });
+
+it('lists a submission for review to members with Code until one of them writes', async () => {
+  // Every device polls this list: a submission addressed to everyone would keep
+  // sitting on Home for colleagues after someone took the review on.
+  const app = Fastify();
+  app.addHook('onRequest', async (request) => {
+    request.localUserId = String(request.headers['x-user']);
+  });
+  let writers: string[] = [];
+  const submittedAt = new Date(1_000);
+  registerSessionListRoute(app, {
+    store: {
+      listSessions: async () => [],
+      linkedSessionIds: async () => new Set(),
+      sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async () => new Map() } as never,
+    },
+    summarizeSessions: async () =>
+      [{ sessionId: 's1', projectId: 'p', pendingPermissions: [] }] as unknown as SessionSummary[],
+    collectAttention: async () => [],
+    prunePrSummaryCache: () => {},
+    pruneBranchCache: () => {},
+    requestAddressing: {
+      store: {
+        sessionPeople: { owners: async () => new Map() } as never,
+        isActiveAdministrator: async () => false,
+        hasProjectPermission: async (user: string, _project: string, permission: string) =>
+          permission === 'read' || user === 'alex' || user === 'kim',
+      },
+    },
+    changeSubmissions: {
+      store: {
+        changeSubmissions: {
+          open: async () =>
+            new Map([
+              [
+                's1',
+                {
+                  sessionId: 's1',
+                  submittedBy: 'mara',
+                  submittedAt,
+                  revision: null,
+                  state: 'submitted',
+                },
+              ],
+            ]),
+          writersSince: async () => new Map([['s1', writers]]),
+        } as never,
+        isActiveAdministrator: async () => false,
+        hasProjectPermission: async (user: string, _project: string, permission: string) =>
+          permission === 'code' && (user === 'alex' || user === 'kim'),
+        userDisplayNames: async () => new Map([['mara', 'Mara']]),
+      },
+    },
+  });
+  const read = async (user: string) => {
+    const result = await app.inject({ url: '/sessions', headers: { 'x-user': user } });
+    return result.json<SessionSummary[]>()[0]?.changeSubmission;
+  };
+  try {
+    expect(await read('alex')).toMatchObject({
+      status: 'waiting',
+      submittedBy: { id: 'mara', name: 'Mara' },
+      addressedToViewer: true,
+    });
+    expect((await read('kim'))?.addressedToViewer).toBe(true);
+    expect((await read('mara'))?.addressedToViewer).toBe(false);
+    writers = ['alex'];
+    expect(await read('alex')).toMatchObject({ status: 'checking', addressedToViewer: true });
+    expect((await read('kim'))?.addressedToViewer).toBe(false);
+  } finally {
+    await app.close();
+  }
+});

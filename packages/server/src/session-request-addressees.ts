@@ -44,7 +44,7 @@ function memoizedAdministrators(store: RequestAddressingDeps['store']): RightsSt
 
 /** Whether `userId` holds Code where `projectId` is; a session without a project
  *  is an administrator's. */
-async function holdsCode(
+export async function holdsCode(
   store: RightsStore,
   userId: string,
   projectId: string | null,
@@ -109,7 +109,7 @@ export async function addressRequests(
       summary.requestInitiator,
       ...(fallback.get(summary.sessionId) ?? []),
     ]) {
-      if (candidate !== undefined && (await cached('read', candidate, summary.projectId))) {
+      if (candidate != null && (await cached('read', candidate, summary.projectId))) {
         owner = candidate;
         break;
       }

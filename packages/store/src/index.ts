@@ -136,7 +136,6 @@ export {
   type ProjectKind,
   LOCAL_PROJECT_OWNER,
   isLocalProject,
-  isSessionLinkProject,
   isInstallationPlaceholder,
   ProjectIdentityClaimConflict,
   type SessionAutomationRecord,
@@ -404,3 +403,5 @@ export {
   storedMockupScreens,
   storedMockupState,
 } from './session-mockups.js';
+export { isSessionLinkProject } from './project-session-links.js';
+export type { ChangeSubmission, ChangeSubmissionState } from './change-submissions.js';

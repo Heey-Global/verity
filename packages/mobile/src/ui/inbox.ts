@@ -1,4 +1,5 @@
 import type { MockupReviewScreen, ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
+import { projectNoun } from '../changeSubmissions.js';
 import { sessionAttention } from './attention.js';
 import { mockupProgress } from './mockups.js';
 import { projectNeedsRepair } from './projectBadge.js';
@@ -42,6 +43,7 @@ export type InboxItemKind =
   | 'mockup_review'
   | 'crashed'
   | 'merge_ready'
+  | 'code_review'
   | 'project_health'
   | 'qa_stop';
 
@@ -123,6 +125,7 @@ const RANK: Record<InboxItemKind, number> = {
   plan_review: 5,
   mockup_review: 4,
   crashed: 3,
+  code_review: 2,
   merge_ready: 2,
   project_health: 1,
 };
@@ -195,6 +198,7 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   add('plan_review', 'plan to review', 'plans to review');
   add('mockup_review', 'mockup review', 'mockup reviews');
   add('crashed', 'crashed session', 'crashed sessions');
+  add('code_review', 'code review', 'code reviews');
   add('merge_ready', 'pull request ready', 'pull requests ready');
   add('project_health', 'project needs care', 'projects need care');
   return parts.join(' · ');
@@ -396,6 +400,32 @@ function sessionItems(
         session.resumable === false
           ? [open()]
           : [{ kind: 'resume', label: 'Resume', sessionId: session.sessionId }, open()],
+    });
+  }
+
+  // Submitted changes wait on everyone with Code until one of them writes in the
+  // session; the server then addresses them to that person alone (ADR 0023).
+  const submission = session.changeSubmission;
+  // Once a pull request is open, its own item takes over from the review.
+  if (
+    submission?.addressedToViewer === true &&
+    (submission.status === 'waiting' || submission.status === 'checking')
+  ) {
+    const who = submission.submittedBy.name ?? 'A member';
+    items.push({
+      ...base,
+      // Each submission asks anew: a dismissed one returns when changes are resubmitted.
+      key: `code_review:${session.sessionId}:${String(submission.submittedAt)}`,
+      kind: 'code_review',
+      tag: 'Code review',
+      tone: 'action',
+      title: `${who} submitted changes`,
+      context: where,
+      message:
+        submission.checker === undefined
+          ? `Check them and add them to ${projectNoun()}.`
+          : `You are checking them.`,
+      actions: [open('Review')],
     });
   }
 

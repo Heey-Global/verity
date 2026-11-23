@@ -297,6 +297,10 @@ export class SessionReducer {
           this.emitAgentEvent(seq, ts, event);
           break;
         }
+        if (event.changeSubmission) {
+          this.emitAgentEvent(seq, ts, event);
+          break;
+        }
         if (event.role === 'operator') {
           this.appendMessage({
             kind: 'user-text',

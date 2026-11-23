@@ -297,6 +297,17 @@ member with Code instead.
 A prompt the server cannot describe, such as a linked-session approval, stays
 unaddressed and appears for every member, because nobody can tell whom it is for.
 
+**Members without Code submit changes.** A member who may execute but not add
+changes to the project's code submits a session's changes instead. The
+submission records who submitted, when, and the commit the session was at; the
+history shows it as a quiet line. Where it stands is derived rather than
+stored: it waits for a developer until a member with Code writes in the
+session, is being checked by the first one who does, is being added while the
+session has an open pull request, and is added once that pull request is merged
+or the session is saved to a local project. Home offers the review to every
+member with Code until one of them writes, and then only to that person. The
+submitter, or a member with Code, can withdraw a submission.
+
 ### 3. Personal connections, with explicit shared-service exceptions
 
 Every connection has, per project, one of three states: _not applicable_,
