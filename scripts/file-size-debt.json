@@ -2,7 +2,7 @@
   "apps/mobile/__tests__/static-preview-sheet.test.tsx": 1967,
   "apps/mobile/app/index.tsx": 2720,
   "apps/mobile/app/meeting/[sessionId].tsx": 3392,
-  "apps/mobile/app/session/[id].tsx": 9687,
+  "apps/mobile/app/session/[id].tsx": 9677,
   "apps/mobile/components/project/StaticPreviewSheet.tsx": 2530,
   "apps/mobile/lib/remoteControlTransport.test.ts": 1848,
   "apps/mobile/tests/live-meeting-screen.test.tsx": 2859,
@@ -51,7 +51,7 @@
   "packages/store/src/projects.test.ts": 1766,
   "packages/store/src/schema.ts": 2149,
   "packages/store/src/store.test.ts": 2666,
-  "packages/store/src/store.ts": 9005,
+  "packages/store/src/store.ts": 8770,
   "scripts/ci-workflow.test.ts": 6046,
   "scripts/probes/project-egress/host-smoke.ts": 1523,
   "scripts/release-workflow.test.ts": 1842

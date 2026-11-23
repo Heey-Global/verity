@@ -286,10 +286,9 @@ import { isSameAutomation } from '../../lib/automationText';
 import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import type { AttachAnchor } from '../../lib/attachMenu';
-import type { RecentImage } from '../../lib/recentImages';
 import { AttachMenu } from '../../components/AttachMenu';
 import {
-  attachRecentImage,
+  attachRecentImages,
   captureImage,
   pickMeetingAudioAsset,
   readMeetingAudioUpload,
@@ -2695,10 +2694,12 @@ export const SessionChat = memo(function SessionChat({
   ]);
 
   // Sendable with text OR at least one attachment (a bare screenshot is valid).
+  const [attachingRecent, setAttachingRecent] = useState(false);
   const canSend =
     (draft.trim().length > 0 || attachments.length > 0) &&
     attachments.length <= MAX_ATTACHMENTS_PER_TURN &&
     !sending &&
+    !attachingRecent &&
     !dead;
   // Show a one-time rate-limit banner only when the 5h window is exhausted
   // (status !== 'allowed'); the common 'allowed' case shows nothing.
@@ -2763,7 +2764,7 @@ export const SessionChat = memo(function SessionChat({
   }, [branches.saveToProject, scrollToLatest]);
   const voiceAbort = voice.abort;
   voiceAutoSendRef.current = async (text) => {
-    if (!text || sending || dead || attachments.length > 0) return false;
+    if (!text || sending || attachingRecent || dead || attachments.length > 0) return false;
     const accepted = await sendTurn(text);
     if (!accepted) return false;
     scrollToLatest(true);
@@ -2772,15 +2773,7 @@ export const SessionChat = memo(function SessionChat({
   };
   const onSend = useCallback(() => {
     const prompt = draft.trim();
-    // Enforce the cap here as well as through `canSend`: hardware Enter invokes
-    // this callback directly and can bypass the disabled send button. Restored
-    // queue backlogs may exceed the cap and must remain intact until trimmed.
-    if (
-      (prompt.length === 0 && attachments.length === 0) ||
-      attachments.length > MAX_ATTACHMENTS_PER_TURN ||
-      sending
-    )
-      return;
+    if (!canSend) return; // Hardware Enter can invoke this with the button disabled.
     // End any live dictation FIRST (#133): otherwise the voice hook's next (partial/
     // final) result writes the transcript back into the field right after we clear
     // it, and recording stays on. `abort()` swallows the trailing result; no-op idle.
@@ -2834,7 +2827,7 @@ export const SessionChat = memo(function SessionChat({
   }, [
     draft,
     attachments,
-    sending,
+    canSend,
     sendTurn,
     scrollToLatest,
     setDraft,
@@ -2860,21 +2853,23 @@ export const SessionChat = memo(function SessionChat({
   // Screen position of the composer's paperclip, so the attach menu docks to it.
   const [attachAnchor, setAttachAnchor] = useState<AttachAnchor | null>(null);
   // Merge a picker's result into `attachments`, capping at MAX_ATTACHMENTS. The
-  // picker fns throw a user-facing message on failure — a silent no-op would look
-  // like a dead button.
+  const attachmentReadPending = useRef(false);
   const performPick = useCallback(
-    (pick: (remaining: number) => Promise<AttachmentUpload[]>) => {
-      void (async () => {
-        const remaining = MAX_ATTACHMENTS_PER_TURN - attachments.length;
-        if (remaining <= 0) return;
-        try {
-          const picked = await pick(remaining);
-          if (picked.length === 0) return;
-          setAttachments((cur) => [...cur, ...picked].slice(0, MAX_ATTACHMENTS_PER_TURN));
-        } catch (error) {
-          Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
-        }
-      })();
+    async (pick: (remaining: number) => Promise<AttachmentUpload[]>, cleanUpDrop = false) => {
+      const busy = attachmentReadPending.current;
+      const remaining = busy ? 0 : Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length);
+      if (busy)
+        Alert.alert('Could not attach', 'Wait for the current attachments to finish loading.');
+      if (remaining === 0 && !cleanUpDrop) return;
+      if (!busy) attachmentReadPending.current = true;
+      try {
+        const picked = await pick(remaining);
+        if (picked.length > 0) setAttachments((current) => [...current, ...picked]);
+      } catch (error) {
+        Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!busy) attachmentReadPending.current = false;
+      }
     },
     [attachments.length],
   );
@@ -3163,21 +3158,10 @@ export const SessionChat = memo(function SessionChat({
   const onPickFiles = useCallback(() => choosePick((r) => pickFiles(r)), [choosePick]);
   const onDropFiles = useCallback(
     (files: Parameters<typeof readDroppedAttachments>[0]) => {
-      void (async () => {
-        // Unlike an interactive picker, native drop loading may finish after
-        // another attachment source has filled the remaining slots. Always run
-        // the reader so its `finally` removes every native temporary copy.
-        const remaining = Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length);
-        try {
-          const dropped = await readDroppedAttachments(files, remaining);
-          if (dropped.length === 0) return;
-          setAttachments((current) => [...current, ...dropped].slice(0, MAX_ATTACHMENTS_PER_TURN));
-        } catch (error) {
-          Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
-        }
-      })();
+      // Read even with zero slots so native temporary copies are removed.
+      void performPick((remaining) => readDroppedAttachments(files, remaining), true);
     },
-    [attachments.length],
+    [performPick],
   );
   const onDropRejected = useCallback((errors: string[]) => {
     if (errors.length > 0) Alert.alert('Could not attach', errors.join('\n'));
@@ -3336,9 +3320,12 @@ export const SessionChat = memo(function SessionChat({
     );
   }, [client, sessionId, workspaceFile, invalidateGoogleStatus]);
   const onAttachRecent = useCallback(
-    (image: RecentImage) => {
+    (ids: readonly string[]) => {
       setAttachMenuOpen(false);
-      performPick(() => attachRecentImage(image.id));
+      setAttachingRecent(true);
+      void performPick((remaining) => attachRecentImages(ids, remaining)).finally(() =>
+        setAttachingRecent(false),
+      );
     },
     [performPick],
   );
@@ -4781,6 +4768,7 @@ export const SessionChat = memo(function SessionChat({
         onSend={onSend}
         canSend={canSend}
         sending={sending}
+        attachingRecent={attachingRecent}
         // "Working" = the reconciled model signal (`state.working`): server-authoritative
         // `busy` (which already counts open background tasks) OR the reducer's eager
         // `session.running` while it's running AHEAD of the poll on a fresh turn. Unlike
@@ -4830,6 +4818,9 @@ export const SessionChat = memo(function SessionChat({
           onLiveMeeting,
         }}
         onAttachRecent={onAttachRecent}
+        remainingAttachments={
+          attachingRecent ? 0 : Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)
+        }
         google={{
           connected: googleConnected,
           loading: googleCatalogLoading,
@@ -7665,6 +7656,7 @@ function InputBar({
   onSend,
   canSend,
   sending,
+  attachingRecent,
   running,
   activityAnimating,
   onStop,
@@ -7707,6 +7699,7 @@ function InputBar({
   onSend: () => void;
   canSend: boolean;
   sending: boolean;
+  attachingRecent: boolean;
   /** A turn is in flight (#79) — the empty-field action button becomes Stop. */
   running: boolean;
   /** Work is progressing; awaiting user input can still keep Stop available. */
@@ -7898,11 +7891,8 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                 textStyle={styles.inputEngineChipText}
               />
             </View>
-            {/* Right: the persistent mic, then the Send/Stop slot. */}
             <View style={styles.actionRowRight}>
-              {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
-                dictation is tap-to-toggle; recording gets its own active treatment.
-                A separate button keeps it from ever "mutating" into Send/Stop. */}
+              {attachingRecent && running && !dead ? <StopButton onStop={onStop} /> : null}
               <MicButton
                 voiceState={voiceState}
                 autoMode={voiceAutoMode}
@@ -7912,14 +7902,14 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                 onPauseCountdown={onPauseVoiceCountdown}
                 disabled={dead}
               />
-              {running && !canSend && !sending && !dead ? (
-                // Empty field while a turn runs → Stop is available, while the top
-                // activity line carries the "agent is working" cue.
+              {attachingRecent ? (
+                <ActivityIndicator
+                  accessibilityLabel="Loading images"
+                  color={theme.colors.action}
+                />
+              ) : running && !canSend && !sending && !dead ? (
                 <StopButton onStop={onStop} />
               ) : (
-                // Otherwise the Send button — active when there's something to send,
-                // greyed when idle/empty or dead. Sending while a turn runs queues/steers
-                // it, so Send keeps priority over Stop whenever the field is sendable.
                 <Pressable
                   style={[styles.sendButton, canSend ? null : styles.sendButtonDisabled]}
                   onPress={onSend}

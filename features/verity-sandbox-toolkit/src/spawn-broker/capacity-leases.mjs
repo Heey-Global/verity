@@ -4,7 +4,8 @@ import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-const ROOT = '/run/verity-capacity-leases';
+export const CAPACITY_LEASE_ROOT = '/run/verity-capacity-leases';
+const ROOT = CAPACITY_LEASE_ROOT;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 
 export function validateCapacityLeaseRequest(request) {
@@ -52,7 +53,7 @@ async function flock(handle, wait = false) {
   });
 }
 async function rootDirectory(root, uid) {
-  await mkdir(root, { mode: 0o755 }).catch((error) => {
+  await mkdir(root, { mode: 0o711 }).catch((error) => {
     if (error.code !== 'EEXIST') throw error;
   });
   const info = await lstat(root);
@@ -74,7 +75,10 @@ async function rootDirectory(root, uid) {
     const opened = await directory.stat();
     if (opened.dev !== info.dev || opened.ino !== info.ino)
       throw new Error('capacity directory changed');
-    await directory.chmod(0o755);
+    // Agents see this directory read-only. Search without read lets each open
+    // only the random lock path its broker reply named, never list or hold the
+    // leases of other sessions.
+    await directory.chmod(0o711);
   } finally {
     await directory.close();
   }
@@ -125,6 +129,15 @@ async function persist(root, path, value) {
       if (error.code !== 'ENOENT') throw error;
     });
   }
+}
+
+/** Agents hold leases through a read-only view of this directory. A confined
+ *  agent can only see it when it exists before launch, so the broker creates it
+ *  up front rather than on the first lease request. */
+export async function ensureCapacityLeaseRoot(options = {}) {
+  const root = options.capacityLeaseRoot ?? ROOT;
+  await rootDirectory(root, options.enforceRoot === false ? process.getuid() : 0);
+  return root;
 }
 
 /** Only the trusted broker controls these inodes. Missing evidence never releases capacity. */
