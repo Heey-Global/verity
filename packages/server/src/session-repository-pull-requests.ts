@@ -110,6 +110,7 @@ export function createSessionRepositoryPullRequests(
                 const branches = await (branchService ??= branchesForSession(session));
                 const heads = await branches?.sessionBranches(worktree, true);
                 if (!heads) throw new Error('Repository branch metadata unavailable');
+                let branchReadFailure: { error: unknown } | undefined;
                 for (const head of new Set(heads)) {
                   if (signal?.aborted) break;
                   if (!head || head === base) continue;
@@ -117,11 +118,18 @@ export function createSessionRepositoryPullRequests(
                     const status = await readStatus(head, pullRequestNumber);
                     if (status && !statuses.has(status.number))
                       statuses.set(status.number, { status, head });
-                  } catch (err) {
-                    if (repositoryId !== undefined) throw err;
+                    if (status && status.number === pullRequestNumber) break;
+                  } catch (error) {
+                    branchReadFailure ??= { error };
                     discoveryFailed = true;
                   }
                 }
+                if (
+                  repositoryId !== undefined &&
+                  branchReadFailure &&
+                  (pullRequestNumber === undefined || !statuses.has(pullRequestNumber))
+                )
+                  throw branchReadFailure.error;
               } catch (err) {
                 if (repositoryId !== undefined) throw err;
                 discoveryFailed = true;

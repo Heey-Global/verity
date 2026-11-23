@@ -227,6 +227,15 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
         ?.status.mergeable,
     ).toBe(true);
 
+    branches.sessionBranches = async () => ['feat/unavailable', 'feat/site', 'feat/unused'];
+    backend.status = async (...args) => {
+      if (args[1] === 'feat/unavailable' || args[1] === 'feat/unused')
+        throw new Error('Unrelated ref unavailable');
+      return statusFor(...args);
+    };
+    const discovered = await resolvePullRequests(session, undefined, undefined, 'default:p', 7);
+    expect(discovered?.[0]).toMatchObject({ head: 'feat/site', status: { number: 7 } });
+
     backend.status = statusFor;
     branches.sessionBranches = async () => {
       throw new Error('Git unavailable');

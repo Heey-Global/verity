@@ -608,7 +608,8 @@ export function createServerSessionOverview({
           const rows = await observePullRequests(session);
           for (const row of rows ?? []) {
             const pr = row.status;
-            if (pr.repository.isDefault && pr.number === primary?.number) continue;
+            if (pr.observationFailed || (pr.repository.isDefault && pr.number === primary?.number))
+              continue;
             await maybeDispatchPrRepairTurns(session, pr, {
               repositoryId: pr.repository.id,
               isDefault: pr.repository.isDefault,
