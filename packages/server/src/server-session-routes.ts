@@ -132,8 +132,14 @@ export function installSessionRoutes(
     {
       read: Promise<Awaited<ReturnType<typeof resolvePullRequests>> | null>;
       expires: number;
+      waitingForResult: boolean;
     }
   >();
+  const stopRepositoryPRInvalidation = ctx.resources.onInvalidate((path) => {
+    const [, collection, id, resource] = path.split('/');
+    if (collection === 'sessions' && id && resource === 'branches') repositoryPRReads.delete(id);
+  });
+  app.addHook('onClose', async () => stopRepositoryPRInvalidation());
   installCodeWorkspaces(app, ctx, { invalidateBranchCache });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
@@ -471,12 +477,13 @@ export function installSessionRoutes(
       const pullRequest =
         rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
       const pullRequests = await readStage('pr', async () => {
-        const key = session.worktree;
+        const key = encodeURIComponent(session.sessionId);
         let entry = repositoryPRReads.get(key);
         if (!entry || entry.expires < Date.now()) {
           const started: NonNullable<ReturnType<typeof repositoryPRReads.get>> = {
             read: resolvePullRequests(session, pullRequest),
             expires: Infinity,
+            waitingForResult: false,
           };
           repositoryPRReads.set(key, started);
           if (repositoryPRReads.size > 512)
@@ -491,12 +498,17 @@ export function installSessionRoutes(
             })
             .finally(() => {
               started.expires = Date.now() + 5000;
+              if (started.waitingForResult && repositoryPRReads.get(key) === started)
+                ctx.resources.refresh(`/sessions/${key}/branches`);
             });
           entry = started;
         }
         let timeout: ReturnType<typeof setTimeout> | undefined;
         const budget = new Promise<null>((resolve) => {
-          timeout = setTimeout(() => resolve(null), 100);
+          timeout = setTimeout(() => {
+            entry.waitingForResult = true;
+            resolve(null);
+          }, 100);
         });
         return Promise.race([entry.read, budget]).finally(() => clearTimeout(timeout));
       });

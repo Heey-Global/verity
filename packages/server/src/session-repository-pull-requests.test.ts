@@ -149,6 +149,12 @@ it('resolves historical and module PRs, and merges an equal-number PR only in th
       session,
       expect.objectContaining({ number: 7, phase: 'merged' }),
     );
+    backend.defaultBranch = async () => 'main';
+    mergePR.mockClear();
+    const unverifiable = await merge('default:p');
+    expect(unverifiable.statusCode).toBe(503);
+    expect(unverifiable.json()).toMatchObject({ code: 'merge_status_unavailable' });
+    expect(mergePR).not.toHaveBeenCalled();
   } finally {
     await app.close();
   }

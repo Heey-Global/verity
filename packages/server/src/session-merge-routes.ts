@@ -145,15 +145,14 @@ export function registerSessionMergeRoutes(
           reply.code(503);
           return { error: 'repository base branch is temporarily unavailable' };
         }
-        const onBase =
-          target.head === undefined
-            ? (
-                await deps.projectPullRequests
-                  .status(target.project, base, number)
-                  .catch(() => null)
-              )?.number === number
-            : target.head === base;
-        if (onBase) {
+        if (target.head === undefined) {
+          reply.code(503);
+          return {
+            code: 'merge_status_unavailable',
+            error: 'pull request head could not be verified',
+          };
+        }
+        if (target.head === base) {
           reply.code(409);
           return {
             error: 'a PR from the repository base branch needs a recorded session association',
