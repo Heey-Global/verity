@@ -478,11 +478,20 @@ export async function beginCapacityLease(kind, growth, options = {}) {
       reply = await request({ version: 1, id, action, ...body });
     } catch (error) {
       // Lost replies must consult the same id, never reserve a second allowance.
-      // When that cannot prove admission either, report the original refusal.
+      // When that cannot prove admission either, a Server refusal stays the
+      // reason; after a lost reply, the status answer explains more.
+      let status;
       try {
-        return validate(await request({ version: 1, id, action: 'status' }), states);
+        status = await request({ version: 1, id, action: 'status' });
       } catch {
         throw error;
+      }
+      try {
+        return validate(status, states);
+      } catch (rejection) {
+        throw error instanceof Error && /refused admission \(HTTP /u.test(error.message)
+          ? error
+          : rejection;
       }
     }
     return validate(reply, states);

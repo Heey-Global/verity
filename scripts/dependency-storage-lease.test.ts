@@ -201,6 +201,20 @@ it('reports the original refusal when the status follow-up cannot prove admissio
   );
 });
 
+it('explains a lost reply by the status answer rather than the transport failure', async () => {
+  expect(
+    await probe(`
+    try{await s.beginCapacityLease('dependency-prepare',{bytes:1,inodes:1},{environment:{VERITY_SESSION_ID:'session'},
+      request:async body=>{
+        if(body.action==='reserve')throw Error('Dependency capacity broker request timed out after 30 seconds.');
+        return {version:1,id:body.id,admitted:false,state:'settled',lockPath:'/run/verity-capacity-leases/'+body.id+'.lock'}},
+      hold:async()=>{throw Error('unexpected holder')}})}catch(error){console.log(error.message)}
+  `),
+  ).toBe(
+    'Dependency capacity admission failed (Dependency capacity lease was not admitted by the current broker); no additional dependency work started.',
+  );
+});
+
 it('names a lease directory the session cannot see instead of a generic refusal', async () => {
   // The broker creates its directory outside the agent's confinement. When the
   // launch omits it, the lstat fails with ENOENT, which used to surface only as
