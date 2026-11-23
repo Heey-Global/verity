@@ -136,16 +136,14 @@ export function registerSessionMergeRoutes(
             if (legacy?.number === number) target = await findTarget(legacy);
           }
         } catch {
-          if (repositoryId !== undefined) {
-            reply.code(503);
-            return {
-              code: 'merge_status_unavailable',
-              error: 'pull request status is unavailable',
-            };
-          }
+          reply.code(503);
+          return {
+            code: 'merge_status_unavailable',
+            error: 'pull request status is unavailable',
+          };
         }
       }
-      if (repositoryId !== undefined && target === undefined) {
+      if (selectedRepositoryId !== undefined && target === undefined) {
         reply.code(404);
         return { error: 'pull request is not associated with this session and repository' };
       }
