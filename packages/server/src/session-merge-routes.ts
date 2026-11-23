@@ -162,7 +162,7 @@ export function registerSessionMergeRoutes(
       const approvedRevision = expectedHeadSha ?? target?.status.headSha;
       const readyForReset = async (branches: GitBranchService, worktree: string) => {
         if (!target) return true;
-        if (!target.head || !approvedRevision) return false;
+        if (!target.head || !approvedRevision || target.head === target.defaultBranch) return false;
         try {
           if (
             (await branches.current(worktree)) !== target.head ||

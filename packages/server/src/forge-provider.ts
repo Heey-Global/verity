@@ -78,6 +78,7 @@ export interface ForgePullRequestView {
   state: 'open' | 'closed' | 'merged';
   /** True while the forge treats it as a draft (GitHub draft, Forgejo `WIP:` title). */
   draft: boolean;
+  headRepository?: string | null;
   head: string;
   base: string;
   body: string;

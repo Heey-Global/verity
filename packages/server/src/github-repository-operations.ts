@@ -42,6 +42,7 @@ function pullView(row: GitHubPullRow): ForgePullRequestView {
     state: row.merged_at ? 'merged' : row.state === 'closed' ? 'closed' : 'open',
     draft: row.draft === true,
     head: row.head.ref,
+    ...(row.head.repo === undefined ? {} : { headRepository: row.head.repo?.full_name ?? null }),
     base: row.base.ref,
     body: row.body ?? '',
   };

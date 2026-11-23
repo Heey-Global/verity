@@ -74,7 +74,7 @@ export function installRepositoryTools(
               )?.worktree;
         if (!worktree) return [];
         const branches = await branchesForSession(session);
-        return (await branches?.sessionBranches(worktree).catch(() => [])) ?? [];
+        return (await branches?.sessionBranches(worktree, true).catch(() => [])) ?? [];
       },
       pullRequestChanged: async (id, project) => {
         await deps.projectPullRequests?.invalidate?.(project).catch((err: unknown) => {

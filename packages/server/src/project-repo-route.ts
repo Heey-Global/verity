@@ -171,6 +171,11 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
       pr: Awaited<ReturnType<typeof ops.createPullRequest>>,
       dependsOn?: string[],
     ) => {
+      if (
+        pr.headRepository !== undefined &&
+        pr.headRepository?.toLowerCase() !== `${project.owner}/${project.repo}`.toLowerCase()
+      )
+        return pr;
       const actualBranch = sessionId
         ? await deps.currentRepositoryBranch?.(sessionId, selectedId ?? `default:${project.id}`)
         : undefined;

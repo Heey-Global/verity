@@ -30,7 +30,9 @@ export function createSessionRepositoryPullRequests(
           const worktree = repository.isDefault ? session.worktree : workspace?.worktree;
           if (!worktree) return [];
           const target = projectForRepository(project, repository);
-          const heads = new Set((await branches?.sessionBranches(worktree).catch(() => [])) ?? []);
+          const heads = new Set(
+            (await branches?.sessionBranches(worktree, true).catch(() => [])) ?? [],
+          );
           const recorded = new Map<number, string>();
           for (const pr of workspace?.pullRequests ?? []) {
             if (
@@ -100,6 +102,7 @@ export function createSessionRepositoryPullRequests(
             status: { ...status, repository: identity },
             head,
             recorded: recorded.has(status.number),
+            defaultBranch: base,
             worktree,
             project: target,
           }));

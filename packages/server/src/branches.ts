@@ -241,7 +241,7 @@ export interface GitBranchService {
    * case is unchanged. Used to find a session's PR when it lives on a branch other
    * than the worktree HEAD.
    */
-  sessionBranches(worktreePath: string): Promise<string[]>;
+  sessionBranches(worktreePath: string, includeConfiguredBase?: boolean): Promise<string[]>;
   /** Whether the worktree has uncommitted (or untracked) changes. */
   isDirty(worktreePath: string): Promise<boolean>;
   /** Uncommitted files or committed file changes since branching from the project base. */
@@ -538,11 +538,17 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     return (await git(['-C', worktreePath, 'rev-parse', '--short', 'HEAD'])).trim();
   }
 
-  async function sessionBranches(worktreePath: string): Promise<string[]> {
+  async function sessionBranches(
+    worktreePath: string,
+    includeConfiguredBase = false,
+  ): Promise<string[]> {
     if (opts.withGit) {
       const { withGit, ...scopedOptions } = opts;
       return withGit(worktreePath, (scopedGit) =>
-        createGitBranchService({ ...scopedOptions, git: scopedGit }).sessionBranches(worktreePath),
+        createGitBranchService({ ...scopedOptions, git: scopedGit }).sessionBranches(
+          worktreePath,
+          includeConfiguredBase,
+        ),
       );
     }
     const here = await current(worktreePath);
@@ -569,7 +575,9 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       }
       // A long session can leave hundreds of reflog candidates. One refs listing
       // filters detached SHAs without spawning one Docker exec per candidate.
-      const named = candidates.filter((name) => name !== here && name !== baseBranch);
+      const named = candidates.filter(
+        (name) => name !== here && (includeConfiguredBase || name !== baseBranch),
+      );
       if (named.length > 0) {
         const refs = await git([
           '-C',
