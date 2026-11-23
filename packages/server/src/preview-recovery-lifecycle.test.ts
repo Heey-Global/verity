@@ -12,8 +12,12 @@ describe('preview recovery lifecycle wiring', () => {
     expect(recovery).toMatch(
       /const reconcileLocal = async[^]*?if \(secretCipher\.isSealed\(\)\) return;[^]*?await localPreviewManager\.reconcile\(\);\s*setPreviewRecoveryReady\(true\);\s*await sweepLocalConnectors\(\);/,
     );
-    expect(embedded.indexOf('await adoptHandedOffSecretKey(')).toBeGreaterThan(-1);
-    expect(embedded.indexOf('await adoptHandedOffSecretKey(')).toBeLessThan(
+    const unlock = await source('./embedded-secret-unlock.ts');
+    expect(unlock).toMatch(
+      /export async function activateEmbeddedSecretHandoff[^]*?await adoptHandedOffSecretKey\(/,
+    );
+    expect(embedded.indexOf('await activateEmbeddedSecretHandoff(')).toBeGreaterThan(-1);
+    expect(embedded.indexOf('await activateEmbeddedSecretHandoff(')).toBeLessThan(
       embedded.indexOf('await installEmbeddedLocalPreviewRecovery('),
     );
     expect(embedded).toMatch(
@@ -42,7 +46,7 @@ describe('preview recovery lifecycle wiring', () => {
     const embedded = await source('./embedded.ts');
     const bootStart = 'if (!secretCipher.isSealed()) uplinkControl?.start();';
     expect(embedded.indexOf(bootStart)).toBeGreaterThan(
-      embedded.indexOf('await adoptHandedOffSecretKey('),
+      embedded.indexOf('await activateEmbeddedSecretHandoff('),
     );
     expect(embedded).toMatch(/onSecretUnlocked: createEmbeddedSecretUnlock\(\{[^]*?uplinkControl,/);
     const unlock = await source('./embedded-secret-unlock.ts');

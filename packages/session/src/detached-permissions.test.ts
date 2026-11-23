@@ -63,44 +63,54 @@ it('does not dismiss a durable card when a decision fails', async () => {
   expect(pending.ids('s')).toEqual(['r']);
 });
 
-it.each(['allow', 'deny'] as const)(
-  'resumes only an approved detached workflow (%s)',
-  async (behavior) => {
-    const { decideDetachedPermission, detachedContinuation } =
-      await import('./detached-permissions.js');
-    const permissions = new DetachedPermissions();
-    const request = {
-      requestId: 'r',
+it.each([
+  ['once', 'allow', 'once'],
+  ['session', 'allow', 'session'],
+  ['project', 'allow', 'project'],
+  ['once', 'deny', 'denied'],
+] as const)('records %s/%s without a routine notice', async (scope, behavior, status) => {
+  const { decideDetachedPermission, detachedContinuation } =
+    await import('./detached-permissions.js');
+  const permissions = new DetachedPermissions();
+  const request = {
+    requestId: 'r',
+    toolUseId: 'r',
+    toolName: 'verity_http_request',
+    input: { url: 'https://api.example.com' },
+  };
+  permissions.configure({ list: async () => [request], decide: async () => true });
+  await permissions.refresh('s', async () => {});
+  const resume = vi.fn(async () => {});
+  const recordDecision = vi.fn(async () => {});
+  const notice = vi.fn(async () => {});
+  expect(
+    await decideDetachedPermission({
+      permissions,
+      sessionId: 's',
       toolUseId: 'r',
-      toolName: 'verity_http_request',
-      input: { url: 'https://api.example.com' },
-    };
-    permissions.configure({ list: async () => [request], decide: async () => true });
-    await permissions.refresh('s', async () => {});
-    const resume = vi.fn(async () => {});
-    expect(
-      await decideDetachedPermission({
-        permissions,
-        sessionId: 's',
-        toolUseId: 'r',
-        decision: behavior === 'allow' ? { behavior } : { behavior, message: 'No' },
-        options: { actorId: 'user' },
-        persistScoped: async () => {},
-        notice: async () => {},
-        resume,
-      }),
-    ).toBe(true);
-    expect(resume).toHaveBeenCalledTimes(behavior === 'allow' ? 1 : 0);
-    if (behavior === 'allow') expect(resume).toHaveBeenCalledWith(request, 'user');
-    const first = detachedContinuation(request, 'user');
-    expect(first.dispatch).toMatchObject({
-      durableDispatchId: 'secret-approval:r',
-      initiatedBy: { userId: 'user' },
-    });
-    expect(detachedContinuation(request, 'user').dispatch).toEqual(first.dispatch);
-    expect(first.prompt).toContain('untrusted reference material');
-  },
-);
+      decision: behavior === 'allow' ? { behavior } : { behavior, message: 'No' },
+      options: { actorId: 'user', scope },
+      persistScoped: async () => {},
+      recordDecision,
+      notice,
+      resume,
+    }),
+  ).toBe(true);
+  expect(notice).not.toHaveBeenCalled();
+  expect(recordDecision).toHaveBeenCalledWith(
+    expect.objectContaining({ secretApproval: expect.objectContaining({ decision: status }) }),
+  );
+  expect(resume).toHaveBeenCalledTimes(behavior === 'allow' ? 1 : 0);
+  if (behavior === 'allow') expect(resume).toHaveBeenCalledWith(request, 'user');
+  const first = detachedContinuation(request, 'user');
+  expect(first.dispatch).toMatchObject({
+    durableDispatchId: 'secret-approval:r',
+    origin: 'secret-approval',
+    initiatedBy: { userId: 'user' },
+  });
+  expect(detachedContinuation(request, 'user').dispatch).toEqual(first.dispatch);
+  expect(first.prompt).toContain('untrusted reference material');
+});
 
 it('closes exact consent before saving reusable scope and never resumes a failed scope save', async () => {
   const { decideDetachedPermission } = await import('./detached-permissions.js');

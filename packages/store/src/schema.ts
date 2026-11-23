@@ -839,8 +839,8 @@ export interface QueuedTurnOpts {
   disallowedTools?: string[];
   attachments?: Attachment[];
   displayPrompt?: string;
+  origin?: 'secret-approval';
   peer?: { sessionId: string; projectId: string; label: string; message: string };
-  /** The local user the queued turn runs for; stamped on its `prompt` event. */
   initiatedBy?: { userId: string };
 }
 

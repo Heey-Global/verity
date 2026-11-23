@@ -32,6 +32,10 @@ import { BINARY_UPLOAD_ROUTES, DEFAULT_BODY_LIMIT_BYTES, WS_LIVE_PATH } from './
 import { isWebAppRequest } from './web-app.js';
 import { RepositoryHasNoCommitsError } from './worktree.js';
 
+export function invalidBearerRateLimitKey(request: { ip?: string }): string {
+  return request.ip ? rateLimitPlugin.normalizeIP(request.ip) : 'unix-socket';
+}
+
 /**
  * The Fastify instance with what must exist before any route: logging, the body
  * limit, the lifecycle registry, the pre-auth exemption set derived from route
@@ -315,7 +319,11 @@ export function installHttpGuards(
     if (websocketStream) {
       return;
     }
-    checkInvalidBearer ??= app.createRateLimit({ max: 100, timeWindow: '1 minute' });
+    checkInvalidBearer ??= app.createRateLimit({
+      max: 100,
+      timeWindow: '1 minute',
+      keyGenerator: invalidBearerRateLimitKey,
+    });
     const limit = await checkInvalidBearer(request);
     if (!limit.isAllowed && limit.isExceeded) {
       reply.header('retry-after', String(limit.ttlInSeconds));

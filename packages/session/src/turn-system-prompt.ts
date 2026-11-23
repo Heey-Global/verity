@@ -73,6 +73,10 @@ function pullRequestPrompt(codeHost: TurnCodeHost): string {
 export const APPROVAL_WAITING_SYSTEM_PROMPT =
   'Verity approvals: awaiting_approval means a user decision is pending, not that the action failed or ran. Name the waiting approval and continue independent work. Do not repeatedly request the same approval or bypass it. Unanswered requests persist. After a decision, recheck status and authority; retry only the exact authorized request when Verity says it is safe. Network grants do not run blocked actions. DNS refusal may mean pending project approval, not denial. Claim displayed popups or successful actions only with evidence.';
 
+/** The forge gateway refuses code writes for a person without Code (ADR 0023 §1). */
+const FORGE_CODE_PERMISSION_SYSTEM_PROMPT =
+  'A push or pull-request change refused with 403 can mean the person you work for lacks the Code permission: gh and API responses name it, while git push shows only the 403. Do not retry or work around that refusal: tell them their changes stay in this session for a project member with Code permission to add.';
+
 function assembleTurnSystemPrompt(codeHost: TurnCodeHost): string {
   return `${TERMINOLOGY_SYSTEM_PROMPT}
 
@@ -95,6 +99,8 @@ ${MEMORY_SYSTEM_PROMPT}
 ${VISIBLE_MEDIA_SYSTEM_PROMPT}
 
 ${pullRequestPrompt(codeHost)}
+
+${codeHost === 'github' || codeHost === 'forgejo' ? FORGE_CODE_PERMISSION_SYSTEM_PROMPT : ''}
 
 ${codeHost === 'documents' ? '' : PROJECT_REPOSITORIES_SYSTEM_PROMPT}
 
@@ -168,7 +174,7 @@ export const COMPACT_RESUME_SYSTEM_PROMPT =
 
 export function turnSystemPrompt(codeHost: TurnCodeHost = 'github', compact = false): string {
   if (compact)
-    return `${AGENT_CORE_PROMPT}\n\n${APPROVAL_WAITING_SYSTEM_PROMPT}\n\n# Built-in Skills\n${AGENT_SKILL_CATALOG}\n\n${codeHost === 'documents' ? '' : PROJECT_REPOSITORIES_SYSTEM_PROMPT}\n\nCode host: ${codeHost}. ${codeHost === 'documents' ? 'This Documents working copy publishes automatically; do not offer Git, push or PR actions. Use the code working directory for code and package installs.' : codeHost === 'local' ? 'No remote publishing is configured; do not offer push/PR actions.' : 'Use the session checkout branch for the target repository for remote work.'}`;
+    return `${AGENT_CORE_PROMPT}\n\n${APPROVAL_WAITING_SYSTEM_PROMPT}\n\n# Built-in Skills\n${AGENT_SKILL_CATALOG}\n\n${codeHost === 'documents' ? '' : PROJECT_REPOSITORIES_SYSTEM_PROMPT}\n\nCode host: ${codeHost}. ${codeHost === 'documents' ? 'This Documents working copy publishes automatically; do not offer Git, push or PR actions. Use the code working directory for code and package installs.' : codeHost === 'local' ? 'No remote publishing is configured; do not offer push/PR actions.' : `Use the session checkout branch for the target repository for remote work. ${FORGE_CODE_PERMISSION_SYSTEM_PROMPT}`}`;
   return TURN_SYSTEM_PROMPTS[codeHost];
 }
 

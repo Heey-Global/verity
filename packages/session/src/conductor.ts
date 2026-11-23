@@ -534,14 +534,15 @@ export interface TurnOptions {
  * runs for (ADR 0023 §2). Both are durable provenance on the `prompt` event, set
  * by the server and never taken from a request body. */
 export interface PromptOrigin {
+  origin?: 'secret-approval';
   peer?: { sessionId: string; projectId: string; label: string; message: string };
   initiatedBy?: { userId: string };
 }
 
-/** Copy only the provenance fields that are set, so a persisted event carries no
- * explicit `undefined` keys. */
+// Omit unset provenance from persisted events.
 function originFields(origin: PromptOrigin): PromptOrigin {
   return {
+    ...(origin.origin ? { origin: origin.origin } : {}),
     ...(origin.peer ? { peer: origin.peer } : {}),
     ...(origin.initiatedBy ? { initiatedBy: origin.initiatedBy } : {}),
   };
@@ -5025,9 +5026,8 @@ export class Conductor {
             ),
             displayPrompt: prompt.text,
             promptAlreadyPersisted: true,
-            // The persisted prompt names who sent it; the recovered turn runs for
-            // that person, never for whoever happens to be active after a restart.
-            ...(prompt.initiatedBy !== undefined ? { initiatedBy: prompt.initiatedBy } : {}),
+            ...(prompt.initiatedBy && { initiatedBy: prompt.initiatedBy }),
+            ...(prompt.origin && { origin: prompt.origin }),
           });
         }
         this.queues.set(session.sessionId, queue);

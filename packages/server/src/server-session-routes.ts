@@ -1,3 +1,4 @@
+import { mayAllowPermission } from './permission-decision-authority.js';
 import { NO_PERSONAL_MODEL, personModelRefusal } from './turn-sandbox.js';
 import { isVulnerabilityWorkspace } from './vulnerability-project.js';
 import { buildVulnerabilityFixPrompt } from './vulnerability-fix.js';
@@ -379,6 +380,8 @@ export function installSessionRoutes(
     conductor,
     cancelMeetingJobs,
     permissionResolved: (id, toolUseId) => pushFirePoints?.permissionResolved(id, toolUseId),
+    mayAllowPermission: (request, id, toolUseId) =>
+      mayAllowPermission({ store: deps.eventStore, conductor }, request, id, toolUseId),
     ...(decidePendingLinkedMessage === undefined ? {} : { decidePendingLinkedMessage }),
   });
   registerSessionLinkRoutes(app, deps.eventStore);
