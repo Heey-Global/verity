@@ -139,7 +139,6 @@ import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
 import { ListenerDiscovery } from './listener-discovery.js';
-import { getDockerExecDiagnostics } from './docker-exec-diagnostics.js';
 export { parsePort } from './deployment-port.js';
 import {
   classifyProbeError,
@@ -161,15 +160,18 @@ import {
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFileSync, mkdirSync } from 'node:fs';
+import { rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
 import { buildControlPlane } from './app.js';
-import { createEmbeddedRuntimeDiagnostics } from './embedded-runtime-diagnostics.js';
+import {
+  createEmbeddedRuntimeDiagnostics,
+  installEmbeddedDockerExecDiagnostics,
+} from './embedded-runtime-diagnostics.js';
 import {
   createEmbeddedProjectList,
   createEmbeddedProjectFleetBindings,
@@ -228,7 +230,7 @@ import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
 import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
-import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
+import { createEmbeddedMatrix, installEmbeddedMatrix } from './embedded-matrix.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { createEmbeddedBackup } from './embedded-backup.js';
 
@@ -1209,13 +1211,7 @@ export async function buildEmbeddedServer(
     provisioner,
   });
 
-  const managedMatrixControl = existsSync('/run/verity-updater/control');
-  let matrixActivationDone = false;
-  const activateMatrixIfConfigured = async (): Promise<void> => {
-    if (!managedMatrixControl || matrixActivationDone) return;
-    if ((await eventStore.integrations.matrixConfigSummary()) === null) return;
-    matrixActivationDone = await notifyManagedMatrixConfigured();
-  };
+  const matrix = createEmbeddedMatrix({ integrations: eventStore.integrations });
 
   const backup = await createEmbeddedBackup({ config, projectDocker, eventStore });
   let lastDockerGcReport: DockerGcReport | undefined;
@@ -1245,18 +1241,7 @@ export async function buildEmbeddedServer(
     ...(sessionStorage ? { sessionStorage } : {}),
     eventStore,
     ...(backup ? { backup } : {}),
-    ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
-    matrixConnectorToken: async () => {
-      try {
-        return (
-          await readFile('/run/verity-updater/control/matrix/connector-token', 'utf8')
-        ).trim();
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
-          return process.env.VERITY_MATRIX_CONNECTOR_TOKEN;
-        throw error;
-      }
-    },
+    ...matrix.bindings,
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
     ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
@@ -1527,19 +1512,7 @@ export async function buildEmbeddedServer(
   startCloneConfigSweep(config.hostCloneRoot, Boolean(durableServerRoot), (event, msg) =>
     app.log.warn(event, msg),
   );
-  if (managedMatrixControl) {
-    const retryMatrixActivation = async (): Promise<void> => {
-      try {
-        await activateMatrixIfConfigured();
-      } catch (error) {
-        app.log.warn({ err: error }, 'Matrix connector activation will retry');
-      }
-    };
-    void retryMatrixActivation();
-    const matrixActivationTimer = setInterval(() => void retryMatrixActivation(), 10_000);
-    matrixActivationTimer.unref?.();
-    app.addHook('onClose', () => clearInterval(matrixActivationTimer));
-  }
+  installEmbeddedMatrix(app, matrix);
   // Bind before any unlock or startup can dial, so handshake diagnostics use pino.
   uplinkLog.bind(app.log);
   const sessionMaintenance = createEmbeddedSessionMaintenance({
@@ -1608,20 +1581,7 @@ export async function buildEmbeddedServer(
     sleepSandbox: () => provisioner?.sleepPersonalSandbox?.bind(provisioner),
   });
   installEmbeddedBuildStorage(app, { config, buildStorage, provisioner, dependencyCapacity });
-  // Fixed-purpose counters exclude command arguments, environment values and identities.
-  let previousDockerExecCounts = getDockerExecDiagnostics();
-  const dockerExecDiagnosticTimer = setInterval(() => {
-    const current = getDockerExecDiagnostics();
-    if (
-      current.started === previousDockerExecCounts.started &&
-      current.active === previousDockerExecCounts.active
-    )
-      return;
-    previousDockerExecCounts = current;
-    app.log.info({ dockerExec: current }, 'verity: docker exec activity diagnostic');
-  }, 60_000);
-  dockerExecDiagnosticTimer.unref();
-  app.addHook('onClose', () => clearInterval(dockerExecDiagnosticTimer));
+  installEmbeddedDockerExecDiagnostics(app);
   app.addHook('onClose', () => listenerDiscovery?.close());
   app.addHook('onClose', () => projectEgress?.close());
   app.addHook('onClose', stopSystemInventory);
