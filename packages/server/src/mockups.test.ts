@@ -7,10 +7,12 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { registerAttachmentRoute } from './attachment-route.js';
 import {
   createSessionMockups,
   mockupImage,
   nextMockupRound,
+  presentMockupsRequestSchema,
   registerMockupRoutes,
   type SessionMockupActions,
 } from './mockups.js';
@@ -37,6 +39,16 @@ function jpeg(width: number, height: number): Buffer {
   sof.writeUInt16BE(width, 7);
   return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof]);
 }
+
+describe('presentMockupsRequestSchema', () => {
+  it('requires exactly one file path per screen', () => {
+    for (const input of [{}, { path: 'image.png', htmlPath: 'demo.html' }]) {
+      expect(
+        presentMockupsRequestSchema.safeParse({ screens: [{ name: 'Demo', ...input }] }).success,
+      ).toBe(false);
+    }
+  });
+});
 
 describe('mockupImage', () => {
   it('reads the size of PNG and JPEG images', () => {
@@ -133,6 +145,7 @@ beforeEach(async () => {
   mockups = createSessionMockups({ eventStore: store });
   app = Fastify();
   registerMockupRoutes(app, { mockups });
+  registerAttachmentRoute(app, { getAttachment: (hash) => store.getAttachment(hash) });
 });
 afterEach(async () => {
   await app.close();
@@ -151,6 +164,53 @@ const post = (payload: Record<string, unknown>) =>
 const queuedTurns = () => ctx.db.selectFrom('queued_turns').selectAll().execute();
 
 describe('presenting mockups', () => {
+  it('serves HTML snapshots as inert downloads on the API origin', async () => {
+    const html = '<!doctype html><title>Mockup</title>';
+    const hash = await store.putAttachment('text/html', Buffer.from(html).toString('base64'));
+    const res = await app.inject({ method: 'GET', url: `/attachments/${hash}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toBe('text/html');
+    expect(res.headers['content-disposition']).toBe('attachment; filename="mockup.html"');
+    expect(res.headers['content-security-policy']).toBe("sandbox; default-src 'none'");
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.body).toBe(html);
+  });
+
+  it('snapshots a mixed HTML and image round', async () => {
+    const html =
+      '<!doctype html><html><head><title>Demo</title></head><body>Original</body></html>';
+    const path = join(worktree, 'demo.html');
+    writeFileSync(path, html);
+    const request = presentMockupsRequestSchema.parse({
+      screens: [
+        { name: 'Demo', htmlPath: 'demo.html' },
+        { name: 'Home', path: 'home.png' },
+      ],
+    });
+    const round = await mockups.present('s1', request);
+    writeFileSync(path, html.replace('Original', 'Changed'));
+    expect(round.screens.map((screen) => screen.mediaType)).toEqual(['text/html', 'image/png']);
+    expect(await store.getAttachment(round.screens[0]!.attachment)).toEqual({
+      mediaType: 'text/html',
+      bytes: Buffer.from(html),
+    });
+    expect((await store.getSession('s1'))?.mockupReview).toEqual(round);
+  });
+
+  it.each([
+    ['missing doctype', Buffer.from('<p>Draft</p>'), /doctype/],
+    ['invalid UTF-8', Buffer.from([0xff]), /utf-8/i],
+    ['oversized document', Buffer.alloc(2 * 1024 * 1024 + 1), /2 MiB/],
+  ])('refuses HTML with %s before publishing a round', async (_label, bytes, error) => {
+    writeFileSync(join(worktree, 'demo.html'), bytes);
+    await expect(
+      mockups.present('s1', {
+        screens: [{ name: 'Demo', htmlPath: 'demo.html' }],
+      }),
+    ).rejects.toThrow(error);
+    expect((await store.getSession('s1'))?.mockupReview).toBeUndefined();
+  });
+
   it('rejects a presentation overtaken by a planning restart', async () => {
     const put = store.putAttachment.bind(store);
     vi.spyOn(store, 'putAttachment').mockImplementationOnce(async (...args) => {

@@ -45,6 +45,13 @@ describe('design prompts', () => {
     expect(MOCKUPS_FIRST_PROMPT).toMatch(/end your turn/);
   });
 
+  it('guides web drafts to HTML while keeping PNG and JPEG for image drafts', () => {
+    expect(MOCKUPS_FIRST_PROMPT).toMatch(/For web UI drafts, default to self-contained HTML/);
+    expect(MOCKUPS_FIRST_PROMPT).toContain('htmlPath');
+    expect(MOCKUPS_FIRST_PROMPT).toContain('the preview does not run JavaScript');
+    expect(MOCKUPS_FIRST_PROMPT).toContain('submit a PNG or JPEG as path');
+  });
+
   it('starts the build only from the chat and ends the review first', () => {
     // Without the complete call the review bar and Home item stay after the build starts.
     expect(MOCKUPS_FIRST_PROMPT).toContain(COMPLETE_MOCKUPS_FOCUSED_TOOL);

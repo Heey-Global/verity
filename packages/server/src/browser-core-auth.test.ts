@@ -95,6 +95,37 @@ describe('browser authentication through the Core', () => {
     }
   });
 
+  it('serves a sandboxed mockup preview to the paired browser only', async () => {
+    const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const browser = await registry.mint('Browser', true);
+    const html = '<details><summary>Show prices</summary></details><script>init()</script>';
+    const attachment = await ctx.store.putAttachment(
+      'text/html',
+      Buffer.from(html).toString('base64'),
+    );
+    const app = buildServer({
+      eventStore: ctx.store,
+      bus: new InMemoryEventBus(),
+      conductor,
+      authRegistry: registry,
+    });
+    try {
+      const url = `/attachments/${attachment}?mockup=1`;
+      expect((await app.inject(url)).statusCode).toBe(401);
+      const preview = await app.inject({ url, headers: { cookie: cookie(browser.token) } });
+      expect(preview.statusCode).toBe(200);
+      expect(preview.headers['content-type']).toBe('text/html; charset=utf-8');
+      expect(preview.headers['cache-control']).toBe('no-store');
+      expect(preview.headers['content-security-policy']).toContain(
+        "; sandbox; frame-ancestors 'self'",
+      );
+      expect(preview.body).toContain('<summary>Show prices</summary>');
+      expect(preview.body).not.toContain('<script>');
+    } finally {
+      await app.close();
+    }
+  });
+
   it('rejects cookie mutations with missing or foreign Origin while allowing native bearer authentication', async () => {
     const registry = await createAuthTokenRegistry(ctx.store, { enabled: true });
     const browser = await registry.mint('Browser', true);

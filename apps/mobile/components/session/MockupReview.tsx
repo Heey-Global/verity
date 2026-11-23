@@ -25,6 +25,7 @@ import { ImageLightbox } from '../ImageLightbox';
 import { Button, IconButton, StatusTag, Text } from '../ui';
 import { Image } from '../ui/Image';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../ui/SessionBar';
+import { HtmlMockupPreview } from './HtmlMockupPreview';
 
 type Verdict = MockupReviewScreen['verdict'];
 
@@ -50,6 +51,21 @@ function verdictTone(
     : verdict === 'discarded'
       ? colors.attention
       : colors.textFaint;
+}
+
+function HtmlMockupLabel({ name }: { name: string }) {
+  const { theme } = useUnistyles();
+  return (
+    <View style={styles.htmlLabel}>
+      <Icon name="code" size={16} color={theme.colors.textMuted} />
+      <View style={styles.flex}>
+        <Text variant="row" numberOfLines={1}>
+          {name}
+        </Text>
+        <Text variant="subtitle">Interactive mockup</Text>
+      </View>
+    </View>
+  );
 }
 
 function MockupPicture({
@@ -83,7 +99,7 @@ function MockupStage({
   screen,
   onEnlarge,
 }: {
-  screen: MockupReviewScreen;
+  screen: MockupScreenView;
   onEnlarge: (enlarged: Enlarged) => void;
 }) {
   const source = useAttachmentImageSource({ id: screen.attachment, mediaType: screen.mediaType });
@@ -131,6 +147,7 @@ export function MockupPager({
   const [width, setWidth] = useState(0);
   const [index, setIndex] = useState(0);
   const screen = screens[Math.min(index, screens.length - 1)]!;
+  const [archivedScreen, setArchivedScreen] = useState<string>();
   const tone = verdictTone(screen.verdict, theme.colors);
   return (
     <View
@@ -143,30 +160,64 @@ export function MockupPager({
         showsHorizontalScrollIndicator={false}
         onMomentumScrollEnd={(event) => setIndex(pageOf(event, width))}
       >
-        {screens.map((entry) => (
-          <Pressable
-            key={entry.name}
-            accessibilityRole="button"
-            accessibilityLabel={current ? `Review ${entry.name}` : `${entry.name} mockup`}
-            accessibilityHint={current ? 'Opens the full-screen review' : undefined}
-            disabled={!current}
-            onPress={() => onOpen(entry.name)}
-            style={{ width }}
-          >
-            <MockupPicture screen={entry} style={styles.page} />
-          </Pressable>
-        ))}
+        {screens.map((entry) => {
+          if (entry.mediaType === 'text/html') {
+            return (
+              <View key={entry.name} style={{ width }}>
+                {current ? (
+                  <HtmlMockupLabel name={entry.name} />
+                ) : (
+                  <Button
+                    label={entry.name}
+                    icon="code"
+                    variant="secondary"
+                    size="compact"
+                    accessibilityLabel={`View ${entry.name} mockup`}
+                    onPress={() => setArchivedScreen(entry.name)}
+                  />
+                )}
+              </View>
+            );
+          }
+          return (
+            <Pressable
+              key={entry.name}
+              accessibilityRole="button"
+              accessibilityLabel={current ? `Review ${entry.name}` : `${entry.name} mockup`}
+              accessibilityHint={current ? 'Opens the full-screen review' : undefined}
+              disabled={!current}
+              onPress={() => onOpen(entry.name)}
+              style={{ width }}
+            >
+              <MockupPicture screen={entry} style={styles.page} />
+            </Pressable>
+          );
+        })}
       </ScrollView>
-      <View style={styles.caption}>
-        {screen.verdict !== undefined ? (
-          <Icon name={STATE_ICON[screen.verdict]} size={12} color={tone} />
-        ) : null}
-        <Text variant="caption" numberOfLines={1} style={styles.flex}>
-          {screen.name} · {String(index + 1)} of {String(screens.length)}
-          {current ? '' : ' · earlier round'}
-        </Text>
-      </View>
+      {screen.mediaType !== 'text/html' || screens.length > 1 || !current ? (
+        <View style={styles.caption}>
+          {screen.verdict !== undefined ? (
+            <Icon name={STATE_ICON[screen.verdict]} size={12} color={tone} />
+          ) : null}
+          <Text variant="caption" numberOfLines={1} style={styles.flex}>
+            {screen.mediaType === 'text/html' ? '' : `${screen.name} · `}
+            {String(index + 1)} of {String(screens.length)}
+            {current ? '' : ' · earlier round'}
+          </Text>
+        </View>
+      ) : null}
       {screens.length > 1 ? <PageDots count={screens.length} index={index} /> : null}
+      {archivedScreen !== undefined ? (
+        <MockupReviewSheet
+          visible
+          screens={screens}
+          title="Mockups"
+          initialScreen={archivedScreen}
+          deciding={false}
+          error={undefined}
+          onClose={() => setArchivedScreen(undefined)}
+        />
+      ) : null}
     </View>
   );
 }
@@ -215,14 +266,18 @@ export function MockupThumbs({
             onPress={onOpen}
             style={[styles.tile, { width }]}
           >
-            <MockupPicture
-              screen={screen}
-              style={[styles.thumb, { height: Math.min(THUMB_HEIGHT, width / ratio) }]}
-            />
+            {screen.mediaType === 'text/html' ? (
+              <HtmlMockupLabel name={screen.name} />
+            ) : (
+              <MockupPicture
+                screen={screen}
+                style={[styles.thumb, { height: Math.min(THUMB_HEIGHT, width / ratio) }]}
+              />
+            )}
             <View style={styles.caption}>
               <Icon name={STATE_ICON[screen.verdict]} size={12} color={tone} />
               <Text variant="caption" numberOfLines={1} style={styles.flex}>
-                {screen.name}
+                {screen.mediaType === 'text/html' ? STATE_LABEL[screen.verdict] : screen.name}
               </Text>
             </View>
           </Pressable>
@@ -280,14 +335,14 @@ export function MockupReviewSheet({
   onClose,
 }: {
   visible: boolean;
-  screens: readonly MockupReviewScreen[];
+  screens: readonly MockupScreenView[];
   /** The plan's title, shown under the screen name. */
   title: string;
   initialScreen: string | undefined;
   deciding: boolean;
   error: string | undefined;
-  onDecide: (screen: string, decision: { verdict: Verdict }) => Promise<boolean>;
-  onComplete: () => Promise<void>;
+  onDecide?: (screen: string, decision: { verdict: Verdict }) => Promise<boolean>;
+  onComplete?: () => Promise<void>;
   onClose: () => void;
 }) {
   const { theme } = useUnistyles();
@@ -295,12 +350,14 @@ export function MockupReviewSheet({
   const [index, setIndex] = useState(0);
   const [width, setWidth] = useState(0);
   const [scroller, setScroller] = useState<ScrollView | null>(null);
+  const [desktop, setDesktop] = useState(true);
   const [enlarged, setEnlarged] = useState<Enlarged | undefined>(undefined);
 
   useEffect(() => {
     if (!visible) {
       // A viewer left open must not reappear over the next review.
       setEnlarged(undefined);
+      setDesktop(true);
       return;
     }
     const at =
@@ -316,9 +373,14 @@ export function MockupReviewSheet({
   }, [scroller, width, index, visible]);
 
   const current = screens[Math.min(index, screens.length - 1)];
+  // An interactive frame owns its touch and wheel gestures, so rounds with
+  // HTML use explicit paging controls that stay outside the frame.
+  const hasHtml = screens.some((screen) => screen.mediaType === 'text/html');
+  const isHtml = current?.mediaType === 'text/html';
+  const canPreviewDesktop = width >= 900;
   const mark = (verdict: Exclude<Verdict, 'open'>) => {
     if (current === undefined) return;
-    void onDecide(current.name, { verdict: current.verdict === verdict ? 'open' : verdict });
+    void onDecide?.(current.name, { verdict: current.verdict === verdict ? 'open' : verdict });
   };
 
   return (
@@ -333,7 +395,7 @@ export function MockupReviewSheet({
               {title} · {String(Math.min(index + 1, screens.length))} of {String(screens.length)}
             </Text>
           </View>
-          {current !== undefined && current.verdict !== 'open' ? (
+          {current?.verdict !== undefined && current.verdict !== 'open' ? (
             <StatusTag
               intent={current.verdict === 'approved' ? 'ready' : 'needsSetup'}
               label={STATE_LABEL[current.verdict]}
@@ -341,76 +403,143 @@ export function MockupReviewSheet({
           ) : null}
           <IconButton icon="x" accessibilityLabel="Close review" onPress={onClose} />
         </View>
+        {isHtml && canPreviewDesktop ? (
+          <View style={styles.viewportChoices}>
+            <Button
+              label="Phone"
+              icon="smartphone"
+              size="compact"
+              variant={desktop ? 'secondary' : 'answer'}
+              selected={!desktop}
+              onPress={() => setDesktop(false)}
+            />
+            <Button
+              label="Desktop"
+              icon="monitor"
+              size="compact"
+              variant={desktop ? 'answer' : 'secondary'}
+              selected={desktop}
+              onPress={() => setDesktop(true)}
+            />
+          </View>
+        ) : null}
         <View
           style={styles.flex}
           onLayout={(event: LayoutChangeEvent) => setWidth(event.nativeEvent.layout.width)}
         >
-          <ScrollView
-            ref={setScroller}
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            onMomentumScrollEnd={(event) => setIndex(pageOf(event, width))}
-          >
-            {screens.map((screen) => (
-              <View key={screen.name} style={[styles.stage, { width }]}>
-                <MockupStage screen={screen} onEnlarge={setEnlarged} />
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-        {screens.length > 1 ? <PageDots count={screens.length} index={index} /> : null}
-        <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, theme.spacing.md) }]}>
-          {error !== undefined ? (
-            <Text variant="bodySmall" tone="attention">
-              {error}
-            </Text>
-          ) : null}
-          {current === undefined ? null : (
-            <View style={styles.actions}>
-              <View style={styles.mark}>
-                <Button
-                  label={current.verdict === 'discarded' ? 'Discarded' : 'Discard'}
-                  icon="x"
-                  size="compact"
-                  variant={current.verdict === 'discarded' ? 'destructive' : 'secondary'}
-                  fullWidth
-                  disabled={deciding}
-                  accessibilityHint={
-                    current.verdict === 'discarded' ? 'Takes the mark back' : undefined
-                  }
-                  onPress={() => mark('discarded')}
-                />
-              </View>
-              <View style={styles.mark}>
-                <Button
-                  label={current.verdict === 'approved' ? 'Approved' : 'Approve'}
-                  icon="check"
-                  size="compact"
-                  variant={current.verdict === 'approved' ? 'primary' : 'secondary'}
-                  fullWidth
-                  disabled={deciding}
-                  accessibilityHint={
-                    current.verdict === 'approved' ? 'Takes the mark back' : undefined
-                  }
-                  onPress={() => mark('approved')}
-                />
-              </View>
+          {hasHtml ? (
+            <View style={styles.stage}>
+              {visible && current !== undefined ? (
+                isHtml ? (
+                  <View
+                    style={[
+                      styles.htmlStage,
+                      { maxWidth: desktop && canPreviewDesktop ? 840 : 393 },
+                    ]}
+                  >
+                    <HtmlMockupPreview
+                      key={current.attachment}
+                      attachment={current.attachment}
+                      name={current.name}
+                    />
+                  </View>
+                ) : (
+                  <MockupStage screen={current} onEnlarge={setEnlarged} />
+                )
+              ) : null}
             </View>
+          ) : (
+            <ScrollView
+              ref={setScroller}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              onMomentumScrollEnd={(event) => setIndex(pageOf(event, width))}
+            >
+              {screens.map((screen) => (
+                <View key={screen.name} style={[styles.stage, { width }]}>
+                  <MockupStage screen={screen} onEnlarge={setEnlarged} />
+                </View>
+              ))}
+            </ScrollView>
           )}
-          <Text variant="bodySmall" tone="muted">
-            Already implemented? End this review to remove it from Home and Needs you. Images and
-            marks stay in the chat. This does not start implementation.
-          </Text>
-          <Button
-            label="End review"
-            size="compact"
-            variant="secondary"
-            fullWidth
-            disabled={deciding}
-            onPress={() => void onComplete()}
-          />
         </View>
+        {screens.length > 1 ? (
+          hasHtml ? (
+            <View style={styles.navigation}>
+              <IconButton
+                icon="chevron-left"
+                accessibilityLabel="Previous screen"
+                disabled={index <= 0}
+                onPress={() => setIndex(index - 1)}
+              />
+              <PageDots count={screens.length} index={index} />
+              <IconButton
+                icon="chevron-right"
+                accessibilityLabel="Next screen"
+                disabled={index >= screens.length - 1}
+                onPress={() => setIndex(index + 1)}
+              />
+            </View>
+          ) : (
+            <PageDots count={screens.length} index={index} />
+          )
+        ) : null}
+        {onDecide && onComplete ? (
+          <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, theme.spacing.md) }]}>
+            {error !== undefined ? (
+              <Text variant="bodySmall" tone="attention">
+                {error}
+              </Text>
+            ) : null}
+            {current === undefined ? null : (
+              <View style={styles.actions}>
+                <View style={styles.mark}>
+                  <Button
+                    label={current.verdict === 'discarded' ? 'Discarded' : 'Discard'}
+                    icon="x"
+                    size="compact"
+                    variant={current.verdict === 'discarded' ? 'destructive' : 'secondary'}
+                    fullWidth
+                    disabled={deciding}
+                    accessibilityHint={
+                      current.verdict === 'discarded' ? 'Takes the mark back' : undefined
+                    }
+                    onPress={() => mark('discarded')}
+                  />
+                </View>
+                <View style={styles.mark}>
+                  <Button
+                    label={current.verdict === 'approved' ? 'Approved' : 'Approve'}
+                    icon="check"
+                    size="compact"
+                    variant={current.verdict === 'approved' ? 'primary' : 'secondary'}
+                    fullWidth
+                    disabled={deciding}
+                    accessibilityHint={
+                      current.verdict === 'approved' ? 'Takes the mark back' : undefined
+                    }
+                    onPress={() => mark('approved')}
+                  />
+                </View>
+              </View>
+            )}
+            <Text variant="bodySmall" tone="muted">
+              Already implemented? End this review to remove it from Home and Needs you. Mockups and
+              marks stay in the chat. This does not start implementation.
+            </Text>
+            <Button
+              label="End review"
+              size="compact"
+              variant="secondary"
+              fullWidth
+              disabled={deciding}
+              onPress={() => void onComplete?.()}
+            />
+          </View>
+        ) : (
+          <View style={{ paddingBottom: insets.bottom }} />
+        )}
       </View>
       {enlarged !== undefined ? (
         <ImageLightbox
@@ -452,6 +581,34 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.md,
   },
   stage: { flex: 1, paddingHorizontal: theme.spacing.lg },
+  viewportChoices: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
+  },
+  htmlStage: {
+    flex: 1,
+    alignSelf: 'center',
+    width: '100%',
+    overflow: 'hidden',
+    borderRadius: theme.radius.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+  },
+  htmlLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.sm,
+  },
+  navigation: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
   image: {
     flex: 1,
     width: '100%',

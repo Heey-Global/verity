@@ -1,7 +1,7 @@
 // Design module: the agent presents rendered mockups and the user marks each screen
 // as approved or discarded, then discusses them in the chat. Marks only record the
 // user's opinion and never start a turn: the user tells the agent in the chat to
-// implement, and the agent ends the review before it goes on. Images are copied
+// implement, and the agent ends the review before it goes on. Files are copied
 // into the attachment store when presented, so a round in the chat keeps showing
 // what was reviewed after the files change.
 import type { EventStore, MockupScreenRecord, MockupVerdict, SessionMockups } from '@verity/store';
@@ -11,17 +11,18 @@ import { readWorktreeFile } from './worktree-file.js';
 
 const MAX_MOCKUP_SCREENS = 12;
 const MAX_MOCKUP_BYTES = 15 * 1024 * 1024;
+const MAX_HTML_MOCKUP_BYTES = 2 * 1024 * 1024;
+const screenName = z.string().trim().min(1).max(80);
+const screenPath = z.string().trim().min(1).max(1_000);
 
 export const presentMockupsRequestSchema = z
   .object({
     screens: z
       .array(
-        z
-          .object({
-            name: z.string().trim().min(1).max(80),
-            path: z.string().trim().min(1).max(1_000),
-          })
-          .strict(),
+        z.union([
+          z.object({ name: screenName, path: screenPath }).strict(),
+          z.object({ name: screenName, htmlPath: screenPath }).strict(),
+        ]),
       )
       .min(1)
       .max(MAX_MOCKUP_SCREENS)
@@ -33,6 +34,15 @@ export const presentMockupsRequestSchema = z
   .strict();
 
 export type PresentMockupsRequest = z.infer<typeof presentMockupsRequestSchema>;
+
+function mockupHtml(bytes: Buffer): Pick<MockupScreenRecord, 'mediaType' | 'width' | 'height'> {
+  const html = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  if (!/^\s*<!doctype html\s*>/iu.test(html)) {
+    throw new Error('an HTML mockup must start with <!doctype html>');
+  }
+  // Viewport hints for clients that use a screen's intrinsic dimensions.
+  return { mediaType: 'text/html', width: 840, height: 768 };
+}
 
 /** Pixel size from the image header: PNG's IHDR, or the first JPEG frame header. */
 export function mockupImage(
@@ -69,7 +79,7 @@ function validMockupSize(image: Pick<MockupScreenRecord, 'mediaType' | 'width' |
 }
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
-/** The next round: new images open for review, except a screen that is unchanged
+/** The next round: new screens open for review, except a screen that is unchanged
  *  from the round before, which keeps its mark. A discarded screen presented
  *  unchanged therefore stays discarded and never turns into an approval. */
 export function nextMockupRound(
@@ -98,20 +108,25 @@ export function createSessionMockups(deps: MockupDeps) {
   const store = deps.eventStore;
 
   return {
-    /** Snapshot the images and open a new round. Answers the stored round. */
+    /** Snapshot the files and open a new round. Answers the stored round. */
     async present(sessionId: string, request: PresentMockupsRequest): Promise<SessionMockups> {
       const session = await store.getSession(sessionId);
       if (!session) throw new Error('session not found');
       const screens: Omit<MockupScreenRecord, 'verdict'>[] = [];
       for (const screen of request.screens) {
-        const bytes = await readWorktreeFile(session.worktree, screen.path, {
-          label: `mockup "${screen.name}" path`,
-          maxBytes: MAX_MOCKUP_BYTES,
-          tooLarge: `mockup "${screen.name}" exceeds 15 MB`,
-        });
-        const image = mockupImage(bytes);
-        const attachment = await store.putAttachment(image.mediaType, bytes.toString('base64'));
-        screens.push({ name: screen.name, attachment, ...image });
+        const html = 'htmlPath' in screen;
+        const bytes = await readWorktreeFile(
+          session.worktree,
+          html ? screen.htmlPath : screen.path,
+          {
+            label: `mockup "${screen.name}" ${html ? 'htmlPath' : 'path'}`,
+            maxBytes: html ? MAX_HTML_MOCKUP_BYTES : MAX_MOCKUP_BYTES,
+            tooLarge: `mockup "${screen.name}" exceeds ${html ? '2 MiB' : '15 MB'}`,
+          },
+        );
+        const format = html ? mockupHtml(bytes) : mockupImage(bytes);
+        const attachment = await store.putAttachment(format.mediaType, bytes.toString('base64'));
+        screens.push({ name: screen.name, attachment, ...format });
       }
       const stored = await store.updateSessionMockups(
         sessionId,

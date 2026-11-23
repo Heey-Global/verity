@@ -7,13 +7,13 @@
  *  the review ended. */
 export type SessionMockupState = 'pending' | 'revising' | 'approved';
 
-/** One presented screen. The image is a snapshot in the attachment store, so the
+/** One presented screen. The artifact is a snapshot in the attachment store, so the
  *  round stays as it was reviewed even when the agent rewrites the file later. */
 export interface MockupScreenRecord {
   name: string;
-  /** SHA-256 of the image in the attachment store. */
+  /** SHA-256 of the artifact in the attachment store. */
   attachment: string;
-  mediaType: 'image/png' | 'image/jpeg';
+  mediaType: 'image/png' | 'image/jpeg' | 'text/html';
   width: number;
   height: number;
   verdict: MockupVerdict;
