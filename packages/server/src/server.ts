@@ -438,8 +438,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   installVulnerabilityFix(app, ctx, { sessionCreate, sessionPrCache });
   installChangeSubmissions(app, ctx, {
     publish: publishSessionEvent,
-    revision: async (session) =>
-      (await branchesForSession(session))?.headRevision?.(session.worktree),
+    // Uncommitted work is not in HEAD, so HEAD is not what was submitted.
+    revision: async (session) => {
+      const branches = await branchesForSession(session);
+      if (!branches || (await branches.isDirty(session.worktree))) return undefined;
+      return branches.headRevision?.(session.worktree);
+    },
     pullRequest: async (session) => (await sessionPrCache.get(session)) ?? undefined,
     hasChanges: async (session) => {
       const branches = await branchesForSession(session);

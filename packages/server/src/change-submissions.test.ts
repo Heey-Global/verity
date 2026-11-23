@@ -96,7 +96,7 @@ describe('change submission routes', () => {
       if (typeof user === 'string') request.localUserId = user;
     });
     const published: AgentEvent[] = [];
-    let pr: { phase: PullRequestPhase; url: string; headSha: string } | undefined;
+    let pr: { phase: PullRequestPhase; url: string; headSha?: string } | undefined;
     let hasChanges: boolean | undefined;
     registerChangeSubmissionRoutes(app, {
       store: ctx.store,
@@ -120,8 +120,11 @@ describe('change submission routes', () => {
       app,
       call,
       published,
-      setPullRequest: (phase: PullRequestPhase, url = 'https://forge/pr/2', headSha = 'h1') =>
-        (pr = { phase, url, headSha }),
+      setPullRequest: (
+        phase: PullRequestPhase,
+        url = 'https://forge/pr/2',
+        headSha: string | null = 'h1',
+      ) => (pr = headSha === null ? { phase, url } : { phase, url, headSha }),
       setChanges: (next: boolean | undefined) => (hasChanges = next),
     };
   };
@@ -218,6 +221,18 @@ describe('change submission routes', () => {
       expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'waiting' } });
       setPullRequest('open', 'https://forge/pr/3', 'after');
       expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'adding' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps an earlier pull request without a head commit out of the status', async () => {
+    const { app, call, setPullRequest } = setup();
+    try {
+      // The forge left the head out; the store reads it back as null.
+      setPullRequest('merged', 'https://forge/pr/5', null);
+      await call('POST', 'mara');
+      expect((await call('GET', 'mara')).body).toMatchObject({ submission: { status: 'waiting' } });
     } finally {
       await app.close();
     }

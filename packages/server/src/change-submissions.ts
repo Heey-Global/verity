@@ -49,11 +49,12 @@ function pullRequestSince(
   if (pr === undefined) return undefined;
   // The same pull request counts once someone pushed to it after the submission,
   // or when it already carries exactly the submitted commit.
+  // Stored columns read back as null where the forge leaves a field out.
+  const head = pr.headSha ?? null;
   const earlier =
-    pr.url !== undefined &&
     pr.url === submission.pullRequestUrl &&
-    pr.headSha === submission.pullRequestHead &&
-    (pr.headSha === undefined || pr.headSha !== submission.revision);
+    head === submission.pullRequestHead &&
+    (head === null || head !== submission.revision);
   return earlier ? undefined : pr.phase;
 }
 
