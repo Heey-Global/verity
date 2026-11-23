@@ -626,3 +626,123 @@ describe('inboxView', () => {
     expect(woke.visible).toEqual([]);
   });
 });
+
+describe('requests addressed to someone else', () => {
+  // Home and the project overview list what the requester has to answer. Showing a
+  // colleague's question there would invite answering on their behalf.
+  const asking = (over: Partial<SessionSummary> = {}) =>
+    session('s1', {
+      status: 'awaiting_input',
+      openChoices: { question: 'Which color?', options: [{ label: 'Red' }, { label: 'Blue' }] },
+      planning: 'active',
+      planningPresented: true,
+      pendingPermissions: ['secret', 'bash'],
+      pendingPermissionRequests: [
+        { toolUseId: 'secret', tool: 'verity_secret_run', riskClass: 'ask', input: {} },
+        { toolUseId: 'bash', tool: 'Bash', riskClass: 'ask', input: { command: 'ls' } },
+      ],
+      ...over,
+    });
+  const kinds = (s: SessionSummary) =>
+    inboxItems({ sessions: [s], projects: [], now: NOW }).map((item) => item.key.split(':')[0]);
+
+  it('keeps every request when the server does not address them', () => {
+    expect(kinds(asking())).toEqual(['permission', 'permission', 'question', 'plan']);
+  });
+
+  it('leaves out requests for someone else but keeps a prompt sent to the requester', () => {
+    const s = asking({
+      addressedToViewer: false,
+      pendingPermissionRequests: [
+        {
+          toolUseId: 'secret',
+          tool: 'verity_secret_run',
+          riskClass: 'ask',
+          input: {},
+          addressedToViewer: true,
+        },
+        {
+          toolUseId: 'bash',
+          tool: 'Bash',
+          riskClass: 'ask',
+          input: { command: 'ls' },
+          addressedToViewer: false,
+        },
+      ],
+    });
+    expect(inboxItems({ sessions: [s], projects: [], now: NOW }).map((item) => item.key)).toEqual([
+      'permission:s1:secret',
+    ]);
+  });
+
+  it('leaves out mockups and an unstructured question for someone else', () => {
+    const waiting = (addressedToViewer?: boolean) => [
+      session('mockups', {
+        mockupReview: {
+          state: 'pending',
+          revision: 1,
+          screens: [
+            {
+              name: 'Home',
+              attachment: 'a'.repeat(64),
+              mediaType: 'image/png',
+              width: 1,
+              height: 1,
+              verdict: 'open',
+            },
+          ],
+        },
+        ...(addressedToViewer === undefined ? {} : { addressedToViewer }),
+      }),
+      // Awaiting an answer in prose, without a choices block.
+      session('prose', {
+        status: 'awaiting_input',
+        ...(addressedToViewer === undefined ? {} : { addressedToViewer }),
+      }),
+    ];
+    const keys = (sessions: SessionSummary[]) =>
+      inboxItems({ sessions, projects: [], now: NOW })
+        .map((item) => item.key)
+        .sort();
+    expect(keys(waiting(true))).toEqual(['mockups:mockups:1', 'question:prose']);
+    expect(keys(waiting(false))).toEqual([]);
+  });
+});
+
+describe('submitted changes', () => {
+  const submitted = (over: Record<string, unknown> = {}) =>
+    session('s1', {
+      changeSubmission: {
+        status: 'waiting',
+        submittedBy: { id: 'mara', name: 'Mara' },
+        submittedAt: 5,
+        addressedToViewer: true,
+        ...over,
+      },
+    });
+  const items = (s: SessionSummary) => inboxItems({ sessions: [s], projects: [], now: NOW });
+
+  it('asks a member with Code to check them', () => {
+    expect(items(submitted())).toEqual([
+      expect.objectContaining({
+        key: 'code_review:s1:5',
+        kind: 'code_review',
+        tag: 'Code review',
+        title: 'Mara submitted changes',
+        message: 'Check them and add them to the project.',
+      }),
+    ]);
+    expect(items(submitted({ checker: { id: 'alex' } }))[0]?.message).toBe(
+      'You are checking them.',
+    );
+  });
+
+  // The server addresses a submission to whoever checks it; without that flag
+  // (no accounts, an older server) there is nobody else to hand changes to.
+  it('stays away from others and from added changes', () => {
+    expect(items(submitted({ addressedToViewer: false }))).toEqual([]);
+    expect(items(submitted({ addressedToViewer: undefined }))).toEqual([]);
+    expect(items(submitted({ status: 'added' }))).toEqual([]);
+    expect(items(submitted({ status: 'adding' }))).toEqual([]);
+  });
+});

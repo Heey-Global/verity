@@ -1,3 +1,4 @@
+import type { ChangeSubmissionView } from './change-submissions.js';
 import type { AgentEvent, Attachment, RateLimitState, UsageTotals } from '@verity/events';
 import type {
   EventStore,
@@ -315,6 +316,17 @@ export interface SessionSummary extends SessionRecord {
   /** The current turn's unanswered `verity:choices` block, while the session waits
    * on it. Absent while running, after an answer, and on sessions without one. */
   openChoices?: OpenChoices;
+  /** The person the current turn runs for. Used to address the session's requests;
+   *  the session list leaves it out. */
+  requestInitiator?: string;
+  /** Session list only, per person: whether the session's questions, plans and
+   *  mockups are for the requester (ADR 0023). A permission prompt the server cannot
+   *  describe stays unaddressed and is shown to everyone. Absent without accounts,
+   *  where everything is for the one operator. */
+  addressedToViewer?: boolean;
+  /** Session list only: changes a member submitted here for review (ADR 0023), and,
+   *  per person, whether checking them waits on the requester. */
+  changeSubmission?: ChangeSubmissionView & { addressedToViewer?: boolean };
   /** Cumulative token usage across the session's turns (§13a). */
   usage: UsageTotals;
   /** Latest 5-hour rate-limit state observed in the session log, if any. */

@@ -1,4 +1,5 @@
 import type { MockupReviewScreen, ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
+import { projectNoun } from '../changeSubmissions.js';
 import { sessionAttention } from './attention.js';
 import { mockupProgress } from './mockups.js';
 import { projectNeedsRepair } from './projectBadge.js';
@@ -42,6 +43,7 @@ export type InboxItemKind =
   | 'mockup_review'
   | 'crashed'
   | 'merge_ready'
+  | 'code_review'
   | 'project_health'
   | 'qa_stop';
 
@@ -123,6 +125,7 @@ const RANK: Record<InboxItemKind, number> = {
   plan_review: 5,
   mockup_review: 4,
   crashed: 3,
+  code_review: 2,
   merge_ready: 2,
   project_health: 1,
 };
@@ -195,6 +198,7 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   add('plan_review', 'plan to review', 'plans to review');
   add('mockup_review', 'mockup review', 'mockup reviews');
   add('crashed', 'crashed session', 'crashed sessions');
+  add('code_review', 'code review', 'code reviews');
   add('merge_ready', 'pull request ready', 'pull requests ready');
   add('project_health', 'project needs care', 'projects need care');
   return parts.join(' · ');
@@ -228,8 +232,12 @@ function sessionItems(
   const items: InboxItem[] = [];
 
   // Permissions: one item per parked prompt the server could describe.
+  // Requests belong to the person who asked (ADR 0023). The session still shows
+  // and answers every one of them; Home lists only the requester's own.
+  const mine = session.addressedToViewer !== false;
   const requests = session.pendingPermissionRequests ?? [];
   for (const request of requests) {
+    if (request.addressedToViewer === false) continue;
     const { title, lines, message, decidable } = permissionOverview(request.tool, request.input);
     items.push({
       ...base,
@@ -264,6 +272,7 @@ function sessionItems(
   // A prompt the server could not describe (older server, linked-session approval)
   // still needs the operator; send them to the card instead of hiding it.
   const described = new Set(requests.map((request) => request.toolUseId));
+  // Unaddressed: the server cannot tell what it asks, so nor whom it is for.
   if (
     session.permissionAwaitingInput === true &&
     (session.pendingPermissions ?? []).some((id) => !described.has(id))
@@ -287,7 +296,7 @@ function sessionItems(
   }).map((flag) => flag.kind);
 
   // Question: the turn's choices, or an awaiting session asking in prose.
-  const choices = session.openChoices;
+  const choices = mine ? session.openChoices : undefined;
   if (choices !== undefined) {
     items.push({
       ...base,
@@ -315,7 +324,7 @@ function sessionItems(
               open('Own answer'),
             ],
     });
-  } else if (flags.includes('question') && session.permissionAwaitingInput !== true) {
+  } else if (mine && flags.includes('question') && session.permissionAwaitingInput !== true) {
     items.push({
       ...base,
       key: `question:${session.sessionId}`,
@@ -332,6 +341,7 @@ function sessionItems(
   // the session, where the plan can be read in full. The key follows the
   // revision, so a revised plan comes back after a dismissal.
   if (
+    mine &&
     session.planning === 'active' &&
     session.planningPresented === true &&
     session.status !== 'running'
@@ -352,7 +362,7 @@ function sessionItems(
   // Mockups: open until the user tells the agent in the chat to build; marks alone
   // never end the review.
   const review = session.mockupReview;
-  if (review?.state === 'pending' && review.screens.length > 0) {
+  if (mine && review?.state === 'pending' && review.screens.length > 0) {
     const undecided = review.screens.some((screen) => screen.verdict === 'open');
     items.push({
       ...base,
@@ -390,6 +400,32 @@ function sessionItems(
         session.resumable === false
           ? [open()]
           : [{ kind: 'resume', label: 'Resume', sessionId: session.sessionId }, open()],
+    });
+  }
+
+  // Submitted changes wait on everyone with Code until one of them writes in the
+  // session; the server then addresses them to that person alone (ADR 0023).
+  const submission = session.changeSubmission;
+  // Once a pull request is open, its own item takes over from the review.
+  if (
+    submission?.addressedToViewer === true &&
+    (submission.status === 'waiting' || submission.status === 'checking')
+  ) {
+    const who = submission.submittedBy.name ?? 'A member';
+    items.push({
+      ...base,
+      // Each submission asks anew: a dismissed one returns when changes are resubmitted.
+      key: `code_review:${session.sessionId}:${String(submission.submittedAt)}`,
+      kind: 'code_review',
+      tag: 'Code review',
+      tone: 'action',
+      title: `${who} submitted changes`,
+      context: where,
+      message:
+        submission.checker === undefined
+          ? `Check them and add them to ${projectNoun()}.`
+          : `You are checking them.`,
+      actions: [open('Review')],
     });
   }
 

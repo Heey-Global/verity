@@ -190,37 +190,32 @@ async function isWikiMaintenanceCall(
   );
 }
 
-export function registerServerMcpRoutes({
-  deps,
-  wikiProposals,
-  inquiryTool,
-  coordinationSpawn,
-  app,
-  conductor,
-  assistantToolDeps,
-  summarizeSession,
-  sessionResumable,
-  schedulingTool,
-  runningTurnInitiator,
-  projectsBeingDeleted,
-  beginProjectSpawn,
-  availableModels,
-  isConfiguredProjectSessionModel,
-  liveStatus,
-  branchesForSession,
-  prSummaryCache,
-  vulnerabilityService,
-  canExecuteAs,
-  sessionPlanning,
-  sessionMockups,
-  publishSessionEvent,
-  projectSettingsStore,
-  isProjectSessionModel,
-  isControlPlaneProject,
-  makeBranch,
-  SERVER_VERSION,
-  VERITY_CONTROL_PROJECT_ID,
-}: ServerMcpRouteDeps) {
+export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
+  const {
+    deps,
+    wikiProposals,
+    inquiryTool,
+    coordinationSpawn,
+    app,
+    conductor,
+    assistantToolDeps,
+    summarizeSession,
+    sessionResumable,
+    schedulingTool,
+    runningTurnInitiator,
+    liveStatus,
+    branchesForSession,
+    prSummaryCache,
+    vulnerabilityService,
+    canExecuteAs,
+    sessionPlanning,
+    sessionMockups,
+    publishSessionEvent,
+    projectSettingsStore,
+    isControlPlaneProject,
+    SERVER_VERSION,
+    VERITY_CONTROL_PROJECT_ID,
+  } = routeDeps;
   // `POST /internal/mcp` — the loopback MCP gateway (ADR 0014 D1), called by an ACP
   // session's own MCP client, NOT the operator. Like the other project-socket brokers it is
   // pre-auth allowlisted and rides the internal listener only; the PROJECT comes from the
@@ -232,17 +227,7 @@ export function registerServerMcpRoutes({
   // reaches the same durable permission card, decide route and standing-grant check as a
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
-  const createHandoffSession = createHandoffSessionCreator({
-    deps,
-    isControlPlaneProject,
-    projectsBeingDeleted,
-    beginProjectSpawn,
-    projectSettingsStore,
-    availableModels,
-    isProjectSessionModel,
-    isConfiguredProjectSessionModel,
-    makeBranch,
-  });
+  const createHandoffSession = createHandoffSessionCreator(routeDeps);
   const qaRepair = createQARepairTool({
     store: deps.eventStore,
     permitted: canExecuteAs,

@@ -454,6 +454,7 @@ export function registerSessionCreateRoute(
         model: effectiveModel ?? deps.defaultModel,
         ...(displayName ? { name: displayName } : {}),
         ...(projectId !== undefined ? { projectId } : {}),
+        ...(request.localUserId ? { createdByUserId: request.localUserId } : {}),
       });
       if (projectId !== undefined)
         await deps.eventStore.userProviderConnections

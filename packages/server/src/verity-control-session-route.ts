@@ -83,6 +83,7 @@ export function registerVerityControlSessionRoute(
             worktree,
             model,
             projectId: project.id,
+            ...(request.localUserId ? { createdByUserId: request.localUserId } : {}),
           });
           reply.code(201);
           return { sessionId };

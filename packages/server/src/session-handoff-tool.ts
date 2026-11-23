@@ -283,6 +283,8 @@ export interface ControlPlaneSessionToolDeps {
     projectId: string;
     name: string;
     idempotencyKey: string;
+    /** The turn handing off; the new session belongs to the person behind it. */
+    caller?: { sessionId: string; turnId: string };
   }): Promise<{ sessionId: string }>;
   readProgress?(sessionId: string): Promise<Record<string, unknown>>;
   readRecentMessages?(input: {
@@ -841,6 +843,7 @@ export function createControlPlaneSessionTools(
           projectId: project.id,
           name: request.title,
           idempotencyKey: `handoff-session:${input.turnId}:${input.invocationId}`,
+          caller: { sessionId: input.sessionId, turnId: input.turnId },
         });
         target = {
           project,

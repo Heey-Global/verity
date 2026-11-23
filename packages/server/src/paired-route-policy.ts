@@ -196,6 +196,19 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     routeScopeKey('POST', '/sessions/:id/save-to-project'),
     { kind: 'session', parameter: 'id', permission: 'code' },
   ],
+  // Submitting is how a member without Code hands changes to those with it.
+  [
+    routeScopeKey('GET', '/sessions/:id/change-submission'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/change-submission'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('DELETE', '/sessions/:id/change-submission'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
   [
     routeScopeKey('POST', '/sessions/:id/knowledge-sources'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
