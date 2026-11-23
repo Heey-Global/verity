@@ -6,6 +6,19 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.102.0](https://github.com/Heey-Global/verity/compare/v4.101.0...v4.102.0) (2026-11-23)
+
+
+### Features
+
+* **mobile:** select multiple recent images in the add menu ([#2858](https://github.com/Heey-Global/verity/issues/2858)) ([373122b](https://github.com/Heey-Global/verity/commit/373122b10d38f1565d5fae671abf2c850e6a84a4))
+
+
+### Bug Fixes
+
+* **sandbox:** expose capacity lease locks to confined agents ([#2859](https://github.com/Heey-Global/verity/issues/2859)) ([13983b7](https://github.com/Heey-Global/verity/commit/13983b73883aba6730986821601faff3666e95b5))
+* **session:** show pull requests across repositories ([#2847](https://github.com/Heey-Global/verity/issues/2847)) ([36c03bc](https://github.com/Heey-Global/verity/commit/36c03bcea2d032d7d0af781ac8b60c980e52c9ec))
+
 ## [4.101.0](https://github.com/Heey-Global/verity/compare/v4.100.0...v4.101.0) (2026-11-23)
 
 
