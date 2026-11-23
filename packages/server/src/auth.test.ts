@@ -15,12 +15,21 @@ import { bearerToken, createAuthTokenRegistry, hashAuthToken, wsOriginAllowed } 
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createDevicePairingManager, type DevicePairingManager } from './device-pairing.js';
 import { buildServer } from './server.js';
+import { invalidBearerRateLimitKey } from './server-http.js';
 
 const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 
 const conductor = {} as unknown as Conductor;
 
 const PASSWORD = 'correct-horse-battery';
+
+describe('invalid bearer rate-limit keys', () => {
+  it('handles Unix-socket requests without a remote IP', () => {
+    expect(invalidBearerRateLimitKey({})).toBe('unix-socket');
+    expect(invalidBearerRateLimitKey({ ip: '' })).toBe('unix-socket');
+    expect(invalidBearerRateLimitKey({ ip: '127.0.0.1' })).toBe('127.0.0.1');
+  });
+});
 
 describe('bearerToken parsing', () => {
   it('extracts the token from a Bearer header (case-insensitive), else undefined', () => {
