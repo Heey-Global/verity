@@ -63,7 +63,14 @@ export function changeSubmissionBar(input: {
         subtitle: `${nameOf(submission.checker, 'A developer')} is adding them`,
       };
     case 'added':
-      return { title: `Added to ${input.noun}`, subtitle: 'Changes from this session' };
+      // Done; follow-up work in the same session is submitted the same way.
+      return {
+        title: `Added to ${input.noun}`,
+        subtitle: 'Submit again when there is more',
+        ...(viewerCanSubmit === false
+          ? {}
+          : { action: { kind: 'submit', label: 'Submit changes' } }),
+      };
   }
 }
 

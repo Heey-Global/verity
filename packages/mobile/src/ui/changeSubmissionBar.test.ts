@@ -55,10 +55,11 @@ describe('change submission bar without Code', () => {
       undefined,
     ]);
     expect(titles(editor(submitted({ status: 'adding' })))).toContain('A developer is adding them');
+    // Follow-up work in the same session must remain submittable.
     expect(titles(editor(submitted({ status: 'added' })))).toEqual([
       'Added to the project',
-      'Changes from this session',
-      undefined,
+      'Submit again when there is more',
+      'Submit changes',
     ]);
   });
 });
