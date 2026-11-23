@@ -1,5 +1,6 @@
+import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import type { FastifyInstance } from 'fastify';
-import type { EventStore } from '@verity/store';
+import type { EventStore, SealableSecretCipher } from '@verity/store';
 import type { DockerClient } from './docker.js';
 import type { ProvisionerImpl } from './provisioner.js';
 import type { ServerDeps } from './server-deps.js';
@@ -103,4 +104,42 @@ export function createEmbeddedSecretUnlock(ctx: {
     await codexModelCatalog?.refresh();
     uplinkControl?.start();
   };
+}
+
+type UnlockContext = Parameters<typeof createEmbeddedSecretUnlock>[0];
+
+export async function activateEmbeddedSecretHandoff({
+  secretCipher,
+  handedOffKeyMaterial,
+  projectAgentGatewayIdentity,
+  publishRunnerIdentity,
+  codexModelCatalog,
+}: Pick<
+  UnlockContext,
+  'projectAgentGatewayIdentity' | 'publishRunnerIdentity' | 'codexModelCatalog'
+> & {
+  secretCipher: Pick<SealableSecretCipher, 'unlock' | 'seal'>;
+  handedOffKeyMaterial: string | undefined;
+}): Promise<void> {
+  // Adopt the handed-off key (ADR 0008 D8) only now that everything is built.
+  // Every component above was therefore constructed against a sealed store, the
+  // way it is on an interactive boot, and the key goes in through the same door
+  // an operator unlock uses — the very callback `onSecretUnlocked` runs.
+  if (handedOffKeyMaterial !== undefined) {
+    await adoptHandedOffSecretKey({
+      cipher: secretCipher,
+      material: handedOffKeyMaterial,
+      activate: async () => {
+        await projectAgentGatewayIdentity();
+        // The candidate constructed every component against a sealed store, so the
+        // Runner identity publish was deferred exactly as on an interactive boot.
+        // This callback IS the update path's unlock — carry it out here too, or the
+        // promoted Server runs without Runner identity until some later turn
+        // happens to refresh it. Best-effort for the same reason the boot path is:
+        // a certificate must never cost the key handover it rides in on.
+        await publishRunnerIdentity('key handover');
+        await codexModelCatalog?.refresh();
+      },
+    });
+  }
 }
