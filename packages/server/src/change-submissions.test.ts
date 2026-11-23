@@ -281,6 +281,10 @@ describe('change submission routes', () => {
       pullRequest: async () => {
         throw new Error('forge down');
       },
+      // The display read may come from a cache; the baseline read must not guess.
+      freshPullRequest: async () => {
+        throw new Error('forge down');
+      },
     });
     try {
       const response = await app.inject({ method: 'POST', url: '/sessions/s1/change-submission' });

@@ -445,6 +445,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return branches.headRevision?.(session.worktree);
     },
     pullRequest: async (session) => (await sessionPrCache.get(session)) ?? undefined,
+    freshPullRequest: async (session) => {
+      const status = await sessionPrStatus(session);
+      if (status?.observationFailed === true) throw new Error('pull request unavailable');
+      return status ?? undefined;
+    },
     hasChanges: async (session) => {
       const branches = await branchesForSession(session);
       if (!branches || session.projectId === null) return undefined;

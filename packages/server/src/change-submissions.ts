@@ -183,6 +183,10 @@ export interface ChangeSubmissionRouteDeps {
   revision?: (session: SessionRecord) => Promise<string | undefined>;
   /** The session's pull request, if it has one. */
   pullRequest?: (session: SessionRecord) => Promise<SubmissionPullRequest | undefined>;
+  /** The same, read afresh, and throwing when the forge could not be read: the
+   *  baseline a submission is measured against must not mistake "unreadable"
+   *  for "none". Falls back to {@link pullRequest}. */
+  freshPullRequest?: (session: SessionRecord) => Promise<SubmissionPullRequest | undefined>;
   /** Whether the session changed anything the project does not have yet. */
   hasChanges?: (session: SessionRecord) => Promise<boolean | undefined>;
 }
@@ -267,7 +271,7 @@ export function registerChangeSubmissionRoutes(
     let prUnread = false;
     const [revision, pr] = await Promise.all([
       deps.revision?.(session).catch(() => undefined),
-      deps.pullRequest?.(session).catch(() => {
+      (deps.freshPullRequest ?? deps.pullRequest)?.(session).catch(() => {
         prUnread = true;
         return undefined;
       }),
