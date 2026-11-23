@@ -41,7 +41,7 @@ import { File as FsFile } from 'expo-file-system';
 import { Platform } from 'react-native';
 
 import {
-  attachRecentImage,
+  attachRecentImages,
   base64IsHeif,
   captureImage,
   droppedImageMediaType,
@@ -119,6 +119,22 @@ describe('dragged attachments', () => {
       [],
       expect.objectContaining({ base64: true, format: 'jpeg' }),
     );
+  });
+
+  it('encodes the selected images in order up to the remaining attachment limit', async () => {
+    mockGetAssetInfoAsync.mockResolvedValue({
+      localUri: 'file:///library/shot.png',
+      filename: 'shot.png',
+    });
+    mockManipulateAsync
+      .mockResolvedValueOnce({ base64: 'Zmlyc3Q=' })
+      .mockResolvedValueOnce({ base64: 'c2Vjb25k' });
+
+    await expect(attachRecentImages(['first', 'second', 'extra'], 2)).resolves.toEqual([
+      { kind: 'image', mediaType: 'image/png', data: 'Zmlyc3Q=' },
+      { kind: 'image', mediaType: 'image/png', data: 'c2Vjb25k' },
+    ]);
+    expect(mockGetAssetInfoAsync.mock.calls.map(([id]) => id)).toEqual(['first', 'second']);
   });
 
   it('transcodes an HEIC photo returned directly by the iPhone camera', async () => {
@@ -537,7 +553,7 @@ describe('recent strip images', () => {
     });
     mockManipulateAsync.mockResolvedValue({ base64: 'cG5n' });
 
-    await expect(attachRecentImage('shot')).resolves.toEqual([
+    await expect(attachRecentImages(['shot'], 1)).resolves.toEqual([
       { kind: 'image', mediaType: 'image/png', data: 'cG5n' },
     ]);
     expect(mockGetAssetInfoAsync).toHaveBeenCalledWith('shot', { shouldDownloadFromNetwork: true });
@@ -554,7 +570,7 @@ describe('recent strip images', () => {
       localUri: 'file:///library/IMG_2.HEIC',
       filename: 'IMG_2.HEIC',
     });
-    await expect(attachRecentImage('a')).resolves.toEqual([
+    await expect(attachRecentImages(['a'], 1)).resolves.toEqual([
       { kind: 'image', mediaType: 'image/jpeg', data: 'anBlZw==' },
     ]);
 
@@ -563,7 +579,7 @@ describe('recent strip images', () => {
       localUri: 'file:///library/IMG_3.JPG',
       filename: 'IMG_3.JPG',
     });
-    await expect(attachRecentImage('b')).resolves.toEqual([
+    await expect(attachRecentImages(['b'], 1)).resolves.toEqual([
       { kind: 'image', mediaType: 'image/jpeg', data: 'anBlZw==' },
     ]);
     expect(mockManipulateAsync).toHaveBeenCalledWith(
@@ -575,6 +591,6 @@ describe('recent strip images', () => {
 
   it('says so when an iCloud photo could not be brought to the device', async () => {
     mockGetAssetInfoAsync.mockResolvedValue({ uri: 'ph://c', localUri: null, filename: 'c.JPG' });
-    await expect(attachRecentImage('c')).rejects.toThrow('not available on this device');
+    await expect(attachRecentImages(['c'], 1)).rejects.toThrow('not available on this device');
   });
 });

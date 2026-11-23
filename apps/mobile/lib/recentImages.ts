@@ -7,7 +7,7 @@ import { AppState, Linking, Platform } from 'react-native';
 
 const RECENT_IMAGE_LIMIT = 10;
 
-export interface RecentImage {
+interface RecentImage {
   id: string;
   uri: string;
 }

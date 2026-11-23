@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import type { GmailSessionConnection } from '@verity/mobile';
 import { AppState, Linking, Platform } from 'react-native';
 
@@ -49,7 +49,11 @@ const gmail: GmailSessionConnection = {
 };
 
 function renderMenu(
-  overrides: Partial<{ visible: boolean; google: Partial<AttachMenuGoogle> }> = {},
+  overrides: Partial<{
+    visible: boolean;
+    remainingAttachments: number;
+    google: Partial<AttachMenuGoogle>;
+  }> = {},
 ) {
   const onAttachRecent = jest.fn();
   const onToggle = jest.fn();
@@ -57,6 +61,7 @@ function renderMenu(
     anchor: { x: 12, y: 700, width: 40, height: 40 },
     handlers,
     onAttachRecent,
+    remainingAttachments: overrides.remainingAttachments ?? 10,
     google: {
       connected: true,
       loading: false,
@@ -87,28 +92,42 @@ afterEach(() => {
 
 it('opens with the camera, then screenshots before other recent images', async () => {
   const { onAttachRecent } = renderMenu();
-  const tiles = await screen.findAllByLabelText(/^Attach recent image/);
+  const tiles = await screen.findAllByLabelText(/^Select recent image/);
   expect(tiles).toHaveLength(4);
   expect(screen.getByLabelText('Take photo')).toBeTruthy();
   // The strip's camera replaces the row, so the camera is offered exactly once.
   expect(screen.queryByText('Take photo')).toBeNull();
+  fireEvent.press(tiles[1]);
   fireEvent.press(tiles[0]);
-  expect(onAttachRecent).toHaveBeenCalledWith(image('shot-2'));
   fireEvent.press(tiles[2]);
-  expect(onAttachRecent).toHaveBeenLastCalledWith(image('photo-3'));
+  fireEvent.press(tiles[2]);
+  expect(tiles[0]).toHaveProperty('props.accessibilityState.checked', true);
+  expect(tiles[2]).toHaveProperty('props.accessibilityState.checked', false);
+  // The badge numbers the images in the order they will be attached.
+  expect(within(tiles[1]).getByText('1')).toBeTruthy();
+  expect(within(tiles[0]).getByText('2')).toBeTruthy();
+  expect(within(tiles[2]).queryByText(/\d/)).toBeNull();
+  expect(onAttachRecent).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByRole('button', { name: 'Attach 2 images' }));
+  expect(onAttachRecent).toHaveBeenCalledWith(['shot-1', 'shot-2']);
 });
 
 it('shows a screenshot taken while the menu is open without attaching it', async () => {
   const { onAttachRecent } = renderMenu();
-  await screen.findAllByLabelText(/^Attach recent image/);
+  const tiles = await screen.findAllByLabelText(/^Select recent image/);
+  fireEvent.press(tiles[0]);
   mockLibrary.screenshots = [image('shot-3'), ...mockLibrary.screenshots];
   await act(async () => {
     for (const listener of mockListeners) listener();
   });
-  await waitFor(() => expect(screen.getAllByLabelText(/^Attach recent image/)).toHaveLength(5));
-  fireEvent.press(screen.getAllByLabelText(/^Attach recent image/)[0]);
-  expect(onAttachRecent).toHaveBeenCalledTimes(1);
-  expect(onAttachRecent).toHaveBeenCalledWith(image('shot-3'));
+  await waitFor(() => expect(screen.getAllByLabelText(/^Select recent image/)).toHaveLength(5));
+  expect(screen.getByLabelText('Select recent image 1')).toHaveProperty(
+    'props.accessibilityState.checked',
+    false,
+  );
+  expect(onAttachRecent).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByRole('button', { name: 'Attach 1 image' }));
+  expect(onAttachRecent).toHaveBeenCalledWith(['shot-2']);
 });
 
 it('rechecks photo access when returning from Settings without a library event', async () => {
@@ -120,22 +139,22 @@ it('rechecks photo access when returning from Settings without a library event',
   await act(async () => {
     appState.mock.calls.find(([event]) => event === 'change')?.[1]('active');
   });
-  expect(screen.getAllByLabelText(/^Attach recent image/)).toHaveLength(4);
+  expect(screen.getAllByLabelText(/^Select recent image/)).toHaveLength(4);
 });
 
 it('hides the previous thumbnails while rechecking photo access on reopen', async () => {
   const view = renderMenu();
-  await screen.findAllByLabelText(/^Attach recent image/);
+  await screen.findAllByLabelText(/^Select recent image/);
   view.rerender(<AttachMenu visible={false} {...view.props} />);
   mockLibrary.permission.status = 'denied';
   view.rerender(<AttachMenu visible {...view.props} />);
-  expect(screen.queryAllByLabelText(/^Attach recent image/)).toHaveLength(0);
+  expect(screen.queryAllByLabelText(/^Select recent image/)).toHaveLength(0);
   await screen.findByLabelText('Allow photo access');
 });
 
 it('stops listening to the library once the menu closes', async () => {
   const view = renderMenu();
-  await screen.findAllByLabelText(/^Attach recent image/);
+  await screen.findAllByLabelText(/^Select recent image/);
   expect(mockListeners.size).toBe(1);
   view.rerender(<AttachMenu visible={false} {...view.props} />);
   expect(mockListeners.size).toBe(0);
@@ -148,10 +167,10 @@ it('asks for photo access on the first open only', async () => {
     return mockLibrary.permission;
   });
   const view = renderMenu();
-  await screen.findAllByLabelText(/^Attach recent image/);
+  await screen.findAllByLabelText(/^Select recent image/);
   view.rerender(<AttachMenu visible={false} {...view.props} />);
   view.rerender(<AttachMenu visible {...view.props} />);
-  await screen.findAllByLabelText(/^Attach recent image/);
+  await screen.findAllByLabelText(/^Select recent image/);
   expect(mockRequestPermissions).toHaveBeenCalledTimes(1);
 });
 
@@ -163,7 +182,7 @@ it('keeps only the camera when the library cannot be read', async () => {
   await waitFor(() => expect(getAssetsAsync).toHaveBeenCalled());
   expect(screen.getByLabelText('Take photo')).toBeTruthy();
   expect(screen.queryByLabelText('Allow photo access')).toBeNull();
-  expect(screen.queryAllByLabelText(/^Attach recent image/)).toHaveLength(0);
+  expect(screen.queryAllByLabelText(/^Select recent image/)).toHaveLength(0);
 });
 
 it('offers Settings in the strip when photo access was refused', async () => {
@@ -173,7 +192,7 @@ it('offers Settings in the strip when photo access was refused', async () => {
   fireEvent.press(await screen.findByLabelText('Allow photo access'));
   expect(openSettings).toHaveBeenCalledTimes(1);
   expect(screen.getByLabelText('Take photo')).toBeTruthy();
-  expect(screen.queryAllByLabelText(/^Attach recent image/)).toHaveLength(0);
+  expect(screen.queryAllByLabelText(/^Select recent image/)).toHaveLength(0);
 });
 
 it('lets limited access widen the selection', async () => {
@@ -210,3 +229,33 @@ it('switches connectors in place and leaves project access to Project settings',
   fireEvent.press(screen.getByLabelText('Back to the add menu'));
   expect(screen.getByText('Choose photo')).toBeTruthy();
 });
+
+it('limits selection to free attachment slots and clears it on close', async () => {
+  const view = renderMenu({ remainingAttachments: 1 });
+  const tiles = await screen.findAllByLabelText(/^Select recent image/);
+  fireEvent.press(tiles[0]);
+  expect(tiles[1]).toHaveProperty('props.accessibilityState.disabled', true);
+  view.rerender(<AttachMenu visible={false} {...view.props} />);
+  view.rerender(<AttachMenu visible {...view.props} />);
+  await screen.findAllByLabelText(/^Select recent image/);
+  expect(screen.queryByRole('button', { name: 'Attach 1 image' })).toBeNull();
+});
+
+it.each([
+  { loading: true, error: null, status: 'Checking Google accounts…' },
+  {
+    loading: false,
+    error: 'Could not check Google accounts',
+    status: 'Could not check Google accounts',
+  },
+])(
+  'shows the Google catalog status only under Connectors ($status)',
+  async ({ loading, error, status }) => {
+    renderMenu({ google: { connected: false, loading, error } });
+    await screen.findAllByLabelText(/^Select recent image/);
+    expect(screen.queryByText(status)).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: 'Connectors' }));
+    expect(screen.getByText(status)).toBeTruthy();
+    expect(screen.queryByRole('switch')).toBeNull();
+  },
+);

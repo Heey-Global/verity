@@ -291,10 +291,9 @@ import { isSameAutomation } from '../../lib/automationText';
 import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import type { AttachAnchor } from '../../lib/attachMenu';
-import type { RecentImage } from '../../lib/recentImages';
 import { AttachMenu } from '../../components/AttachMenu';
 import {
-  attachRecentImage,
+  attachRecentImages,
   captureImage,
   pickMeetingAudioAsset,
   readMeetingAudioUpload,
@@ -3341,9 +3340,9 @@ export const SessionChat = memo(function SessionChat({
     );
   }, [client, sessionId, workspaceFile, invalidateGoogleStatus]);
   const onAttachRecent = useCallback(
-    (image: RecentImage) => {
+    (ids: readonly string[]) => {
       setAttachMenuOpen(false);
-      performPick(() => attachRecentImage(image.id));
+      performPick((remaining) => attachRecentImages(ids, remaining));
     },
     [performPick],
   );
@@ -4827,6 +4826,7 @@ export const SessionChat = memo(function SessionChat({
           onLiveMeeting,
         }}
         onAttachRecent={onAttachRecent}
+        remainingAttachments={Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)}
         google={{
           connected: googleConnected,
           loading: googleCatalogLoading,

@@ -306,9 +306,20 @@ export async function pickImagesFromLibrary(remaining: number): Promise<Attachme
   return picked;
 }
 
+export async function attachRecentImages(
+  ids: readonly string[],
+  remaining: number,
+): Promise<AttachmentUpload[]> {
+  const attachments: AttachmentUpload[] = [];
+  for (const id of ids.slice(0, remaining)) {
+    attachments.push(...(await attachRecentImage(id)));
+  }
+  return attachments;
+}
+
 /** Resolve a recent library image to a local file and encode its pixels without
  * carrying over source metadata. Keep PNG lossless while it fits the limit. */
-export async function attachRecentImage(assetId: string): Promise<AttachmentUpload[]> {
+async function attachRecentImage(assetId: string): Promise<AttachmentUpload[]> {
   const info = await MediaLibrary.getAssetInfoAsync(assetId, { shouldDownloadFromNetwork: true });
   const uri = info.localUri;
   if (!uri) throw new Error('This photo is not available on this device right now.');
