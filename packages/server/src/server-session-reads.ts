@@ -40,7 +40,7 @@ export interface SessionListWiring {
   wikiMaintenanceSessions: Set<string>;
   sessionOverview: Pick<
     SessionOverview,
-    'prunePrSummaryCache' | 'pruneBranchCache' | 'summarizeSessions'
+    'prunePrSummaryCache' | 'pruneBranchCache' | 'summarizeSessions' | 'sessionPrCache'
   >;
 }
 
@@ -169,6 +169,11 @@ export function installSessionList(
         projectIds: new Set(await deps.eventStore.listReadableProjectIds(viewer)),
         unassigned: false,
       };
+    },
+    requestAddressing: { store: deps.eventStore },
+    changeSubmissions: {
+      store: deps.eventStore,
+      pullRequest: (session) => sessionOverview.sessionPrCache.get(session),
     },
     prunePrSummaryCache,
     pruneBranchCache,

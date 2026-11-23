@@ -1,6 +1,7 @@
+import type { ProjectPermission } from '@verity/store';
+
 import { routeScopeKey } from './route-scopes.js';
 
-type ProjectPermission = 'read' | 'execute' | 'manage';
 type ResourceRule =
   | {
       readonly kind: 'project' | 'session';
@@ -14,7 +15,10 @@ type PairedRoutePolicy =
 
 /** Routes become available to members only after their resource and required
  * permission are declared here. Everything else remains administrator-only,
- * including collections and cross-project actions. */
+ * including collections and cross-project actions. Adding a session's changes
+ * to the project's code (merging, saving, switching or opening repositories,
+ * scanning for and acting on QA and vulnerability findings) needs the Code
+ * permission, not only execute (ADR 0023 §1). */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, ResourceRule>([
   // Deleting a project, or tearing down its sandboxes, ends everyone's work in it:
   // only the person who created it or an administrator may (members with manage
@@ -170,15 +174,15 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
   ],
   [
     routeScopeKey('POST', '/sessions/:id/branch'),
-    { kind: 'session', parameter: 'id', permission: 'execute' },
+    { kind: 'session', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/sessions/:id/merge'),
-    { kind: 'session', parameter: 'id', permission: 'execute' },
+    { kind: 'session', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/sessions/:id/pull-request/merge'),
-    { kind: 'session', parameter: 'id', permission: 'execute' },
+    { kind: 'session', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/sessions/:id/recover-worktree'),
@@ -186,10 +190,23 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
   ],
   [
     routeScopeKey('POST', '/sessions/:id/code-workspace/restore'),
-    { kind: 'session', parameter: 'id', permission: 'execute' },
+    { kind: 'session', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/sessions/:id/save-to-project'),
+    { kind: 'session', parameter: 'id', permission: 'code' },
+  ],
+  // Submitting is how a member without Code hands changes to those with it.
+  [
+    routeScopeKey('GET', '/sessions/:id/change-submission'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/change-submission'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('DELETE', '/sessions/:id/change-submission'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
@@ -424,11 +441,11 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
   ],
   [
     routeScopeKey('POST', '/projects/:id/pull-requests/:repositoryId/:number/merge'),
-    { kind: 'project', parameter: 'id', permission: 'execute' },
+    { kind: 'project', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/projects/:id/pull-requests/:repositoryId/:number/fix'),
-    { kind: 'project', parameter: 'id', permission: 'execute' },
+    { kind: 'project', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/projects/:id/repositories'),
@@ -444,7 +461,7 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
   ],
   [
     routeScopeKey('POST', '/sessions/:id/repositories/:repositoryId/open'),
-    { kind: 'session', parameter: 'id', permission: 'execute' },
+    { kind: 'session', parameter: 'id', permission: 'code' },
   ],
   // The person's own view of a project or session (fold, read mark, dismissed
   // Home items) is stored per user and changes nothing anyone else sees, so
@@ -569,7 +586,7 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
   ],
   [
     routeScopeKey('POST', '/projects/:id/repairs/approval'),
-    { kind: 'project', parameter: 'id', permission: 'execute' },
+    { kind: 'project', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('GET', '/projects/:id/repairs'),
@@ -585,11 +602,11 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
   ],
   [
     routeScopeKey('POST', '/projects/:id/qa/issues/:issueId/decision'),
-    { kind: 'project', parameter: 'id', permission: 'execute' },
+    { kind: 'project', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/projects/:id/repairs/retry'),
-    { kind: 'project', parameter: 'id', permission: 'execute' },
+    { kind: 'project', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/projects/:id/egress/remove-request'),
@@ -637,11 +654,11 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
   ],
   [
     routeScopeKey('POST', '/projects/:id/vulnerability-fix'),
-    { kind: 'project', parameter: 'id', permission: 'execute' },
+    { kind: 'project', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/projects/:id/vulnerability-scan'),
-    { kind: 'project', parameter: 'id', permission: 'execute' },
+    { kind: 'project', parameter: 'id', permission: 'code' },
   ],
   [
     routeScopeKey('POST', '/sessions/:id/live-meetings/online'),

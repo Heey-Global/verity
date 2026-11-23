@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.95.2](https://github.com/Heey-Global/verity/compare/mobile-v1.95.1...mobile-v1.95.2) (2026-11-23)
+
+
+### Features
+
+* **team:** address session requests to the person who asked ([#2840](https://github.com/Heey-Global/verity/issues/2840)) ([56ea677](https://github.com/Heey-Global/verity/commit/56ea677902c258a441d6cc44013cce234cf95db2))
+
+
+### Bug Fixes
+
+* **secrets:** shorten approval cards and hide legacy chat notices ([#2842](https://github.com/Heey-Global/verity/issues/2842)) ([681fb88](https://github.com/Heey-Global/verity/commit/681fb88a4eb072fae1250e7627ecc22d1f6506af))
+
+## [1.95.1](https://github.com/Heey-Global/verity/compare/mobile-v1.95.0...mobile-v1.95.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **secrets:** streamline approval cards and continuation in chat ([#2825](https://github.com/Heey-Global/verity/issues/2825)) ([2a280d2](https://github.com/Heey-Global/verity/commit/2a280d2dbe595cb30c73316328bba91817aeb2f7))
+
+## [1.94.8](https://github.com/Heey-Global/verity/compare/mobile-v1.94.7...mobile-v1.94.8) (2026-11-22)
+
+
+### Features
+
+* **mobile:** show session collaboration in the session header ([#2805](https://github.com/Heey-Global/verity/issues/2805)) ([dac29b5](https://github.com/Heey-Global/verity/commit/dac29b52eaa6d5ff1ad88892d3fa89801b51a74b))
+
+
+### Bug Fixes
+
+* **home:** rank recent sessions by message activity ([#2808](https://github.com/Heey-Global/verity/issues/2808)) ([e70f36f](https://github.com/Heey-Global/verity/commit/e70f36faf7c96689817ee675aee6359902ebcd48))
+
 ## [1.94.7](https://github.com/Heey-Global/verity/compare/mobile-v1.94.6...mobile-v1.94.7) (2026-11-22)
 
 

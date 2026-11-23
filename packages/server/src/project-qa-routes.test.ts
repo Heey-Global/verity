@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import type { ProjectPermission } from '@verity/store';
 import { registerProjectQARoutes } from './project-qa-routes.js';
 import { registerRepairRoutes } from './repair-routes.js';
 
@@ -26,7 +27,7 @@ beforeEach(async () => {
 });
 
 /** An app acting as `user` with the given project permissions. */
-function app(permissions: readonly ('read' | 'execute' | 'manage')[], admin = false) {
+function app(permissions: readonly ProjectPermission[], admin = false) {
   const server = Fastify();
   server.addHook('preHandler', async (request) => {
     request.localUserId = 'user';
@@ -53,7 +54,7 @@ async function stoppedIssue() {
   return issue!;
 }
 
-it('shows readers the QA state and its stopped issues, but lets only executors decide', async () => {
+it('shows readers the QA state and its stopped issues, but lets only members with Code decide', async () => {
   const issue = await stoppedIssue();
   const reader = app(['read']);
   try {
@@ -80,7 +81,22 @@ it('shows readers the QA state and its stopped issues, but lets only executors d
   } finally {
     await reader.server.close();
   }
-  const executor = app(['read', 'execute']);
+  // Edit alone does not decide about QA's repairs; that is working with code.
+  const editor = app(['read', 'execute']);
+  try {
+    expect(
+      (
+        await editor.server.inject({
+          method: 'POST',
+          url: `/projects/a/qa/issues/${issue.id}/decision`,
+          payload: { decision: 'another_round' },
+        })
+      ).statusCode,
+    ).toBe(403);
+  } finally {
+    await editor.server.close();
+  }
+  const executor = app(['read', 'execute', 'code']);
   try {
     const decided = await executor.server.inject({
       method: 'POST',
@@ -111,7 +127,7 @@ it('refuses a decision about another project’s issue', async () => {
     state: 'active',
   });
   const issue = await stoppedIssue();
-  const executor = app(['read', 'execute']);
+  const executor = app(['read', 'execute', 'code']);
   try {
     const response = await executor.server.inject({
       method: 'POST',

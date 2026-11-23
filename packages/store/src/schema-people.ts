@@ -19,6 +19,8 @@ interface ProjectMembershipsTable {
   user_id: string;
   can_read: boolean;
   can_execute: boolean;
+  /** "Code": the session's technical side and adding changes to the project's code. Needs `can_execute`. */
+  can_code: ColumnType<boolean, boolean | undefined, boolean>;
   can_manage: boolean;
   created_at: ColumnType<Date, string | undefined, never>;
 }
@@ -59,6 +61,8 @@ interface ProjectInvitationsTable {
   inviter_user_id: string;
   invitee_name: string;
   can_execute: boolean;
+  /** Stays on this server: Uplink's invitation carries only read and execute. */
+  can_code: ColumnType<boolean, boolean | undefined, boolean>;
   /** SHA-256 of the link secret; the secret itself is never stored. */
   secret_hash: string;
   /** The link secret, encrypted, while the invitation can still be shared; cleared
@@ -110,6 +114,23 @@ interface SessionUserModelsTable {
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
+interface SessionCreatorsTable {
+  session_id: string;
+  user_id: string;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
+interface ChangeSubmissionsTable {
+  session_id: string;
+  submitted_by: string;
+  submitted_at: ColumnType<Date, string | undefined, string>;
+  revision: string | null;
+  pull_request_url: string | null;
+  pull_request_head: string | null;
+  state: string;
+  updated_at: ColumnType<Date, string | undefined, string>;
+}
+
 interface ProjectSandboxesTable {
   project_id: string;
   user_id: string;
@@ -155,6 +176,8 @@ export interface PeopleDatabase {
   user_provider_connections: UserProviderConnectionsTable;
   user_project_preferences: UserProjectPreferencesTable;
   session_user_models: SessionUserModelsTable;
+  session_creators: SessionCreatorsTable;
+  change_submissions: ChangeSubmissionsTable;
   project_invitations: ProjectInvitationsTable;
   team_outbox: TeamOutboxTable;
   team_join_admissions: TeamJoinAdmissionsTable;

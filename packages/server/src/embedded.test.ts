@@ -1050,19 +1050,6 @@ describe('resolveToolkitFeatureRef (devcontainer build key)', () => {
       identity: 'sha256:abc',
     });
   });
-
-  it('wires embedded server provisioning through the bundled Feature reader', () => {
-    const source = readFileSync('packages/server/src/embedded.ts', 'utf8');
-
-    expect(source).not.toContain('resolveToolkitFeatureRef(\n            undefined,');
-    expect(source).not.toContain('resolveToolkitFeatureRef(\n          undefined,');
-    expect(source).toContain(
-      'resolveToolkitFeatureRef(\n            readBundledDevcontainerFeature(),',
-    );
-    expect(source).toContain(
-      'resolveToolkitFeatureRef(\n          readBundledDevcontainerFeature(),',
-    );
-  });
 });
 
 it('offers remote control only through the paired TLS ingress', () => {

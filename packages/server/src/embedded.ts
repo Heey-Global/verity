@@ -1,4 +1,10 @@
-import { createEmbeddedSecretUnlock } from './embedded-secret-unlock.js';
+import { createEmbeddedConductor } from './embedded-conductor.js';
+import { createEmbeddedAudit, createEmbeddedAuditBindings } from './embedded-audit.js';
+import { createEmbeddedProjectRuntimeBindings } from './embedded-project-runtime.js';
+import {
+  activateEmbeddedSecretHandoff,
+  createEmbeddedSecretUnlock,
+} from './embedded-secret-unlock.js';
 import {
   installEmbeddedLocalPreviewRecovery,
   installEmbeddedPublicPreviewRecovery,
@@ -8,8 +14,6 @@ import {
   createEmbeddedClaudeCredentialSync,
   createEmbeddedProviderCredentialBindings,
 } from './embedded-provider-credentials.js';
-import { createEmbeddedSessionBackend } from './embedded-session-backend.js';
-import { createEmbeddedRunnerConductorWiring } from './embedded-runner-conductor.js';
 import {
   createEmbeddedProjectRelayControl,
   validateEmbeddedProjectRelay,
@@ -29,6 +33,7 @@ import { createEmbeddedSecretJobs, installEmbeddedSecretJobs } from './embedded-
 import {
   createEmbeddedUplink,
   createEmbeddedUplinkBindings,
+  installEmbeddedTeamOutbox,
   createEmbeddedTeamSharingBindings,
 } from './embedded-uplink.js';
 import { createEmbeddedDocker } from './embedded-docker.js';
@@ -38,15 +43,17 @@ import {
   createEmbeddedWorktreeBindings,
   createEmbeddedWorktreeForge,
   createEmbeddedWorktreeStatus,
+  createEmbeddedProjectWorktrees,
   createEmbeddedWorktrees,
 } from './embedded-worktrees.js';
 import {
   createEmbeddedRepositoryAnalysisBindings,
   createEmbeddedProjectRepositoryBindings,
+  createEmbeddedRepositoryReadBindings,
   createEmbeddedRepositoryAccess,
   createEmbeddedRepositoryPullRequests,
 } from './embedded-repositories.js';
-import { createEmbeddedGitHub } from './embedded-github.js';
+import { createEmbeddedGitHub, createEmbeddedGitHubOnboardingBindings } from './embedded-github.js';
 import { createEmbeddedDoppler } from './embedded-doppler.js';
 import { createEmbeddedMcpGateway } from './embedded-mcp-gateway.js';
 import { createEmbeddedTrustedCli, installEmbeddedTrustedCli } from './embedded-trusted-cli.js';
@@ -58,27 +65,22 @@ import { createEmbeddedPreviewMutations } from './embedded-preview-mutations.js'
 import { createEmbeddedProvisioning } from './embedded-provisioning.js';
 import type { DeprovisionerImpl } from './deprovisioner.js';
 import { MaintenanceImages } from './maintenance-image.js';
-import { installPersonalSandboxSleep } from './personal-sandbox-sleep.js';
+import {
+  installEmbeddedPersonalSandboxSleep,
+  startEmbeddedStarterProject,
+} from './embedded-project-startup.js';
 import { resolveTurnSandbox } from './turn-sandbox.js';
-import { personForCredential } from './personless-credential.js';
-import { sandboxIdentity, sandboxNetworkName, sandboxPersonTag } from './sandbox-identity.js';
+import { sandboxIdentity, sandboxNetworkName } from './sandbox-identity.js';
 import {
   createEmbeddedControlPlaneRunnerIdentity,
   createEmbeddedRunnerIdentityPublisher,
 } from './embedded-control-plane-runner-identity.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
+import { refreshProjectGitHubToken } from './embedded-support.js';
 import {
-  SWEEP_SHUTDOWN_WAIT_MS,
-  rejectLatestImageRef,
-  publishedDevcontainerFeatureRef,
-  toolkitFeatureRefIsConfigured,
-  resolveToolkitFeatureRef,
-  branchRenameAppliesToSession,
-  syncProjectsFromInstallation,
-  readBundledDevcontainerFeature,
-  refreshProjectGitHubToken,
-  createProjectWorktreeFactory,
-} from './embedded-support.js';
+  createEmbeddedDefaultProjectImage,
+  prepareEmbeddedToolkitFeature,
+} from './embedded-image-sources.js';
 export {
   resolveInstallationListToken,
   resolveRepoWorktreeFetchAuthHeader,
@@ -121,14 +123,12 @@ export {
   runnerAuthorizationProjectId,
   RUNNER_CONTAINER_PROJECT_ROOT,
 } from './embedded-runner-wiring.js';
-import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
-import { resolveAgentContext } from './agent-context.js';
-import { projectDecisionDirectory } from './knowledge-decisions.js';
-import { installEmbeddedDockerGc } from './embedded-docker-gc.js';
+import {
+  installEmbeddedDockerGc,
+  createEmbeddedProjectHiddenGcBindings,
+} from './embedded-docker-gc.js';
 import { createEmbeddedSessionStorage } from './embedded-session-storage.js';
 import type { DockerGcReport } from './docker-gc.js';
-import { createServerLogSource } from './server-log-source.js';
-import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import type { BuildStorage } from './build-storage.js';
 import {
@@ -136,28 +136,18 @@ import {
   installEmbeddedBuildStorage,
 } from './embedded-build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
-import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
-import { ensureStarterProject } from './welcome-session.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
 import { ListenerDiscovery } from './listener-discovery.js';
-import { getDockerExecDiagnostics } from './docker-exec-diagnostics.js';
 export { parsePort } from './deployment-port.js';
 import {
   classifyProbeError,
   parseEgressReadiness,
   type SandboxEgressProbe,
 } from './sandbox-turn-readiness.js';
-import {
-  AcpClaudeBackend,
-  AcpCodexBackend,
-  AcpOpenCodeBackend,
-  CODEX_DEFAULT_MODEL,
-  InMemoryEventBus,
-  requestRunnerSupervisor,
-} from '@verity/session';
+import { InMemoryEventBus, requestRunnerSupervisor } from '@verity/session';
 import {
   createPostgresDb,
   createSealableSecretCipher,
@@ -172,17 +162,21 @@ import {
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Kysely } from 'kysely';
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFileSync, mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
-import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
+import { createEmbeddedModels, installEmbeddedModels } from './embedded-models.js';
 
 import { buildControlPlane } from './app.js';
-import { createEmbeddedRuntimeDiagnostics } from './embedded-runtime-diagnostics.js';
-import { createProjectListCache } from './project-list-cache.js';
+import {
+  createEmbeddedRuntimeDiagnostics,
+  installEmbeddedDockerExecDiagnostics,
+} from './embedded-runtime-diagnostics.js';
+import {
+  createEmbeddedProjectList,
+  createEmbeddedProjectFleetBindings,
+} from './embedded-project-fleet.js';
 
 import { createAuthTokenRegistry } from './auth.js';
 import { ensureControlPlaneProject } from './control-plane-project.js';
@@ -190,15 +184,10 @@ import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import { healAdminGitdirsAtStartup } from './worktree.js';
 import { startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
-import { projectForgeProvider } from './project-forge-provider.js';
 import type { DockerClient } from './docker.js';
-import { runDockerGc } from './docker-gc.js';
 import { DataVolumeUsage } from './data-volume-usage.js';
 import { PreviewShareConflictError, PreviewShareManager } from './preview-share-manager.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
-import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
-import { createAuditRecorder } from './audit-recorder.js';
-import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring } from './gateway-request-mac.js';
 import { createTurnCredentials } from './turn-credentials.js';
 import { createGitHubUserAuthorization } from './github-user-authorization.js';
@@ -210,36 +199,18 @@ import {
 } from './embedded-session-cleanup.js';
 
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
-import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
-import {
-  validateGitHubAppCreds,
-  resolveGitHubAppIdentity,
-  type GitHubAppCreds,
-  type GitHubAppIdentityResult,
-} from './github-app-token.js';
-import { defaultManifestConvert } from './github-manifest.js';
+import { createEmbeddedSessionMaintenance } from './embedded-session-maintenance.js';
+import { createEmbeddedShutdown } from './embedded-shutdown.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createSigningCapabilityRegistry } from './signing-capability.js';
-import { readOrMigrateProjectOverview } from './project-overview-file.js';
-import {
-  type ProvisionerImpl,
-  projectClonePath,
-  ensureOpenCodeSettingsMaterialized,
-  materializeOpenCodeSettings,
-  type ProjectImageRefSource,
-  type DevcontainerFeatureSource,
-} from './provisioner.js';
+import { type ProvisionerImpl, projectClonePath } from './provisioner.js';
 import { ProjectSandboxLifecycleTelemetry } from './project-lifecycle-telemetry.js';
 import { trustedToolkitIdentity } from './runner-boundary-attestation.js';
-import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 
-import { containerPathFor, DockerExecBackend } from './project-backend.js';
-import { createSandboxGit } from './sandbox-git.js';
-import { projectSettingsEnv } from './project-settings-env.js';
-import { reconcileProjectContainerStates } from './project-state.js';
+import { containerPathFor } from './project-backend.js';
 import {
   createClaudeEgressIdentityService,
   type ClaudeEgressIdentityService,
@@ -249,12 +220,8 @@ import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
-import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
-import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
-import { createSandboxUpdateChecker } from './sandbox-updates.js';
-import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
-import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
+import { createEmbeddedMatrix, installEmbeddedMatrix } from './embedded-matrix.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { createEmbeddedBackup } from './embedded-backup.js';
 
@@ -480,64 +447,8 @@ export async function buildEmbeddedServer(
   const secretRoot =
     config.secretMaterializationRoot ??
     join(config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'), 'secrets');
-  // `<secretRoot>/opencode/opencode.json` is the file both control-plane Runner
-  // specs mount and `OPENCODE_CONFIG` names. Until now only an operator saving
-  // settings wrote it (`onOpenCodeSettingsChanged` below), which was enough while
-  // the only reader was a Sandbox — the provisioner materializes it as it composes
-  // the container. The Runner is not composed per turn: it is created once with the
-  // mount already in its spec, so a deployment that never saved OpenCode settings
-  // would hand OpenCode a config path with no file in it.
-  //
-  // At boot the write withholds only the credential-free fallback, and only when a
-  // file is already there: a sealed boot cannot tell "no provider configured" from
-  // "the settings are encrypted", and answering the second with the fallback would
-  // disable OpenCode until someone re-saved the settings.
-  // `ensureOpenCodeSettingsMaterialized` holds that rule and is tested on it. Unlock
-  // is unconditional — the settings are authoritative by then, including a provider
-  // that was removed. Reading settings can itself fail on a sealed store, so neither
-  // path may take the Server down with it.
-  const materializeOpenCodeConfig = async (reason: 'boot' | 'secret unlock'): Promise<void> => {
-    try {
-      const settings = await eventStore.getVeritySettings();
-      if (reason === 'boot') {
-        ensureOpenCodeSettingsMaterialized(settings, secretRoot, config.claudeConnectorPort);
-        return;
-      }
-      materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
-    } catch (error) {
-      console.warn(`verity: OpenCode configuration not materialized (${reason})`, error);
-    }
-  };
-  await materializeOpenCodeConfig('boot');
-  const configuredCodexModels =
-    config.codexEnabled === true ? (config.codexModels ?? [CODEX_DEFAULT_MODEL]) : [];
-  const codexModelCatalog =
-    config.codexEnabled === true && config.codexModels === undefined
-      ? startCodexModelCatalog({
-          fallback: configuredCodexModels,
-          // The Server has no project mTLS identity and must never materialize the
-          // subscription login merely to enumerate models. The binary's bundled
-          // catalog is credential-free and is refreshed after upgrades.
-          load: () => (config.codexBundledModelLoader ?? fetchCodexBundledModels)(),
-          onError: (error) =>
-            console.warn(
-              'verity: Codex model catalog refresh failed; keeping cached models',
-              error,
-            ),
-        })
-      : undefined;
-  if (codexModelCatalog !== undefined) await codexModelCatalog.refresh();
-  const openCodeModels = async (): Promise<string[]> => {
-    const settings = await eventStore.getVeritySettingsRaw();
-    if (
-      !settings?.opencodeBaseUrl?.trim() ||
-      !settings.opencodeApiKey?.trim() ||
-      !settings.opencodeModels?.trim()
-    ) {
-      return [];
-    }
-    return selectedOpenCodeModels(settings).map((model) => `verity/${model}`);
-  };
+  const models = await createEmbeddedModels({ config, eventStore, secretRoot });
+  const { materializeOpenCodeConfig, codexModelCatalog } = models;
 
   const { projectDocker, runtimeDocker, resolvePreviewUser } = createEmbeddedDocker(config);
   // Filled once the managed dev server manager exists, further down.
@@ -749,103 +660,20 @@ export async function buildEmbeddedServer(
   let claudeEgressServerName: string | undefined;
   let refreshProjectToken: ((project: ProjectRecord) => Promise<void>) | undefined;
   let projectTurnReconciler: ((projectId: string) => Promise<void>) | undefined;
-  let projectWorktrees: ReturnType<typeof createProjectWorktreeFactory> | undefined;
-  // `main.ts` always passes a resolver, so this is what an embedder that omits
-  // one gets. Shared with the last-resort fallback there rather than repeated:
-  // the two must name the same artifact, and the pair they replace drifted onto
-  // a sandbox image that no longer exists. Note this path is the ref VERBATIM —
-  // no resolver sits behind it to prefer a digest it resolved earlier, so an
-  // embedder that wants the stronger pin passes its own digest.
-  const defaultProjectImageSource = config.defaultProjectImage ?? DEFAULT_SANDBOX_IMAGE_FALLBACK;
-  const defaultProjectImage: ProjectImageRefSource =
-    typeof defaultProjectImageSource === 'function'
-      ? // Forward `forceRefresh` so the provision/recreate path can pin the CURRENT
-        // digest instead of the poll cache's; the zero-arg update poll passes none.
-        async (forceRefresh?: boolean) =>
-          rejectLatestImageRef(
-            await defaultProjectImageSource(forceRefresh),
-            'VERITY_DEFAULT_PROJECT_IMAGE',
-          )
-      : rejectLatestImageRef(defaultProjectImageSource, 'VERITY_DEFAULT_PROJECT_IMAGE');
-  // Pin the toolkit Feature to the version BAKED into this server image, resolved
-  // from GHCR under its BARE semver tag (never the `v`-prefixed visible-version
-  // tag, which is not a resolvable Feature manifest — that was the `…:v1.11.6`
-  // build failure). Off-server (dev/test) the bundle is absent → published ref.
-  const configuredDevcontainerFeatureRef = config.devcontainerFeatureRef;
-  // A ref handed over as a plain STRING is configuration by construction —
-  // nothing resolved it, a caller wrote it. Only the resolver-function form is
-  // ambiguous (`main.ts` uses it for both the operator's value and its own
-  // lookup), and only that form has to fall back to reading the environment.
-  const devcontainerFeatureRefConfigured =
-    config.devcontainerFeatureRefConfigured ??
-    (typeof configuredDevcontainerFeatureRef === 'string'
-      ? configuredDevcontainerFeatureRef.trim().length > 0
-      : toolkitFeatureRefIsConfigured());
+  let projectWorktrees: ReturnType<typeof createEmbeddedProjectWorktrees> | undefined;
+  const defaultProjectImage = createEmbeddedDefaultProjectImage(config);
+  const resolveDevcontainerFeature = prepareEmbeddedToolkitFeature(config);
   const imageReferences = createProjectImageReferences(db);
   const maintenanceImages = projectDocker
     ? new MaintenanceImages(projectDocker, imageReferences)
     : undefined;
   const preparedWorktreeImages = new Map<string, string>();
-  // Durable audit trail for project image builds (ADR 0028). The Server generation is
-  // read from this container's own label once; outside a managed deployment it is null.
-  let auditServer: AuditServerIdentity | undefined;
-  const buildDiagnostics = createBuildDiagnosticStore(
-    join(
-      config.dataDir ?? config.dataVolumeRoot ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
-      'build-diagnostics',
-    ),
-  );
-  const auditLog = createPostgresAuditLog(db);
-  const auditRecorder = createAuditRecorder(auditLog, {
-    server: async () => {
-      if (auditServer !== undefined) return auditServer;
-      let generation: number | null = null;
-      let settled = true;
-      try {
-        const label = (await projectDocker?.inspectContainer(hostname()))?.labels?.[
-          'verity.generation'
-        ];
-        const parsed = label === undefined ? Number.NaN : Number(label);
-        generation = Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
-      } catch {
-        // Recorded as unknown this time, and asked again next time: a transient
-        // failure must neither block a build nor stick for the life of the process.
-        settled = false;
-      }
-      const identity = { release: runtimeServerVersion(), generation };
-      if (settled) auditServer = identity;
-      return identity;
-    },
-    onError: (error, kind) => {
-      console.warn(`verity: audit event ${kind} could not be recorded`, error);
-    },
+  const { auditRecorder, auditLog, buildDiagnostics } = createEmbeddedAudit({
+    config,
+    db,
+    projectDocker,
   });
-  const selectedDevcontainerFeature: DevcontainerFeatureSource | undefined =
-    typeof configuredDevcontainerFeatureRef === 'function'
-      ? async () =>
-          resolveToolkitFeatureRef(
-            readBundledDevcontainerFeature(),
-            publishedDevcontainerFeatureRef(await configuredDevcontainerFeatureRef()),
-            devcontainerFeatureRefConfigured,
-          )
-      : resolveToolkitFeatureRef(
-          readBundledDevcontainerFeature(),
-          publishedDevcontainerFeatureRef(configuredDevcontainerFeatureRef),
-          devcontainerFeatureRefConfigured,
-        );
-  const devcontainerFeature: DevcontainerFeatureSource | undefined =
-    selectedDevcontainerFeature === undefined
-      ? undefined
-      : async () =>
-          pinToolkitFeature(
-            releaseToolkitFeature(
-              typeof selectedDevcontainerFeature === 'function'
-                ? await selectedDevcontainerFeature()
-                : selectedDevcontainerFeature,
-              process.env.VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE,
-              devcontainerFeatureRefConfigured,
-            ),
-          );
+  const devcontainerFeature = resolveDevcontainerFeature();
   if (projectDocker !== undefined && config.hostCloneRoot) {
     if (config.dockerBaseUrl === undefined) {
       throw new Error('dockerBaseUrl is required when project Docker provisioning is configured');
@@ -875,31 +703,11 @@ export async function buildEmbeddedServer(
     // changes still invalidate the cache immediately.
     refreshProjectToken = (project: ProjectRecord): Promise<void> =>
       refreshProjectGitHubToken(project, cachedProjectTokenMint.strict);
-    // Session worktrees use their project's provider: GitHub App tokens or the
-    // current Forgejo connection token and CA. Neither credential is persisted
-    // in the clone or worktree.
-    projectWorktrees = createProjectWorktreeFactory(projectTokenMint, async (project) => {
-      const access = await forgeRepositoryAccess(project);
-      if (!access) throw new Error('Forgejo connection unavailable');
-      let caPath: string | undefined;
-      if (access.customCaPem) {
-        const directory = join(secretRoot, 'git');
-        mkdirSync(directory, { recursive: true, mode: 0o700 });
-        caPath = join(directory, `forge_ca.${project.forgeConnectionId ?? project.id}`);
-        const temporary = `${caPath}.${randomUUID()}.tmp`;
-        try {
-          await writeFile(temporary, access.customCaPem, { mode: 0o600 });
-          await rename(temporary, caPath);
-        } finally {
-          await rm(temporary, { force: true });
-        }
-      }
-      return {
-        url: access.url,
-        authorization: access.authorization,
-        ...(caPath ? { caPath } : {}),
-      };
-    });
+    projectWorktrees = createEmbeddedProjectWorktrees(
+      projectTokenMint,
+      forgeRepositoryAccess,
+      secretRoot,
+    );
     // Claude-egress identity material is refreshed on every issue/revoke and
     // projected to the standalone gateway. The provisioner uses the same service
     // to issue per-project client certificates and the deprovisioner revokes them.
@@ -1014,10 +822,7 @@ export async function buildEmbeddedServer(
     }));
   }
 
-  // Hoisted so the runner-transport factory (ADR 0006 Stage 2.2-prep) can close
-  // over the SAME bus instance the control plane's WS subscribers/Conductor use —
-  // events the FileTailRunnerClient republishes off the tailed event file must
-  // reach the exact bus the live stream reads from, not a second instance.
+  // Runner transport and the control plane share the event bus for live streams.
   const bus = new InMemoryEventBus();
   // Declared before discovery, whose scans feed its orphan sweep.
   let managedDevServerManager: ManagedDevServerManager | undefined;
@@ -1257,47 +1062,14 @@ export async function buildEmbeddedServer(
           sessionSandboxCwd,
         });
 
-  // Memoised fleet listing. The routes that write an operator-owned project
-  // field (fold state, order, setup status) invalidate it through
-  // `invalidateProjectList`, or the write would stay invisible to the overview
-  // for the whole window.
-  const projectList =
-    installationService === undefined
-      ? undefined
-      : createProjectListCache(
-          async () => {
-            const projects = await syncProjectsFromInstallation(eventStore, installationService);
-            const reconciled =
-              docker !== undefined
-                ? reconcileProjectContainerStates(
-                    projects,
-                    docker,
-                    (id, state, provisionError, provisionWarning) =>
-                      eventStore.updateProjectState(id, state, provisionError, provisionWarning),
-                    (id) => provisioner?.isProjectProvisioning(id) === true,
-                    // A list poll can land after wake persisted `waking` but before
-                    // Docker starts the retained container. Give reconciliation the
-                    // same recovery hooks as the detail route: an in-process wake
-                    // owns the mutation barrier, so recovery declines and the
-                    // reconciler preserves `waking` instead of publishing a
-                    // momentary, operator-actionable `failed` state.
-                    provisioner?.recoverInterruptedSleep?.bind(provisioner),
-                    provisioner?.recoverInterruptedWake?.bind(provisioner),
-                  )
-                : projects;
-            const result = await reconciled;
-            return result;
-          },
-          { ttlMs: 3_000 },
-        );
+  const projectList = createEmbeddedProjectList({
+    eventStore,
+    installationService,
+    docker,
+    provisioner,
+  });
 
-  const managedMatrixControl = existsSync('/run/verity-updater/control');
-  let matrixActivationDone = false;
-  const activateMatrixIfConfigured = async (): Promise<void> => {
-    if (!managedMatrixControl || matrixActivationDone) return;
-    if ((await eventStore.integrations.matrixConfigSummary()) === null) return;
-    matrixActivationDone = await notifyManagedMatrixConfigured();
-  };
+  const matrix = createEmbeddedMatrix({ integrations: eventStore.integrations });
 
   const backup = await createEmbeddedBackup({ config, projectDocker, eventStore });
   let lastDockerGcReport: DockerGcReport | undefined;
@@ -1327,18 +1099,7 @@ export async function buildEmbeddedServer(
     ...(sessionStorage ? { sessionStorage } : {}),
     eventStore,
     ...(backup ? { backup } : {}),
-    ...(managedMatrixControl ? { onMatrixConfigured: activateMatrixIfConfigured } : {}),
-    matrixConnectorToken: async () => {
-      try {
-        return (
-          await readFile('/run/verity-updater/control/matrix/connector-token', 'utf8')
-        ).trim();
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
-          return process.env.VERITY_MATRIX_CONNECTOR_TOKEN;
-        throw error;
-      }
-    },
+    ...matrix.bindings,
     // The same root the provisioner mounts from, so the explorer and the sandbox
     // are looking at one directory rather than two copies of an idea (ADR 0022).
     ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
@@ -1467,21 +1228,7 @@ export async function buildEmbeddedServer(
     // With a dedicated internal listener (main.ts starts it and tags its sockets),
     // only it serves `/internal/*`; the public one 404s them. Omit → no gate.
     ...(config.internalPort !== undefined ? { internalPathGuard: requestArrivedInternally } : {}),
-    // `configuredCodexModels` stands in for the catalogue as well as for itself: the
-    // refresh timer only runs when `codexModels` was left unset, and that is precisely
-    // the case where this list falls back to `[CODEX_DEFAULT_MODEL]`. So a populated
-    // catalogue always has a non-empty list beside it, and this gate cannot drop one.
-    ...{
-      // Synchronous behind an async contract: the Codex catalogue is a cache the
-      // refresh timer fills, and the OpenCode half is the provider's discovered catalog,
-      // so neither half has anything to await since the transport migration. The
-      // signature stays a promise because it is the seam a live catalogue would
-      // reappear in.
-      listModels: async () => [
-        ...(codexModelCatalog?.list() ?? configuredCodexModels),
-        ...(await openCodeModels()),
-      ],
-    },
+    ...models.bindings,
     ...(config.logger !== undefined ? { logger: config.logger } : {}),
     ...(config.workspacesDir !== undefined ? { spawnWorktreeRoot: config.workspacesDir } : {}),
     ...(worktrees !== undefined ? { worktrees } : {}),
@@ -1496,10 +1243,7 @@ export async function buildEmbeddedServer(
       readProjectStatus,
       projectPullRequests,
     }),
-    // Live GitHub-App credential validation for the onboarding wizard (#320). The
-    // route reads + decrypts the stored creds itself (unsealed-only) and hands them
-    // here; this just performs the redaction-safe test-mint against GitHub.
-    githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
+    ...createEmbeddedGitHubOnboardingBindings(resolveGithubAppCreds),
     // GitHub-token broker: resolve a sandbox capability + mint its repo-scoped token.
     ghTokenCapabilities,
     dependencyCapacity,
@@ -1508,330 +1252,70 @@ export async function buildEmbeddedServer(
     // deliberately absent here and bound inside buildServer to its own conductor.
     mcpGateway,
     mcpProxyResolveCaller: (input) => Promise.resolve(mcpProxyTokens.resolve(input)),
-    // Derive the git committer identity from the App installation for the
-    // signing-key onboarding step. Resolves the (decrypted) creds from settings;
-    // undefined when no App is configured yet (nothing to derive).
-    resolveGitHubAppIdentity: async (): Promise<GitHubAppIdentityResult | undefined> => {
-      const creds = await resolveGithubAppCreds();
-      return creds === undefined ? undefined : resolveGitHubAppIdentity(creds);
-    },
     ...dopplerServerDeps,
-    // Real code→App conversion for the manifest one-click onboarding routes
-    // (#320). Redaction-safe by contract: never logs the PEM / GitHub body. The
-    // callback route persists the returned app id + PEM via the sealed store.
-    manifestConvert: defaultManifestConvert(),
     // Real server-side ssh-keygen for the onboarding signing-key step (#320).
     // Needs `openssh-client` in the Server image (deploy/Dockerfile). Injectable
     // so tests never shell out.
     sshKeygen: defaultSshKeygenSpawner,
     // Give server-side model queries the configured repository as context.
     ...(config.repoDir ? { refineCwd: config.repoDir } : {}),
-    listProjectGitHubIssues: async (project: ProjectRecord) =>
-      (await projectForgeProvider(eventStore, githubForge, project))?.listIssues(project) ?? {
-        connected: false,
-        viewerLogin: null,
-        issues: [],
-      },
-    latestRelease: (owner: string, repo: string) => githubForge.latestRelease({ owner, repo }),
-    refreshLatestRelease: (owner: string, repo: string) =>
-      githubForge.refreshLatestRelease({ owner, repo }),
-    // Multi-repo fleet-registry listing (concept §19, #174). The provider syncs
-    // the live GitHub-App-installation repos into the durable `projects` cache
-    // (upsert preserves worker-owned state — cloning/container_starting/active/
-    // failed survives a list-refresh that runs mid-provisioning) and returns the
-    // cache. New repos land as `state='absent'`; Verity-self's row appears after
-    // the first `GET /projects` because Verity is itself a normal installation
-    // repo (§19.1).
-    ...(installationService !== undefined && projectList !== undefined
-      ? {
-          ...(refreshProjectToken !== undefined ? { refreshProjectToken } : {}),
-          listProjects: async () => {
-            if (hasMasterPassword && secretCipher.isSealed()) throw new SealedError();
-            return projectList.list();
-          },
-          invalidateProjectList: () => projectList.invalidate(),
-          listAvailableRepositories: async () => {
-            if (hasMasterPassword && secretCipher.isSealed()) throw new SealedError();
-            return syncProjectsFromInstallation(eventStore, installationService, {
-              includeHidden: true,
-            });
-          },
-        }
-      : {}),
-    // Single-project freshness for `GET /projects/:id` (the screen that owns
-    // Repair). Deliberately independent of `listProjects`: no GitHub-installation
-    // sync and no list cache, just one container inspect — so detail stays correct
-    // while the installation sync is degraded, and a sandbox that died is visible
-    // the moment the screen loads instead of after the next overview poll.
-    ...(docker !== undefined
-      ? {
-          reconcileProjectState: async (project: ProjectRecord) => {
-            const [reconciled] = await reconcileProjectContainerStates(
-              [project],
-              docker,
-              (id, state, provisionError, provisionWarning) =>
-                eventStore.updateProjectState(id, state, provisionError, provisionWarning),
-              (id) => provisioner?.isProjectProvisioning(id) === true,
-              provisioner?.recoverInterruptedSleep?.bind(provisioner),
-              provisioner?.recoverInterruptedWake?.bind(provisioner),
-            );
-            return reconciled ?? project;
-          },
-        }
-      : {}),
-    ...(projectDocker !== undefined
-      ? {
-          sandboxUpdates: createSandboxUpdateChecker({
-            docker: projectDocker,
-            defaultProjectImage,
-            defaultProjectImageVersion: config.defaultProjectImageVersion,
-            toolkitFeatureRef:
-              devcontainerFeature === undefined
-                ? undefined
-                : async () => (await devcontainerFeature())?.ref,
-          }),
-        }
-      : {}),
-    // Repo root reserved for the human/main session — the server's delete path
-    // never removes it (#105 safety guard); sessions always run in their own worktree.
-    ...(config.repoDir !== undefined ? { workspaceDir: config.repoDir } : {}),
-    // Multi-repo fleet-registry provisioner + deprovisioner (§19.3/#19.8). Absent →
-    // the `project` field on POST /sessions and POST /projects/:id/deprovision
-    // both return 503 (the mobile picker hides the fleet-registry UI).
-    ...(provisioner !== undefined ? { provisioner } : {}),
-    ...(provisioner !== undefined ? { projectSandboxLifecycleTelemetry } : {}),
-    ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
-      ? { projectCloneRoot: config.hostCloneRoot }
-      : {}),
-    ...(!config.repoDir && config.hostCloneRoot !== undefined
-      ? { projectWorktreeBranchesOnly: true }
-      : {}),
-    ...(config.dockerBaseUrl !== undefined && config.hostCloneRoot !== undefined
-      ? {
-          projectBackend: (project: ProjectRecord, selected, settings) =>
-            new DockerExecBackend({
-              containerName: project.containerName,
-              hostProjectRoot: projectClonePath(config.hostCloneRoot as string, project),
-              dockerBaseUrl: config.dockerBaseUrl,
-              backend: selected,
-              containerEnv: projectSettingsEnv(settings),
-            }),
-          // Git for the GitHub-free merge, run inside the project's own container.
-          // Same shape as the backend above on purpose: the merge touches a clone the
-          // session owns, so it must execute where the session's own code executes.
-          // The daemon distinguishes stopped sandboxes from failed Git commands.
-          ...(projectDocker !== undefined
-            ? {
-                sandboxGit: (project: ProjectRecord, clonePath: string) =>
-                  createSandboxGit({
-                    containerName: project.containerName,
-                    hostRoot: clonePath,
-                    dockerBaseUrl: config.dockerBaseUrl,
-                    // Trust daemon state rather than repository-controlled Git output.
-                    inspect: () => projectDocker.inspectContainer(project.containerName),
-                  }),
-              }
-            : {}),
-          ...(config.enableProjectRuntime === true
-            ? {
-                projectRuntime: new DockerProjectRuntime({
-                  resolveUser: resolvePreviewUser,
-                  dockerBaseUrl: config.dockerBaseUrl,
-                }),
-              }
-            : {}),
-        }
-      : {}),
-    audit: {
-      recorder: auditRecorder,
-      log: auditLog,
+    ...createEmbeddedRepositoryReadBindings({ eventStore, githubForge }),
+    ...createEmbeddedProjectFleetBindings({
+      eventStore,
+      installationService,
+      docker,
+      provisioner,
+      projectList,
+      hasMasterPassword,
+      secretCipher,
+      refreshProjectToken,
+    }),
+    ...createEmbeddedProjectRuntimeBindings({
+      config,
+      projectDocker,
+      defaultProjectImage,
+      devcontainerFeature,
+      provisioner,
+      projectSandboxLifecycleTelemetry,
+      resolvePreviewUser,
+    }),
+    ...createEmbeddedAuditBindings({
+      config,
+      auditRecorder,
+      auditLog,
       buildDiagnostics,
-      serverLogs: createServerLogSource(runtimeDocker, config.diagnosticServerContainerId),
-    },
-    ...(projectDocker === undefined
-      ? {}
-      : {
-          onProjectHidden: async () => {
-            await runDockerGc({
-              docker: projectDocker,
-              log: app.log,
-              imageReferences,
-              ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
-              imagesOnly: true,
-              onProjectImageRemoved: (image) =>
-                auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
-            });
-          },
-        }),
+      runtimeDocker,
+    }),
+    ...createEmbeddedProjectHiddenGcBindings({
+      config,
+      projectDocker,
+      imageReferences,
+      auditRecorder,
+      log: () => app.log,
+    }),
     ...(deprovisioner !== undefined ? { deprovisioner } : {}),
     // Per-project session worktree factory whose `refreshBase` fetch carries the
     // project-scoped token (only wired when the App-token mint + docker/clone-root
     // are configured — same guard as `refreshProjectToken`).
     ...(projectWorktrees !== undefined ? { projectWorktrees } : {}),
-    conductor: {
-      ensureWorkspace: (session) => sessionStorage?.ensureWorkspace(session) ?? Promise.resolve(),
-      // Stable ACP v1 is the only Claude transport (ADR 0012); the native
-      // stream-json backend it replaced has been removed, rollback included.
-      backend: new AcpClaudeBackend(),
-      // ACP delegates every approval decision to its client. Keep Verity's
-      // durable permission card/decision channel authoritative for those calls.
-      permissionControl: true,
-      // Capture each session's verbatim .jsonl so it survives + is resumable.
-      transcript: transcriptStore,
-      ...(config.dataVolumeRoot !== undefined
-        ? {
-            agentContext: async (session, initiatedBy) => {
-              const status =
-                session.projectId && config.runnerSupervisor === true
-                  ? await requestRunnerSupervisor(
-                      join(config.dataVolumeRoot!, 'runners', session.projectId, 'supervisor.sock'),
-                      { kind: 'status' },
-                    ).catch(() => undefined)
-                  : undefined;
-              return resolveAgentContext(
-                eventStore,
-                config.dataVolumeRoot!,
-                session,
-                (projectId) =>
-                  readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
-                    const approved = await eventStore.knowledge.getProjectOverview(projectId);
-                    return (
-                      approved?.bodyMarkdown ??
-                      (await eventStore.getProjectSettingsRaw(projectId))?.memory ??
-                      undefined
-                    );
-                  }),
-                status?.['builtInSkillsVersion'] === 1 &&
-                  status['builtInSkillsManifestHash'] === AGENT_SKILL_MANIFEST_HASH,
-                initiatedBy,
-              );
-            },
-            projectOverview: async (projectId: string) => {
-              return readOrMigrateProjectOverview(config.dataVolumeRoot!, projectId, async () => {
-                const approved = await eventStore.knowledge.getProjectOverview(projectId);
-                if (approved !== null) return approved.bodyMarkdown;
-                return (await eventStore.getProjectSettingsRaw(projectId))?.memory ?? undefined;
-              });
-            },
-            projectDecisionDirectory: (projectId: string) =>
-              projectDecisionDirectory(config.dataVolumeRoot!, projectId),
-          }
-        : {}),
-      // ADR 0011 D3: expose the project's secret alias names to every turn whose
-      // transport carries the brokered tools — ACP included, not just codex.
+    conductor: createEmbeddedConductor({
+      config,
+      eventStore,
+      sessionStorage,
+      transcriptStore,
       brokeredSecretAliases,
-      // ADR 0011 D2: scoped operator grants auto-approve matching brokered-secret prompts.
-      checkBrokeredHttpGrant: async (input) => {
-        const bindingId = await brokeredGrantBindingId(input.projectId);
-        return bindingId === undefined ||
-          (input.bindingId !== undefined && input.bindingId !== bindingId)
-          ? false
-          : brokeredHttpGrants.check({
-              ...input,
-              // Work without a person holds the original sandbox's person's grants,
-              // only where personless-credential.ts allows it at all.
-              userId: await personForCredential(eventStore, input.projectId, input.userId),
-              bindingId: input.bindingId ?? bindingId,
-            });
-      },
-      persistBrokeredHttpGrant: async (input) => {
-        const bindingId = await brokeredGrantBindingId(input.projectId);
-        if (
-          bindingId === undefined ||
-          (input.bindingId !== undefined && input.bindingId !== bindingId)
-        ) {
-          throw new Error('Doppler access changed before saving approval');
-        }
-        await brokeredHttpGrants.grant({ ...input, bindingId: input.bindingId ?? bindingId });
-      },
-      // Auto-name an unnamed session from its opening turn: the conductor derives a
-      // 2–3 word title from the first chat using the session's OWN model (routed via
-      // the same backend its turns run on). `afterTurns: 1` names off the very first
-      // exchange, and the attempt fires at turn START — concurrently with the turn, off
-      // the operator's prompt — so the name lands in seconds rather than waiting for the
-      // reply to stream or the turn to settle. Best-effort — a failure just leaves the
-      // branch label. When a title lands, also ask the same model for a short
-      // English branch candidate and let the branch service rename only fresh,
-      // unpublished Verity-created branches in place.
-      autoTitle: {
-        afterTurns: 1,
-        ...(branches !== undefined
-          ? {
-              onBranchName: async (session, branchName) => {
-                if (
-                  !(await branchRenameAppliesToSession(session, (id) => eventStore.getProject(id)))
-                ) {
-                  return;
-                }
-                await branches.autoRename(session.worktree, branchName);
-              },
-            }
-          : {}),
-      },
-      // Runner wiring (ADR 0006), opt-in per deployment flag — see {@link
-      // buildRunnerConductorWiring}. `runnerSupervisor` routes project turns through a
-      // restart-surviving Sandbox {@link SupervisorRunnerClient} (Server-owned transcript
-      // + reattach recovery); `runnerTransport` uses the in-process
-      // {@link FileTailRunnerClient} event-file/control-socket transport; neither leaves
-      // the Conductor's default loopback byte-for-byte unchanged. `eventStore` is the real
-      // EventSink; events republish onto the SAME hoisted `bus` the live WS stream reads.
-      // Switching a session to another backend drops the previous backend's
-      // `session_backend_state` row, and that row was the only thing naming its files
-      // on the runner runtime. Purging here is the one chance to reach them; otherwise
-      // they survive even the eventual delete of the session that wrote them. The
-      // `backend-switch` scope keeps what the session still needs while it lives —
-      // claude's `subagents/` tree has no other copy — and the startup sweep collects
-      // that remainder once the displaced id is no longer live.
-      ...(purgeRunnerArtifacts === undefined
-        ? {}
-        : {
-            purgeBackendArtifacts: async (
-              sessionId: string,
-              bindings: readonly { backend: string; backendSessionId: string }[],
-            ): Promise<void> => {
-              // A person's own thread (`backend#tag`) lives in their sandbox's runtime.
-              const byPerson = new Map<string | undefined, typeof bindings>();
-              for (const binding of bindings) {
-                const [backend = binding.backend, tag] = binding.backend.split('#');
-                byPerson.set(tag, [...(byPerson.get(tag) ?? []), { ...binding, backend }]);
-              }
-              for (const [tag, scoped] of byPerson)
-                await purgeRunnerArtifacts(sessionId, scoped, 'backend-switch', tag);
-            },
-          }),
-      // Each person resumes only their own backend thread (ADR 0023 §3–4).
-      backendStateScope: async (session, initiatedBy) => {
-        if (session.projectId === null) return undefined;
-        const sandbox = await resolveTurnSandbox(eventStore, session.projectId, initiatedBy);
-        return sandbox.projectDefault ? undefined : sandboxPersonTag(sandbox.userId);
-      },
-      ...createEmbeddedRunnerConductorWiring({
-        config,
-        eventStore,
-        bus,
-        transcriptStore,
-        allocateEventFile,
-        allocateControlSocket,
-        mcpGatewayTokens,
-        turnCredentials,
-        mcpProxyTokens,
-        getLog: () => app.log,
-        brokeredGrantBindingId,
-        brokeredHttpGrants,
-      }),
-      ...(config.permissionMode !== undefined ? { permissionMode: config.permissionMode } : {}),
-      // OpenCode backend (#143) for provider-qualified models, over ACP like every
-      // other agent since ADR 0012 Amendment 4. The conductor routes by model; not
-      // enabled → Claude-only.
-      openCodeBackend: new AcpOpenCodeBackend(),
-      // Codex runs exclusively over ACP. ADR 0014 supplies its brokered tools through
-      // the approval-gated per-turn MCP gateway.
-      ...(config.codexEnabled === true
-        ? {
-            codexBackend: new AcpCodexBackend(),
-          }
-        : {}),
-      sessionBackend: createEmbeddedSessionBackend({
+      brokeredGrantBindingId,
+      brokeredHttpGrants,
+      branches,
+      purgeRunnerArtifacts,
+      bus,
+      allocateEventFile,
+      allocateControlSocket,
+      mcpGatewayTokens,
+      turnCredentials,
+      mcpProxyTokens,
+      getLog: () => app.log,
+      sessionBackend: {
         config,
         createStore: () => new EventStore(db, secretCipher),
         secretRoot,
@@ -1866,73 +1350,24 @@ export async function buildEmbeddedServer(
             return awaitControlPlaneRunnerIdentity;
           },
         },
-      }),
-    },
+      },
+    }),
   });
   startCloneConfigSweep(config.hostCloneRoot, Boolean(durableServerRoot), (event, msg) =>
     app.log.warn(event, msg),
   );
-  if (managedMatrixControl) {
-    const retryMatrixActivation = async (): Promise<void> => {
-      try {
-        await activateMatrixIfConfigured();
-      } catch (error) {
-        app.log.warn({ err: error }, 'Matrix connector activation will retry');
-      }
-    };
-    void retryMatrixActivation();
-    const matrixActivationTimer = setInterval(() => void retryMatrixActivation(), 10_000);
-    matrixActivationTimer.unref?.();
-    app.addHook('onClose', () => clearInterval(matrixActivationTimer));
-  }
+  installEmbeddedMatrix(app, matrix);
   // Bind before any unlock or startup can dial, so handshake diagnostics use pino.
   uplinkLog.bind(app.log);
-  // One-time reconciliation of backend transcripts left by sessions that no longer
-  // exist (see `session-artifact-sweep.ts`). Deleting a session now takes its
-  // transcripts with it, but everything deleted BEFORE that fix left its files behind
-  // and no future delete can reach them — those sessions are gone from the store. It is
-  // also the backstop for the one case the delete path cannot cover: a backend switch
-  // leaves claude's `subagents/` tree in place (it is the only copy while the session
-  // lives), so the tree of a displaced binding is collected once the session it belongs
-  // to is deleted and its worktree stops being live.
-  //
-  // Not awaited into the boot: a start must not wait on a directory walk, and nothing
-  // downstream depends on the outcome. What IS handed back on the server object is the
-  // store-read phase alone ({@link EmbeddedServer.transcriptSweep}), so a caller that
-  // closes immediately — a test, a one-shot CLI run — settles those two queries before
-  // `destroy()` without also waiting out the walk behind them. Blocking a SIGTERM on a
-  // full walk of a large volume is how a graceful shutdown becomes a SIGKILL, and the
-  // walk touches nothing that shutdown tears down. Not on a timer either: the ongoing
-  // case is handled at the delete itself, so once per start is enough.
-  const sweepMode = config.transcriptSweep ?? 'on';
-  let transcriptSweep: Promise<void> | undefined;
-  let transcriptSweepWalk: Promise<SweepResult | undefined> | undefined;
-  // Aborted by `close()`, which then waits for the walk to notice. Without it a caller
-  // that closes the server and tears its data root down is racing a delete loop over that
-  // same root — `main.ts` never sees it because it exits immediately after, but this is a
-  // public entry point and not every caller does.
-  const sweepAbort = new AbortController();
-  /**
-   * Started only once the rest of the build has succeeded — see the call site.
-   *
-   * Nothing here depends on where it is defined; what matters is that the walk is not
-   * running while `buildEmbeddedServer` can still throw. A rejected build hands the caller
-   * no server, so nobody holds {@link sweepAbort} or the walk promise, and a delete loop
-   * over `runners/` would carry on under a boot that failed.
-   */
-  const startTranscriptSweep = (): void => {
-    if (dataVolumeRoot === undefined || sweepMode === 'off') return;
-    const sweep = startOrphanTranscriptSweep({
-      runnersRoot: join(dataVolumeRoot, 'runners'),
-      dryRun: sweepMode === 'dry',
-      store: eventStore,
-      sessionSandboxCwd,
-      signal: sweepAbort.signal,
-      log: app.log,
-    });
-    transcriptSweep = sweep.storeReads;
-    transcriptSweepWalk = sweep.walk;
-  };
+  const sessionMaintenance = createEmbeddedSessionMaintenance({
+    config,
+    dataVolumeRoot,
+    eventStore,
+    sessionSandboxCwd,
+    log: app.log,
+    cleanupAbort,
+    sessionCleanupWorker,
+  });
 
   app.addHook('onClose', async () => {
     maintenanceImages?.abort();
@@ -1947,27 +1382,13 @@ export async function buildEmbeddedServer(
     authRegistry,
     dopplerCredentialFor,
   });
-  // Adopt the handed-off key (ADR 0008 D8) only now that everything is built.
-  // Every component above was therefore constructed against a sealed store, the
-  // way it is on an interactive boot, and the key goes in through the same door
-  // an operator unlock uses — the very callback `onSecretUnlocked` runs.
-  if (handedOffKeyMaterial !== undefined) {
-    await adoptHandedOffSecretKey({
-      cipher: secretCipher,
-      material: handedOffKeyMaterial,
-      activate: async () => {
-        await projectAgentGatewayIdentity();
-        // The candidate constructed every component against a sealed store, so the
-        // Runner identity publish was deferred exactly as on an interactive boot.
-        // This callback IS the update path's unlock — carry it out here too, or the
-        // promoted Server runs without Runner identity until some later turn
-        // happens to refresh it. Best-effort for the same reason the boot path is:
-        // a certificate must never cost the key handover it rides in on.
-        await publishRunnerIdentity('key handover');
-        await codexModelCatalog?.refresh();
-      },
-    });
-  }
+  await activateEmbeddedSecretHandoff({
+    secretCipher,
+    handedOffKeyMaterial,
+    projectAgentGatewayIdentity,
+    publishRunnerIdentity,
+    codexModelCatalog,
+  });
   // A sealed credentials read triggers feature revocation. Wait for key handover;
   // interactive boots start the client through onSecretUnlocked instead.
   if (!secretCipher.isSealed()) uplinkControl?.start();
@@ -1981,29 +1402,9 @@ export async function buildEmbeddedServer(
     },
   });
   await installEmbeddedTrustedCli(app, { trustedCliOutput });
-  // A person's own sandbox sleeps once nothing needs it (ADR 0023 §4), so a
-  // member's container uses memory only while that member works.
-  installPersonalSandboxSleep(app, {
-    store: eventStore,
-    hasRunningServersFor: async (projectId, userId) =>
-      managedDevServerManager?.hasRunningServersFor(projectId, userId),
-    sleepSandbox: () => provisioner?.sleepPersonalSandbox?.bind(provisioner),
-  });
+  installEmbeddedPersonalSandboxSleep(app, eventStore, managedDevServerManager, provisioner);
   installEmbeddedBuildStorage(app, { config, buildStorage, provisioner, dependencyCapacity });
-  // Fixed-purpose counters exclude command arguments, environment values and identities.
-  let previousDockerExecCounts = getDockerExecDiagnostics();
-  const dockerExecDiagnosticTimer = setInterval(() => {
-    const current = getDockerExecDiagnostics();
-    if (
-      current.started === previousDockerExecCounts.started &&
-      current.active === previousDockerExecCounts.active
-    )
-      return;
-    previousDockerExecCounts = current;
-    app.log.info({ dockerExec: current }, 'verity: docker exec activity diagnostic');
-  }, 60_000);
-  dockerExecDiagnosticTimer.unref();
-  app.addHook('onClose', () => clearInterval(dockerExecDiagnosticTimer));
+  installEmbeddedDockerExecDiagnostics(app);
   app.addHook('onClose', () => listenerDiscovery?.close());
   app.addHook('onClose', () => projectEgress?.close());
   app.addHook('onClose', stopSystemInventory);
@@ -2011,30 +1412,9 @@ export async function buildEmbeddedServer(
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
   void listenerDiscovery?.reconcile();
-  // A fresh installation provisions its starter project now, so the sandbox image
-  // is pulled while the operator is still onboarding (see welcome-session.ts).
-  const starterProvisioner = provisioner;
-  if (starterProvisioner !== undefined) {
-    void ensureStarterProject({
-      store: eventStore,
-      provision: (projectId) =>
-        starterProvisioner.provision(projectId, {
-          initiator: { kind: 'system', trigger: 'welcome_project' },
-        }),
-      log: app.log,
-    });
-  }
+  startEmbeddedStarterProject(app, eventStore, provisioner);
   app.addHook('onClose', () => claudeCredentialSync.close());
-  if (uplinkControl !== undefined) {
-    // Deliver queued team changes to Uplink once it negotiated team v1.
-    installTeamOutbox(app, {
-      team: eventStore.projectTeam,
-      uplink: uplinkControl,
-      identityKey: () => config.devicePairing?.identity().identityKey,
-      log: app.log,
-      isSealed: (error) => error instanceof SealedError,
-    });
-  }
+  installEmbeddedTeamOutbox(app, eventStore.projectTeam, uplinkControl, config.devicePairing);
   let preserveProjectRelaysOnClose = false;
   app.addHook('onClose', () =>
     preserveProjectRelaysOnClose
@@ -2071,9 +1451,7 @@ export async function buildEmbeddedServer(
       lastDockerGcReport = report;
     },
   });
-  if (codexModelCatalog !== undefined) {
-    app.addHook('onClose', () => codexModelCatalog.close());
-  }
+  installEmbeddedModels(app, models);
 
   projectRelayLifecycle = installEmbeddedProjectRelayRuntime({
     app,
@@ -2097,57 +1475,26 @@ export async function buildEmbeddedServer(
   // Last thing before the server object exists, because from here on the only way out is
   // the `return` below: everything that could still have thrown has run, so the caller is
   // guaranteed to receive the handle that can stop this walk.
-  startTranscriptSweep();
+  const transcriptSweep = sessionMaintenance.start();
   sessionCleanupWorker?.start();
-  // Latch so a double SIGINT/SIGTERM (or any repeat call) coalesces onto one
-  // teardown instead of double-closing the app/db.
-  let closing: Promise<void> | undefined;
   return {
     app,
     ...(embeddedSecretJobs !== undefined ? { secretJobs: embeddedSecretJobs } : {}),
-    ...(transcriptSweep !== undefined ? { transcriptSweep } : {}),
-    ...(transcriptSweepWalk !== undefined ? { transcriptSweepWalk } : {}),
+    ...transcriptSweep,
     secretKeyHandoff: {
       exportKeyMaterial: () => secretCipher.exportKeyMaterial(),
     },
-    close: (options = {}) =>
-      (closing ??= (async () => {
-        // Latched by the first close call, matching the coalesced teardown below.
-        // Only standby quiescence is a handoff; SIGTERM and administrative stops
-        // retain destructive relay/capability cleanup.
-        preserveProjectRelaysOnClose = options.preserveProjectRelays === true;
-        googleSlidesTool.close();
-        await stopAgentGatewayCredentialProjection();
-        await stopRunnerSupervisorReconciler();
-        await agentGatewaySynchronizer?.close();
-        await app.close();
-        // The sweep, settled before the database goes: a short-lived process (a test, a
-        // one-shot run) can otherwise reach `destroy()` with its two store reads still in
-        // flight — and, worse, hand control back to a caller that tears down the data root
-        // while the walk is still calling `rm` inside it.
-        //
-        // So the walk is told to stop rather than left to run: it checks between directory
-        // entries and between deletes, and returns a partial result the next boot's sweep
-        // completes. Waiting for it then costs one in-flight `fs` call, not a full volume
-        // walk — blocking a SIGTERM on THAT is how a graceful shutdown becomes a SIGKILL.
-        //
-        // Bounded even so, and the bound is what makes this a strong guarantee only in the
-        // normal case: if the timer wins, `close` resolves with the walk still somewhere
-        // inside a call that never came back, so a caller that then removes the data root
-        // is back to racing it. That is the wedged-volume case, where every other option —
-        // waiting forever, and the SIGKILL that follows — is worse. The store reads are
-        // full-table scans issued at boot and get the same treatment: giving up and
-        // destroying under them costs at worst one logged query error on a process that is
-        // exiting anyway. `ref: false` so the losing timer cannot itself hold the process
-        // open for the rest of the window.
-        sweepAbort.abort();
-        cleanupAbort.abort();
-        sessionCleanupWorker?.stop();
-        await Promise.race([
-          Promise.all([transcriptSweep, transcriptSweepWalk, sessionCleanupWorker?.settled()]),
-          delay(SWEEP_SHUTDOWN_WAIT_MS, undefined, { ref: false }),
-        ]);
-        await db.destroy();
-      })()),
+    close: createEmbeddedShutdown({
+      closeGoogleSlides: () => googleSlidesTool.close(),
+      stopAgentGatewayCredentialProjection,
+      stopRunnerSupervisorReconciler,
+      closeAgentGatewaySynchronizer: () => agentGatewaySynchronizer?.close(),
+      closeApp: () => app.close(),
+      closeSessionMaintenance: () => sessionMaintenance.close(),
+      destroyDatabase: () => db.destroy(),
+      setPreserveProjectRelays: (preserve) => {
+        preserveProjectRelaysOnClose = preserve;
+      },
+    }),
   };
 }

@@ -826,6 +826,17 @@ export {
   type CollaborationState,
 } from './sessionCollaboration.js';
 export {
+  projectNoun,
+  type ChangeSubmission,
+  type ChangeSubmissionPerson,
+  type ChangeSubmissionState,
+} from './changeSubmissions.js';
+export {
+  changeSubmissionBar,
+  openPullRequestPrompt,
+  type ChangeSubmissionBarModel,
+} from './ui/changeSubmissionBar.js';
+export {
   PULL_REQUEST_STATES,
   pullRequestAction,
   pullRequestCounts,
@@ -861,6 +872,7 @@ export {
   type SessionWorkEntry,
   type SessionWorkSections,
 } from './ui/sessionWork.js';
+export { teamRightLabel, toggleTeamRight, type TeamRight, type TeamRights } from './teamRights.js';
 export {
   invitationLinkFieldsSchema,
   projectTeamSchema,

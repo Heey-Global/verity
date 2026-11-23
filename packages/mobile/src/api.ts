@@ -1,8 +1,11 @@
+import { addressedToViewerSchema, openChoicesSchema } from './sessionRequests.js';
+import { changeSubmissionsClient, sessionChangeSubmissionSchema } from './changeSubmissions.js';
 import { mcpAppsClient } from './mcp-apps-client.js';
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
   agentLoginResponseSchema,
   peopleClient,
+  projectViewerSchema,
   type AgentLogin,
   type AgentLoginProvider,
 } from './people-api.js';
@@ -275,22 +278,6 @@ export const attentionSignalSchema = z.object({
 });
 export type AttentionSignal = z.infer<typeof attentionSignalSchema>;
 
-/**
- * The current turn's unanswered `verity:choices` block, as the session list
- * carries it. Options keep the agent's labels verbatim: a label is what is sent
- * as the answer. A block that no longer parses (a newer server, a malformed
- * option) reads as "no open question" rather than failing the whole list.
- */
-const openChoicesSchema = z.object({
-  question: z.string().optional(),
-  options: z
-    .array(z.object({ label: z.string().min(1), recommended: z.boolean().optional() }))
-    .min(1),
-  multiSelect: z.boolean().optional(),
-});
-
-/** One parked permission prompt with what it asks. `input` is absent when the
- * server judged it too large to carry; the app then opens the session instead. */
 /** A mockup review: the screens the agent presented, each marked approved,
  * discarded or still open. An older server's `comment` reads as discarded, as the
  * server itself reads it. A value this build does not understand reads as absent
@@ -406,6 +393,9 @@ export const sessionSummarySchema = z
     /** Keys of this session's Home items the requesting person dismissed, synced
      * across their devices. ABSENT = older server that cannot dismiss. */
     inboxDismissed: z.array(z.string()).optional(),
+    /** Whether its questions, plans and mockups are the requester's to answer. */
+    addressedToViewer: addressedToViewerSchema,
+    changeSubmission: sessionChangeSubmissionSchema,
     /** Conditions about THIS session, e.g. a sandbox that lost its connection to
      * the server (`sandbox_disconnected`). Absent from a healthy session and from
      * any older server, both of which read as "nothing to report". */
@@ -1809,9 +1799,8 @@ export const projectDetailSchema = z.object({
   project: projectRecordSchema,
   settings: projectSettingsSchema.nullable(),
   sessions: z.array(sessionSummarySchema),
-  // What the requesting person may change. Absent from older servers, which
-  // left every change to administrators and refused the rest.
-  viewer: z.object({ canManage: z.boolean() }).optional(),
+  // What the requesting person may do; absent from older servers (see the schema).
+  viewer: projectViewerSchema.optional(),
 });
 export type ProjectDetail = z.infer<typeof projectDetailSchema>;
 
@@ -2738,6 +2727,8 @@ export class VerityClient {
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
   readonly projectQA = projectQAClient((path, init) => this.request(path, init));
+  readonly changeSubmissions = changeSubmissionsClient((path, init) => this.request(path, init));
+  readonly saveSessionToProject = this.changeSubmissions.saveToProject;
   readonly getProjectTeam = this.people.getProjectTeam;
   readonly createProjectInvitation = this.people.createProjectInvitation;
   readonly getProjectInvitation = this.people.getProjectInvitation;
@@ -6788,14 +6779,6 @@ export class VerityClient {
       method: 'POST',
     });
     return localMergedSchema.parse(await res.json());
-  }
-
-  /** Ask the session agent to commit its work, then add it to the local project. */
-  async saveSessionToProject(id: string): Promise<{ accepted: true }> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/save-to-project`, {
-      method: 'POST',
-    });
-    return z.object({ accepted: z.literal(true) }).parse(await res.json());
   }
 
   /** Answer a live mid-turn permission prompt (#149): allow (optionally with edited

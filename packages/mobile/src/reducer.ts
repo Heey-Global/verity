@@ -178,6 +178,10 @@ export class SessionReducer {
   // Several can wait at once: parallel tool calls, sub-agents, and gateway prompts
   // (a secret run) that no turn holds. Keeping only the newest hid the older ones
   // while the server still listed them as open. See SessionState.pendingPermission.
+  private readonly legacyApprovals = new Map<
+    string,
+    { tool: string | undefined; expiresAt: number }
+  >();
   private readonly _pendingPermissions = new Map<string, PendingPermission>();
   // Prompts a turn boundary dropped. A gateway prompt outlives its turn on the
   // server, so the live pending set can bring one back (see reconcilePendingPermissions).
@@ -292,6 +296,55 @@ export class SessionReducer {
         break;
       case 'notice': {
         this.active = null;
+        if (event.secretApproval) {
+          this.clearPermissionFor(event.secretApproval.id);
+          this.emitAgentEvent(seq, ts, event);
+          break;
+        }
+        if (event.changeSubmission) {
+          this.emitAgentEvent(seq, ts, event);
+          break;
+        }
+        // Older servers persisted their internal approval instructions as chat notices.
+        const legacyApproval =
+          /^Secret tool approval ([a-f0-9-]{36}) was (approved|denied)\. Nothing was executed by answering the card\. (.+)$/.exec(
+            event.text,
+          );
+        const legacyApprovalId = legacyApproval?.[1];
+        const legacyApproved = legacyApproval?.[2] === 'approved';
+        const legacyInstruction = legacyApproval?.[3];
+        const knownLegacyInstruction = legacyApproved
+          ? legacyInstruction ===
+              'If the operation is still needed, retry the exact original tool request; its approval is single-use and valid for five minutes.' ||
+            legacyInstruction ===
+              'The selected session approval was saved; continue only the original authorized action.' ||
+            legacyInstruction ===
+              'The selected project approval was saved; continue only the original authorized action.'
+          : legacyInstruction === 'Do not retry this operation without a new user instruction.';
+        if (
+          legacyApprovalId &&
+          knownLegacyInstruction &&
+          event.role !== 'operator' &&
+          !event.clientRequestId
+        ) {
+          const pending =
+            this._pendingPermissions.get(legacyApprovalId) ??
+            this._droppedPermissions.get(legacyApprovalId)?.request;
+          if (
+            !pending ||
+            pending.tool === 'verity_secret_run' ||
+            pending.tool === 'verity_http_request'
+          ) {
+            this.clearPermissionFor(legacyApprovalId);
+            if (legacyApproved) {
+              this.legacyApprovals.set(legacyApprovalId, {
+                tool: pending?.tool,
+                expiresAt: ts + 5 * 60_000,
+              });
+            }
+            break;
+          }
+        }
         if (event.role === 'operator') {
           this.appendMessage({
             kind: 'user-text',
@@ -342,6 +395,22 @@ export class SessionReducer {
         this._running = true;
         // Steering belongs to the current turn and must retain its background work.
         if (!event.steered) this._openTasks.clear();
+        if (event.origin === 'secret-approval') break;
+        for (const [id, approval] of this.legacyApprovals) {
+          if (ts > approval.expiresAt) this.legacyApprovals.delete(id);
+        }
+        if (!event.origin && !event.peer && !event.steered && !event.attachments?.length) {
+          const continuation =
+            /^Continue after approval of (verity_secret_run|verity_http_request) \(([a-f0-9-]{36})\)\.$/.exec(
+              event.text,
+            );
+          const id = continuation?.[2];
+          const approval = id ? this.legacyApprovals.get(id) : undefined;
+          if (id && approval && (!approval.tool || approval.tool === continuation?.[1])) {
+            this.legacyApprovals.delete(id);
+            break;
+          }
+        }
         const msg: UserTextMessage = {
           kind: 'user-text',
           id: `user-${String(seq)}`,
@@ -406,6 +475,7 @@ export class SessionReducer {
           input: event.input,
           riskClass: event.riskClass,
           createdAt: ts,
+          ...(event.secretSource && { secretSource: event.secretSource }),
           ...(event.grantChannel !== undefined ? { grantChannel: event.grantChannel } : {}),
         });
         break;
@@ -917,8 +987,13 @@ export class SessionReducer {
 
   /** Restore a server-confirmed detached approval without reopening a completed turn. */
   restorePendingPermission(permission: PendingPermission): void {
-    if (!this._pendingPermissions.has(permission.toolUseId))
-      this._pendingPermissions.set(permission.toolUseId, { ...permission });
+    const existing = this._pendingPermissions.get(permission.toolUseId);
+    if (!existing) this._pendingPermissions.set(permission.toolUseId, { ...permission });
+    else if (!existing.secretSource && permission.secretSource)
+      this._pendingPermissions.set(permission.toolUseId, {
+        ...existing,
+        secretSource: permission.secretSource,
+      });
   }
 
   /** Reconcile a replayed permission card with the server's live pending set.

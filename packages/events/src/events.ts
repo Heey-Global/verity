@@ -328,6 +328,11 @@ const parentToolId = z.string().min(1).optional();
  * - `thinking.signature` is required to replay a thinking block on `--resume`;
  *   it is model-specific and must round-trip verbatim.
  */
+export const secretApprovalSourceSchema = z.object({
+  project: z.string(),
+  config: z.string(),
+});
+
 export const agentEventSchema = z.discriminatedUnion('t', [
   z.object({
     t: z.literal('session'),
@@ -372,14 +377,33 @@ export const agentEventSchema = z.discriminatedUnion('t', [
     t: z.literal('notice'),
     text: z.string(),
     role: z.enum(['agent', 'operator']).optional(),
+    secretApproval: z
+      .object({
+        id: z.string().min(1),
+        tool: z.string().min(1),
+        input: z.unknown(),
+        secretSource: secretApprovalSourceSchema.optional(),
+        decision: z.enum(['once', 'session', 'project', 'denied', 'save_failed']),
+      })
+      .optional(),
     // Correlates a server-confirmed workflow notice with an optimistic local echo.
     clientRequestId: z.string().max(100).optional(),
+    // A member submitted the session's changes for review, or withdrew them.
+    // Current apps show a quiet history row; an older app ignores the field and
+    // shows `text` as a message, which still reads correctly.
+    changeSubmission: z
+      .object({
+        action: z.enum(['submitted', 'withdrawn']),
+        userId: z.string().min(1).optional(),
+      })
+      .optional(),
   }),
   z.object({
     // The operator's steering prompt for a turn — persisted by the conductor when
     // a turn is dispatched, so the operator's own message shows in the transcript
     // (claude's stream doesn't echo it). Distinct from `text` (the agent's output).
     t: z.literal('prompt'),
+    origin: z.literal('secret-approval').optional(),
     // A linked peer's identity is durable provenance, not caller-controlled display text.
     peer: z
       .object({
@@ -468,6 +492,7 @@ export const agentEventSchema = z.discriminatedUnion('t', [
   }),
   z.object({
     t: z.literal('permission'),
+    secretSource: secretApprovalSourceSchema.optional(),
     id: z.string().min(1),
     tool: z.string().min(1),
     input: z.unknown(),

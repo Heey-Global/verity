@@ -5,7 +5,7 @@ import { SessionRepositories } from '../../components/project/SessionRepositorie
 import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { NetworkApprovalPrompt } from '../../components/NetworkApprovalPrompt';
 import { SecretApprovalHistory } from '../../components/SecretApprovalHistory';
-import { SecretApprovalWaitNote } from '../../components/SecretApprovalWaitNote';
+import { SecretApprovalCard } from '../../components/SecretApprovalCard';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
 import { connectionFailureKind, projectTitle } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
@@ -26,6 +26,8 @@ import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/use
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
+import { ChangeSubmissionBar } from '../../components/session/ChangeSubmissionBar';
+import { LocalMergeBar } from '../../components/session/LocalMergeBar';
 import {
   VulnerabilityFixSheet,
   VulnerabilityStarterCard,
@@ -149,12 +151,7 @@ import {
   rateLimitNoticeTone,
   rowKey,
   rowRecycleType,
-  secretGrantScopes,
-  brokeredAuthSentence,
   permissionSummary,
-  trustedCliCommandLine,
-  trustedCliRiskSentence,
-  brokeredHttpSummary,
   listSessionsSentence,
   listSessionsSummary,
   permissionInputText,
@@ -167,8 +164,6 @@ import {
   sessionProgressSummary,
   recentSessionMessagesSummary,
   spellOutBidiControls,
-  trustedCliSecretLabel,
-  trustedCliSummary,
   sessionFileTargetFromLocalLink,
   splitRichText,
   toolCallView,
@@ -4714,6 +4709,14 @@ export const SessionChat = memo(function SessionChat({
           onSave={onSaveToProject}
         />
       ) : null}
+      <ChangeSubmissionBar
+        client={client}
+        sessionId={sessionId}
+        projectKind={settingsProjects.find((project) => project.id === projectId)?.kind}
+        pullRequestShown={visiblePullRequest !== undefined && visiblePullRequest !== null}
+        busy={working}
+        onOpenPullRequest={(prompt) => sendTurn(prompt)}
+      />
       {planning === 'active' && planningPlan != null ? (
         <PinnedPlan
           revision={planningRevision}
@@ -5038,6 +5041,14 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     case 'tool-call':
       return <ToolCard key={item.message.id} message={item.message} />; // single tool not in a run
     case 'agent-event':
+      if (item.message.event.t === 'notice' && item.message.event.secretApproval)
+        return (
+          <SecretApprovalCard
+            key={item.message.id}
+            request={item.message.event.secretApproval}
+            decision={item.message.event.secretApproval.decision}
+          />
+        );
       if (item.message.event.t === 'mcp_app') return <McpAppCard event={item.message.event} />;
       return <EventRow message={item.message} isLatest={isLatest} />;
     case 'dependency-status':
@@ -6851,8 +6862,6 @@ function PermissionPrompt({
       : schedulingDraft?.toolUseId === pending.toolUseId
         ? schedulingDraft.edit
         : schedulingCardEdit(schedulingEditable);
-  const httpSummary = isBrokeredHttp ? brokeredHttpSummary(pending.input) : null;
-  const cliSummary = isTrustedCli ? trustedCliSummary(pending.input) : null;
   const handoffSummary = isSessionHandoff ? sessionHandoffSummary(pending.input) : null;
   const linkedMessage =
     isLinkedMessage &&
@@ -6870,7 +6879,6 @@ function PermissionPrompt({
     : null;
   const matrixSummary = isMatrix ? matrixSendSummary(pending.input) : null;
   const gmailSummary = isGmail ? gmailSendSummary(pending.input) : null;
-  const cliSecretLabel = cliSummary === null ? null : trustedCliSecretLabel(cliSummary);
   const grantInput =
     typeof pending.input === 'object' && pending.input !== null && !Array.isArray(pending.input)
       ? (pending.input as Record<string, unknown>)
@@ -6883,18 +6891,7 @@ function PermissionPrompt({
     typeof googleAccount.email === 'string'
       ? googleAccount.email
       : null;
-  const reusableScopes = secretGrantScopes(pending.tool, grantInput);
-  const isScopedSecretTool = reusableScopes.length > 0;
-  // A brokered request whose input the summariser could not read still has to be
-  // legible before it is approved, so the raw input takes the summary's place
-  // rather than leaving the card with nothing but the tool name.
-  //
-  // See {@link permissionInputText} for why rendering it is its own function: this
-  // runs inside `render`, on the inputs least likely to be well-formed, and a throw
-  // here removes the card rather than degrading it.
   const brokeredRequestDetails =
-    (isBrokeredHttp && httpSummary === null) ||
-    (isTrustedCli && cliSummary === null) ||
     (isSessionHandoff && handoffSummary === null) ||
     (isLinkedMessage && linkedMessage === null) ||
     (isListSessions && listingSummary === null) ||
@@ -6913,9 +6910,6 @@ function PermissionPrompt({
   // `null` passed to each: there is no summary to read, the tool name is the whole input, and
   // the card still says what approving does rather than showing raw JSON and nothing else.
   //
-  // Trusted CLI is absent from this chain and has no tool-level caveat to fall back to — its
-  // warning is built from the parsed secret list, so there is nothing to render when parsing
-  // is what failed. That is a gap in the same argument, not an exception to it.
   const brokeredRequestCaveats =
     brokeredRequestDetails === null
       ? null
@@ -6964,6 +6958,20 @@ function PermissionPrompt({
           : { behavior: 'allow', scope },
     );
   };
+  if (isBrokeredHttp || isTrustedCli) {
+    return (
+      <SecretApprovalCard
+        key={pending.toolUseId}
+        request={pending}
+        actions={{
+          disabled: !active,
+          deciding,
+          allow,
+          deny: () => onDecide(pending.toolUseId, { behavior: 'deny' }),
+        }}
+      />
+    );
+  }
   return (
     <View
       style={styles.permissionPrompt}
@@ -7005,7 +7013,6 @@ function PermissionPrompt({
           Google account: {spellOutBidiControls(googleAccountEmail)}
         </Text>
       ) : null}
-      {isBrokeredHttp || isTrustedCli ? <SecretApprovalWaitNote /> : null}
       {isPresentPlan ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionHttpMeta}>
@@ -7037,36 +7044,6 @@ function PermissionPrompt({
               the updated content.
             </Text>
           ) : null}
-        </View>
-      ) : httpSummary !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionSubtitle} selectable numberOfLines={2}>
-            {httpSummary.method} {httpSummary.host}
-            {httpSummary.path}
-          </Text>
-          {httpSummary.body !== null ? (
-            <ScrollView style={styles.permissionDetails} nestedScrollEnabled>
-              {/* The method, host and path are held to printable ASCII by the summariser,
-                  but the body is a stringified JSON value and is not — and `JSON.stringify`
-                  does not escape bidi controls. Spelled out so the body reads in the order
-                  it is sent. */}
-              <Text style={styles.permissionSubtitle} selectable>
-                {spellOutBidiControls(httpSummary.body)}
-              </Text>
-            </ScrollView>
-          ) : null}
-          <Text style={styles.permissionHttpMeta}>{brokeredAuthSentence(httpSummary)}</Text>
-        </View>
-      ) : cliSummary !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          <ScrollView style={styles.permissionDetails} nestedScrollEnabled>
-            {/* Command tokens are arbitrary strings and this is the card that hands a
-                secret to a process — the displayed order has to be the executed order. */}
-            <Text style={styles.permissionSubtitle} selectable>
-              {trustedCliCommandLine(cliSummary)}
-            </Text>
-          </ScrollView>
-          <Text style={styles.permissionHttpMeta}>{trustedCliRiskSentence(cliSummary)}</Text>
         </View>
       ) : linkedMessage !== null ? (
         <View style={styles.permissionHttpSummary}>
@@ -7355,7 +7332,7 @@ function PermissionPrompt({
                 ? knowledgeSummary?.replacesExisting
                   ? 'Save changes to Global Knowledge'
                   : 'Publish to Global Knowledge'
-                : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}${isScopedSecretTool ? ' once' : ''}`
+                : `${approvedForDelivery ? 'Retry delivery of' : 'Allow'} ${view.title}`
           }
           style={({ pressed }) => [
             styles.permissionButton,
@@ -7376,86 +7353,11 @@ function PermissionPrompt({
                     : 'Publish to Global'
                   : approvedForDelivery
                     ? 'Retry delivery'
-                    : isScopedSecretTool
-                      ? 'Allow once'
-                      : 'Allow'}
+                    : 'Allow'}
             </Text>
           )}
         </Pressable>
       </View>
-      {/* Scoped allows (ADR 0011 D2): quieter secondary actions. 'This session'
-          auto-approves this secret+host pair until the session ends; 'Always'
-          persists a project-wide grant for 30 days. */}
-      {isScopedSecretTool ? (
-        <View style={styles.permissionScopeRow}>
-          {reusableScopes.includes('session') ? (
-            <Pressable
-              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
-              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
-              onTouchCancel={() => {
-                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
-                if (allowTiming.current) allowTiming.current.status = 'cancelled';
-              }}
-              onPress={() => allow('session')}
-              disabled={!active}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} for this session`}
-              style={({ pressed }) => [
-                styles.permissionScopeButton,
-                active ? null : styles.permissionButtonDisabled,
-                pressed && active ? styles.permissionButtonPressed : null,
-              ]}
-            >
-              <Text style={styles.permissionScopeLabel}>Allow this session</Text>
-            </Pressable>
-          ) : null}
-          {reusableScopes.includes('project') ? (
-            <Pressable
-              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
-              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
-              onTouchCancel={() => {
-                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
-                if (allowTiming.current) allowTiming.current.status = 'cancelled';
-              }}
-              onPress={() => allow('project')}
-              disabled={!active}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Allow ${httpSummary?.secretAlias ?? cliSecretLabel ?? view.title} for ${httpSummary?.host ?? cliSummary?.executable ?? 'this destination'} in this project for 30 days`}
-              style={({ pressed }) => [
-                styles.permissionScopeButton,
-                active ? null : styles.permissionButtonDisabled,
-                pressed && active ? styles.permissionButtonPressed : null,
-              ]}
-            >
-              <Text style={styles.permissionScopeLabel}>Allow for 30 days</Text>
-            </Pressable>
-          ) : null}
-          {reusableScopes.includes('forever') ? (
-            <Pressable
-              onTouchStart={(event) => allowTouch(event.nativeEvent.timestamp)}
-              onPressIn={() => markSessionSwitch(allowTiming.current, 'allow-js-press-in')}
-              onTouchCancel={() => {
-                markSessionSwitch(allowTiming.current, 'allow-touch-cancel');
-                if (allowTiming.current) allowTiming.current.status = 'cancelled';
-              }}
-              onPress={() => allow('forever')}
-              disabled={!active}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !active, busy: deciding }}
-              accessibilityLabel={`Always allow ${httpSummary?.secretAlias ?? view.title} for ${httpSummary?.host ?? 'this destination'}`}
-              style={({ pressed }) => [
-                styles.permissionScopeButton,
-                active ? null : styles.permissionButtonDisabled,
-                pressed && active ? styles.permissionButtonPressed : null,
-              ]}
-            >
-              <Text style={styles.permissionScopeLabel}>Always allow</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -7749,92 +7651,6 @@ function PullRequestBar({
           )}
         </Pressable>
       )}
-    </SessionBar>
-  );
-}
-
-/** Save a local session's work through the agent and then into the project base.
- *  The server checks the commit and merge preconditions. */
-function LocalMergeBar({
-  confirmHint,
-  branch,
-  base,
-  busy,
-  onSave,
-}: {
-  confirmHint: () => Promise<boolean>;
-  branch: string;
-  base: string;
-  busy: boolean;
-  onSave: UseBranches['saveToProject'];
-}) {
-  const { theme } = useUnistyles();
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const mounted = useRef(true);
-  useEffect(() => {
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-  // A new branch (or base) is a new attempt: drop the previous rejection so a stale
-  // reason can't sit under a button that would now succeed.
-  useEffect(() => {
-    setError(undefined);
-  }, [branch, base]);
-
-  const save = (): void => {
-    if (saving || busy) return;
-    void (async () => {
-      setSaving(true);
-      setError(undefined);
-      const result = await onSave();
-      if (!mounted.current) return;
-      setSaving(false);
-      if (!result.ok) setError(result.message);
-      // The server runs the agent turn and local merge after accepting the request.
-    })();
-  };
-
-  return (
-    <SessionBar>
-      <View style={styles.prLocalMain}>
-        <Text style={styles.prTitle} numberOfLines={1}>
-          Changes from this session
-        </Text>
-        <Text style={styles.prSub} numberOfLines={1}>
-          Save them as a version in your project.
-        </Text>
-        {error !== undefined ? (
-          <Text style={styles.prError} numberOfLines={2}>
-            {error}
-          </Text>
-        ) : null}
-      </View>
-      <Pressable
-        style={({ pressed }) => [
-          styles.prMergeButton,
-          styles.prLocalMergeButton,
-          { backgroundColor: theme.colors.success },
-          saving || busy ? styles.prMergeButtonDisabled : null,
-          pressed && !saving && !busy ? styles.prMergeButtonPressed : null,
-        ]}
-        onPress={() =>
-          void confirmHint().then((proceed) => {
-            if (proceed && mounted.current) save();
-          })
-        }
-        disabled={saving || busy}
-        accessibilityRole="button"
-        accessibilityState={{ disabled: saving || busy, busy: saving }}
-        accessibilityLabel="Save this session's changes as a version in your project"
-      >
-        {saving ? (
-          <ActivityIndicator color={theme.colors.onAction} />
-        ) : (
-          <Text style={styles.prMergeText}>Save to project</Text>
-        )}
-      </Pressable>
     </SessionBar>
   );
 }
@@ -8862,29 +8678,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing.md,
     gap: theme.spacing.sm,
   },
-  /** The local merge bar has no status dot and nothing to open, so it carries the
-   *  padding the shared session target gives the PR row — without it the branch name sits
-   *  flush against the bar's border on one side and the Merge button on the other. */
-
-  prLocalMain: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 52,
-    gap: 1,
-    justifyContent: 'center',
-    paddingLeft: theme.spacing.md,
-    paddingRight: theme.spacing.sm,
-  },
-  prTitle: {
-    color: theme.colors.text,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.bold,
-  },
-  prSub: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
   prError: {
     color: theme.colors.attention,
     fontSize: theme.typography.footnote.fontSize,
@@ -8899,9 +8692,6 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.action,
-  },
-  prLocalMergeButton: {
-    width: 124,
   },
   prMergeButtonDisabled: {
     opacity: 0.45,
@@ -9671,26 +9461,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textFaint,
     fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
-  },
-  // Scoped allows (ADR 0011 D2): a quiet outlined secondary row under Deny/Allow.
-  permissionScopeRow: {
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
-  },
-  permissionScopeButton: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: 'transparent',
-  },
-  permissionScopeLabel: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
   },
   // The rounded input card holding the full-width text field stacked above the
   // action row (two-tier, like the Claude app). Padding lives here, not on the

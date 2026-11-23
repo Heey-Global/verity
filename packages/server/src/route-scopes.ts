@@ -269,6 +269,12 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
     'per-container capability, presented by the sandbox package-manager shims',
   ),
   declare(
+    'POST',
+    '/internal/dependency-storage',
+    'container-capability',
+    'project-bound broker socket identity and per-container dependency capacity capability',
+  ),
+  declare(
     'GET',
     '/internal/package-artifacts/*',
     'container-capability',

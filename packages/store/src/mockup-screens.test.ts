@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { storedMockupScreens, storedMockupState } from './store.js';
+import { storedMockupScreens, storedMockupState } from './session-mockups.js';
 
 describe('storedMockupScreens', () => {
   const screen = { name: 'Home', attachment: 'a', mediaType: 'image/png', width: 1, height: 1 };

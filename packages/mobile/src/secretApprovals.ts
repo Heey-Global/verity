@@ -1,5 +1,10 @@
+import { secretApprovalSourceSchema } from '@verity/events';
 import { z } from 'zod';
 
+import { addressedToViewerSchema } from './sessionRequests.js';
+
+/** One parked permission prompt with what it asks. `input` is absent when the
+ * server judged it too large to carry; the app then opens the session instead. */
 export const pendingPermissionRequestSchema = z.object({
   toolUseId: z.string().min(1),
   tool: z.string().min(1),
@@ -8,6 +13,9 @@ export const pendingPermissionRequestSchema = z.object({
   grantChannel: z.literal('acp').optional(),
   createdAt: z.number().optional(),
   detached: z.boolean().optional(),
+  /** Session list only: whether the requester is the one to decide it. */
+  addressedToViewer: addressedToViewerSchema,
+  secretSource: secretApprovalSourceSchema.optional(),
 });
 export type PendingPermissionRequest = z.infer<typeof pendingPermissionRequestSchema>;
 

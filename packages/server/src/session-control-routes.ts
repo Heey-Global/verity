@@ -1,7 +1,7 @@
 import { PermissionDecisionInProgressError, type Conductor } from '@verity/session';
 import { viewerId } from './view-state-routes.js';
 import type { EventStore } from '@verity/store';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import { sessionParams } from './session-route-schemas.js';
@@ -26,6 +26,11 @@ export interface SessionControlRouteDeps {
   >;
   cancelMeetingJobs: (sessionId: string) => boolean;
   permissionResolved?: (sessionId: string, toolUseId: string) => void;
+  /** Whether the requester may allow this prompt: secret and network prompts need
+   *  Code (ADR 0023 §1). Denying stays with execute. Absent → no restriction. */
+  mayAllowPermission?:
+    | ((request: FastifyRequest, sessionId: string, toolUseId: string) => Promise<boolean>)
+    | undefined;
   decidePendingLinkedMessage?: (
     sessionId: string,
     toolUseId: string,
@@ -69,6 +74,14 @@ export function registerSessionControlRoutes(
     if (!session) {
       reply.code(404);
       return { error: `session ${id} not found` };
+    }
+    if (
+      body.behavior === 'allow' &&
+      deps.mayAllowPermission !== undefined &&
+      !(await deps.mayAllowPermission(request, id, toolUseId))
+    ) {
+      reply.code(403);
+      return { error: 'Allowing secret use or network access needs permission to work with code.' };
     }
     const decision =
       body.behavior === 'allow'

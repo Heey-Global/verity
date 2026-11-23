@@ -95,6 +95,33 @@ and managing membership. An instance administrator manages the service, but
 that role does not implicitly authorize application-level use of another
 user's credentials.
 
+**Code is a separate permission.** Executing turns ("Edit") lets a member work
+with the agent and use the preview. Seeing a session's technical side and adding
+its changes to the project's code (merging, saving to the project) is the
+**Code** permission. Permissions are independent attributes rather than ranked
+levels, so later ones need not fit an order, with two dependencies: Code
+requires execute, and manage includes execute and Code, because a member who
+changes rights could grant either to themselves. The store refuses a
+combination that breaks them. In the database, a check constraint holds an
+invitation's Code to execute, and a trigger clears a membership's Code when
+execute goes and sets it for a manager, so an older server still writing during
+an upgrade keeps memberships consistent. Every member and invitation that could
+execute when Code was introduced receives it, and a project's creator always
+holds it. Code is local to the instance: the Uplink invitation contract
+(section 7) still carries only read and execute, and a join takes Code from the
+stored invitation. The routes that add changes to the project's code require
+it: merging, saving to the project, switching or opening repositories, changing
+code files by hand, running vulnerability scans, and acting on QA and
+vulnerability findings. Reading the
+code working copy stays with read, because the agent shows its files in the
+conversation anyway. The agent's vulnerability tool already requires Code from
+the person behind a turn for anything beyond reading. The forge gateway holds
+agents to the same boundary: when the person a turn acts for lacks Code, it
+refuses pushes and pull-request and release writes, and the agent is told to
+leave the changes in the session for a member with Code. Allowing a secret or
+network permission prompt likewise requires Code; denying one stays with
+execute.
+
 **Project creation is build authority.** Creating a project provisions a
 sandbox and may build a repository-supplied `devcontainer.json` on the host's
 Docker through the policy gateway of ADR 0017. Team members cannot create
@@ -255,6 +282,31 @@ Another member cannot inject instructions into an active turn or answer its
 credential approval on behalf of the initiator. Their message becomes a new
 turn under their own identity. Administrative cancellation is a separate,
 audited permission; it does not transfer execution authority.
+
+**Requests belong to the person who asked.** A turn's questions, plans,
+mockups and permission prompts are addressed to the person the turn runs for.
+Without a named person they go to whoever started the session; a session
+without a recorded creator, such as one from before creators were recorded or
+one Verity started on its own, falls back to the project's creator. When none
+of them can still read the project, the request is for every member. Home and the
+project overview list only the requests addressed to the viewer. The session
+itself still shows every request, and members who may execute can answer there.
+Allowing a secret or network prompt requires Code (section 1), so a prompt the
+person asking cannot allow, or one without a person, is addressed to every
+member with Code instead.
+A prompt the server cannot describe, such as a linked-session approval, stays
+unaddressed and appears for every member, because nobody can tell whom it is for.
+
+**Members without Code submit changes.** A member who may execute but not add
+changes to the project's code submits a session's changes instead. The
+submission records who submitted, when, and the commit the session was at; the
+history shows it as a quiet line. Where it stands is derived rather than
+stored: it waits for a developer until a member with Code writes in the
+session, is being checked by the first one who does, is being added while the
+session has an open pull request, and is added once that pull request is merged
+or the session is saved to a local project. Home offers the review to every
+member with Code until one of them writes, and then only to that person. The
+submitter, or a member with Code, can withdraw a submission.
 
 ### 3. Personal connections, with explicit shared-service exceptions
 

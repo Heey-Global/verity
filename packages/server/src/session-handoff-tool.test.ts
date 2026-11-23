@@ -588,6 +588,8 @@ describe('verity_session_handoff', () => {
       projectId: 'website',
       name: 'Investigate worker failure',
       idempotencyKey: 'handoff-session:turn-1:invocation-1',
+      // The new session belongs to the person behind the handing-off turn.
+      caller: { sessionId: 'control-session', turnId: 'turn-1' },
     });
     expect(dispatchTurn).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: 'sess-created' }),

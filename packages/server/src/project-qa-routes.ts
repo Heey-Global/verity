@@ -1,11 +1,11 @@
-import type { EventStore, QAIssue, RepairIncident } from '@verity/store';
+import type { EventStore, ProjectPermission, QAIssue, RepairIncident } from '@verity/store';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 /** A source counts as fresh for this long after QA last read it (sweeps run every 2 min). */
 const FRESH_MS = 10 * 60_000;
 
-type Permission = 'read' | 'execute' | 'manage';
+type Permission = ProjectPermission;
 
 /** One issue as the QA page shows it: state, the newest incident and the work done on it. */
 interface PublicQAIssue {
@@ -144,8 +144,8 @@ export function registerProjectQARoutes(
     const { id, issueId } = z
       .object({ id: z.string().min(1), issueId: z.string().min(1) })
       .parse(request.params);
-    if (!(await allowed(request, id, 'execute')))
-      return reply.code(403).send({ error: 'Project execution permission required' });
+    if (!(await allowed(request, id, 'code')))
+      return reply.code(403).send({ error: 'Permission to work with code required' });
     const { decision } = z
       .object({ decision: z.enum(['another_round', 'take_over', 'defer']) })
       .strict()

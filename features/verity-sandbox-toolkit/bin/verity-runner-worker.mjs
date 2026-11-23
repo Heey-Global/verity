@@ -23529,6 +23529,10 @@ var permissionDenialSchema = import_zod.z.object({
   input: import_zod.z.unknown().optional()
 });
 var parentToolId = import_zod.z.string().min(1).optional();
+var secretApprovalSourceSchema = import_zod.z.object({
+  project: import_zod.z.string(),
+  config: import_zod.z.string()
+});
 var agentEventSchema = import_zod.z.discriminatedUnion("t", [
   import_zod.z.object({
     t: import_zod.z.literal("session"),
@@ -23571,14 +23575,29 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
     t: import_zod.z.literal("notice"),
     text: import_zod.z.string(),
     role: import_zod.z.enum(["agent", "operator"]).optional(),
+    secretApproval: import_zod.z.object({
+      id: import_zod.z.string().min(1),
+      tool: import_zod.z.string().min(1),
+      input: import_zod.z.unknown(),
+      secretSource: secretApprovalSourceSchema.optional(),
+      decision: import_zod.z.enum(["once", "session", "project", "denied", "save_failed"])
+    }).optional(),
     // Correlates a server-confirmed workflow notice with an optimistic local echo.
-    clientRequestId: import_zod.z.string().max(100).optional()
+    clientRequestId: import_zod.z.string().max(100).optional(),
+    // A member submitted the session's changes for review, or withdrew them.
+    // Current apps show a quiet history row; an older app ignores the field and
+    // shows `text` as a message, which still reads correctly.
+    changeSubmission: import_zod.z.object({
+      action: import_zod.z.enum(["submitted", "withdrawn"]),
+      userId: import_zod.z.string().min(1).optional()
+    }).optional()
   }),
   import_zod.z.object({
     // The operator's steering prompt for a turn — persisted by the conductor when
     // a turn is dispatched, so the operator's own message shows in the transcript
     // (claude's stream doesn't echo it). Distinct from `text` (the agent's output).
     t: import_zod.z.literal("prompt"),
+    origin: import_zod.z.literal("secret-approval").optional(),
     // A linked peer's identity is durable provenance, not caller-controlled display text.
     peer: import_zod.z.object({
       sessionId: import_zod.z.string(),
@@ -23665,6 +23684,7 @@ var agentEventSchema = import_zod.z.discriminatedUnion("t", [
   }),
   import_zod.z.object({
     t: import_zod.z.literal("permission"),
+    secretSource: secretApprovalSourceSchema.optional(),
     id: import_zod.z.string().min(1),
     tool: import_zod.z.string().min(1),
     input: import_zod.z.unknown(),

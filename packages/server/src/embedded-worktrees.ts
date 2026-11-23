@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { rename, rm, writeFile } from 'node:fs/promises';
+import type { createEmbeddedRepositoryAccess } from './embedded-repositories.js';
 import type { ServerDeps } from './server-deps.js';
 import { selectBranchStatus } from './forge-status-cache.js';
 import { tmpdir } from 'node:os';
@@ -6,7 +10,10 @@ import type { EventStore } from '@verity/store';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import type { createEmbeddedGitHub } from './embedded-github.js';
 import type { createEmbeddedRepositoryPullRequests } from './embedded-repositories.js';
-import { resolveRepoWorktreeFetchAuthHeader } from './embedded-support.js';
+import {
+  createProjectWorktreeFactory,
+  resolveRepoWorktreeFetchAuthHeader,
+} from './embedded-support.js';
 import { projectClonePath } from './provisioner.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitWorktreeProvisioner } from './worktree.js';
@@ -102,4 +109,36 @@ export function createEmbeddedWorktreeBindings(ctx: {
       (await forgeForWorktree(wt))?.prServiceFor(wt).mergePr(n, expectedHeadSha) ?? false,
     repoIdentity: async (wt: string) => (await forgeForWorktree(wt))?.identityFor(wt)() ?? null,
   };
+}
+
+export function createEmbeddedProjectWorktrees(
+  projectTokenMint: Parameters<typeof createProjectWorktreeFactory>[0],
+  forgeRepositoryAccess: ReturnType<typeof createEmbeddedRepositoryAccess>,
+  secretRoot: string,
+): ReturnType<typeof createProjectWorktreeFactory> {
+  // Session worktrees use their project's provider: GitHub App tokens or the
+  // current Forgejo connection token and CA. Neither credential is persisted
+  // in the clone or worktree.
+  return createProjectWorktreeFactory(projectTokenMint, async (project) => {
+    const access = await forgeRepositoryAccess(project);
+    if (!access) throw new Error('Forgejo connection unavailable');
+    let caPath: string | undefined;
+    if (access.customCaPem) {
+      const directory = join(secretRoot, 'git');
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      caPath = join(directory, `forge_ca.${project.forgeConnectionId ?? project.id}`);
+      const temporary = `${caPath}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, access.customCaPem, { mode: 0o600 });
+        await rename(temporary, caPath);
+      } finally {
+        await rm(temporary, { force: true });
+      }
+    }
+    return {
+      url: access.url,
+      authorization: access.authorization,
+      ...(caPath ? { caPath } : {}),
+    };
+  });
 }

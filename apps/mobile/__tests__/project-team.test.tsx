@@ -40,6 +40,7 @@ const member = (overrides: Record<string, unknown>) => ({
   displayName: 'Lena',
   canRead: true,
   canExecute: true,
+  canCode: false,
   canManage: false,
   creator: false,
   joinedAt: '2026-11-01T10:00:00.000Z',
@@ -91,6 +92,11 @@ it('lists members and open invitations and changes a member right', async () => 
 
   expect(await screen.findByText('Members · 2')).toBeOnTheScreen();
   expect(screen.getByText('Owner of this project')).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Invite a person'));
+  expect(mockRouter.push).toHaveBeenLastCalledWith({
+    pathname: '/project/[id]/settings/invite',
+    params: { id: 'p1', code: '1' },
+  });
   fireEvent.press(screen.getByText('Invitation for Mia'));
   expect(mockRouter.push).toHaveBeenCalledWith({
     pathname: '/project/[id]/settings/invitation',
@@ -101,7 +107,55 @@ it('lists members and open invitations and changes a member right', async () => 
   fireEvent.press(screen.getByText('Holger'));
   expect(screen.queryByText('Can manage')).not.toBeOnTheScreen();
   fireEvent.press(screen.getByText('Lena'));
+  // Managing includes every right, so Code is checked along with it.
   fireEvent.press(await screen.findByText('Can manage'));
+  await waitFor(() =>
+    expect(setRights).toHaveBeenCalledWith('p1', 'u-lena', {
+      canExecute: true,
+      canCode: true,
+      canManage: true,
+    }),
+  );
+});
+
+// Unchecking Edit must take Code with it: the server refuses Code without Edit,
+// and the person would otherwise keep a right the sheet no longer shows.
+it('clears what builds on a right that is unchecked', async () => {
+  const setRights = jest.fn().mockResolvedValue(member({ canExecute: false }));
+  const client = {
+    getProjectTeam: jest
+      .fn()
+      .mockResolvedValue({ members: [member({ canCode: true })], invitations: [] }),
+    setProjectMemberRights: setRights,
+  } as unknown as VerityClient;
+  render(<ProjectTeamView client={client} projectId="p1" />);
+  expect(await screen.findByText('Code')).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Lena'));
+  expect(screen.getByRole('checkbox', { name: /Can work with code/ })).toBeChecked();
+  fireEvent.press(screen.getByText('Can edit'));
+  await waitFor(() =>
+    expect(setRights).toHaveBeenCalledWith('p1', 'u-lena', {
+      canExecute: false,
+      canCode: false,
+      canManage: false,
+    }),
+  );
+});
+
+// A server that predates Code reports no `canCode` and refuses the field: the
+// sheet offers no Code row and sends the rights as before.
+it('offers no Code right against a server that predates it', async () => {
+  const setRights = jest.fn().mockResolvedValue(member({ canCode: undefined, canManage: true }));
+  const client = {
+    getProjectTeam: jest
+      .fn()
+      .mockResolvedValue({ members: [member({ canCode: undefined })], invitations: [] }),
+    setProjectMemberRights: setRights,
+  } as unknown as VerityClient;
+  render(<ProjectTeamView client={client} projectId="p1" />);
+  fireEvent.press(await screen.findByText('Lena'));
+  expect(screen.queryByText('Can work with code')).not.toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Can manage'));
   await waitFor(() =>
     expect(setRights).toHaveBeenCalledWith('p1', 'u-lena', { canExecute: true, canManage: true }),
   );
@@ -130,7 +184,11 @@ it('creates an invitation with the chosen right and opens it', async () => {
   render(<InviteView client={client} projectId="p1" />);
   fireEvent.changeText(screen.getByLabelText('Your name, as invited people see it'), ' Holger ');
   fireEvent.changeText(screen.getByLabelText('Who are you inviting?'), 'Mia');
-  fireEvent.press(screen.getByText('Can read'));
+  // Edit is checked by default; unchecking it leaves reading. Without word that
+  // the server knows Code, the page does not offer it.
+  expect(screen.queryByText('Can manage')).not.toBeOnTheScreen();
+  expect(screen.queryByText('Can work with code')).not.toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Can edit'));
   fireEvent.press(screen.getByText('Create invitation'));
   await waitFor(() =>
     expect(create).toHaveBeenCalledWith('p1', {
@@ -143,6 +201,29 @@ it('creates an invitation with the chosen right and opens it', async () => {
     expect(mockRouter.replace).toHaveBeenCalledWith({
       pathname: '/project/[id]/settings/invitation',
       params: { id: 'p1', invitationId: invitation.id },
+    }),
+  );
+});
+
+it('invites with Code only when it is chosen, and checks Edit along with it', async () => {
+  const create = jest.fn().mockResolvedValue({ invitation, linkFields: null });
+  const client = {
+    getProject: jest.fn().mockResolvedValue({ project: { id: 'p1', name: 'verity' } }),
+    createProjectInvitation: create,
+  } as unknown as VerityClient;
+  render(<InviteView client={client} projectId="p1" code />);
+  fireEvent.changeText(screen.getByLabelText('Who are you inviting?'), 'Kim');
+  expect(screen.getByRole('checkbox', { name: /Can work with code/ })).not.toBeChecked();
+  // Uncheck Edit first: checking Code must bring it back.
+  fireEvent.press(screen.getByText('Can edit'));
+  fireEvent.press(screen.getByText('Can work with code'));
+  expect(screen.getByRole('checkbox', { name: /Can edit/ })).toBeChecked();
+  fireEvent.press(screen.getByText('Create invitation'));
+  await waitFor(() =>
+    expect(create).toHaveBeenCalledWith('p1', {
+      inviteeName: 'Kim',
+      canExecute: true,
+      canCode: true,
     }),
   );
 });
@@ -192,10 +273,12 @@ it('revokes the invitation after confirming', async () => {
   expect(done).toHaveBeenCalled();
 });
 
+// Against a server that predates Code the invite page must not offer it: that
+// server refuses the field, so the team page passes no word of it along.
 it('offers to invite again where a join did not go through', async () => {
   const client = {
     getProjectTeam: jest.fn().mockResolvedValue({
-      members: [member({})],
+      members: [member({ canCode: undefined })],
       invitations: [{ ...invitation, state: 'failed' }],
     }),
   } as unknown as VerityClient;

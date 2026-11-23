@@ -74,9 +74,23 @@ const eventExamples: Record<AgentEvent['t'], AgentEvent> = {
   },
   status: { t: 'status', state: 'crashed', message: 'Connection closed' },
   text: { t: 'text', delta: 'hello', parentToolId: 'parent' },
-  notice: { t: 'notice', text: 'notice', role: 'agent', clientRequestId: 'request' },
+  notice: {
+    t: 'notice',
+    text: 'notice',
+    role: 'agent',
+    clientRequestId: 'request',
+    changeSubmission: { action: 'submitted', userId: 'user' },
+    secretApproval: {
+      id: 'approval-1',
+      tool: 'verity_http_request',
+      input: {},
+      decision: 'once',
+      secretSource: { project: 'example', config: 'stg' },
+    },
+  },
   prompt: {
     t: 'prompt',
+    origin: 'secret-approval',
     peer: { sessionId: 's', projectId: 'p', label: 'Peer', message: 'hello' },
     initiatedBy: { userId: 'user' },
     text: 'hello',
@@ -120,6 +134,7 @@ const eventExamples: Record<AgentEvent['t'], AgentEvent> = {
     input: {},
     riskClass: 'ask',
     grantChannel: 'acp',
+    secretSource: { project: 'example', config: 'stg' },
   },
   result: {
     t: 'result',

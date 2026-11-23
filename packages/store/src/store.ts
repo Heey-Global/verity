@@ -1,7 +1,20 @@
+import {
+  storedMockupScreens,
+  type SessionMockupReview,
+  type SessionMockups,
+  storedMockupState,
+  mockupReview,
+} from './session-mockups.js';
+import { findRecordedApprovalDecision } from './secret-approval-events.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
-import { createStoredSessionLink } from './session-links.js';
-import { ProjectTeamStore } from './project-team.js';
+import {
+  SessionLinkStore,
+  type SessionLinkRecord,
+  type SessionLinkReservation,
+  type PendingSessionLinkMessage,
+} from './session-links.js';
+import { ProjectTeamStore, type ProjectPermission } from './project-team.js';
 import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
 import {
   MESSAGE_PROJECTION_VERSION,
@@ -44,6 +57,8 @@ import { QAAssignmentStore } from './qa-assignments.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
+import { recordSessionCreator, SessionPeopleStore } from './session-people.js';
+import { ChangeSubmissionStore } from './change-submissions.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
@@ -78,13 +93,14 @@ import { LiveMeetingStore } from './live-meetings.js';
 import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import { scrubNulEscapes } from './nul-scrub.js';
 import { redactSecrets } from './redact.js';
-import { computeNextRun } from './schedule.js';
-import type {
-  Database,
-  PublicPreviewSharesTable,
-  QueuedTurnOpts,
-  ScheduleConfig,
-} from './schema.js';
+import {
+  SessionAutomationStore,
+  type SessionAutomationInput,
+  type SessionAutomationOutcome,
+  type SessionAutomationRecord,
+  type SessionAutomationStatus,
+} from './session-automations.js';
+import type { Database, PublicPreviewSharesTable, QueuedTurnOpts } from './schema.js';
 import { ManagedDevServerStore } from './managed-dev-servers.js';
 import { TaskStore } from './tasks.js';
 
@@ -131,109 +147,11 @@ export interface SessionRecord {
  *  which tells the app whether the newest plan was carried out. */
 export type SessionPlanning = 'active' | 'implemented' | 'discarded';
 
-/** `pending`: screens wait for the reviewer, who marks each one and discusses them
- *  in the chat. `revising`: written by earlier versions, which sent comments for a
- *  revision; read as `pending` (see {@link storedMockupState}). `approved`: the user told the agent to implement and
- *  the review ended. */
-export type SessionMockupState = 'pending' | 'revising' | 'approved';
-
-/** One presented screen. The image is a snapshot in the attachment store, so the
- *  round stays as it was reviewed even when the agent rewrites the file later. */
-export interface MockupScreenRecord {
-  name: string;
-  /** SHA-256 of the image in the attachment store. */
-  attachment: string;
-  mediaType: 'image/png' | 'image/jpeg';
-  width: number;
-  height: number;
-  verdict: MockupVerdict;
-}
-
-/** The reviewer's mark on one screen. Only marks: neither starts any work. */
-export type MockupVerdict = 'open' | 'approved' | 'discarded';
-
-/** Stored screens, with marks from earlier versions mapped onto the current ones:
- *  a commented screen was one the reviewer did not accept, so it reads as
- *  discarded and never as approved. */
-export function storedMockupScreens(raw: unknown): MockupScreenRecord[] {
-  if (!Array.isArray(raw)) return [];
-  const entries = raw.filter(
-    (entry): entry is Omit<MockupScreenRecord, 'verdict'> & { verdict: string } =>
-      typeof entry === 'object' &&
-      entry !== null &&
-      typeof (entry as { name?: unknown }).name === 'string' &&
-      typeof (entry as { attachment?: unknown }).attachment === 'string' &&
-      typeof (entry as { width?: unknown }).width === 'number' &&
-      typeof (entry as { height?: unknown }).height === 'number',
-  );
-  return entries.map(({ name, attachment, mediaType, width, height, verdict }) => ({
-    name,
-    attachment,
-    mediaType,
-    width,
-    height,
-    verdict: verdict === 'approved' ? 'approved' : verdict === 'open' ? 'open' : 'discarded',
-  }));
-}
-
-export interface SessionMockupReview {
-  state: SessionMockupState;
-  /** Increments with each presentation; decisions name the round they were made for. */
-  revision: number;
-  screens: MockupScreenRecord[];
-}
-
-/** The review as stored; `state` null before the first presentation. */
-export interface SessionMockups {
-  state: SessionMockupState | null;
-  revision: number;
-  screens: MockupScreenRecord[];
-}
-
-/** A round an earlier version left `revising` already handed its comments to the
- *  agent; nothing moves it on any more, so it reads as open for marks again. */
-export function storedMockupState(state: SessionMockupState | null): SessionMockupState | null {
-  return state === 'revising' ? 'pending' : state;
-}
-
-function mockupReview(
-  rawState: SessionMockupState | null,
-  revision: number,
-  screens: unknown,
-): { mockupReview?: SessionMockupReview } {
-  const state = storedMockupState(rawState);
-  if (state === null) return {};
-  return {
-    mockupReview: {
-      state,
-      revision,
-      screens: storedMockupScreens(screens),
-    },
-  };
-}
-
-export interface SessionLinkRecord {
-  sessionId: string;
-  peerSessionId: string;
-  peerProjectId: string;
-  peerName: string | null;
-}
-
-export type SessionLinkReservation = 'reserved' | 'duplicate' | 'exhausted' | 'unlinked';
-
-export interface PendingSessionLinkMessage {
-  id: string;
-  invocationId: string;
-  sourceSessionId: string;
-  targetSessionId: string;
-  sourceProjectId: string;
-  requestMac: string;
-  macKeyId: string;
-  message: string;
-  approvedAt: Date | null;
-  createdAt: Date;
-}
-
+export type {
+  SessionLinkRecord,
+  SessionLinkReservation,
+  PendingSessionLinkMessage,
+} from './session-links.js';
 export type GoogleWorkspaceFileKind = 'slides' | 'docs' | 'sheets';
 
 export interface SessionWorkspaceFileRecord {
@@ -276,6 +194,8 @@ export type SessionInput = Omit<
 > & {
   name?: string | null;
   projectId?: string | null;
+  /** The person starting the session; its requests are theirs (ADR 0023). */
+  createdByUserId?: string | null;
 };
 
 /**
@@ -316,20 +236,6 @@ export class ProjectIdentityClaimConflict extends Error {
 /** Whether a project has no GitHub repository behind it (yet). */
 export function isLocalProject(project: Pick<ProjectRecord, 'kind'>): boolean {
   return project.kind === 'local';
-}
-
-/**
- * Whether a project's sessions can be linked and messaged. A sleeping project
- * qualifies: a linked message is an ordinary turn, and turn preparation wakes the
- * Sandbox before running it — the same states the turn route admits.
- */
-export function isSessionLinkProject(
-  project: Pick<ProjectRecord, 'kind' | 'state' | 'hiddenAt'>,
-): boolean {
-  return (
-    project.hiddenAt === null &&
-    (project.state === 'active' || project.state === 'sleeping' || project.state === 'waking')
-  );
 }
 
 /**
@@ -522,57 +428,14 @@ export interface SessionBackendStateRecord {
 /** How one scheduled automation run settled: `ok` (its check script found
  * nothing to do), `acted` (a turn was dispatched), `skipped` (the session was
  * busy or the project unavailable), or `error`. */
-export type SessionAutomationOutcome = 'ok' | 'acted' | 'error' | 'skipped';
-
-/** Only an `enabled` automation fires. */
-export type SessionAutomationStatus = 'enabled' | 'paused';
-
-/** Consecutive failed runs after which an automation pauses itself. */
-export const SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS = 5;
-
-/** A recurring prompt bound to one session (see {@link SessionAutomationsTable}). */
-export interface SessionAutomationRecord {
-  id: string;
-  sessionId: string;
-  name: string;
-  status: SessionAutomationStatus;
-  schedule: ScheduleConfig;
-  /** The task the session's agent receives on every run. */
-  prompt: string;
-  /** Optional check script; when present the agent is only woken on its signal. */
-  script: string | null;
-  /** Model for the dispatched turn; null keeps the session's model. */
-  model: string | null;
-  consecutiveErrorCount: number;
-  lastRunAt: Date | null;
-  lastOutcome: SessionAutomationOutcome | null;
-  /** Short operator-facing explanation of the last outcome, if any. */
-  lastDetail: string | null;
-  nextRunAt: Date | null;
-  /** The local user who confirmed it; null for automations confirmed before
-   * sponsors were recorded. */
-  sponsorUserId: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-/** Input to {@link EventStore.setSessionAutomation}. */
-export class SessionAutomationWorkspaceChangedError extends Error {
-  constructor() {
-    super('The session workspace changed. Confirm the automation again in its current project.');
-    this.name = 'SessionAutomationWorkspaceChangedError';
-  }
-}
-
-export interface SessionAutomationInput {
-  sessionId: string;
-  name: string;
-  schedule: ScheduleConfig;
-  prompt: string;
-  script?: string | null;
-  model?: string | null;
-  sponsorUserId?: string | null;
-}
+export {
+  SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS,
+  SessionAutomationWorkspaceChangedError,
+  type SessionAutomationOutcome,
+  type SessionAutomationStatus,
+  type SessionAutomationRecord,
+  type SessionAutomationInput,
+} from './session-automations.js';
 
 export interface ProjectSettingsRecord {
   /** Absent on older clients; defaults to enabled. Changing it affects the next recreation. */
@@ -1220,7 +1083,10 @@ export interface RunnerTurnOwnership {
  * caller passes it unchanged.
  */
 export interface EventSink {
-  appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }>;
+  appendEvent(
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing?: true }>;
   createSession(session: SessionInput): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
 }
@@ -1585,6 +1451,8 @@ export class EventStore implements EventSink {
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
     const db = rootDb;
+    this.sessionAutomations = new SessionAutomationStore(db);
+    this.sessionLinks = new SessionLinkStore(db);
     this.capacityLeases = new CapacityLeaseStore(db);
     this.userContext = new UserContextStore(db);
     this.userProfiles = new UserProfileStore(db);
@@ -1608,8 +1476,12 @@ export class EventStore implements EventSink {
     this.sandboxUpdateState = new SandboxUpdateStateStore(db);
     this.sandboxRepairIntents = new SandboxRepairIntentStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
+    this.sessionPeople = new SessionPeopleStore(db);
+    this.changeSubmissions = new ChangeSubmissionStore(db);
   }
 
+  private readonly sessionAutomations: SessionAutomationStore;
+  private readonly sessionLinks: SessionLinkStore;
   readonly capacityLeases: CapacityLeaseStore;
   readonly userContext: UserContextStore;
   readonly userProfiles: UserProfileStore;
@@ -1634,6 +1506,10 @@ export class EventStore implements EventSink {
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
+  /** Who started each session, for addressing its requests. */
+  readonly sessionPeople: SessionPeopleStore;
+  /** Session changes members without Code submitted for review. */
+  readonly changeSubmissions: ChangeSubmissionStore;
 
   async getAttendeeState<T>(id: string): Promise<T | undefined> {
     const result = await sql<{
@@ -1665,72 +1541,24 @@ export class EventStore implements EventSink {
     await sql`delete from attendee_state where id = ${id}`.execute(this.db);
   }
 
-  /** One delivery at a time leaves pool capacity for conductor acceptance. */
-  private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
-
   async createSessionLink(leftId: string, rightId: string, requestId?: string): Promise<boolean> {
-    return createStoredSessionLink(this.db, leftId, rightId, isSessionLinkProject, requestId);
+    return this.sessionLinks.createSessionLink(leftId, rightId, requestId);
   }
 
   async deleteSessionLink(leftId: string, rightId: string): Promise<boolean> {
-    const [sessionA, sessionB] = [leftId, rightId].sort() as [string, string];
-    const deleted = await this.db
-      .deleteFrom('session_links')
-      .where('session_a', '=', sessionA)
-      .where('session_b', '=', sessionB)
-      .returning('session_a')
-      .executeTakeFirst();
-    return deleted !== undefined;
+    return this.sessionLinks.deleteSessionLink(leftId, rightId);
   }
 
-  /** Both endpoints are marked using one query for the overview. */
   async linkedSessionIds(): Promise<Set<string>> {
-    const rows = await this.db
-      .selectFrom('session_links')
-      .select(['session_a', 'session_b'])
-      .execute();
-    return new Set(rows.flatMap((row) => [row.session_a, row.session_b]));
+    return this.sessionLinks.linkedSessionIds();
   }
 
   async listSessionLinks(sessionId: string): Promise<SessionLinkRecord[]> {
-    const rows = await this.db
-      .selectFrom('session_links')
-      .innerJoin('sessions', (join) =>
-        join
-          .onRef('sessions.session_id', '=', 'session_links.session_a')
-          .on('session_links.session_b', '=', sessionId),
-      )
-      .select(['sessions.session_id as peer_id', 'sessions.project_id', 'sessions.name'])
-      .unionAll(
-        this.db
-          .selectFrom('session_links')
-          .innerJoin('sessions', (join) =>
-            join
-              .onRef('sessions.session_id', '=', 'session_links.session_b')
-              .on('session_links.session_a', '=', sessionId),
-          )
-          .select(['sessions.session_id as peer_id', 'sessions.project_id', 'sessions.name']),
-      )
-      .execute();
-    return rows
-      .filter((row) => row.project_id !== null)
-      .map((row) => ({
-        sessionId,
-        peerSessionId: row.peer_id,
-        peerProjectId: row.project_id!,
-        peerName: row.name,
-      }));
+    return this.sessionLinks.listSessionLinks(sessionId);
   }
 
   async sessionLinkHasAllowance(sourceId: string, targetId: string): Promise<boolean> {
-    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const row = await this.db
-      .selectFrom('session_links')
-      .select(['remaining_a', 'remaining_b'])
-      .where('session_a', '=', sessionA)
-      .where('session_b', '=', sessionB)
-      .executeTakeFirst();
-    return row !== undefined && (sourceId === sessionA ? row.remaining_a : row.remaining_b) > 0;
+    return this.sessionLinks.sessionLinkHasAllowance(sourceId, targetId);
   }
 
   async sessionLinkHasDelivery(
@@ -1738,16 +1566,7 @@ export class EventStore implements EventSink {
     targetId: string,
     invocationId: string,
   ): Promise<boolean> {
-    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const row = await this.db
-      .selectFrom('session_link_deliveries')
-      .select('invocation_id')
-      .where('invocation_id', '=', invocationId)
-      .where('session_a', '=', sessionA)
-      .where('session_b', '=', sessionB)
-      .where('source_session_id', '=', sourceId)
-      .executeTakeFirst();
-    return row !== undefined;
+    return this.sessionLinks.sessionLinkHasDelivery(sourceId, targetId, invocationId);
   }
 
   async createPendingSessionLinkMessage(input: {
@@ -1760,142 +1579,34 @@ export class EventStore implements EventSink {
     macKeyId: string;
     message: string;
   }): Promise<boolean> {
-    const [sessionA, sessionB] = [input.sourceSessionId, input.targetSessionId].sort() as [
-      string,
-      string,
-    ];
-    return this.db.transaction().execute(async (trx) => {
-      // Several links may share one source. Lock that session before counting so
-      // concurrent requests to different peers cannot each fill the last slot.
-      const source = await trx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('session_id', '=', input.sourceSessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!source) return false;
-      const link = await trx
-        .selectFrom('session_links')
-        .select('session_a')
-        .where('session_a', '=', sessionA)
-        .where('session_b', '=', sessionB)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!link) return false;
-      const count = await trx
-        .selectFrom('session_link_pending_messages')
-        .select(sql<number>`count(*)::int`.as('count'))
-        .where('source_session_id', '=', input.sourceSessionId)
-        .executeTakeFirstOrThrow();
-      if (count.count >= 6) throw new Error('too many linked messages awaiting approval');
-      const inserted = await trx
-        .insertInto('session_link_pending_messages')
-        .values({
-          id: input.id,
-          invocation_id: input.invocationId,
-          session_a: sessionA,
-          session_b: sessionB,
-          source_session_id: input.sourceSessionId,
-          target_session_id: input.targetSessionId,
-          source_project_id: input.sourceProjectId,
-          request_mac: input.requestMac,
-          mac_key_id: input.macKeyId,
-          message: input.message,
-          approved_at: null,
-        })
-        .onConflict((oc) => oc.column('invocation_id').doNothing())
-        .returning('id')
-        .executeTakeFirst();
-      return inserted !== undefined;
-    });
+    return this.sessionLinks.createPendingSessionLinkMessage(input);
   }
 
   async listPendingSessionLinkMessages(
     sourceSessionId: string,
   ): Promise<PendingSessionLinkMessage[]> {
-    const rows = await this.db
-      .selectFrom('session_link_pending_messages')
-      .selectAll()
-      .where('source_session_id', '=', sourceSessionId)
-      .orderBy('created_at')
-      .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      invocationId: row.invocation_id,
-      sourceSessionId: row.source_session_id,
-      targetSessionId: row.target_session_id,
-      sourceProjectId: row.source_project_id,
-      requestMac: row.request_mac,
-      macKeyId: row.mac_key_id,
-      message: row.message,
-      approvedAt: row.approved_at,
-      createdAt: row.created_at,
-    }));
+    return this.sessionLinks.listPendingSessionLinkMessages(sourceSessionId);
   }
 
   async pendingSessionLinkMessageIds(
     sessionIds: readonly string[],
   ): Promise<Map<string, string[]>> {
-    const result = new Map<string, string[]>();
-    if (sessionIds.length === 0) return result;
-    const rows = await this.db
-      .selectFrom('session_link_pending_messages')
-      .select(['id', 'source_session_id'])
-      .where('source_session_id', 'in', [...sessionIds])
-      .execute();
-    for (const row of rows) {
-      const ids = result.get(row.source_session_id) ?? [];
-      ids.push(row.id);
-      result.set(row.source_session_id, ids);
-    }
-    return result;
+    return this.sessionLinks.pendingSessionLinkMessageIds(sessionIds);
   }
 
   async getPendingSessionLinkMessage(
     sourceSessionId: string,
     id: string,
   ): Promise<PendingSessionLinkMessage | undefined> {
-    const row = await this.db
-      .selectFrom('session_link_pending_messages')
-      .selectAll()
-      .where('source_session_id', '=', sourceSessionId)
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row === undefined
-      ? undefined
-      : {
-          id: row.id,
-          invocationId: row.invocation_id,
-          sourceSessionId: row.source_session_id,
-          targetSessionId: row.target_session_id,
-          sourceProjectId: row.source_project_id,
-          requestMac: row.request_mac,
-          macKeyId: row.mac_key_id,
-          message: row.message,
-          approvedAt: row.approved_at,
-          createdAt: row.created_at,
-        };
+    return this.sessionLinks.getPendingSessionLinkMessage(sourceSessionId, id);
   }
 
   async approvePendingSessionLinkMessage(sourceSessionId: string, id: string): Promise<boolean> {
-    const updated = await this.db
-      .updateTable('session_link_pending_messages')
-      .set({ approved_at: sql`coalesce(approved_at, now())` })
-      .where('source_session_id', '=', sourceSessionId)
-      .where('id', '=', id)
-      .returning('id')
-      .executeTakeFirst();
-    return updated !== undefined;
+    return this.sessionLinks.approvePendingSessionLinkMessage(sourceSessionId, id);
   }
 
   async deletePendingSessionLinkMessage(sourceSessionId: string, id: string): Promise<boolean> {
-    const deleted = await this.db
-      .deleteFrom('session_link_pending_messages')
-      .where('source_session_id', '=', sourceSessionId)
-      .where('id', '=', id)
-      .returning('id')
-      .executeTakeFirst();
-    return deleted !== undefined;
+    return this.sessionLinks.deletePendingSessionLinkMessage(sourceSessionId, id);
   }
 
   async reserveSessionLinkMessage(
@@ -1905,66 +1616,13 @@ export class EventStore implements EventSink {
     approvedRenewal: boolean,
     deliver?: () => Promise<void>,
   ): Promise<SessionLinkReservation> {
-    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const previous = this.sessionLinkDeliveryTail;
-    let release = (): void => undefined;
-    const finished = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.sessionLinkDeliveryTail = finished;
-    try {
-      await previous;
-      return await this.db.transaction().execute(async (trx) => {
-        const link = await trx
-          .selectFrom('session_links')
-          .selectAll()
-          .where('session_a', '=', sessionA)
-          .where('session_b', '=', sessionB)
-          .forUpdate()
-          .executeTakeFirst();
-        if (!link) return 'unlinked';
-        const prior = await trx
-          .selectFrom('session_link_deliveries')
-          .select(['invocation_id', 'session_a', 'session_b', 'source_session_id'])
-          .where('invocation_id', '=', invocationId)
-          .executeTakeFirst();
-        if (prior) {
-          if (
-            prior.session_a !== sessionA ||
-            prior.session_b !== sessionB ||
-            prior.source_session_id !== sourceId
-          )
-            throw new Error('linked message invocation was reused for a different target');
-          await deliver?.();
-          return 'duplicate';
-        }
-        const column = sourceId === sessionA ? 'remaining_a' : 'remaining_b';
-        const remaining = link[column];
-        if (remaining === 0 && !approvedRenewal) return 'exhausted';
-        await trx
-          .updateTable('session_links')
-          .set({ [column]: remaining === 0 ? 5 : remaining - 1 })
-          .where('session_a', '=', sessionA)
-          .where('session_b', '=', sessionB)
-          .execute();
-        await trx
-          .insertInto('session_link_deliveries')
-          .values({
-            invocation_id: invocationId,
-            session_a: sessionA,
-            session_b: sessionB,
-            source_session_id: sourceId,
-          })
-          .execute();
-        // The row lock keeps unlink and project changes from completing until
-        // the target has accepted this turn. Global serialization leaves pool
-        // capacity for conductor work that uses the same store.
-        await deliver?.();
-        return 'reserved';
-      });
-    } finally {
-      release();
-    }
+    return this.sessionLinks.reserveSessionLinkMessage(
+      sourceId,
+      targetId,
+      invocationId,
+      approvedRenewal,
+      deliver,
+    );
   }
 
   /** Encrypt a normalized secret value for storage (null stays null). */
@@ -2052,6 +1710,8 @@ export class EventStore implements EventSink {
         if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
       }
       await tx.insertInto('sessions').values(values).execute();
+      if (session.createdByUserId)
+        await recordSessionCreator(tx, session.sessionId, session.createdByUserId);
     };
     if (this.db.isTransaction) await insert(this.db);
     else await this.db.transaction().execute(insert);
@@ -4438,23 +4098,17 @@ export class EventStore implements EventSink {
    * milliseconds (`ts`), so the live fan-out can broadcast the real persist time
    * alongside `seq` (#32) — matching what the read paths surface.
    */
-  async appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }> {
+  async appendEvent(
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing?: true }> {
     if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
     const { type, payload } = await this.prepareEventRow(event);
-    // Takes the cross-process append lock like every other writer. Server generations
-    // overlap during reattach/cutover, so "the generation that writes a session's events
-    // is the generation that sweeps it" is a convention, not something the database
-    // enforces: a draining generation can still be streaming a live turn's output through
-    // here while the new one probes that same turn. An advisory lock only orders holders
-    // OF it, so an append that skipped it would be invisible to
-    // {@link appendEventForRunningTurn}'s predicate and still take the lower id — exactly
-    // the reversal that lock exists to rule out.
-    //
-    // READ COMMITTED takes a new snapshot per statement. Acquire the lock before
-    // the INSERT so a tombstone committed during lock contention is visible.
     const row = await this.withSessionEventAppend(sessionId, () =>
       this.db.transaction().execute(async (tx) => {
         await this.sessionEventAppendLock(tx, sessionId);
+        const existing = await findRecordedApprovalDecision(tx, sessionId, event);
+        if (existing) return { ...existing, existing: true as const };
         const result = await sql<{ id: number; created_at: Date }>`
           insert into events (session_id, type, payload)
           select ${sessionId}, ${type}, ${payload}::jsonb
@@ -4467,6 +4121,8 @@ export class EventStore implements EventSink {
         return inserted;
       }),
     );
+    if ('existing' in row)
+      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: true };
     this.enqueuePersistedMessageEvent(
       sessionId,
       Number(row.id),
@@ -6839,21 +6495,14 @@ export class EventStore implements EventSink {
   async hasProjectPermission(
     userId: string,
     projectId: string,
-    permission: 'read' | 'execute' | 'manage',
+    permission: ProjectPermission,
   ): Promise<boolean> {
     const membership = await this.db
       .selectFrom('project_memberships as m')
       .innerJoin('users as u', 'u.id', 'm.user_id')
       .innerJoin('projects as p', 'p.id', 'm.project_id')
-      .select([
-        'm.can_read',
-        'm.can_execute',
-        'm.can_manage',
-        'u.status',
-        'u.role',
-        'p.kind',
-        'p.created_by_user_id',
-      ])
+      .selectAll('m')
+      .select(['u.status', 'u.role', 'p.kind', 'p.created_by_user_id'])
       .where('m.user_id', '=', userId)
       .where('m.project_id', '=', projectId)
       .executeTakeFirst();
@@ -7736,258 +7385,53 @@ export class EventStore implements EventSink {
       .execute();
   }
 
-  // ─── Session automations: recurring prompts bound to one session ──────────
-
-  private sessionAutomationRowToRecord(row: {
-    id: string;
-    session_id: string;
-    name: string;
-    status: string;
-    schedule: ScheduleConfig;
-    prompt: string;
-    script: string | null;
-    model: string | null;
-    consecutive_error_count: number;
-    last_run_at: Date | null;
-    last_outcome: string | null;
-    last_detail: string | null;
-    next_run_at: Date | null;
-    sponsor_user_id: string | null;
-    created_at: Date;
-    updated_at: Date;
-  }): SessionAutomationRecord {
-    return {
-      id: row.id,
-      sessionId: row.session_id,
-      name: row.name,
-      status: row.status as SessionAutomationStatus,
-      schedule: row.schedule,
-      prompt: row.prompt,
-      script: row.script,
-      model: row.model,
-      consecutiveErrorCount: row.consecutive_error_count,
-      lastRunAt: row.last_run_at,
-      lastOutcome: row.last_outcome as SessionAutomationOutcome | null,
-      lastDetail: row.last_detail,
-      nextRunAt: row.next_run_at,
-      sponsorUserId: row.sponsor_user_id,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  /**
-   * Create or replace the automation of one session. A session owns at most one
-   * automation, so confirming a new proposal replaces the previous one in place.
-   * The result is enabled immediately and armed for its next slot: the operator's
-   * confirmation is the gate, not a separate enable step.
-   */
   async setSessionAutomation(
     input: SessionAutomationInput,
     now: Date = new Date(),
     checkedWorkspace?: Pick<SessionRecord, 'projectId' | 'worktree'>,
   ): Promise<SessionAutomationRecord> {
-    const values = {
-      name: input.name,
-      status: 'enabled',
-      schedule: JSON.stringify(input.schedule),
-      prompt: input.prompt,
-      script: input.script ?? null,
-      model: input.model ?? null,
-      consecutive_error_count: 0,
-      last_run_at: null,
-      last_outcome: null,
-      last_detail: null,
-      next_run_at: computeNextRun(input.schedule, now).toISOString(),
-      // A replacement is confirmed by whoever confirmed it, so it re-sponsors.
-      sponsor_user_id: input.sponsorUserId ?? null,
-    };
-    return this.db.transaction().execute(async (tx) => {
-      // Serialize with commitSessionMove: a script checked in the old workspace
-      // must not overwrite the move's pause or become enabled in the new one.
-      const session = await tx
-        .selectFrom('sessions')
-        .select(['project_id', 'worktree'])
-        .where('session_id', '=', input.sessionId)
-        .forUpdate()
-        .executeTakeFirstOrThrow();
-      if (
-        checkedWorkspace !== undefined &&
-        (session.project_id !== checkedWorkspace.projectId ||
-          session.worktree !== checkedWorkspace.worktree)
-      ) {
-        throw new SessionAutomationWorkspaceChangedError();
-      }
-      const row = await tx
-        .insertInto('session_automations')
-        .values({ id: randomUUID(), session_id: input.sessionId, ...values })
-        // A replacement gets a fresh id. Claims and outcomes are keyed by id, so a
-        // run of the previous configuration still in flight cannot record its result
-        // (or its errors) against the one the operator just confirmed.
-        .onConflict((oc) =>
-          oc
-            .column('session_id')
-            .doUpdateSet({ ...values, id: randomUUID(), updated_at: sql`now()` }),
-        )
-        .returningAll()
-        .executeTakeFirst();
-      if (!row)
-        throw new Error('verity: setSessionAutomation RETURNING yielded no row — dialect bug');
-      return this.sessionAutomationRowToRecord(row);
-    });
+    return this.sessionAutomations.setSessionAutomation(input, now, checkedWorkspace);
   }
 
   async getSessionAutomation(sessionId: string): Promise<SessionAutomationRecord | undefined> {
-    const row = await this.db
-      .selectFrom('session_automations')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return row ? this.sessionAutomationRowToRecord(row) : undefined;
+    return this.sessionAutomations.getSessionAutomation(sessionId);
   }
 
-  /**
-   * Pause or resume a session's automation. Resuming re-arms it from `now` and
-   * closes the error circuit, so an automation paused after repeated failures
-   * gets a fresh run of attempts once the operator turns it back on.
-   */
   async setSessionAutomationStatus(
     sessionId: string,
     status: SessionAutomationStatus,
     now: Date = new Date(),
   ): Promise<SessionAutomationRecord | undefined> {
-    return this.db.transaction().execute(async (tx) => {
-      const row = await tx
-        .selectFrom('session_automations')
-        .selectAll()
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!row) return undefined;
-      // Re-sending the current status must neither reset the error budget nor
-      // push an already armed slot further out.
-      if (row.status === status) return this.sessionAutomationRowToRecord(row);
-      const updated = await tx
-        .updateTable('session_automations')
-        .set({
-          status,
-          next_run_at:
-            status === 'enabled' ? computeNextRun(row.schedule, now).toISOString() : null,
-          ...(status === 'enabled' ? { consecutive_error_count: 0 } : {}),
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', row.id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return this.sessionAutomationRowToRecord(updated);
-    });
+    return this.sessionAutomations.setSessionAutomationStatus(sessionId, status, now);
   }
 
   async deleteSessionAutomation(sessionId: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('session_automations')
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numDeletedRows > 0n;
+    return this.sessionAutomations.deleteSessionAutomation(sessionId);
   }
 
-  /** Automation status per session, for the session list's automation marker.
-   *  Sessions without an automation are absent from the map. */
   async listSessionAutomationStatuses(
     sessionIds: readonly string[],
   ): Promise<Map<string, SessionAutomationStatus>> {
-    const statuses = new Map<string, SessionAutomationStatus>();
-    if (sessionIds.length === 0) return statuses;
-    const rows = await this.db
-      .selectFrom('session_automations')
-      .select(['session_id', 'status'])
-      .where('session_id', 'in', sessionIds)
-      .execute();
-    for (const row of rows) statuses.set(row.session_id, row.status as SessionAutomationStatus);
-    return statuses;
+    return this.sessionAutomations.listSessionAutomationStatuses(sessionIds);
   }
 
-  /** Enabled automations due at or before `now`, earliest-overdue first. */
   async listDueSessionAutomations(now: Date): Promise<SessionAutomationRecord[]> {
-    const rows = await this.db
-      .selectFrom('session_automations')
-      .selectAll()
-      .where('status', '=', 'enabled')
-      .where('next_run_at', 'is not', null)
-      .where('next_run_at', '<=', now)
-      .orderBy('next_run_at', 'asc')
-      .execute();
-    return rows.map((r) => this.sessionAutomationRowToRecord(r));
+    return this.sessionAutomations.listDueSessionAutomations(now);
   }
 
-  /** The earliest armed due time, or `null` — the scheduler sleeps until then. */
   async nextSessionAutomationDueAt(): Promise<Date | null> {
-    const row = await this.db
-      .selectFrom('session_automations')
-      .select((eb) => eb.fn.min('next_run_at').as('next'))
-      .where('status', '=', 'enabled')
-      .where('next_run_at', 'is not', null)
-      .executeTakeFirst();
-    return row?.next ?? null;
+    return this.sessionAutomations.nextSessionAutomationDueAt();
   }
 
-  /**
-   * Claim one due tick: advance `next_run_at` before any work starts, so a crash
-   * mid-run cannot re-fire the same slot after a restart, and two server
-   * generations cannot both run it. Returns false when another claimer won or the
-   * automation was paused, replaced, or deleted in the meantime.
-   */
   async claimSessionAutomationRun(id: string, ranAt: Date, nextRunAt: Date): Promise<boolean> {
-    const result = await this.db
-      .updateTable('session_automations')
-      .set({
-        last_run_at: ranAt.toISOString(),
-        next_run_at: nextRunAt.toISOString(),
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .where('status', '=', 'enabled')
-      .where('next_run_at', 'is not', null)
-      .where('next_run_at', '<=', ranAt)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionAutomations.claimSessionAutomationRun(id, ranAt, nextRunAt);
   }
 
-  /**
-   * Record how a claimed run settled. Five consecutive errors pause the
-   * automation so a broken one stops spending turns until the operator resumes it.
-   */
   async recordSessionAutomationOutcome(
     id: string,
     result: { outcome: SessionAutomationOutcome; detail: string | null },
   ): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      const automation = await tx
-        .selectFrom('session_automations')
-        .select('consecutive_error_count')
-        .where('id', '=', id)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!automation) return;
-      const errorCount =
-        result.outcome === 'error'
-          ? automation.consecutive_error_count + 1
-          : result.outcome === 'skipped'
-            ? automation.consecutive_error_count
-            : 0;
-      const circuitOpen = errorCount >= SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS;
-      await tx
-        .updateTable('session_automations')
-        .set({
-          last_outcome: result.outcome,
-          last_detail: result.detail,
-          consecutive_error_count: errorCount,
-          ...(circuitOpen ? { status: 'paused', next_run_at: null } : {}),
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .execute();
-    });
+    return this.sessionAutomations.recordSessionAutomationOutcome(id, result);
   }
 
   private projectSettingsRowToRecord(

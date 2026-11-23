@@ -46,6 +46,25 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
       const persisted = await deps.store.appendEvent(sessionId, event);
       deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
     });
+    try {
+      for (const event of await this.unrecordedDecisions(sessionId)) {
+        await this.appendDecision(sessionId, event);
+      }
+    } catch (error) {
+      deps.reportError(sessionId, error);
+    }
+    await this.tryResumeApproved(sessionId);
+  }
+
+  private async appendDecision(sessionId: string, event: AgentEvent): Promise<void> {
+    const deps = this.dependencies();
+    const persisted = await deps.store.appendEvent(sessionId, event);
+    if (!persisted.existing)
+      deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
+  }
+
+  private async tryResumeApproved(sessionId: string): Promise<void> {
+    const deps = this.dependencies();
     // A failed continuation must not make the read lose an otherwise actionable card.
     try {
       await this.resumeApproved(sessionId);
@@ -100,7 +119,7 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
   async answer(
     input: Omit<
       Parameters<typeof decideDetachedPermission>[0],
-      'permissions' | 'notice' | 'resume' | 'persistScoped' | 'options'
+      'permissions' | 'notice' | 'resume' | 'persistScoped' | 'recordDecision' | 'options'
     > & {
       options?:
         | (Parameters<typeof decideDetachedPermission>[0]['options'] & {
@@ -121,7 +140,22 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
       },
       notice: (text) =>
         this.dependencies().emitEvent(input.sessionId, { t: 'notice', role: 'agent', text }),
-      resume: () => this.resumeApproved(input.sessionId),
+      recordDecision: async (event) => {
+        const deps = this.dependencies();
+        try {
+          await this.appendDecision(input.sessionId, event);
+        } catch (error) {
+          deps.reportError(input.sessionId, error);
+          await deps
+            .emitEvent(input.sessionId, {
+              t: 'notice',
+              role: 'agent',
+              text: 'The decision was recorded, but its chat card could not be saved yet. Reopen this session to retry saving the card.',
+            })
+            .catch((noticeError: unknown) => deps.reportError(input.sessionId, noticeError));
+        }
+      },
+      resume: () => this.tryResumeApproved(input.sessionId),
     });
   }
 }

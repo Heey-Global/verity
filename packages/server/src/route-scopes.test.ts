@@ -161,6 +161,11 @@ const fixture = (method: string, url: string): ReadonlyMap<string, RouteScopeDec
   new Map([[routeScopeKey(method, url), { scope: 'public' as const, credential: 'test fixture' }]]);
 
 describe('route scope declarations', () => {
+  it('admits dependency capacity requests to their container capability check', () => {
+    expect(NON_OPERATOR_ROUTES.get('POST /internal/dependency-storage')?.scope).toBe(
+      'container-capability',
+    );
+  });
   it('finds the route surface it is supposed to be checking', () => {
     // A guard on the extraction itself. If the pattern stopped matching — a
     // Fastify upgrade, a reformat, a move to `route({ method })` — every other
