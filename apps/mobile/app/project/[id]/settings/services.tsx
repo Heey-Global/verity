@@ -100,7 +100,7 @@ function ProjectServicesView({
           title="Secrets"
           description="The Doppler projects and configs this project reads secrets from. Agents write NAME for the default and project/config/NAME for the others."
         >
-          <ProjectDopplerBindings client={client} projectId={projectId} />
+          <ProjectDopplerBindings key={projectId} client={client} projectId={projectId} />
         </SettingsGroup>
       ) : null}
 

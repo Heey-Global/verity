@@ -47,6 +47,21 @@ export function createBrokeredHttpConsumptionStore(db: Kysely<Database>) {
       callId: string;
       requestHash: string;
     }): Promise<boolean> {
+      // Old claims lacked a provider-independent ID. The request hash still
+      // identifies a possible replay in the same turn after a binding change.
+      if (
+        input.callId.startsWith('doppler-v2:') &&
+        (await db
+          .selectFrom('brokered_http_consumptions')
+          .select('call_id')
+          .where('project_id', '=', input.projectId)
+          .where('session_id', '=', input.sessionId)
+          .where('turn_id', '=', input.turnId)
+          .where('request_hash', '=', input.requestHash)
+          .where('call_id', 'not like', 'doppler-v2:%')
+          .executeTakeFirst())
+      )
+        return false;
       const inserted = await db
         .insertInto('brokered_http_consumptions')
         .values({

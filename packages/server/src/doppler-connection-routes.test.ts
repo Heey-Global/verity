@@ -23,9 +23,14 @@ const binding = (
 
 function harness({
   changeBindings = false,
-  workplaceSlug = null as string | null,
-  personalWorkplace = null as string | null,
-  instanceWorkplace = undefined as string | null | undefined,
+  workplaceSlug = 'northstar',
+  personalWorkplace = 'northstar',
+  instanceWorkplace,
+}: {
+  changeBindings?: boolean;
+  workplaceSlug?: string | null;
+  personalWorkplace?: string | null;
+  instanceWorkplace?: string | null;
 } = {}) {
   const instanceToken =
     instanceWorkplace === undefined ? undefined : Buffer.from('instance-token-fixture');
@@ -150,6 +155,19 @@ describe('personal Doppler connection routes', () => {
     },
   );
 
+  it('requires a workplace before enrolling a token on a tokenless legacy connection', async () => {
+    const { app, listNames, tokens } = harness({ workplaceSlug: null });
+    try {
+      const result = await put(app, 'lena', { token: 'dp.st.good', connectionId: 'platform' });
+      expect(result.statusCode).toBe(400);
+      expect(result.json().error).toContain('verify the workplace');
+      expect(listNames).not.toHaveBeenCalled();
+      expect(tokens.size).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('accepts a verified same-workplace token that can read the bound configs', async () => {
     const { app, tokens } = harness({ workplaceSlug: 'northstar', personalWorkplace: 'northstar' });
     try {
@@ -164,6 +182,7 @@ describe('personal Doppler connection routes', () => {
 
   it('derives workplace identity for a connection with a migrated instance token', async () => {
     const { app, tokens, workplace, instanceToken } = harness({
+      workplaceSlug: null,
       instanceWorkplace: 'northstar',
       personalWorkplace: 'other-workplace',
     });

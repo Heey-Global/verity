@@ -95,8 +95,8 @@ export function createEmbeddedSecretJobs({
               ...secretJobsConfig.doppler,
               catalog: secretProviderCatalog!,
               // The catalog retains its instance connection independently of project defaults.
-              readCredential: (_ref, { projectId, userId }) =>
-                dopplerCredentialFor(userId, projectId, dopplerConnectionId),
+              readCredential: (_ref, { projectId, userId }, scope) =>
+                dopplerCredentialFor(userId, projectId, dopplerConnectionId, scope),
             })
           : secretJobsConfig.resolveSecrets!,
       sealEnvelope,
@@ -191,8 +191,8 @@ export function installEmbeddedSecretJobs(
       secretProviderCatalog,
       createDopplerSecretNameLister({
         ...dopplerOptions,
-        readCredential: (_ref, { projectId, userId }) =>
-          dopplerCredentialFor(userId, projectId, dopplerConnectionId),
+        readCredential: (_ref, { projectId, userId }, scope) =>
+          dopplerCredentialFor(userId, projectId, dopplerConnectionId, scope),
       }),
       async (header, projectId) => {
         const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];

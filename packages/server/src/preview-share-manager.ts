@@ -3,6 +3,7 @@ export type { CreatePreviewShareInput, PublicPreviewShare } from './preview-shar
 import { phaseTimer, type PhaseTimer } from './preview-share-diagnostics.js';
 import {
   authorizedPreviewPort,
+  authorizedManagedPreviewPort,
   previewSandboxFor,
   previewTargetIsLive,
   previewConnectorIsLive,
@@ -329,8 +330,7 @@ export class PreviewShareManager {
       throw error;
     }
     if (!sandbox.running) return [];
-    // Without discovery wired there is simply nothing to show; a 409 here would
-    // park the sheet's default tab on an error it can never leave.
+    // Keep the preview sheet usable when discovery is unavailable.
     if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) return [];
     return (
       this.options.listSessionServers?.(sessionId) ?? this.sessionServers(project, session.worktree)
@@ -380,6 +380,14 @@ export class PreviewShareManager {
     port: number,
     managedId?: string,
   ) {
+    if (managedId)
+      return authorizedManagedPreviewPort(
+        this.options,
+        project,
+        session.sessionId,
+        port,
+        managedId,
+      );
     const target = await this.reachableSessionPort(project, session, port);
     const { store } = this.options;
     const { sessionId } = session;
@@ -492,8 +500,10 @@ export class PreviewShareManager {
       throw new PreviewShareConflictError('dev server is not running');
     }
     const target =
-      port === undefined ? undefined : await this.reachableSessionPort(project, session!, port);
-    if (port !== undefined && !target) {
+      port === undefined || managed
+        ? undefined
+        : await this.reachableSessionPort(project, session!, port);
+    if (port !== undefined && !managed && !target) {
       throw new PreviewShareConflictError(
         'nothing in this session listens on that port on a reachable address',
       );
@@ -507,9 +517,7 @@ export class PreviewShareManager {
     const sandboxProject = await this.previewSandbox(project, managed?.id);
     if (
       managed &&
-      !(await this.options.listListeningProcesses?.(sandboxProject, { fresh: true }))?.some(
-        (listener) => listener.instanceId === managed.id && listener.port === managed.sandboxPort,
-      )
+      !(await this.sessionPortAuthorized(sandboxProject, session!, managed.sandboxPort, managed.id))
     )
       throw new PreviewShareConflictError('managed server listener is unavailable');
     const staticPath = isStatic
@@ -577,8 +585,7 @@ export class PreviewShareManager {
     try {
       shareId = validShareId(binding.shareId);
     } catch (error) {
-      // Even a contract-violating id is the only handle for the object the Uplink
-      // just created. Revoke bounded strings before rejecting the response.
+      // Revoke the new Uplink object by its returned ID, even on an invalid response.
       if (
         typeof binding.shareId === 'string' &&
         binding.shareId.length > 0 &&
@@ -693,9 +700,7 @@ export class PreviewShareManager {
     this.creations.set(shareId, creationFinished);
     try {
       this.assertEdgeAvailable();
-      // External calls above leave a race window after the initial path check.
-      // Revalidate at the mount boundary so a swapped ancestor cannot be handed
-      // to Docker as the connector's static source.
+      // Revalidate the static mount immediately before handing it to Docker.
       if (staticPath && staticRoot) {
         const currentRoot = await this.staticSourceRoot(project, session?.worktree);
         if (currentRoot !== staticRoot) throw new Error('static preview source changed');
@@ -744,7 +749,7 @@ export class PreviewShareManager {
       }
       if (
         port !== undefined &&
-        !(await this.sessionPortAuthorized(project, session!, port, managed?.id))
+        !(await this.sessionPortAuthorized(sandboxProject, session!, port, managed?.id))
       ) {
         throw new Error('the session port stopped listening while the share was being created');
       }
@@ -1006,8 +1011,7 @@ export class PreviewShareManager {
     const startedAt = performance.now();
     await this.creations.get(id);
     const waitedForCreationMs = Math.round(performance.now() - startedAt);
-    // Timed separately because they run in parallel: the slower of the two is
-    // what the user waits for, and the total alone would not say which.
+    // Time parallel cleanup steps separately to identify the slower one.
     const timed = async (operation: () => Promise<void>): Promise<number> => {
       const began = performance.now();
       await operation();
@@ -1023,10 +1027,7 @@ export class PreviewShareManager {
       timed(() => this.options.edge.remove(id)),
     ]);
     const [connectorRemove, uplinkRemove] = cleanup;
-    // A queued Uplink removal is durable: it is persisted before this error is
-    // raised and retried whenever the Uplink connects. Treating it as a failure
-    // left the share in `revoking` for as long as the Uplink was unreachable,
-    // so stopping it answered 500 and every Repair of its project aborted.
+    // A durable queued Uplink removal can finish once the Uplink reconnects.
     const uplinkQueued =
       uplinkRemove?.status === 'rejected' &&
       uplinkRemove.reason instanceof PreviewShareRemovalQueuedError;
@@ -1778,9 +1779,7 @@ async function assertEligibleSandbox(
     ) {
       continue;
     }
-    // Compare against the source the provisioner actually binds, not a guessed
-    // suffix: since seeds are published atomically the source is `<root>/.current`,
-    // and a hard-coded suffix rejected every share once that layout changed.
+    // Match the provisioner's actual seed path, including atomic `.current` layouts.
     if (
       mount.readWrite === STANDARD_MOUNTS.agentSeed.writable &&
       mount.destination === STANDARD_MOUNTS.agentSeed.target &&

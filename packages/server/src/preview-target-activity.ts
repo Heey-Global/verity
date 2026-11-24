@@ -154,3 +154,20 @@ export async function previewSandboxFor(
   const target = await options.sandboxFor(project, instance.lastRunUserId);
   return { ...project, containerName: target.containerName, previewNetwork: target.networkName };
 }
+
+export async function authorizedManagedPreviewPort(
+  options: PreviewShareManagerOptions,
+  sandbox: ProjectRecord,
+  sessionId: string,
+  port: number,
+  managedInstanceId: string,
+): Promise<boolean> {
+  const instance = await managedPreviewInstance(options.store, { sessionId, managedInstanceId });
+  return (
+    instance?.projectId === sandbox.id &&
+    instance.sandboxPort === port &&
+    (await options.listListeningProcesses?.(sandbox, { fresh: true }))?.some(
+      (listener) => listener.instanceId === managedInstanceId && listener.port === port,
+    ) === true
+  );
+}

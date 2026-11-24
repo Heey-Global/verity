@@ -674,6 +674,7 @@ export class LocalPreviewManager {
             ...(saved.targetPort === null ? {} : { targetPort: saved.targetPort }),
             ...(saved.staticPath === null ? {} : { staticPath: saved.staticPath }),
             networkPort: saved.networkPort,
+            ...(saved.managedInstanceId ? { managedInstanceId: saved.managedInstanceId } : {}),
           },
           saved,
         );

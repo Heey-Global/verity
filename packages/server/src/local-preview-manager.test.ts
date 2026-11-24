@@ -417,6 +417,7 @@ it.each(['access', 'approval', 'legacy provider'] as const)(
       sandboxPort: 3000,
       networkPort: 18100,
       desired: 'running',
+      state: 'running',
       localAccess: true,
       lastRunCommand: 'npm start',
       lastRunWorkdir: '.',
@@ -448,6 +449,7 @@ it.each(['access', 'approval', 'legacy provider'] as const)(
     if (reason === 'approval') {
       approved = true;
       await restored.reconcile();
+      expect(docker.createContainer).toHaveBeenCalledOnce();
       expect(restored.list('s1')).toEqual([share]);
     }
   },

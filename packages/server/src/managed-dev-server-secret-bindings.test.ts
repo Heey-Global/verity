@@ -498,7 +498,7 @@ describe('managed servers with secret bindings', () => {
     });
   });
 
-  it.each(['drift', 'reapproved', 'legacy'] as const)(
+  it.each(['drift', 'reapproved', 'legacy', 'retry stop'] as const)(
     'stops obsolete secret-bearing runs and removes local access after %s',
     async (change) => {
       await withResolver(
@@ -544,6 +544,12 @@ describe('managed servers with secret bindings', () => {
         localShareId: null,
       });
       expect(sandbox.started).toHaveLength(1);
+      if (change === 'retry stop') {
+        sandbox.stop.mockRejectedValueOnce(new Error('Docker unavailable'));
+        await manager.tick();
+        expect((await instanceOf()).desired).toBe('running');
+        expect(shares.shares).toHaveLength(0);
+      }
       await manager.tick();
       expect(shares.shares).toHaveLength(0);
       expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), run.instanceId);

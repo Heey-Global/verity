@@ -85,7 +85,6 @@ export function ProjectDopplerBindings({
           })
           .catch(() => {
             if (active) {
-              setPersonal(undefined);
               setPersonalError('Could not load your Doppler tokens.');
             }
           })

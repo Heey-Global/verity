@@ -1154,18 +1154,21 @@ export class ManagedDevServerManager {
     project: ProjectRecord,
     instance: ManagedDevServerInstanceRecord,
     detail: string | null,
+    retryOnFailure = false,
   ): Promise<void> {
     this.liveness.remove(instance.id);
-    await this.servers.updateInstance(instance.id, { desired: 'stopped' });
+    if (!retryOnFailure) await this.servers.updateInstance(instance.id, { desired: 'stopped' });
     try {
       await this.unpublish(instance);
     } finally {
-      // Edge cleanup must not prevent the server process from being stopped.
       if (project.state === 'active' && project.containerName)
         await this.inSandbox(project, instance.lastRunUserId)
           .then((target) => this.options.runtime.stopManagedServer(target, instance.id))
-          .catch(() => undefined);
+          .catch((error: unknown) => {
+            if (retryOnFailure) throw error;
+          });
       await this.servers.updateInstance(instance.id, {
+        desired: 'stopped',
         state: 'stopped',
         detail,
         ...(instance.state === 'running' ? { lastRanAt: new Date(this.now()) } : {}),
@@ -1187,9 +1190,7 @@ export class ManagedDevServerManager {
       return;
     }
     const existing = this.shareFor(instance);
-    // Preserve local identity when the sandbox is recreated.
     if (existing && existing.expiresAt.getTime() - this.now() > 86_400_000) return;
-    // Replace a share nearing expiry on the same port.
     if (existing) await this.options.localShares?.stop(existing.id).catch(() => false);
     if ((this.publishRetryAt.get(instance.id) ?? 0) > this.now()) return;
     const held = local.heldPorts();
@@ -1280,7 +1281,6 @@ export class ManagedDevServerManager {
     ).catch(() => undefined);
   }
 
-  /** One pass over active instances. Exposed for tests and for discovery pushes. */
   tick(): Promise<void> {
     if (this.closed || this.options.canSupervise?.() === false) return Promise.resolve();
     this.ticking ??= this.supervise().finally(() => {
@@ -1330,8 +1330,6 @@ export class ManagedDevServerManager {
   ): Promise<void> {
     const project = await this.options.store.getProject(projectId);
     if (!project || project.state !== 'active' || !project.containerName) return;
-    // Each server is supervised in its own sandbox's container (ADR 0023 §4); a
-    // container is listed once per pass however many servers it runs.
     const listings = new Map<string, Promise<ListeningProcess[]>>();
     const processesIn = (target: ProjectRecord): Promise<ListeningProcess[]> => {
       let listing = listings.get(target.containerName);
@@ -1397,6 +1395,7 @@ export class ManagedDevServerManager {
           project,
           instance,
           'Doppler access changed. Review and approve again.',
+          true,
         );
         changed = true;
         continue;

@@ -154,18 +154,15 @@ export function registerDopplerConnectionRoutes(
         instance?.fill(0);
       }
     }
-    if (expectedWorkplace !== null || connection.hasToken) {
-      const personal =
-        expectedWorkplace === null
-          ? undefined
-          : await deps.workplace(input.data.token).catch(() => undefined);
-      if (expectedWorkplace === null || personal?.slug !== expectedWorkplace) {
-        return reply.code(400).send({
-          error:
-            'This token could not be verified for this Doppler workplace. Use a token from the connected workplace.',
-        });
-      }
-    }
+    if (expectedWorkplace === null)
+      return reply.code(400).send({
+        error: 'Ask an administrator to verify the workplace of this Doppler connection first.',
+      });
+    if ((await deps.workplace(input.data.token).catch(() => undefined))?.slug !== expectedWorkplace)
+      return reply.code(400).send({
+        error:
+          'This token could not be verified for this Doppler workplace. Use a token from the connected workplace.',
+      });
     // The token must read every config the project binds on this connection.
     for (const bound of bindings) {
       const token = Buffer.from(input.data.token, 'utf8');
