@@ -1070,7 +1070,7 @@ async function main() {
         // Root ignores permission bits, so its writes would reach every session;
         // an inventory this process cannot seal is copied as before.
         checkRecovery(ownTrees(cache));
-        const footprint = measureTrees(ownTrees(cache));
+        const footprint = measureTrees(ownTrees(cache), { phase: 'cache activation' });
         const admission = admitCopyDestinations(
           [
             gitDir,
@@ -1441,7 +1441,7 @@ async function privateCopy() {
   try {
     capacity = await lock(join(inventory, 'verity-dependencies', 'preparation.lock'));
     const trees = ownTrees(root);
-    const footprint = measureTrees(trees);
+    const footprint = measureTrees(trees, { phase: 'private activation' });
     admitCopyDestinations(trees.length ? trees : [root], footprint);
     storageLease = await beginCapacityLease('dependency-private', footprint);
     privatize(root);
