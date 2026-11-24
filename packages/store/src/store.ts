@@ -4,6 +4,7 @@ import {
   type SessionMockups,
   storedMockupState,
   mockupReview,
+  attachmentStorageRecord,
 } from './session-mockups.js';
 import { findRecordedApprovalDecision } from './secret-approval-events.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
@@ -59,6 +60,12 @@ import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
 import { recordSessionCreator, SessionPeopleStore } from './session-people.js';
 import { ChangeSubmissionStore } from './change-submissions.js';
+import { GitHubRepositoryIdentityStore } from './github-repository-identity.js';
+import {
+  installationPlaceholderHasDependents,
+  isInstallationPlaceholder,
+  retireInstallationPlaceholder,
+} from './installation-placeholders.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
@@ -265,34 +272,7 @@ export function isLocalProject(project: Pick<ProjectRecord, 'kind'>): boolean {
   return project.kind === 'local';
 }
 
-/**
- * Whether a project row is an unadopted installation-sync placeholder — a row
- * {@link syncProjectsFromInstallation} minted purely because the GitHub App can
- * SEE the repository, not because anyone added it as a project.
- *
- * This exists because those placeholders otherwise make `link-github`
- * unreachable: the sync registers every visible repo within seconds of its
- * creation, so by the time an operator points a local project at a freshly
- * created empty repo, Verity already holds `(owner, repo)` itself and reports
- * its own bookkeeping row as "already registered as a project". The set of repos
- * the linker can push to and the set the sync claims are the SAME set, so
- * without adoption the feature can never succeed.
- *
- * `overviewVisible=false` is the durable provenance marker: explicit project
- * addition sets it true and installation sync deliberately leaves it false.
- * Record-level half of the test only; the authoritative check
- * additionally requires that nothing was ever worked on in the project, which
- * needs a query — see the store's `retireInstallationPlaceholder`. Callers
- * that only hold a {@link ProjectRecord} use this for an early-out and let the
- * store transaction have the final word.
- */
-export function isInstallationPlaceholder(
-  project: Pick<ProjectRecord, 'kind' | 'state' | 'overviewVisible'>,
-): boolean {
-  return (
-    project.kind === 'github' && project.state === 'absent' && project.overviewVisible !== true
-  );
-}
+export { isInstallationPlaceholder } from './installation-placeholders.js';
 
 /** Multi-repo fleet-registry project record (`projects` row, concept §19.2). */
 export interface ProjectRecord {
@@ -302,6 +282,8 @@ export interface ProjectRecord {
   name: string;
   owner: string;
   repo: string;
+  /** GitHub's rename-stable repository ID, once learned; `null` = not yet; absent = not loaded. */
+  githubRepositoryId?: string | null | undefined;
   containerName: string;
   kind?: ProjectKind;
   forgeConnectionId?: string | null;
@@ -1104,28 +1086,16 @@ export class EventStore implements EventSink {
     );
   }
 
-  async recordRepositoryPullRequest(
-    projectId: string,
-    repositoryId: string,
-    branch: string,
-    pullRequest: unknown,
-    sessionId?: string,
-  ): Promise<void> {
-    let query = this.db
-      .updateTable('session_repository_workspaces')
-      .set({
-        pull_request: sql`case when pull_request->>'number' = (${JSON.stringify(pullRequest)}::jsonb)->>'number'
-          then pull_request || ${JSON.stringify(pullRequest)}::jsonb
-          else ${JSON.stringify(pullRequest)}::jsonb end`,
-        branch,
-      })
-      .where('project_id', '=', projectId)
-      .where('repository_id', '=', repositoryId);
-    query =
-      sessionId === undefined
-        ? query.where('branch', '=', branch)
-        : query.where('session_id', '=', sessionId);
-    await query.execute();
+  recordRepositoryPullRequest(...args: Parameters<ProjectRepositoryStore['recordPullRequest']>) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).recordPullRequest(
+      ...args,
+    );
+  }
+
+  sessionRepositoryWorkspaceSessionId(worktree: string) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).workspaceSessionId(
+      worktree,
+    );
   }
 
   listSessionRepositoryWorkspaces(sessionId: string) {
@@ -1390,6 +1360,7 @@ export class EventStore implements EventSink {
     this.scheduling = new SchedulingStore(db, cipher);
     this.sessionPeople = new SessionPeopleStore(db);
     this.changeSubmissions = new ChangeSubmissionStore(db);
+    this.githubRepositories = new GitHubRepositoryIdentityStore(db);
   }
 
   private readonly sessionAutomations: SessionAutomationStore;
@@ -1423,6 +1394,7 @@ export class EventStore implements EventSink {
   readonly sessionPeople: SessionPeopleStore;
   /** Session changes members without Code submitted for review. */
   readonly changeSubmissions: ChangeSubmissionStore;
+  readonly githubRepositories: GitHubRepositoryIdentityStore;
 
   async getAttendeeState<T>(id: string): Promise<T | undefined> {
     const result = await sql<{
@@ -4438,21 +4410,18 @@ export class EventStore implements EventSink {
     return hash;
   }
 
-  /**
-   * Store an image blob from its base64 payload, content-addressed by the SHA-256
-   * of the decoded bytes. Idempotent: a re-upload of identical bytes is a no-op
-   * (ON CONFLICT DO NOTHING), so the same image dedupes to one row. Returns the
-   * hash — the `id` a `prompt` event references and the client fetches by.
-   */
-  async putAttachment(mediaType: string, base64Data: string): Promise<string> {
-    const bytes = Buffer.from(base64Data, 'base64');
-    const hash = createHash('sha256').update(bytes).digest('hex');
+  async putAttachment(
+    mediaType: string,
+    base64Data: string,
+    mockupSessionId?: string,
+  ): Promise<string> {
+    const attachment = attachmentStorageRecord(base64Data, mediaType, mockupSessionId);
     await this.db
       .insertInto('attachments')
-      .values({ hash, media_type: mediaType, bytes })
+      .values(attachment)
       .onConflict((oc) => oc.column('hash').doNothing())
       .execute();
-    return hash;
+    return attachment.hash;
   }
 
   /** Read a stored blob; an optional byte ceiling filters it before transfer. */
@@ -5632,6 +5601,7 @@ export class EventStore implements EventSink {
     name?: string | null;
     owner: string;
     repo: string;
+    github_repository_id?: string | null;
     container_name: string;
     kind?: string | null;
     forge_connection_id?: string | null;
@@ -5665,6 +5635,7 @@ export class EventStore implements EventSink {
       name: row.name ?? defaultProjectName(row),
       owner: row.owner,
       repo: row.repo,
+      githubRepositoryId: row.github_repository_id,
       containerName: row.container_name,
       kind: (row.kind ?? 'github') as ProjectKind,
       forgeConnectionId: row.forge_connection_id ?? null,
@@ -5709,8 +5680,8 @@ export class EventStore implements EventSink {
     'kind',
     'owner',
     'repo',
+    'github_repository_id',
     'container_name',
-    'kind',
     'repository_instance',
     'clone_dir',
     'image_ref',
@@ -6358,11 +6329,9 @@ export class EventStore implements EventSink {
    * (whose ON CONFLICT branch would target the WRONG row — the GitHub-side
    * identity we are moving TO).
    *
-   * `container_name` is left alone: the container already exists under its
-   * local-project name and renaming it would mean recreating it for nothing.
-   * `clone_dir` is pinned to whatever directory the clone occupies right now, so
-   * the derived `<owner>-<repo>` path change does NOT relocate it — sessions
-   * persist absolute worktree paths under that directory.
+   * `container_name` stays (renaming would recreate the container); `clone_dir` is
+   * pinned to the clone's current directory, as sessions persist absolute worktree
+   * paths under it. Any GitHub repository ID is cleared; the new one is learned.
    *
    * Returns `undefined` when the project no longer exists. Throws the driver's
    * unique-violation when `(owner, repo)` is already registered — the caller maps
@@ -6408,7 +6377,7 @@ export class EventStore implements EventSink {
         // this final transaction, alongside the local project's identity rewrite,
         // so a pre-publication failure can restore its claim without losing any of
         // its dependent configuration.
-        await this.retireInstallationPlaceholder(
+        await retireInstallationPlaceholder(
           tx,
           targetOwner,
           targetRepo,
@@ -6446,6 +6415,7 @@ export class EventStore implements EventSink {
           kind: target.kind ?? 'github',
           forge_connection_id: target.forgeConnectionId ?? null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
+          github_repository_id: null,
           updated_at: sql`now()`,
         })
         .where('id', '=', id)
@@ -6506,6 +6476,7 @@ export class EventStore implements EventSink {
           repository_instance: 1,
           forge_connection_id: null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
+          github_repository_id: null,
           latest_release_tag: null,
           latest_release_name: null,
           latest_release_url: null,
@@ -6519,89 +6490,6 @@ export class EventStore implements EventSink {
       return updated;
     });
     return row ? this.projectRowToRecord(row) : undefined;
-  }
-
-  /**
-   * Drop the installation sync's placeholder row for `(owner, repo)` so a link
-   * can take the identity over, and report whether it did.
-   *
-   * Adoption is deliberately narrow. The row must be a picker-only GitHub
-   * project (`overview_visible=false`) that is `absent` AND carry no sessions —
-   * `sessions.project_id` is `ON DELETE SET NULL`, so
-   * deleting a project that was ever worked in would silently orphan its
-   * transcripts rather than fail loudly. Everything else about the row IS
-   * discarded with it via `ON DELETE CASCADE` (project settings, secret
-   * bindings, dev-server config). That is acceptable precisely here: the caller
-   * only reaches this path for a repository the provisioner has verified to be
-   * EMPTY on GitHub, so a placeholder pointing at it holds configuration for a
-   * project that never had any code, and the operator is in the act of saying
-   * which project that repository should belong to.
-   *
-   * Runs inside the caller's transaction so the delete, the claim, and the
-   * project rewrite commit as one unit — a concurrent installation sync can
-   * neither observe a half-adopted identity nor recreate the placeholder
-   * between the steps.
-   */
-  private async retireInstallationPlaceholder(
-    tx: Transaction<Database>,
-    owner: string,
-    repo: string,
-    forProjectId: string,
-    forgeConnectionId?: string | null,
-  ): Promise<boolean> {
-    const holder = await tx
-      .selectFrom('projects')
-      .select(['id', 'kind', 'state', 'overview_visible'])
-      .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
-      .where('owner', '=', owner)
-      .where('repo', '=', repo)
-      .where('repository_instance', '=', 1)
-      .where('id', '!=', forProjectId)
-      .executeTakeFirst();
-    if (holder === undefined) return false;
-    if (
-      !isInstallationPlaceholder({
-        kind: holder.kind as ProjectKind,
-        state: holder.state as ProjectState,
-        overviewVisible: holder.overview_visible,
-      })
-    ) {
-      return false;
-    }
-    if (await this.installationPlaceholderHasDependents(tx, holder.id)) return false;
-    await tx.deleteFrom('project_identity_claims').where('project_id', '=', holder.id).execute();
-    await tx.deleteFrom('projects').where('id', '=', holder.id).execute();
-    return true;
-  }
-
-  /** A sync placeholder is disposable only while no project-scoped durable
-   * state has attached to it. Keep this list aligned with direct `projects.id`
-   * foreign keys in migrations; identity claims are excluded because adoption
-   * deliberately transfers/deletes that bookkeeping row. */
-  private async installationPlaceholderHasDependents(
-    tx: Transaction<Database>,
-    projectId: string,
-  ): Promise<boolean> {
-    const result = await sql<{ has_dependents: boolean }>`
-      select exists (
-        select 1 from sessions where project_id = ${projectId}
-        union all select 1 from project_settings where project_id = ${projectId}
-        union all select 1 from project_google_connections where project_id = ${projectId}
-        union all select 1 from dev_servers where project_id = ${projectId}
-        union all select 1 from dev_server_detection_state where project_id = ${projectId}
-        union all select 1 from claude_egress_client_certs where project_id = ${projectId}
-        union all select 1 from signing_capabilities where project_id = ${projectId}
-        union all select 1 from secret_provider_credentials where project_id = ${projectId}
-        union all select 1 from secret_provider_bindings where project_id = ${projectId}
-        union all select 1 from secret_aliases where project_id = ${projectId}
-        union all select 1 from secret_provider_permissions where project_id = ${projectId}
-        union all select 1 from secret_execution_profiles where project_id = ${projectId}
-        union all select 1 from brokered_http_consumptions where project_id = ${projectId}
-        union all select 1 from public_preview_shares where project_id = ${projectId}
-        union all select 1 from local_preview_shares where project_id = ${projectId}
-      ) as has_dependents
-    `.execute(tx);
-    return result.rows[0]?.has_dependents === true;
   }
 
   async reserveProjectIdentity(
@@ -6670,7 +6558,7 @@ export class EventStore implements EventSink {
             state: holder.state as ProjectState,
             overviewVisible: holder.overview_visible,
           }) ||
-          (await this.installationPlaceholderHasDependents(tx, holder.id))
+          (await installationPlaceholderHasDependents(tx, holder.id))
         ) {
           await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
           return true;

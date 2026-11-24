@@ -18,11 +18,14 @@ import {
   type GoogleMenuAccess,
   type GoogleService,
 } from '../lib/attachMenu';
-import { type RecentImage, useRecentImages } from '../lib/recentImages';
+import { type RecentImages, useRecentImages } from '../lib/recentImages';
 import { Icon, type IconName } from './Icon';
+import { Button } from './ui/Button';
 import { Image } from './ui/Image';
 import { tint } from './ui/tint';
 import { Toggle } from './ui/Toggle';
+
+type RecentImage = Extract<RecentImages, { kind: 'ready' }>['images'][number];
 
 export interface AttachMenuGoogle {
   /** A centrally connected Google account; without one there is no Connectors row. */
@@ -38,7 +41,7 @@ export interface AttachMenuGoogle {
 /**
  * The composer's add menu: a small popover docked to the plus button. On
  * devices with a photo library it opens with a strip — camera first, then the
- * newest images, screenshots first — and a tap on an image attaches it. Below
+ * newest images, screenshots first — with selection before attaching. Below
  * are the remaining sources and the Connectors row, which turns the same card
  * into a list of per-chat switches.
  */
@@ -47,6 +50,7 @@ export function AttachMenu({
   anchor,
   handlers,
   onAttachRecent,
+  remainingAttachments,
   google,
   onClose,
   onDismiss,
@@ -54,22 +58,51 @@ export function AttachMenu({
   visible: boolean;
   anchor: AttachAnchor | null;
   handlers: Omit<AttachMenuHandlers, 'onOpenConnectors'>;
-  onAttachRecent: (image: RecentImage) => void;
+  onAttachRecent: (ids: readonly string[]) => void;
+  remainingAttachments: number;
   google: AttachMenuGoogle;
   onClose: () => void;
   onDismiss: () => void;
 }) {
   const { width: winW, height: winH } = useWindowDimensions();
   const [view, setView] = useState<'main' | 'connectors'>('main');
+  const [selected, setSelected] = useState<RecentImage[]>([]);
   // Reopening the menu starts on its first page again.
   useEffect(() => {
-    if (!visible) setView('main');
+    if (!visible) {
+      setView('main');
+      setSelected([]);
+    }
   }, [visible]);
-  const recent = useRecentImages(visible);
+  useEffect(() => {
+    setSelected((current) =>
+      current.length > remainingAttachments ? current.slice(0, remainingAttachments) : current,
+    );
+  }, [remainingAttachments]);
+  const recent = useRecentImages(visible, selected);
+  useEffect(() => {
+    const state = recent.state;
+    if (state.kind === 'denied') setSelected((current) => (current.length ? [] : current));
+    if (state.kind === 'ready') {
+      const available = new Set(state.images.map(({ id }) => id));
+      setSelected((current) =>
+        current.every(({ id }) => available.has(id))
+          ? current
+          : current.filter(({ id }) => available.has(id)),
+      );
+    }
+  }, [recent.state]);
+  const images = recent.state.kind === 'ready' ? recent.state.images : [];
+  const selection = selected.filter((image) => images.some(({ id }) => id === image.id));
+  const attachable = selection.slice(0, remainingAttachments).map(({ id }) => id);
   const strip = recent.state.kind !== 'unavailable';
   const rows = attachMenuRows(
     { ...handlers, onOpenConnectors: () => setView('connectors') },
-    { recentStrip: strip, googleConnected: google.connected, googleAccess: google.access },
+    {
+      recentStrip: strip,
+      showConnectors: google.connected || google.loading || google.error !== null,
+      googleAccess: google.connected ? google.access : undefined,
+    },
   );
   // Dock to the button: left-aligned and clamped on-screen; placed above the button
   // (the composer sits at the bottom, so the menu opens upward). The strip needs
@@ -107,8 +140,30 @@ export function AttachMenu({
                 <RecentStrip
                   recent={recent}
                   onCapture={handlers.onCapturePhoto}
-                  onAttach={onAttachRecent}
+                  selected={attachable}
+                  canSelectMore={attachable.length < remainingAttachments}
+                  onSelect={(image) =>
+                    setSelected((current) =>
+                      current.some(({ id }) => id === image.id)
+                        ? current.filter(({ id }) => id !== image.id)
+                        : [...selection, image],
+                    )
+                  }
                 />
+              ) : null}
+              {attachable.length > 0 ? (
+                <View style={styles.selectionAction}>
+                  <Button
+                    label={
+                      attachable.length === 1
+                        ? 'Attach 1 image'
+                        : `Attach ${String(attachable.length)} images`
+                    }
+                    size="compact"
+                    fullWidth
+                    onPress={() => onAttachRecent(attachable)}
+                  />
+                </View>
               ) : null}
               {rows.map((row, index) =>
                 'divider' in row ? (
@@ -117,14 +172,6 @@ export function AttachMenu({
                   <MenuRow key={row.label} {...row} />
                 ),
               )}
-              {/* Where the Connectors row appears, so the menu does not jump when it
-                arrives: a first read in progress, or one that failed. */}
-              {!google.connected && (google.loading || google.error) ? (
-                <>
-                  <View style={styles.divider} />
-                  <CatalogStatus error={google.error} />
-                </>
-              ) : null}
             </>
           )}
         </ScrollView>
@@ -188,11 +235,15 @@ function CatalogStatus({ error }: { error: string | null }) {
 function RecentStrip({
   recent,
   onCapture,
-  onAttach,
+  selected,
+  canSelectMore,
+  onSelect,
 }: {
   recent: ReturnType<typeof useRecentImages>;
   onCapture: () => void;
-  onAttach: (image: RecentImage) => void;
+  selected: readonly string[];
+  canSelectMore: boolean;
+  onSelect: (image: RecentImage) => void;
 }) {
   const { theme } = useUnistyles();
   const { state } = recent;
@@ -204,7 +255,7 @@ function RecentStrip({
       accessibilityLabel="Recent images"
     >
       <Pressable
-        style={[styles.tile, styles.iconTile]}
+        style={({ pressed }) => [styles.tile, styles.iconTile, pressed ? styles.rowPressed : null]}
         onPress={onCapture}
         accessibilityRole="button"
         accessibilityLabel="Take photo"
@@ -212,17 +263,40 @@ function RecentStrip({
         <Icon name="camera" size={24} color={theme.colors.textMuted} />
       </Pressable>
       {state.kind === 'ready'
-        ? state.images.map((image, index) => (
-            <Pressable
-              key={image.id}
-              style={styles.tile}
-              onPress={() => onAttach(image)}
-              accessibilityRole="button"
-              accessibilityLabel={`Attach recent image ${String(index + 1)}`}
-            >
-              <Image source={{ uri: image.uri }} style={styles.tileImage} contentFit="cover" />
-            </Pressable>
-          ))
+        ? state.images.map((image, index) => {
+            // Numbered in the order the images will be attached.
+            const order = selected.indexOf(image.id) + 1;
+            const checked = order > 0;
+            const disabled = !checked && !canSelectMore;
+            return (
+              <Pressable
+                key={image.id}
+                style={[styles.tile, disabled ? styles.tileDisabled : null]}
+                onPress={() => onSelect(image)}
+                disabled={disabled}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked, disabled }}
+                accessibilityLabel={`Select recent image ${String(index + 1)}`}
+                accessibilityValue={checked ? { text: `Selected, ${String(order)}` } : undefined}
+              >
+                {({ pressed }) => (
+                  <>
+                    <Image
+                      source={{ uri: image.uri }}
+                      style={styles.tileImage}
+                      contentFit="cover"
+                    />
+                    {pressed ? <View style={styles.tilePressed} /> : null}
+                    {checked ? (
+                      <View style={styles.selectionBadge}>
+                        <Text style={styles.selectionNumber}>{String(order)}</Text>
+                      </View>
+                    ) : null}
+                  </>
+                )}
+              </Pressable>
+            );
+          })
         : null}
       {state.kind === 'denied' ? (
         <ActionTile icon="image" label="Allow photo access" onPress={recent.openSettings} />
@@ -245,7 +319,12 @@ function ActionTile({
   const { theme } = useUnistyles();
   return (
     <Pressable
-      style={[styles.tile, styles.iconTile, styles.actionTile]}
+      style={({ pressed }) => [
+        styles.tile,
+        styles.iconTile,
+        styles.actionTile,
+        pressed ? styles.rowPressed : null,
+      ]}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
@@ -270,30 +349,40 @@ function ConnectorsView({ google, onBack }: { google: AttachMenuGoogle; onBack: 
         <Text style={styles.backLabel}>Connectors</Text>
       </Pressable>
       <View style={styles.divider} />
-      {CONNECTORS.map(({ service, label, icon }) => {
-        const { on, locked, detail } = connectorState(google.access[service]);
-        return (
-          <Pressable
-            key={service}
-            style={styles.row}
-            disabled={locked}
-            onPress={() => google.onToggle(service, !on)}
-            accessibilityRole="switch"
-            accessibilityLabel={label}
-            accessibilityHint={detail}
-            accessibilityState={{ checked: on, disabled: locked }}
-          >
-            <Icon name={icon} size={20} color={theme.colors.textMuted} />
-            <View style={styles.rowText}>
-              <Text style={styles.rowLabel}>{label}</Text>
-              <Text style={styles.rowDetail}>{detail}</Text>
-            </View>
-            <Toggle value={on} disabled={locked} />
-          </Pressable>
-        );
-      })}
-      <View style={styles.divider} />
-      <Text style={styles.footnote}>Project access is set in Project settings.</Text>
+      {!google.connected ? (
+        google.loading || google.error !== null ? (
+          <CatalogStatus error={google.error} />
+        ) : (
+          <Text style={styles.footnote}>No Google account connected.</Text>
+        )
+      ) : (
+        <>
+          {CONNECTORS.map(({ service, label, icon }) => {
+            const { on, locked, detail } = connectorState(google.access[service]);
+            return (
+              <Pressable
+                key={service}
+                style={styles.row}
+                disabled={locked}
+                onPress={() => google.onToggle(service, !on)}
+                accessibilityRole="switch"
+                accessibilityLabel={label}
+                accessibilityHint={detail}
+                accessibilityState={{ checked: on, disabled: locked }}
+              >
+                <Icon name={icon} size={20} color={theme.colors.textMuted} />
+                <View style={styles.rowText}>
+                  <Text style={styles.rowLabel}>{label}</Text>
+                  <Text style={styles.rowDetail}>{detail}</Text>
+                </View>
+                <Toggle value={on} disabled={locked} />
+              </Pressable>
+            );
+          })}
+          <View style={styles.divider} />
+          <Text style={styles.footnote}>Project access is set in Project settings.</Text>
+        </>
+      )}
     </>
   );
 }
@@ -310,11 +399,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: 1,
     borderColor: theme.colors.border,
     paddingVertical: theme.spacing.xs,
-    shadowColor: theme.elevation.floating.shadowColor,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 8,
+    ...theme.elevation.floating,
   },
   row: {
     flexDirection: 'row',
@@ -331,10 +416,9 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.row.fontSize,
   },
   rowDetail: {
+    ...theme.typography.subtitle,
     color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-    marginTop: 1,
+    marginTop: theme.spacing.xxs,
   },
   divider: {
     height: 1,
@@ -363,10 +447,31 @@ const styles = StyleSheet.create((theme) => ({
   },
   actionTile: { width: TILE * 1.5, gap: theme.spacing.xs, paddingHorizontal: theme.spacing.xs },
   actionTileLabel: {
+    ...theme.typography.footnote,
     color: theme.colors.textMuted,
-    fontFamily: theme.fonts.semibold,
-    fontSize: theme.typography.footnote.fontSize,
     textAlign: 'center',
+  },
+  selectionAction: { paddingHorizontal: theme.spacing.sm, paddingBottom: theme.spacing.sm },
+  tileDisabled: { opacity: 0.4 },
+  tilePressed: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: tint(theme.colors.text, 'neutral'),
+  },
+  selectionBadge: {
+    position: 'absolute',
+    top: theme.spacing.xs,
+    right: theme.spacing.xs,
+    minWidth: 22,
+    height: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.action,
+    borderRadius: theme.radius.pill,
+  },
+  selectionNumber: {
+    ...theme.typography.footnote,
+    fontFamily: theme.fonts.bold,
+    color: theme.colors.onAction,
   },
   tileImage: { width: '100%', height: '100%' },
   back: {
@@ -382,9 +487,8 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.row.fontSize,
   },
   footnote: {
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
+    ...theme.typography.footnote,
+    color: theme.colors.textFaint,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.xs,
   },

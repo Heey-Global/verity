@@ -35,6 +35,8 @@ export interface ProjectRepoRouteDeps {
     repositoryId: string,
   ) => Promise<string | undefined>;
   getSession?: EventStore['getSession'];
+  repositorySessionBranches?: (sessionId: string, repositoryId: string) => Promise<string[]>;
+  pullRequestChanged?: (sessionId: string, project: ProjectRecord) => Promise<void>;
   getProject: (projectId: string) => Promise<ProjectRecord | undefined>;
   /** Undefined when the project has no usable code host (local, or connection gone). */
   repositoryFor: (project: ProjectRecord) => Promise<ProjectRepository | undefined>;
@@ -165,14 +167,30 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
     if (repository === undefined)
       return reply.code(503).send({ error: 'the code host connection is unavailable' });
     const ops = repository.operations;
+    const body = parsed.data;
     const remember = async (
       pr: Awaited<ReturnType<typeof ops.createPullRequest>>,
       dependsOn?: string[],
     ) => {
+      if (
+        pr.headRepository !== undefined &&
+        pr.headRepository?.toLowerCase() !== `${project.owner}/${project.repo}`.toLowerCase()
+      )
+        return pr;
+      if (sessionId || body.action !== 'pr.create') {
+        const defaultBranch = await ops.defaultBranch().catch(() => undefined);
+        if (defaultBranch === undefined || pr.head === defaultBranch) return pr;
+      }
       const actualBranch = sessionId
         ? await deps.currentRepositoryBranch?.(sessionId, selectedId ?? `default:${project.id}`)
         : undefined;
-      if (sessionId && deps.currentRepositoryBranch && actualBranch !== pr.head) return pr;
+      const repositoryId = selectedId ?? `default:${project.id}`;
+      const belongsToSession =
+        sessionId !== undefined &&
+        (actualBranch === pr.head ||
+          (await deps.repositorySessionBranches?.(sessionId, repositoryId))?.includes(pr.head) ===
+            true);
+      if (sessionId && deps.currentRepositoryBranch && !belongsToSession) return pr;
       if (sessionId && (selectedId === undefined || selectedId === `default:${project.id}`)) {
         const session = await deps.getSession?.(sessionId);
         if (session?.projectId === project.id)
@@ -181,7 +199,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
             projectId: project.id,
             repositoryId: `default:${project.id}`,
             worktree: session.worktree,
-            branch: pr.head,
+            branch: actualBranch ?? pr.head,
           });
       }
       await deps.store?.recordRepositoryPullRequest(
@@ -192,11 +210,12 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
           ...pr,
           ...(dependsOn === undefined ? {} : { dependsOn }),
         },
-        actualBranch === pr.head ? sessionId : undefined,
+        belongsToSession ? sessionId : undefined,
+        ...(belongsToSession && actualBranch !== pr.head ? ([true] as const) : []),
       );
+      if (sessionId && belongsToSession) await deps.pullRequestChanged?.(sessionId, project);
       return pr;
     };
-    const body = parsed.data;
     try {
       switch (body.action) {
         case 'pr.create': {

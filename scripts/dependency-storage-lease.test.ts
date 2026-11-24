@@ -86,8 +86,10 @@ it('keeps standalone checks local and never starts work after a missing or stale
   ).toBe(
     [
       '0',
-      ...Array(3).fill(
-        'false:Dependency capacity admission failed; no additional dependency work started.',
+      // An injected failure may carry anything, so its text never escapes.
+      'false:Dependency capacity admission failed; no additional dependency work started.',
+      ...Array(2).fill(
+        'false:Dependency capacity admission failed (Dependency capacity lease was not admitted by the current broker); no additional dependency work started.',
       ),
     ].join('\n'),
   );
@@ -140,6 +142,134 @@ it('uses the project capability and redacts failed broker responses', async () =
     server.closeAllConnections();
     await new Promise<void>((done) => server.close(() => done()));
   }
+});
+
+it('surfaces only the reasons the Server composes for refused requests', async () => {
+  const root = temporary();
+  const capability = join(root, 'capability');
+  writeFileSync(capability, 'fixture-capability');
+  const bodies = [
+    '{"error":"Dependency capacity inventory is loading."}',
+    '{"error":"Build storage admission rejected: earlier build admission remains unconfirmed."}',
+    '{"error":"session not found in this project"}',
+    '{"error":"Dependency capacity\\u0007 x"}',
+    'not json',
+  ];
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(409);
+      response.end(bodies.shift());
+    });
+  });
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('address unavailable');
+    const result = await probe(`
+      for (let i=0;i<5;i++) try{await s.dependencyStorageRequest({action:'reserve',id:'fixture'},
+        {VERITY_SESSION_ID:'session',VERITY_PROJECT_MEMORY_URL:${JSON.stringify(`http://127.0.0.1:${address.port}/internal/project/memory`)},
+         VERITY_GH_BROKER_CAPABILITY_FILE:${JSON.stringify(capability)}})}catch(error){console.log(error.message)}
+    `);
+    expect(result.split('\n')).toEqual([
+      'Dependency capacity broker refused admission (HTTP 409): Dependency capacity inventory is loading.',
+      'Dependency capacity broker refused admission (HTTP 409): Build storage admission rejected: earlier build admission remains unconfirmed.',
+      'Dependency capacity broker refused admission (HTTP 409): session not found in this project',
+      // Control characters cannot forge terminal output.
+      'Dependency capacity broker refused admission (HTTP 409): Dependency capacity x',
+      'Dependency capacity broker refused admission (HTTP 409).',
+    ]);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+  }
+});
+
+it('reports the original refusal when the status follow-up cannot prove admission', async () => {
+  expect(
+    await probe(`
+    const actions=[];
+    try{await s.beginCapacityLease('dependency-prepare',{bytes:1,inodes:1},{environment:{VERITY_SESSION_ID:'session'},
+      request:async body=>{actions.push(body.action);
+        if(body.action==='reserve')throw Error('Dependency capacity broker refused admission (HTTP 409): Dependency capacity inventory is loading.');
+        if(body.action==='status')throw Error('Dependency capacity broker refused admission (HTTP 409).');
+        return {}},
+      hold:async()=>{throw Error('unexpected holder')}})}catch(error){console.log(actions.join(',')+':'+error.message)}
+  `),
+  ).toBe(
+    'reserve,status,settle:Dependency capacity admission failed (Dependency capacity broker refused admission (HTTP 409): Dependency capacity inventory is loading); no additional dependency work started.',
+  );
+});
+
+it('explains a lost reply by the status answer rather than the transport failure', async () => {
+  expect(
+    await probe(`
+    try{await s.beginCapacityLease('dependency-prepare',{bytes:1,inodes:1},{environment:{VERITY_SESSION_ID:'session'},
+      request:async body=>{
+        if(body.action==='reserve')throw Error('Dependency capacity broker request timed out after 30 seconds.');
+        return {version:1,id:body.id,admitted:false,state:'settled',lockPath:'/run/verity-capacity-leases/'+body.id+'.lock'}},
+      hold:async()=>{throw Error('unexpected holder')}})}catch(error){console.log(error.message)}
+  `),
+  ).toBe(
+    'Dependency capacity admission failed (Dependency capacity lease was not admitted by the current broker); no additional dependency work started.',
+  );
+});
+
+it('names a lease directory the session cannot see instead of a generic refusal', async () => {
+  // The broker creates its directory outside the agent's confinement. When the
+  // launch omits it, the lstat fails with ENOENT, which used to surface only as
+  // "admission failed" and blocked every managed install.
+  const root = join(temporary(), 'missing');
+  expect(
+    await probe(`
+    let id;
+    try{await s.beginCapacityLease('dependency-prepare',{bytes:1,inodes:1},{environment:{VERITY_SESSION_ID:'session'},
+      request:async body=>{id??=body.id;return {version:1,id,admitted:true,state:'reserved',lockPath:'/run/verity-capacity-leases/'+id+'.lock'}},
+      hold:path=>s.holdCapacityLock(${JSON.stringify(root)}+path.slice('/run/verity-capacity-leases'.length),{root:${JSON.stringify(root)}})})}
+    catch(error){console.log(error.message)}
+  `),
+  ).toBe(
+    'Dependency capacity admission failed (Dependency capacity lock directory is not visible to this session (ENOENT)); no additional dependency work started.',
+  );
+});
+
+it('holds a shared lock on a trusted broker lease and refuses agent-owned ones', async () => {
+  const root = temporary();
+  const id = '3f7f388a-6f7f-4746-a60e-ed2ac5b1e3a0';
+  const lock = join(root, `${id}.lock`);
+  writeFileSync(lock, '', { mode: 0o644 });
+  spawnSync('chmod', ['711', root]);
+  const result = await probe(`
+    const held=await s.holdCapacityLock(${JSON.stringify(lock)},{root:${JSON.stringify(root)},rootOwned:()=>true});
+    const {spawnSync}=await import('node:child_process');
+    console.log(spawnSync('flock',['--exclusive','--nonblock',${JSON.stringify(lock)},'true']).status);
+    held.close();
+    console.log(spawnSync('flock',['--exclusive','--nonblock',${JSON.stringify(lock)},'true']).status);
+    // Default trust: a directory the caller owns is never the broker's. Running
+    // as root, the caller's files are root's, so the root-owner case is the stand-in.
+    try{await s.holdCapacityLock(${JSON.stringify(lock)},{root:${JSON.stringify(root)},
+      ...(process.getuid()===0?{rootOwned:()=>false}:{})})}catch(error){console.log(error.message)}
+  `);
+  expect(result.split('\n')).toEqual([
+    '1',
+    '0',
+    `Dependency capacity lock directory is untrusted (owner ${process.getuid!()}, mode 711).`,
+  ]);
+});
+
+it('trusts the overflow owner only where root is unmapped and the overflow id is no one', async () => {
+  // gVisor hosts confine agents in a user namespace mapping only their own id:
+  // the broker's root-owned lease directory appears as the overflow id there.
+  expect(
+    await probe(`
+    const cases=[
+      [0,'0 0 4294967295'],[65534,'0 0 4294967295'],
+      [65534,'1000 1000 1'],[1000,'1000 1000 1'],[0,'1000 1000 1'],
+      [65534,'0 1000 1\\n1 100000 65536'],[65534,'1 100000 70000'],[65534,''],[65534,'garbage'],
+    ];
+    console.log(cases.map(([uid,uidMap])=>s.rootOwned(uid,{uidMap,overflowUid:'65534'})).join(','));
+  `),
+  ).toBe('true,false,true,false,true,false,false,false,false');
 });
 
 it('enforces a 30-second wall deadline even when the broker never sends headers', async () => {

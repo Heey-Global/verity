@@ -53,6 +53,8 @@ export type HttpFetch = (
     headers?: Record<string, string>;
     signal?: AbortSignal;
     body?: string;
+    /** `manual` returns a redirect response instead of following it. */
+    redirect?: 'follow' | 'manual' | 'error';
     /** Transport hint for long streaming responses (the Docker image-pull
      *  progress stream): resolve as soon as the headers arrive and expose the
      *  body incrementally as {@link HttpResponse.body}. The global `fetch`
@@ -78,6 +80,8 @@ export interface GitHubPrServiceOptions {
   token?: GitHubTokenSource | undefined;
   /** Async GitHub token provider, used when no sync token resolves. */
   asyncToken?: ((owner: string, repo: string) => Promise<string | undefined>) | undefined;
+  /** Optional write credential for services that poll with a read-only token. */
+  mergeToken?: GitHubPrServiceOptions['asyncToken'];
   /** Injected git runner (tests); defaults to the real `git`. */
   git?: GitOutput;
   /** Injected fetch (tests); defaults to the global `fetch`. */
@@ -568,25 +572,41 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     id: GitHubIdentity,
     branch: string,
     token: string,
+    number?: number,
   ): Promise<{ ok: boolean; status: PullRequestStatus | null }> => {
     try {
+      const pulls = `https://api.github.com/repos/${id.owner}/${id.repo}/pulls`;
       const head = encodeURIComponent(`${id.owner}:${branch}`);
-      const url =
-        `https://api.github.com/repos/${id.owner}/${id.repo}/pulls` +
-        `?head=${head}&state=all&sort=updated&direction=desc&per_page=100`;
-      const res = await fetchJson(url, token);
+      const res = await fetchJson(
+        number === undefined
+          ? `${pulls}?head=${head}&state=all&sort=updated&direction=desc&per_page=100`
+          : `${pulls}/${number}`,
+        token,
+      );
       if (!res.ok) return { ok: false, status: null };
       const body = res.body;
-      if (!Array.isArray(body) || body.length === 0) return { ok: true, status: null };
-      const rows: unknown[] = body;
+      const sourceMatches = (candidate: unknown, strict: boolean): boolean => {
+        if (candidate === null || typeof candidate !== 'object') return false;
+        const source = (candidate as { head?: { ref?: unknown; repo?: { full_name?: unknown } } })
+          .head;
+        const fullName = source?.repo?.full_name;
+        if (strict && (typeof fullName !== 'string' || source?.ref !== branch)) return false;
+        if (source && 'repo' in source && typeof fullName !== 'string') return false;
+        return (
+          (source?.ref === undefined || source.ref === branch) &&
+          (typeof fullName !== 'string' ||
+            fullName.toLowerCase() === `${id.owner}/${id.repo}`.toLowerCase())
+        );
+      };
+      const candidates: unknown[] = Array.isArray(body)
+        ? body.filter((candidate: unknown) => sourceMatches(candidate, false))
+        : [];
       const raw =
-        rows.find(
-          (candidate) =>
-            candidate !== null &&
-            typeof candidate === 'object' &&
-            !Array.isArray(candidate) &&
-            (candidate as Record<string, unknown>).state === 'open',
-        ) ?? rows[0];
+        number !== undefined
+          ? body
+          : (candidates.find(
+              (candidate) => (candidate as Record<string, unknown>).state === 'open',
+            ) ?? candidates[0]);
       if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
         return { ok: true, status: null };
       }
@@ -599,6 +619,8 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       const mergedAt = pr.merged_at;
       const mergeCommitSha = pr.merge_commit_sha;
       const headObj = pr.head;
+      if (number !== undefined && (num !== number || !sourceMatches(raw, true)))
+        return { ok: true, status: null };
       const sha =
         headObj !== null && typeof headObj === 'object' && !Array.isArray(headObj)
           ? (headObj as Record<string, unknown>).sha
@@ -684,7 +706,10 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     }
   };
 
-  const prStatusForBranch = async (branch: string): Promise<PullRequestStatus | null> => {
+  const prStatusForBranch = async (
+    branch: string,
+    number?: number,
+  ): Promise<PullRequestStatus | null> => {
     if (branch === '') return null;
     const id = await identity();
     if (id === null) return null;
@@ -711,7 +736,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     const credential =
       token === undefined ? (lastCredential ?? 'unavailable') : credentialId(token);
     if (token !== undefined) lastCredential = credential;
-    const cacheKey = `${credential}\0${branch}`;
+    const cacheKey = `${credential}\0${branch}${number === undefined ? '' : `\0${number}`}`;
     const cached = cache.get(cacheKey);
     const unavailableCachedStatus = (): PullRequestStatus | null => {
       if (cached?.status === undefined || cached.status === null) {
@@ -777,7 +802,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
         const ttl = cached.status === null ? negativeTtlMs : ttlMs;
         if (now() - cached.at < ttl) return cached.status;
       }
-      const result = await lookup(id, branch, token);
+      const result = await lookup(id, branch, token, number);
       if (rateLimitDeadline > now())
         rateLimitCooldown.until = Math.max(rateLimitCooldown.until, rateLimitDeadline);
       else rateLimitDeadline = 0;
@@ -842,14 +867,15 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     async mergePr(number: number, expectedHeadSha?: string): Promise<boolean> {
       const id = await identity();
       let token: string | undefined;
-      if (id !== null && opts.asyncToken !== undefined) {
+      const mint = opts.mergeToken ?? opts.asyncToken;
+      if (id !== null && mint !== undefined) {
         try {
-          token = await opts.asyncToken(id.owner, id.repo);
+          token = await mint(id.owner, id.repo);
         } catch {
           // Fall through to the explicitly configured legacy token source.
         }
       }
-      token ??= resolveToken();
+      if (opts.mergeToken === undefined) token ??= resolveToken();
       if (token === undefined || id === null || !Number.isInteger(number) || number <= 0) {
         return false;
       }
@@ -1105,6 +1131,8 @@ interface InstallationRepo {
   owner: string;
   repo: string;
   archived?: boolean;
+  /** GitHub's rename-stable repository ID (decimal), when GitHub reports one. */
+  id?: string;
 }
 
 /**
@@ -1174,12 +1202,14 @@ function toInstallationRepo(raw: Record<string, unknown>): InstallationRepo | nu
   const login = (owner as Record<string, unknown>).login;
   const name = raw.name;
   const archived = raw.archived;
+  const id = raw.id;
   if (typeof login !== 'string' || login === '') return null;
   if (typeof name !== 'string' || name === '') return null;
   return {
     owner: login.toLowerCase(),
     repo: name.toLowerCase(),
     ...(archived === true ? { archived: true } : {}),
+    ...(typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? { id: String(id) } : {}),
   };
 }
 

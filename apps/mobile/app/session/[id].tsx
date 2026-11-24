@@ -25,7 +25,6 @@ import { useSessionCollaboration } from '../../hooks/useSessionCollaboration';
 import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/useServerConnection';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
-import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
 import { ChangeSubmissionBar } from '../../components/session/ChangeSubmissionBar';
 import { LocalMergeBar } from '../../components/session/LocalMergeBar';
 import {
@@ -45,7 +44,7 @@ import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
 import { meetingSavedCard, latestMeetingCards } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
 import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
-import { CodeHostIcon } from '../../components/CodeHostIcon';
+import { PullRequestBarGroup } from '../../components/session/PullRequestBarGroup';
 import { useFeatureHint } from '../../components/FeatureHint';
 import { appendHelpQuestion } from '../../lib/featureHints';
 import {
@@ -73,7 +72,6 @@ import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
 import { ActionMenu } from '../../components/ActionMenu';
-import { SlowSpinner } from '../../components/SlowSpinner';
 // Session chat screen: the live transcript for one Claude Code session plus the
 // operator input bar. Binds @verity/mobile's headless SessionModel via useSession
 // (live WS stream → reducer → Message[]) and renders each canonical message kind
@@ -137,8 +135,6 @@ import {
   groupRows,
   reconcileTranscriptRows,
   withPlanningSnapshot,
-  pullRequestMergeButton,
-  pullRequestStatusText,
   modelRateLimited,
   modelDisplayName,
   excludedAgentsNote,
@@ -169,7 +165,6 @@ import {
   toolCallView,
   planHeadline,
   type PlanView,
-  type PullRequestBlockReason,
   trustedCliUnlockCandidate,
   type FrozenTranscriptTail,
   type GmailSessionConnection,
@@ -265,7 +260,7 @@ import {
 } from '../../hardwareKeyboard';
 import { type Bookmarks, useBookmarks } from '../../hooks/useBookmarks';
 import { useSessionPreviewReads } from '../../hooks/useSessionPreviewReads';
-import { type UseBranches, useBranches } from '../../hooks/useBranches';
+import { type BranchPullRequest, type UseBranches, useBranches } from '../../hooks/useBranches';
 import { shouldShowPullRequest } from '../../lib/pullRequestVisibility';
 import { useModels } from '../../hooks/useModels';
 import { useAttachmentMenuAnchor } from '../../hooks/useAttachmentMenuAnchor';
@@ -286,10 +281,9 @@ import { isSameAutomation } from '../../lib/automationText';
 import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import type { AttachAnchor } from '../../lib/attachMenu';
-import type { RecentImage } from '../../lib/recentImages';
 import { AttachMenu } from '../../components/AttachMenu';
 import {
-  attachRecentImage,
+  attachRecentImages,
   captureImage,
   pickMeetingAudioAsset,
   readMeetingAudioUpload,
@@ -599,19 +593,14 @@ interface SessionActions {
   decidingPlanning: boolean;
   /** The plan card's "Implement plan": the tap itself is the operator's approval. */
   implementPlan: (revision?: number) => void;
-  /** The mockup review, so a presented round shows the current verdicts. */
+  sessionId: string;
   mockupReview: MockupReview | undefined;
-  /** Open the full-screen mockup review at a screen. */
   openMockups: (screen?: string) => void;
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
 
-// Bookmark state (#bookmarks), provided once by `SessionChat` so a deep transcript
-// row (`<AgentMarkdown>`) can toggle its own message's bookmark without threading a
-// callback through `renderRow`. Null outside a provider — the affordance renders
-// nothing rather than crashing (never happens in practice; the FlashList is always
-// wrapped).
+// Transcript rows use this context for bookmark actions.
 const BookmarksContext = createContext<Bookmarks | null>(null);
 
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
@@ -1104,26 +1093,22 @@ export const SessionChat = memo(function SessionChat({
       active = false;
     };
   }, []);
-  const pullRequestKey = branches.pullRequest
-    ? `${sessionId}:${String(branches.pullRequest.number)}:${branches.pullRequest.phase}`
-    : null;
-  const pullRequestDismissed =
-    branches.pullRequest?.phase !== 'open' &&
-    pullRequestKey !== null &&
-    dismissedPullRequests.store.has(pullRequestKey);
-  const visiblePullRequest = shouldShowPullRequest(
-    branches.pullRequest?.phase,
-    pullRequestBarReady,
-    pullRequestDismissed,
-  )
-    ? branches.pullRequest
-    : null;
-  const dismissPullRequest = useCallback(() => {
-    if (pullRequestKey === null) return;
-    dismissedPullRequests.store.add(pullRequestKey);
+  const pullRequestKey = (pr: BranchPullRequest) =>
+    [sessionId, ...(pr.repository ? [pr.repository.id] : []), pr.number, pr.phase].join(':');
+  const visiblePullRequests = branches.pullRequests.filter((pr) =>
+    shouldShowPullRequest(
+      pr.phase,
+      pullRequestBarReady,
+      dismissedPullRequests.store.has(pullRequestKey(pr)) ||
+        (pr.repository?.isDefault === true &&
+          dismissedPullRequests.store.has([sessionId, pr.number, pr.phase].join(':'))),
+    ),
+  );
+  const dismissPullRequest = (pr: BranchPullRequest) => {
+    dismissedPullRequests.store.add(pullRequestKey(pr));
     dismissedPullRequests.persist();
     bumpPullRequestBarVersion((version) => version + 1);
-  }, [pullRequestKey]);
+  };
   // When the live branch diverges from the load-once branch list (an external/agent
   // checkout the switcher didn't initiate), refresh the list so its rows AND the PR
   // chip track the new branch too. Converges in one step (refresh makes them match),
@@ -2695,10 +2680,12 @@ export const SessionChat = memo(function SessionChat({
   ]);
 
   // Sendable with text OR at least one attachment (a bare screenshot is valid).
+  const [attachingRecent, setAttachingRecent] = useState(false);
   const canSend =
     (draft.trim().length > 0 || attachments.length > 0) &&
     attachments.length <= MAX_ATTACHMENTS_PER_TURN &&
     !sending &&
+    !attachingRecent &&
     !dead;
   // Show a one-time rate-limit banner only when the 5h window is exhausted
   // (status !== 'allowed'); the common 'allowed' case shows nothing.
@@ -2746,12 +2733,12 @@ export const SessionChat = memo(function SessionChat({
       ? scrollToLatest(true)
       : openLinkedSession(entry);
   const onMergePullRequest = useCallback<UseBranches['mergePullRequest']>(
-    (number) => {
+    (number, repositoryId, expectedHeadSha) => {
       // Merging dispatches a server-authored transcript turn for both success and
       // rejection. Treat the button press like sending a prompt: return to the live
       // edge now and keep following until that notification arrives.
       scrollToLatest(true);
-      return branches.mergePullRequest(number);
+      return branches.mergePullRequest(number, repositoryId, expectedHeadSha);
     },
     [branches.mergePullRequest, scrollToLatest],
   );
@@ -2763,7 +2750,7 @@ export const SessionChat = memo(function SessionChat({
   }, [branches.saveToProject, scrollToLatest]);
   const voiceAbort = voice.abort;
   voiceAutoSendRef.current = async (text) => {
-    if (!text || sending || dead || attachments.length > 0) return false;
+    if (!text || sending || attachingRecent || dead || attachments.length > 0) return false;
     const accepted = await sendTurn(text);
     if (!accepted) return false;
     scrollToLatest(true);
@@ -2772,15 +2759,7 @@ export const SessionChat = memo(function SessionChat({
   };
   const onSend = useCallback(() => {
     const prompt = draft.trim();
-    // Enforce the cap here as well as through `canSend`: hardware Enter invokes
-    // this callback directly and can bypass the disabled send button. Restored
-    // queue backlogs may exceed the cap and must remain intact until trimmed.
-    if (
-      (prompt.length === 0 && attachments.length === 0) ||
-      attachments.length > MAX_ATTACHMENTS_PER_TURN ||
-      sending
-    )
-      return;
+    if (!canSend) return; // Hardware Enter can invoke this with the button disabled.
     // End any live dictation FIRST (#133): otherwise the voice hook's next (partial/
     // final) result writes the transcript back into the field right after we clear
     // it, and recording stays on. `abort()` swallows the trailing result; no-op idle.
@@ -2834,7 +2813,7 @@ export const SessionChat = memo(function SessionChat({
   }, [
     draft,
     attachments,
-    sending,
+    canSend,
     sendTurn,
     scrollToLatest,
     setDraft,
@@ -2860,21 +2839,23 @@ export const SessionChat = memo(function SessionChat({
   // Screen position of the composer's paperclip, so the attach menu docks to it.
   const [attachAnchor, setAttachAnchor] = useState<AttachAnchor | null>(null);
   // Merge a picker's result into `attachments`, capping at MAX_ATTACHMENTS. The
-  // picker fns throw a user-facing message on failure — a silent no-op would look
-  // like a dead button.
+  const attachmentReadPending = useRef(false);
   const performPick = useCallback(
-    (pick: (remaining: number) => Promise<AttachmentUpload[]>) => {
-      void (async () => {
-        const remaining = MAX_ATTACHMENTS_PER_TURN - attachments.length;
-        if (remaining <= 0) return;
-        try {
-          const picked = await pick(remaining);
-          if (picked.length === 0) return;
-          setAttachments((cur) => [...cur, ...picked].slice(0, MAX_ATTACHMENTS_PER_TURN));
-        } catch (error) {
-          Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
-        }
-      })();
+    async (pick: (remaining: number) => Promise<AttachmentUpload[]>, cleanUpDrop = false) => {
+      const busy = attachmentReadPending.current;
+      const remaining = busy ? 0 : Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length);
+      if (busy)
+        Alert.alert('Could not attach', 'Wait for the current attachments to finish loading.');
+      if (remaining === 0 && !cleanUpDrop) return;
+      if (!busy) attachmentReadPending.current = true;
+      try {
+        const picked = await pick(remaining);
+        if (picked.length > 0) setAttachments((current) => [...current, ...picked]);
+      } catch (error) {
+        Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
+      } finally {
+        if (!busy) attachmentReadPending.current = false;
+      }
     },
     [attachments.length],
   );
@@ -3163,21 +3144,10 @@ export const SessionChat = memo(function SessionChat({
   const onPickFiles = useCallback(() => choosePick((r) => pickFiles(r)), [choosePick]);
   const onDropFiles = useCallback(
     (files: Parameters<typeof readDroppedAttachments>[0]) => {
-      void (async () => {
-        // Unlike an interactive picker, native drop loading may finish after
-        // another attachment source has filled the remaining slots. Always run
-        // the reader so its `finally` removes every native temporary copy.
-        const remaining = Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length);
-        try {
-          const dropped = await readDroppedAttachments(files, remaining);
-          if (dropped.length === 0) return;
-          setAttachments((current) => [...current, ...dropped].slice(0, MAX_ATTACHMENTS_PER_TURN));
-        } catch (error) {
-          Alert.alert('Could not attach', error instanceof Error ? error.message : String(error));
-        }
-      })();
+      // Read even with zero slots so native temporary copies are removed.
+      void performPick((remaining) => readDroppedAttachments(files, remaining), true);
     },
-    [attachments.length],
+    [performPick],
   );
   const onDropRejected = useCallback((errors: string[]) => {
     if (errors.length > 0) Alert.alert('Could not attach', errors.join('\n'));
@@ -3336,9 +3306,12 @@ export const SessionChat = memo(function SessionChat({
     );
   }, [client, sessionId, workspaceFile, invalidateGoogleStatus]);
   const onAttachRecent = useCallback(
-    (image: RecentImage) => {
+    (ids: readonly string[]) => {
       setAttachMenuOpen(false);
-      performPick(() => attachRecentImage(image.id));
+      setAttachingRecent(true);
+      void performPick((remaining) => attachRecentImages(ids, remaining)).finally(() =>
+        setAttachingRecent(false),
+      );
     },
     [performPick],
   );
@@ -3556,6 +3529,7 @@ export const SessionChat = memo(function SessionChat({
       planningPlan,
       decidingPlanning,
       implementPlan,
+      sessionId,
       mockupReview,
       openMockups,
     }),
@@ -3575,6 +3549,7 @@ export const SessionChat = memo(function SessionChat({
       planningPlan,
       decidingPlanning,
       implementPlan,
+      sessionId,
       mockupReview,
       openMockups,
     ],
@@ -4685,18 +4660,17 @@ export const SessionChat = memo(function SessionChat({
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
-      {visiblePullRequest ? (
-        <PullRequestBar
-          key={visiblePullRequest.number}
-          confirmHint={() => featureHint.confirm('review-and-pull-requests')}
-          pullRequest={visiblePullRequest}
-          onMerge={onMergePullRequest}
-          onRefresh={branchesRefresh}
-          onDismiss={visiblePullRequest.phase === 'open' ? undefined : dismissPullRequest}
-          codeHost={branches.codeHost}
-        />
-      ) : null}
-      {!visiblePullRequest &&
+      <PullRequestBarGroup
+        key={sessionId}
+        confirmHint={() => featureHint.confirm('review-and-pull-requests')}
+        pullRequests={visiblePullRequests}
+        onMerge={onMergePullRequest}
+        onRefresh={branchesRefresh}
+        onDismiss={dismissPullRequest}
+        codeHost={branches.codeHost}
+        repositoryName={branches.repo}
+      />
+      {!visiblePullRequests.some((pr) => pr.repository?.isDefault !== false) &&
       branches.localMergeHasChanges &&
       branches.localMergeBase !== undefined &&
       branches.current !== undefined &&
@@ -4714,7 +4688,7 @@ export const SessionChat = memo(function SessionChat({
         client={client}
         sessionId={sessionId}
         projectKind={settingsProjects.find((project) => project.id === projectId)?.kind}
-        pullRequestShown={visiblePullRequest !== undefined && visiblePullRequest !== null}
+        pullRequestShown={visiblePullRequests.some((pr) => pr.repository?.isDefault !== false)}
         busy={working}
         onOpenPullRequest={(prompt) => sendTurn(prompt)}
       />
@@ -4755,6 +4729,7 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       <MockupReviewSheet
         key={mockupReview?.revision}
+        sessionId={sessionId}
         visible={mockupSheet !== null && mockupReview !== undefined}
         screens={mockupReview?.screens ?? []}
         title={planTitle(planningPlan) ?? 'Mockups'}
@@ -4781,6 +4756,7 @@ export const SessionChat = memo(function SessionChat({
         onSend={onSend}
         canSend={canSend}
         sending={sending}
+        attachingRecent={attachingRecent}
         // "Working" = the reconciled model signal (`state.working`): server-authoritative
         // `busy` (which already counts open background tasks) OR the reducer's eager
         // `session.running` while it's running AHEAD of the poll on a fresh turn. Unlike
@@ -4830,6 +4806,9 @@ export const SessionChat = memo(function SessionChat({
           onLiveMeeting,
         }}
         onAttachRecent={onAttachRecent}
+        remainingAttachments={
+          attachingRecent ? 0 : Math.max(0, MAX_ATTACHMENTS_PER_TURN - attachments.length)
+        }
         google={{
           connected: googleConnected,
           loading: googleCatalogLoading,
@@ -5691,12 +5670,13 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   const expandable = Boolean(view.subtitle) || Boolean(view.preview) || Boolean(skillBody);
   const actions = useContext(SessionActionsContext);
   const round = mockupRoundView(message.tool, actions?.mockupReview);
-  if (round)
+  if (round && actions)
     return (
       <MockupPager
+        sessionId={actions.sessionId}
         screens={round.screens}
         current={round.current}
-        onOpen={(name) => actions?.openMockups(name)}
+        onOpen={(name) => actions.openMockups(name)}
       />
     );
   const assignment = qaAssignmentView(message.tool);
@@ -7427,234 +7407,6 @@ function QueuedMessages({
   );
 }
 
-function PullRequestBar({
-  confirmHint,
-  pullRequest,
-  onMerge,
-  onRefresh,
-  onDismiss,
-  codeHost,
-}: {
-  confirmHint: () => Promise<boolean>;
-  pullRequest: NonNullable<UseBranches['pullRequest']>;
-  /** Absent for GitHub; the bar names and marks the host it opens. */
-  codeHost: UseBranches['codeHost'];
-  onMerge: UseBranches['mergePullRequest'];
-  onRefresh: () => void;
-  onDismiss?: () => void;
-}) {
-  const { theme } = useUnistyles();
-  const [merging, setMerging] = useState(false);
-  const [opening, setOpening] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [mergePermissionDenied, setMergePermissionDenied] = useState(false);
-  const [mergeRetryable, setMergeRetryable] = useState(false);
-  const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
-  const mounted = useRef(true);
-  const { checks } = pullRequest;
-  const pullRequestStateKey = [
-    pullRequest.number,
-    pullRequest.headSha ?? pullRequest.updatedAt ?? 'unknown',
-    pullRequest.phase,
-    pullRequest.pipeline,
-    checks.completed,
-    checks.total,
-    checks.failed,
-    checks.pending,
-    pullRequest.mergeable === true
-      ? 'mergeable'
-      : pullRequest.mergeable === false
-        ? 'blocked'
-        : 'unknown',
-    pullRequest.mergeState ?? 'no-state',
-    String(pullRequest.viewerCanMerge),
-  ].join(':');
-  const pending = pullRequest.pipeline === 'running' || pullRequest.pipeline === 'pending';
-  const mergeRejected = !pending && mergeRejectedFor === pullRequestStateKey && error !== undefined;
-  const visibleError = mergeRejected && !mergeRetryable ? error : undefined;
-  const merged = pullRequest.phase === 'merged';
-  const checksText = pullRequestStatusText(pullRequest);
-  // One verdict drives the dot and the button, so they cannot disagree. A conflicting
-  // PR reads `unknown` with zero checks (GitHub builds no merge ref for it), and
-  // `mergeable: null` right after a push means "still computing", not blocked — both
-  // are resolved inside `pullRequestMergeButton`.
-  const button = pullRequestMergeButton(
-    mergeRejected && mergePermissionDenied
-      ? { ...pullRequest, viewerCanMerge: false }
-      : pullRequest,
-    { merging, mergeRejected, mergeRetryable: mergeRejected && mergeRetryable },
-  );
-  const mergeButtonEnabled = button.kind === 'merge';
-  // Static on purpose: the waiting states show their spinner on the button, and a
-  // second animation beside it only competed with it.
-  const statusColor =
-    button.kind === 'blocked' || (button.kind === 'closed' && pullRequest.pipeline === 'failure')
-      ? theme.colors.attention
-      : button.kind === 'waiting'
-        ? theme.colors.textFaint
-        : button.kind === 'refresh'
-          ? theme.colors.attention
-          : theme.colors.success;
-  const conflictTarget = pullRequest.baseRef ?? 'the base branch';
-  const prNumber = String(pullRequest.number);
-  const blockedLabels: Record<PullRequestBlockReason, string> = {
-    permission: `A maintainer must merge pull request ${prNumber}`,
-    rejected: `Merge blocked because the forge rejected pull request ${prNumber}`,
-    conflict: `Merge blocked because pull request ${prNumber} conflicts with ${conflictTarget}`,
-    ci_failed: `Merge blocked because CI failed for pull request ${prNumber}`,
-    blocked: `Merge blocked for pull request ${prNumber}`,
-  };
-  const buttonLabel =
-    button.kind === 'blocked'
-      ? blockedLabels[button.reason]
-      : button.kind === 'refresh'
-        ? `Refresh status of pull request ${prNumber}`
-        : button.kind === 'waiting'
-          ? `Merge unavailable for pull request ${prNumber}: ${checksText}`
-          : button.kind === 'closed'
-            ? `Pull request ${prNumber} is ${pullRequest.phase}`
-            : `Merge pull request ${prNumber}`;
-
-  useEffect(() => {
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (mergeRejectedFor === undefined) return;
-    if (!pending && mergeRejectedFor === pullRequestStateKey) return;
-    setMergeRejectedFor(undefined);
-    setError(undefined);
-  }, [mergeRejectedFor, pending, pullRequestStateKey]);
-
-  const merge = (): void => {
-    if (!mergeButtonEnabled) return;
-    void (async () => {
-      setMerging(true);
-      setError(undefined);
-      setMergeRejectedFor(undefined);
-      if (!(await confirmHint())) {
-        if (mounted.current) setMerging(false);
-        return;
-      }
-      if (!mounted.current) return;
-      const result = await onMerge(pullRequest.number);
-      if (!mounted.current) return;
-      setMerging(false);
-      if (!result.ok) {
-        setError(result.message);
-        setMergePermissionDenied(result.permissionDenied === true);
-        setMergeRetryable(result.retryable === true);
-        setMergeRejectedFor(pullRequestStateKey);
-        return;
-      }
-      // On success there's nothing more to do client-side: onMerge already
-      // refreshed the branch/PR state, and the post-merge worktree reset +
-      // agent notification happen server-side.
-    })();
-  };
-
-  return (
-    <SessionBar pressed={opening}>
-      <SessionBarTarget
-        onPressIn={() => setOpening(true)}
-        onPressOut={() => setOpening(false)}
-        onPress={() =>
-          void confirmHint().then((proceed) => {
-            if (proceed && mounted.current)
-              void Linking.openURL(pullRequest.url).catch(() => undefined);
-          })
-        }
-        accessibilityRole="link"
-        accessibilityLabel={`Open pull request ${String(pullRequest.number)} on ${providerName(codeHost?.provider ?? 'github')}`}
-      >
-        <SessionBarContent
-          color={statusColor}
-          title={`PR #${pullRequest.number} · ${pullRequest.title}`}
-          subtitle={`${merged ? 'merged' : pullRequest.phase} · ${checksText}`}
-        >
-          {visibleError ? (
-            <Text style={styles.prError} numberOfLines={1}>
-              {visibleError}
-            </Text>
-          ) : null}
-        </SessionBarContent>
-        <CodeHostIcon
-          provider={codeHost?.provider ?? 'github'}
-          size={16}
-          color={theme.colors.textMuted}
-        />
-      </SessionBarTarget>
-      {onDismiss ? (
-        <Pressable
-          style={({ pressed }) => [
-            styles.prDismissButton,
-            pressed ? styles.prDismissButtonPressed : null,
-          ]}
-          onPress={() =>
-            void confirmHint().then((proceed) => {
-              if (proceed && mounted.current) onDismiss();
-            })
-          }
-          accessibilityRole="button"
-          accessibilityLabel={`Hide pull request ${String(pullRequest.number)} status`}
-        >
-          <Text style={styles.prDismissText}>×</Text>
-        </Pressable>
-      ) : (
-        <Pressable
-          style={({ pressed }) => [
-            styles.prMergeButton,
-            button.kind === 'merge' || button.kind === 'merging'
-              ? { backgroundColor: theme.colors.success }
-              : button.kind === 'blocked'
-                ? { backgroundColor: theme.colors.attention }
-                : button.kind === 'waiting'
-                  ? styles.prMergeButtonWaiting
-                  : styles.prMergeButtonOutline,
-            pressed && (mergeButtonEnabled || button.kind === 'refresh')
-              ? styles.prMergeButtonPressed
-              : null,
-          ]}
-          onPress={
-            button.kind === 'refresh'
-              ? () =>
-                  void confirmHint().then((proceed) => {
-                    if (proceed && mounted.current) {
-                      setMergeRejectedFor(undefined);
-                      setError(undefined);
-                      onRefresh();
-                    }
-                  })
-              : merge
-          }
-          disabled={!mergeButtonEnabled && button.kind !== 'refresh'}
-          accessibilityRole="button"
-          accessibilityState={{
-            disabled: !mergeButtonEnabled && button.kind !== 'refresh',
-            busy: button.kind === 'merging' || button.kind === 'waiting',
-          }}
-          accessibilityLabel={buttonLabel}
-        >
-          {button.kind === 'merging' ? (
-            <ActivityIndicator color={theme.colors.onAction} />
-          ) : button.kind === 'waiting' ? (
-            <View style={styles.prMergeWaiting}>
-              <SlowSpinner color={theme.colors.textMuted} />
-              <Text style={styles.prMergeWaitingText}>{button.label}</Text>
-            </View>
-          ) : button.kind === 'closed' ? null : (
-            <Text style={button.kind === 'refresh' ? styles.prRefreshText : styles.prMergeText}>
-              {button.label}
-            </Text>
-          )}
-        </Pressable>
-      )}
-    </SessionBar>
-  );
-}
-
 function InputBar({
   hasPlan,
   planning,
@@ -7665,6 +7417,7 @@ function InputBar({
   onSend,
   canSend,
   sending,
+  attachingRecent,
   running,
   activityAnimating,
   onStop,
@@ -7707,6 +7460,7 @@ function InputBar({
   onSend: () => void;
   canSend: boolean;
   sending: boolean;
+  attachingRecent: boolean;
   /** A turn is in flight (#79) — the empty-field action button becomes Stop. */
   running: boolean;
   /** Work is progressing; awaiting user input can still keep Stop available. */
@@ -7898,11 +7652,8 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                 textStyle={styles.inputEngineChipText}
               />
             </View>
-            {/* Right: the persistent mic, then the Send/Stop slot. */}
             <View style={styles.actionRowRight}>
-              {/* The mic is ALWAYS a mic (never a stop glyph) and always pressable —
-                dictation is tap-to-toggle; recording gets its own active treatment.
-                A separate button keeps it from ever "mutating" into Send/Stop. */}
+              {attachingRecent && running && !dead ? <StopButton onStop={onStop} /> : null}
               <MicButton
                 voiceState={voiceState}
                 autoMode={voiceAutoMode}
@@ -7912,14 +7663,14 @@ the Claude app — it sits with the composer instead of the nav bar). */}
                 onPauseCountdown={onPauseVoiceCountdown}
                 disabled={dead}
               />
-              {running && !canSend && !sending && !dead ? (
-                // Empty field while a turn runs → Stop is available, while the top
-                // activity line carries the "agent is working" cue.
+              {attachingRecent ? (
+                <ActivityIndicator
+                  accessibilityLabel="Loading images"
+                  color={theme.colors.action}
+                />
+              ) : running && !canSend && !sending && !dead ? (
                 <StopButton onStop={onStop} />
               ) : (
-                // Otherwise the Send button — active when there's something to send,
-                // greyed when idle/empty or dead. Sending while a turn runs queues/steers
-                // it, so Send keeps priority over Stop whenever the field is sendable.
                 <Pressable
                   style={[styles.sendButton, canSend ? null : styles.sendButtonDisabled]}
                   onPress={onSend}
@@ -8677,75 +8428,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     gap: theme.spacing.sm,
-  },
-  prError: {
-    color: theme.colors.attention,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  prMergeButton: {
-    minWidth: 78,
-    height: 36,
-    paddingHorizontal: theme.spacing.sm,
-    marginRight: theme.spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.action,
-  },
-  prMergeButtonDisabled: {
-    opacity: 0.45,
-  },
-  prMergeButtonPressed: {
-    opacity: 0.8,
-  },
-  prMergeButtonWaiting: {
-    // Same surface as the bar behind it would read as bare text, so the waiting button
-    // gets the stronger border tone as fill plus a visible edge to stay a button.
-    backgroundColor: theme.colors.border,
-    borderWidth: 1,
-    borderColor: theme.colors.textFaint,
-  },
-  prMergeButtonOutline: {
-    backgroundColor: 'transparent',
-    borderWidth: 1,
-    borderColor: theme.colors.textMuted,
-  },
-  prMergeText: {
-    color: theme.colors.onAction,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.bold,
-  },
-  prMergeWaiting: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-  },
-  prMergeWaitingText: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  prRefreshText: {
-    color: theme.colors.text,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  prDismissButton: {
-    width: 36,
-    height: 36,
-    marginRight: theme.spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  prDismissButtonPressed: {
-    opacity: 0.55,
-  },
-  prDismissText: {
-    color: theme.colors.textFaint,
-    fontSize: theme.typography.title.fontSize,
-    lineHeight: 24 * theme.fontScale,
-    fontFamily: theme.fonts.regular,
   },
   queuedBubbleRow: {
     alignItems: 'flex-end',

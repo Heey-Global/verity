@@ -6,13 +6,18 @@ import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
 import { registerDependencyCapacityRoute } from './dependency-capacity-route.js';
+import type { createServerSessionOverview } from './server-session-overview.js';
 import { registerProjectRepoRoute } from './project-repo-route.js';
 import {
   createSessionRepositories,
   registerSessionRepositoriesRoutes,
 } from './session-repositories.js';
 
-export function installRepositoryTools(app: FastifyInstance, ctx: ServerContext): void {
+export function installRepositoryTools(
+  app: FastifyInstance,
+  ctx: ServerContext,
+  branchesForSession: ReturnType<typeof createServerSessionOverview>['branchesForSession'],
+): void {
   const { deps, conductor } = ctx;
   registerDependencyCapacityRoute(app, {
     store: deps.eventStore,
@@ -58,6 +63,25 @@ export function installRepositoryTools(app: FastifyInstance, ctx: ServerContext)
       store: deps.eventStore,
       openRepository: sessionRepositories.openForSandbox,
       currentRepositoryBranch: sessionRepositories.currentBranch,
+      repositorySessionBranches: async (id, repositoryId) => {
+        const session = await deps.eventStore.getSession(id);
+        if (!session?.projectId) return [];
+        const worktree =
+          repositoryId === `default:${session.projectId}`
+            ? session.worktree
+            : (await deps.eventStore.listSessionRepositoryWorkspaces(id)).find(
+                (workspace) => workspace.repositoryId === repositoryId,
+              )?.worktree;
+        if (!worktree) return [];
+        const branches = await branchesForSession(session);
+        return (await branches?.sessionBranches(worktree, true).catch(() => [])) ?? [];
+      },
+      pullRequestChanged: async (id, project) => {
+        await deps.projectPullRequests?.invalidate?.(project).catch((err: unknown) => {
+          app.log.warn({ err, sessionId: id }, 'Pull request status invalidation failed');
+        });
+        ctx.resources.invalidate(`/sessions/${encodeURIComponent(id)}/branches`);
+      },
       getSession: (id) => deps.eventStore.getSession(id),
     });
   }

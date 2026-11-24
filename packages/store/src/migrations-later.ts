@@ -5,6 +5,7 @@ import { sessionMessageRecencyMigration } from './session-message-recency-migrat
 import { projectCodePermissionMigration } from './project-code-permission-migration.js';
 import { sessionCreatorMigration } from './session-creator-migration.js';
 import { changeSubmissionsMigration } from './change-submissions-migration.js';
+import { githubRepositoryIdentityMigration } from './github-repository-identity-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -692,3 +693,14 @@ migrations['0237_project_code_permission'] = projectCodePermissionMigration;
 
 migrations['0238_session_creators'] = sessionCreatorMigration;
 migrations['0239_change_submissions'] = changeSubmissionsMigration;
+
+migrations['0240_session_repository_pull_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table session_repository_workspaces
+      add column if not exists pull_request_history jsonb`.execute(db);
+  },
+  async down(): Promise<void> {
+    // The previous version ignores this column. Keeping it preserves history if reapplied.
+  },
+};
+migrations['0241_github_repository_ids'] = githubRepositoryIdentityMigration;

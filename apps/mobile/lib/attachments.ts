@@ -9,7 +9,7 @@ import { File as FsFile } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library/legacy';
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 
 /** An image upload's media type — the 4 types every vision backend accepts. */
 type ImageUploadMediaType = Extract<AttachmentUpload, { kind: 'image' }>['mediaType'];
@@ -306,10 +306,43 @@ export async function pickImagesFromLibrary(remaining: number): Promise<Attachme
   return picked;
 }
 
+export async function attachRecentImages(
+  ids: readonly string[],
+  remaining: number,
+): Promise<AttachmentUpload[]> {
+  const attachments: AttachmentUpload[] = [];
+  const failures: unknown[] = [];
+  for (const id of ids.slice(0, remaining)) {
+    try {
+      attachments.push(...(await attachRecentImage(id)));
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    if (attachments.length === 0) throw failures[0];
+    Alert.alert(
+      'Could not attach',
+      failures.length === 1
+        ? 'One image could not be loaded.'
+        : `${String(failures.length)} images could not be loaded.`,
+    );
+  }
+  return attachments;
+}
+
 /** Resolve a recent library image to a local file and encode its pixels without
  * carrying over source metadata. Keep PNG lossless while it fits the limit. */
-export async function attachRecentImage(assetId: string): Promise<AttachmentUpload[]> {
+async function attachRecentImage(assetId: string): Promise<AttachmentUpload[]> {
   const info = await MediaLibrary.getAssetInfoAsync(assetId, { shouldDownloadFromNetwork: true });
+  const pairedUri = info.pairedVideoAsset?.uri;
+  if (pairedUri?.startsWith('file://')) {
+    try {
+      new FsFile(pairedUri).delete();
+    } catch {
+      // A temporary paired video is unnecessary for the still image upload.
+    }
+  }
   const uri = info.localUri;
   if (!uri) throw new Error('This photo is not available on this device right now.');
   if (/\.png$/i.test(info.filename)) {

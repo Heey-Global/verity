@@ -207,6 +207,44 @@ agent to find an existing session or start one in a named project, link it and
 hand over a task. Creation and linking follow managed approval and your existing
 project permissions.
 
+### Review a design mockup
+
+Ask the session for a mockup, for example, “Show me an interactive draft of the
+settings page.” Open **Review** at the bottom of the chat to try the draft and
+mark each screen. Tell the session what to change or when to implement it.
+
+For a web UI draft, save one self-contained UTF-8 HTML document per screen in
+the session worktree. Use an explicit `<!doctype html>` and
+`<html>`, `<head>` and `<body>` elements. For an existing web export, inline
+the compiled CSS in a `<style>` element and embed images and fonts as data URLs.
+For SVG illustrations and icons, encode the SVG file as a base64
+`data:image/svg+xml;base64,…` URL and use it in an `<img>` element. The
+preview removes inline `<svg>` markup.
+Use sample data and native controls such as `<details>`, checkboxes and radio
+buttons. CSS selectors like `:checked` can show different states based on
+your choices. The preview disables JavaScript and blocks external resources,
+link navigation, and form submission. Each HTML file may be up to 2 MiB and contain up to 4,096 elements with up to 64 levels of nesting.
+The review opens the saved draft directly, so a project server and screenshot
+renderer are unnecessary.
+
+Submit the drafts with `verity_mockups_present`, using worktree-relative paths.
+Use `htmlPath` for an HTML document and `path` for a PNG or JPEG, such as a
+native screenshot, an image draft, or an explicitly requested image file. Each
+screen takes one path field. You can mix the formats in the same round.
+
+```json
+{
+  "screens": [
+    { "name": "Settings", "htmlPath": "mockups/settings.html" },
+    { "name": "Native notification", "path": "mockups/notification.png" }
+  ]
+}
+```
+
+Verity saves a copy of each submitted file with the review round. Editing
+the file in the worktree leaves the submitted copy intact. To show a revision,
+submit the whole set again.
+
 You are done with the setup. Everything below is optional.
 
 ## Optional: add your other devices

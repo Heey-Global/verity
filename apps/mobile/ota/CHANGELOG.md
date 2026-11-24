@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.95.3](https://github.com/Heey-Global/verity/compare/mobile-v1.95.2...mobile-v1.95.3) (2026-11-23)
+
+
+### Features
+
+* **mobile:** select multiple recent images in the add menu ([#2858](https://github.com/Heey-Global/verity/issues/2858)) ([373122b](https://github.com/Heey-Global/verity/commit/373122b10d38f1565d5fae671abf2c850e6a84a4))
+
+
+### Bug Fixes
+
+* **mobile:** keep project rename input visible ([#2854](https://github.com/Heey-Global/verity/issues/2854)) ([9e384ff](https://github.com/Heey-Global/verity/commit/9e384ff5089a2b4fb990c938019e7b604b9f1545))
+* **mobile:** reduce secret approval card text size ([#2855](https://github.com/Heey-Global/verity/issues/2855)) ([5e1d795](https://github.com/Heey-Global/verity/commit/5e1d795e070b1bf36026aee79f9aaa938ffbdbe8))
+* **session:** show pull requests across repositories ([#2847](https://github.com/Heey-Global/verity/issues/2847)) ([36c03bc](https://github.com/Heey-Global/verity/commit/36c03bcea2d032d7d0af781ac8b60c980e52c9ec))
+
 ## [1.95.2](https://github.com/Heey-Global/verity/compare/mobile-v1.95.1...mobile-v1.95.2) (2026-11-23)
 
 

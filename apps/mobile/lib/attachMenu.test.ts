@@ -38,7 +38,7 @@ describe('attachMenuRows', () => {
     const rows = attachMenuRows(handlers, {
       meetingAudioEnabled: true,
       recentStrip: true,
-      googleConnected: true,
+      showConnectors: true,
     });
     expect(labels(rows)).toEqual([
       'Choose photo',
@@ -86,9 +86,7 @@ describe('attachMenuRows', () => {
   });
 
   it('hides Connectors without a central Google account', () => {
-    expect(labels(attachMenuRows(handlers, { googleConnected: false }))).not.toContain(
-      'Connectors',
-    );
+    expect(labels(attachMenuRows(handlers, { showConnectors: false }))).not.toContain('Connectors');
   });
 });
 

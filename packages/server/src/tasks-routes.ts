@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import { attachmentUploadSchema, type AgentEvent, type TasksRequest } from '@verity/events';
 import {
+  MOCKUP_HTML_ATTACHMENT,
   OPEN_TASK_STATUSES,
   TASK_ATTACHMENTS_MAX,
   TASK_DETAIL_MAX,
@@ -18,6 +19,8 @@ import {
   type EventStore,
   type TaskRecord,
 } from '@verity/store';
+
+import { attachmentDownloadHeaders } from './attachment-route.js';
 
 /** Mirrors the legacy-administrator fallback the HTTP MCP connection routes use:
  *  deployments without the auth gate have one implicit user. */
@@ -254,11 +257,9 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     )
       return reply.code(404).send({ error: 'attachment not found' });
     const blob = await deps.eventStore.getAttachment(hash);
-    if (blob === undefined) return reply.code(404).send({ error: 'attachment not found' });
-    return reply
-      .header('Content-Type', blob.mediaType)
-      .header('Cache-Control', 'private, max-age=31536000, immutable')
-      .send(blob.bytes);
+    if (blob === undefined || blob.mediaType === MOCKUP_HTML_ATTACHMENT)
+      return reply.code(404).send({ error: 'attachment not found' });
+    return attachmentDownloadHeaders(reply, blob.mediaType).send(blob.bytes);
   });
 
   app.get('/tasks', async (request) => {

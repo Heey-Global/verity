@@ -19,6 +19,13 @@ it('requires execute access to mark or end a session mockup review', async () =>
           ? { projectId: 'other' }
           : undefined,
   };
+  const preview = '/sessions/:id/mockup-attachments/:hash';
+  expect(await authorizePairedRoute(store, 'reader', 'GET', preview, { id: 'session' })).toBe(
+    'allow',
+  );
+  expect(await authorizePairedRoute(store, 'reader', 'GET', preview, { id: 'foreign' })).toBe(
+    'forbidden',
+  );
   expect(
     await authorizePairedRoute(store, 'reader', 'POST', '/sessions/:id/mockups', { id: 'session' }),
   ).toBe('forbidden');

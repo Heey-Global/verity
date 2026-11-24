@@ -6,7 +6,8 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-var ROOT = "/run/verity-capacity-leases";
+var CAPACITY_LEASE_ROOT = "/run/verity-capacity-leases";
+var ROOT = CAPACITY_LEASE_ROOT;
 var UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 function validateCapacityLeaseRequest(request) {
   if (request?.protocolVersion !== 1 || request.kind !== "capacity-lease" || !["create", "status", "retire"].includes(request.action) || typeof request.operationId !== "string" || !UUID.test(request.operationId) || typeof request.generation !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(request.generation))
@@ -36,7 +37,7 @@ async function flock(handle, wait = false) {
   });
 }
 async function rootDirectory(root, uid) {
-  await mkdir(root, { mode: 493 }).catch((error) => {
+  await mkdir(root, { mode: 457 }).catch((error) => {
     if (error.code !== "EEXIST") throw error;
   });
   const info = await lstat(root);
@@ -50,7 +51,7 @@ async function rootDirectory(root, uid) {
     const opened = await directory.stat();
     if (opened.dev !== info.dev || opened.ino !== info.ino)
       throw new Error("capacity directory changed");
-    await directory.chmod(493);
+    await directory.chmod(457);
   } finally {
     await directory.close();
   }
@@ -101,6 +102,11 @@ async function persist(root, path, value) {
       if (error.code !== "ENOENT") throw error;
     });
   }
+}
+async function ensureCapacityLeaseRoot(options = {}) {
+  const root = options.capacityLeaseRoot ?? ROOT;
+  await rootDirectory(root, options.enforceRoot === false ? process.getuid() : 0);
+  return root;
 }
 async function capacityLeaseRequest(request, options = {}) {
   validateCapacityLeaseRequest(request);
@@ -734,6 +740,14 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
                 await lease.close();
               }
             };
+          }
+          if (request.kind === "agent" && (options.enforceRoot !== false || options.capacityLeaseRoot !== void 0)) {
+            await ensureCapacityLeaseRoot(options).catch((error) => {
+              process.stderr.write(
+                `verity-agent-spawn-broker: capacity lease directory unavailable: ${error.code ?? error.message}
+`
+              );
+            });
           }
           if (request.kind === "agent" && request.command === "codex-acp") {
             releaseCodexStartup = await acquireCodexStartup();
@@ -1924,7 +1938,10 @@ function normalSessionRoots(options, agentPath) {
     ["--read-root", "/opt/agent-seed"],
     ["--read-root", "/opt/verity/package-managers"],
     ["--read-root", "/knowledge"],
-    ["--write-root", "/knowledge/insights"]
+    ["--write-root", "/knowledge/insights"],
+    // Dependency installs hold their broker-created capacity lock through this
+    // read-only view; without it every managed install is refused admission.
+    ["--read-root", options.capacityLeaseRoot ?? CAPACITY_LEASE_ROOT]
   ]) {
     try {
       const metadata2 = lstatSync2(path);
@@ -3669,6 +3686,7 @@ export {
   brokerSocketOwnership,
   capacityLeaseRequest,
   collectEscapedProcessTree,
+  ensureCapacityLeaseRoot,
   killExitedTrustedCliProcessGroup,
   loadTrustedCliArgvPolicy,
   matchesTrustedCliArgvPolicy,

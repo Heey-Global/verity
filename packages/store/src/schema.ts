@@ -1,3 +1,7 @@
+import type {
+  ProjectRepositoriesTable,
+  SessionRepositoryWorkspacesTable,
+} from './schema-project-repositories.js';
 import type { BrokeredApprovalDatabase, SecretKeyMetaTable } from './schema-brokered-approvals.js';
 export type { SecretKeyMetaTable } from './schema-brokered-approvals.js';
 import type { AssistantDatabase } from './schema-assistant.js';
@@ -25,28 +29,6 @@ export interface WikiMaintenanceTable {
   project_id: string;
   session_id: string | null;
   last_run_at: Date | null;
-}
-
-export interface ProjectRepositoriesTable {
-  id: string;
-  project_id: string;
-  name: string;
-  kind: 'github' | 'forgejo';
-  owner: string;
-  repo: string;
-  forge_connection_id: string | null;
-  default_branch: string | null;
-  removed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
-}
-
-export interface SessionRepositoryWorkspacesTable {
-  session_id: string;
-  repository_id: string;
-  project_id: string;
-  worktree: string;
-  branch: string;
-  pull_request: ColumnType<unknown, unknown, unknown>;
-  created_at: Generated<Date>;
 }
 
 /**
@@ -426,10 +408,11 @@ export interface ProjectsTable {
   /** App-generated UUID; stable across re-provisioning of the same repo. */
   id: string;
   created_by_user_id: ColumnType<string, string | undefined, never>;
-  /** Lowercase canonical owner (`heey-global`). */
+  /** Lowercase canonical owner and repo (`heey-global`/`verity`); follow GitHub renames. */
   owner: string;
-  /** Lowercase canonical repo (`verity`). */
   repo: string;
+  /** GitHub's rename-stable repository ID, once learned; NULL for other code hosts. */
+  github_repository_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** The project's own name, shown wherever the project is named. NULL only
    *  for rows written before migration 0204 by an older writer. */
   name: ColumnType<string | null, string | null | undefined, string | null>;
@@ -441,12 +424,9 @@ export interface ProjectsTable {
   /** `github` or `forgejo` for repository projects; `control_plane` for Verity's
    *  internal advanced workspace; `local` for a project created without a remote. */
   kind: ColumnType<string, string | undefined, string>;
-  /** Host clone-directory NAME under the clone root, when it must not be derived
-   *  from `(owner, repo)`. NULL = derive `<owner>-<repo>` (every pre-existing row).
-   *  Written when a `local` project is created, and DELIBERATELY kept when that
-   *  project is later linked to a GitHub repo: sessions persist ABSOLUTE worktree
-   *  paths under this directory, so moving the clone on link would orphan every
-   *  session the project already has. */
+  /** Host clone-directory NAME under the clone root; NULL = derive `<owner>-<repo>`.
+   *  Pinned before `(owner, repo)` changes (link, disconnect, GitHub rename): sessions
+   *  persist ABSOLUTE worktree paths under it, so moving the clone would orphan them. */
   clone_dir: ColumnType<string | null, string | null | undefined, string | null>;
   /** Resolved image ref for the project container; NULL = resolve Verity default
    *  at build time (§19.5 — not frozen at registration). */

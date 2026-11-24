@@ -164,12 +164,59 @@ describe('project repository assignments', () => {
       ...pullRequest,
       state: 'closed',
     });
-    const updated = (await ctx.store.listSessionRepositoryWorkspaces('s'))[0];
+    // Simulate a workspace migrated from a release that only wrote the legacy column.
+    await ctx.db
+      .updateTable('session_repository_workspaces')
+      .set({ pull_request_history: null })
+      .where('session_id', '=', 's')
+      .where('repository_id', '=', extra.id)
+      .execute();
+    const second = { number: 8, head: 'feat/second', url: 'https://github.com/two/api/pull/8' };
+    await ctx.store.recordRepositoryPullRequest('p', extra.id, second.head, second, 's');
+    const sameNumberInDefault = { ...second, url: 'https://github.com/one/p/pull/8' };
+    await ctx.store.upsertSessionRepositoryWorkspace({
+      ...assignment,
+      repositoryId: 'default:p',
+      worktree: '/default',
+    });
+    await ctx.store.recordRepositoryPullRequest(
+      'p',
+      'default:p',
+      second.head,
+      sameNumberInDefault,
+      's',
+    );
+    const all = await ctx.store.listSessionRepositoryWorkspaces('s');
+    expect(all.find((row) => row.repositoryId === extra.id)?.pullRequests).toEqual([
+      { ...pullRequest, state: 'closed' },
+      second,
+    ]);
+    expect(all.find((row) => row.repositoryId === 'default:p')?.pullRequests).toEqual([
+      sameNumberInDefault,
+    ]);
+    await ctx.store.recordRepositoryPullRequest(
+      'p',
+      extra.id,
+      pullRequest.head,
+      { number: 7, title: 'Updated history' },
+      's',
+      true,
+    );
+    const historical = (await ctx.store.listSessionRepositoryWorkspaces('s')).find(
+      (row) => row.repositoryId === extra.id,
+    );
+    expect(historical?.branch).toBe(second.head);
+    expect(historical?.pullRequest).toEqual({
+      ...pullRequest,
+      state: 'closed',
+      title: 'Updated history',
+    });
+    const updated = await ctx.store.listSessionRepositoryWorkspaces('s');
     expect(await ctx.store.removeProjectRepository('p', extra.id)).toBe(true);
     expect(await ctx.store.getProjectRepository('p', extra.id)).toBeUndefined();
     expect(await ctx.store.listProjectRepositories('p')).toHaveLength(1);
     expect(await ctx.store.listProjectRepositories('p', { includeRemoved: true })).toHaveLength(2);
-    expect(await ctx.store.listSessionRepositoryWorkspaces('s')).toEqual([updated]);
+    expect(await ctx.store.listSessionRepositoryWorkspaces('s')).toEqual(updated);
     await expect(ctx.store.upsertSessionRepositoryWorkspace(assignment)).rejects.toThrow(
       'not connected',
     );

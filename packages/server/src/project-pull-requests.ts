@@ -26,7 +26,14 @@ export interface ProjectPullRequestBackend {
   /** Every open pull request; throws when the list itself cannot be read. */
   list(project: ProjectRecord): Promise<{ webUrl: string; pulls: DiscoveredPullRequest[] }>;
   /** Fresh status of the pull request whose head is `branch`. */
-  status(project: ProjectRecord, branch: string): Promise<PullRequestStatus | null>;
+  status(
+    project: ProjectRecord,
+    branch: string,
+    number?: number,
+  ): Promise<PullRequestStatus | null>;
+  defaultBranch?(project: ProjectRecord): Promise<string>;
+  hasOpenPullRequest?(project: ProjectRecord, branch: string): Promise<boolean>;
+  invalidate?(project: ProjectRecord): Promise<void>;
   /** Merges at `expectedHeadSha`; permission refusals throw ForgeMergePermissionError. */
   merge(project: ProjectRecord, number: number, expectedHeadSha: string): Promise<boolean>;
 }
@@ -92,7 +99,10 @@ function isRenovateAuthor(author: string | undefined): boolean {
 
 /** The key a fix session is registered under, shared with CI repair for the default
  *  repository so a manual fix and an automatic repair never work on one PR at once. */
-function pullRequestResource(repository: ProjectRepositoryRecord, number: number): string {
+export function pullRequestResource(
+  repository: Pick<ProjectRepositoryRecord, 'id' | 'isDefault'>,
+  number: number,
+): string {
   return repository.isDefault
     ? `pr:${String(number)}`
     : `repo:${repository.id}:pr:${String(number)}`;
@@ -370,7 +380,9 @@ export function registerProjectPullRequestRoutes(
       return reply.code(503).send({ error: 'pull request merging is not configured' });
     const target = await resolve(id, repositoryId);
     if (!target) return reply.code(404).send({ error: 'repository not found' });
-    const status = await deps.backend.status(target.remote, parsed.data.branch).catch(() => null);
+    const status = await deps.backend
+      .status(target.remote, parsed.data.branch, number)
+      .catch(() => null);
     const refusal = mergeRefusal(status, number, parsed.data.expectedHeadSha);
     if (refusal)
       return reply.code(refusal.statusCode).send({ error: refusal.error, code: refusal.code });
@@ -400,7 +412,9 @@ export function registerProjectPullRequestRoutes(
       return reply.code(503).send({ error: 'fixing pull requests is not configured' });
     const target = await resolve(id, repositoryId);
     if (!target) return reply.code(404).send({ error: 'repository not found' });
-    const status = await deps.backend.status(target.remote, parsed.data.branch).catch(() => null);
+    const status = await deps.backend
+      .status(target.remote, parsed.data.branch, number)
+      .catch(() => null);
     if (!status)
       return reply.code(503).send({
         error: 'Pull request status is temporarily unavailable. Try again shortly.',

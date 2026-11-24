@@ -34,6 +34,41 @@ interface GitHubInstallationTokenResponse {
 
 interface GitHubAppTokenResponse {
   token?: unknown;
+  repositories?: unknown;
+}
+
+/** A failed installation-token request. The message names only the HTTP status. */
+class GitHubAppTokenMintError extends Error {
+  constructor(readonly status: number) {
+    super(`GitHub App token mint failed: HTTP ${String(status)}`);
+    this.name = 'GitHubAppTokenMintError';
+  }
+}
+
+/** A repository a minted token covers, as GitHub reported it. */
+interface GitHubTokenRepository {
+  id: string;
+  owner: string;
+  repo: string;
+}
+
+/**
+ * Stable repository identity for project token mints (see
+ * `GitHubRepositoryIdentityStore`). A recorded ID scopes the token by
+ * `repository_ids`, which keeps working after the repository is renamed;
+ * `reconcile` records what GitHub reported so the stored name follows.
+ */
+export interface GitHubRepositoryIdentity {
+  lookup(owner: string, repo: string): Promise<string | undefined>;
+  reconcile(observation: {
+    requestedOwner: string;
+    requestedRepo: string;
+    id: string;
+    owner: string;
+    repo: string;
+    /** GitHub redirected the requested name to this repository (a confirmed rename). */
+    redirected?: boolean;
+  }): Promise<void>;
 }
 
 /** Resolved GitHub App credentials for one mint call: the App id, the private
@@ -72,6 +107,10 @@ export interface GitHubAppProjectTokenMintOptions {
   /** Backoff before retrying transient GitHub 5xx responses. Empty disables retries. */
   retryDelaysMs?: readonly number[] | undefined;
   sleep?: ((delayMs: number) => Promise<void>) | undefined;
+  /** Rename-stable repository identity. Without it tokens are scoped by name only. */
+  repositoryIdentity?: GitHubRepositoryIdentity | undefined;
+  /** Reports a failed identity write; the minted token is still returned. */
+  onIdentityError?: ((error: unknown) => void) | undefined;
 }
 
 /** `kind` is OPTIONAL because two callers hold only a repo coordinate, not a
@@ -79,7 +118,8 @@ export interface GitHubAppProjectTokenMintOptions {
  *  (`{owner, repo}`), and the memo wrapper keys on the same pair. Both are still
  *  covered by the reserved-owner half of the local-project check below. */
 export type GitHubProjectTokenMint = (
-  project: Pick<ProjectRecord, 'owner' | 'repo'> & Partial<Pick<ProjectRecord, 'kind'>>,
+  project: Pick<ProjectRecord, 'owner' | 'repo'> &
+    Partial<Pick<ProjectRecord, 'kind' | 'githubRepositoryId'>>,
 ) => Promise<string | undefined>;
 
 export type GitHubInstallationTokenMint = () => Promise<string | undefined>;
@@ -151,6 +191,34 @@ async function mintGitHubAppInstallationToken(
   opts: GitHubAppProjectTokenMintOptions,
   body: Record<string, unknown>,
 ): Promise<string | undefined> {
+  return (await requestGitHubAppInstallationToken(opts, body))?.token;
+}
+
+function tokenRepositories(payload: GitHubAppTokenResponse): GitHubTokenRepository[] {
+  if (!Array.isArray(payload.repositories)) return [];
+  return payload.repositories.flatMap((raw: unknown) => {
+    if (raw === null || typeof raw !== 'object') return [];
+    const { id, name, owner } = raw as { id?: unknown; name?: unknown; owner?: unknown };
+    const login =
+      owner !== null && typeof owner === 'object'
+        ? (owner as { login?: unknown }).login
+        : undefined;
+    return typeof id === 'number' &&
+      Number.isSafeInteger(id) &&
+      id > 0 &&
+      typeof name === 'string' &&
+      name !== '' &&
+      typeof login === 'string' &&
+      login !== ''
+      ? [{ id: String(id), owner: login.toLowerCase(), repo: name.toLowerCase() }]
+      : [];
+  });
+}
+
+async function requestGitHubAppInstallationToken(
+  opts: GitHubAppProjectTokenMintOptions,
+  body: Record<string, unknown>,
+): Promise<{ token: string | undefined; repositories: GitHubTokenRepository[] } | undefined> {
   const doFetch = opts.fetch ?? fetch;
   const readFile = opts.readFile ?? ((path: string): string => readFileSync(path, 'utf8'));
   const now = opts.now ?? ((): number => Date.now());
@@ -190,19 +258,78 @@ async function mintGitHubAppInstallationToken(
     await res.body?.cancel().catch(() => undefined);
     const delayMs = retryDelaysMs[attempt];
     if (res.status < 500 || res.status >= 600 || delayMs === undefined) {
-      throw new Error(`GitHub App token mint failed: HTTP ${String(res.status)}`);
+      throw new GitHubAppTokenMintError(res.status);
     }
     await sleep(delayMs);
   }
   const payload = (await res.json()) as GitHubAppTokenResponse;
-  return typeof payload.token === 'string' && payload.token.length > 0 ? payload.token : undefined;
+  return {
+    token:
+      typeof payload.token === 'string' && payload.token.length > 0 ? payload.token : undefined,
+    repositories: tokenRepositories(payload),
+  };
 }
 
 /**
- * Mint short-lived GitHub App installation tokens directly inside Verity.
- * The token is scoped to the target repository name via GitHub's
- * `repositories` request body, then persisted by the provisioner into the
- * project's host clone directory for container git operations.
+ * Find the ID of a repository GitHub knows to have been renamed away from
+ * `owner/repo`. GitHub answers a renamed repository's old API path with a
+ * permanent redirect to `/repositories/<id>`; a name that now belongs to another
+ * repository answers 200 instead and is NOT followed. Uses a metadata-only
+ * installation token, which sees nothing outside the installation.
+ */
+async function locateRenamedRepository(
+  opts: GitHubAppProjectTokenMintOptions,
+  owner: string,
+  repo: string,
+): Promise<string | undefined> {
+  const token = await mintGitHubAppInstallationToken(opts, { permissions: { metadata: 'read' } });
+  if (token === undefined) return undefined;
+  const apiBaseUrl = (opts.apiBaseUrl ?? 'https://api.github.com').replace(/\/+$/, '');
+  const res = await (opts.fetch ?? fetch)(
+    `${apiBaseUrl}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    {
+      method: 'GET',
+      redirect: 'manual',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'User-Agent': 'verity',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
+    },
+  );
+  await res.body?.cancel().catch(() => undefined);
+  if (res.status !== 301 && res.status !== 307 && res.status !== 308) return undefined;
+  const location = res.headers?.get('location');
+  if (!location) return undefined;
+  let target: URL;
+  try {
+    target = new URL(location, `${apiBaseUrl}/`);
+  } catch {
+    return undefined;
+  }
+  const match = /^\/repositories\/([1-9][0-9]{0,14})$/u.exec(
+    target.pathname.slice(new URL(apiBaseUrl).pathname.replace(/\/+$/, '').length),
+  );
+  return target.origin === new URL(apiBaseUrl).origin &&
+    match !== null &&
+    Number.isSafeInteger(Number(match[1]))
+    ? match[1]
+    : undefined;
+}
+
+/**
+ * Mint short-lived GitHub App installation tokens directly inside Verity, each
+ * scoped to the one target repository.
+ *
+ * With a {@link GitHubRepositoryIdentity}, the scope is GitHub's repository ID
+ * (`repository_ids`) once it is known, so a rename on GitHub cannot break the
+ * mint, and a known ID is never traded for a name: a repository the
+ * installation lost stays refused even when another one takes over its name.
+ * Before the ID is known the scope is the name (`repositories`), and the first
+ * token records the ID GitHub reports for it. A name GitHub refuses is
+ * recovered only when GitHub itself redirects it to the renamed repository.
  */
 export function createGitHubAppProjectTokenMint(
   opts: GitHubAppProjectTokenMintOptions,
@@ -221,12 +348,77 @@ export function createGitHubAppProjectTokenMint(
       project.owner === LOCAL_PROJECT_OWNER
     )
       return undefined;
-    return mintGitHubAppInstallationToken(opts, {
-      repositories: [project.repo],
-      // Only include the subset when configured — an absent `permissions` key
-      // keeps the full-installation-scope behaviour (and the existing wire shape).
-      ...(opts.permissions ? { permissions: opts.permissions } : {}),
-    });
+    const permissions = opts.permissions ? { permissions: opts.permissions } : {};
+    const identity = opts.repositoryIdentity;
+    const requested = { owner: project.owner.toLowerCase(), repo: project.repo.toLowerCase() };
+    const record = async (
+      reported: GitHubTokenRepository[],
+      expectedId: string | undefined,
+      redirected = false,
+    ): Promise<void> => {
+      const [repository] = reported;
+      if (identity === undefined || reported.length !== 1 || repository === undefined) return;
+      if (expectedId !== undefined && repository.id !== expectedId) return;
+      const sameName = repository.owner === requested.owner && repository.repo === requested.repo;
+      // By ID, an unchanged name needs no write. By name, a different reported name
+      // is never a rename: GitHub resolves a bare name in the installation's own
+      // account, which need not be the owner the project was stored under.
+      if (expectedId !== undefined ? sameName : !sameName) return;
+      try {
+        await identity.reconcile({
+          requestedOwner: requested.owner,
+          requestedRepo: requested.repo,
+          ...repository,
+          ...(redirected ? { redirected: true } : {}),
+        });
+      } catch (error) {
+        opts.onIdentityError?.(error);
+      }
+    };
+    const mintById = async (id: string): Promise<string | undefined> => {
+      // Once the ID is known the name is never consulted again: a repository the
+      // installation lost stays refused even if another one takes over its name.
+      if (!/^[1-9][0-9]{0,14}$/u.test(id)) throw new Error('invalid GitHub repository ID');
+      const minted = await requestGitHubAppInstallationToken(opts, {
+        repository_ids: [Number(id)],
+        ...permissions,
+      });
+      if (minted !== undefined) await record(minted.repositories, id);
+      return minted?.token;
+    };
+    // A record speaks for itself: `null` means that project is not bound yet and
+    // learns its own ID by name. Only a caller holding bare coordinates (no field
+    // at all) borrows the ID recorded for the repository stored under that name.
+    const knownId =
+      project.githubRepositoryId === undefined
+        ? await identity?.lookup(requested.owner, requested.repo)
+        : project.githubRepositoryId;
+    if (knownId) return mintById(knownId);
+    try {
+      const minted = await requestGitHubAppInstallationToken(opts, {
+        repositories: [project.repo],
+        // Only include the subset when configured — an absent `permissions` key
+        // keeps the full-installation-scope behaviour (and the existing wire shape).
+        ...permissions,
+      });
+      if (minted !== undefined) await record(minted.repositories, undefined);
+      return minted?.token;
+    } catch (error) {
+      // GitHub refuses a name the installation no longer has (HTTP 422). A rename
+      // is the one case with a verifiable successor; anything else stays an error.
+      if (!(error instanceof GitHubAppTokenMintError) || error.status !== 422) throw error;
+      if (identity === undefined) throw error;
+      const renamedId = await locateRenamedRepository(opts, requested.owner, requested.repo).catch(
+        () => undefined,
+      );
+      if (renamedId === undefined) throw error;
+      const minted = await requestGitHubAppInstallationToken(opts, {
+        repository_ids: [Number(renamedId)],
+        ...permissions,
+      });
+      if (minted !== undefined) await record(minted.repositories, renamedId, true);
+      return minted?.token;
+    }
   };
 }
 
@@ -293,7 +485,13 @@ export function createCachedProjectTokenMint(
       cache.clear();
       return undefined;
     }
-    const key = `${authority}\0${project.owner}/${project.repo}`;
+    // The recorded repository ID is part of the scope: a token minted for one bound
+    // repository is never handed to a caller of the same name bound to another.
+    // `undefined` (bare coordinates, ID looked up) and `null` (an unbound project,
+    // scoped by name) can resolve to different repositories, so they never share.
+    const scope =
+      project.githubRepositoryId === undefined ? '?' : (project.githubRepositoryId ?? '-');
+    const key = `${authority}\0${project.owner}/${project.repo}\0${scope}`;
     const hit = cache.get(key);
     if (hit !== undefined && now() - hit.at < ttlMs) return Promise.resolve(hit.token);
     const existing = inflight.get(key);

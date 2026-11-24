@@ -15,6 +15,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { CAPACITY_LEASE_ROOT } from './capacity-leases.mjs';
 import { join, resolve } from 'node:path';
 import {
   DEFAULT_SCRIPT_SANDBOX_PATH,
@@ -65,6 +66,9 @@ function normalSessionRoots(options, agentPath) {
     ['--read-root', '/opt/verity/package-managers'],
     ['--read-root', '/knowledge'],
     ['--write-root', '/knowledge/insights'],
+    // Dependency installs hold their broker-created capacity lock through this
+    // read-only view; without it every managed install is refused admission.
+    ['--read-root', options.capacityLeaseRoot ?? CAPACITY_LEASE_ROOT],
   ]) {
     try {
       const metadata = lstatSync(path);

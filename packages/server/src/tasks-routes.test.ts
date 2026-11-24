@@ -328,6 +328,27 @@ describe('tasks routes', () => {
     expect((await app.inject({ method: 'GET', url, headers: asMember })).statusCode).toBe(200);
   });
 
+  it('serves HTML task attachments as inert downloads', async () => {
+    const html = '<!doctype html><title>Mockup</title>';
+    const hash = await store.putAttachment('text/html', Buffer.from(html).toString('base64'));
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: MEMBER,
+      origin: 'user',
+      title: 'With HTML',
+      attachments: [{ hash, filename: 'mockup.html', mimeType: 'text/html' }],
+    });
+    const response = await app.inject({
+      method: 'GET',
+      url: `/tasks/${T1}/attachments/${hash}`,
+      headers: asMember,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-disposition']).toContain('attachment');
+    expect(response.headers['content-security-policy']).toBe("sandbox; default-src 'none'");
+    expect(response.body).toBe(html);
+  });
+
   it('cannot substitute a future revision for the authorized HTTP snapshot', async () => {
     await store.tasks.upsert({ id: T1, ownerUserId: MEMBER, origin: 'user', title: 'Personal' });
     const patch = vi.spyOn(store.tasks, 'patch');

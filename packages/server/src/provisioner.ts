@@ -39,6 +39,7 @@ import {
   FALLBACK_SANDBOX_MEMORY_BYTES,
 } from './sandbox-memory-policy.js';
 import { stripTrailingSlashes } from './path-text.js';
+import { currentGitHubUrl, followGitHubOrigin } from './clone-origin.js';
 import {
   type CloneConfigGit,
   type CloneWorktreeRepair,
@@ -5496,7 +5497,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError('Forgejo connection unavailable');
     const token = access?.token ?? (await this.resolveProjectToken(project));
     const authHeader = access?.authorization ?? gitAuthHeader(token);
-    const url = access?.url ?? `https://github.com/${project.owner}/${project.repo}`;
+    const url = access?.url ?? (await currentGitHubUrl(this.opts.store, project));
     const git = this.forgeGitRunner(access, project.forgeConnectionId ?? project.id);
     let remoteIsEmpty: boolean;
     try {
@@ -5525,9 +5526,8 @@ export class ProvisionerImpl implements Provisioner {
         onRepaired: this.opts.onCloneConfigRepaired,
         fail: (message) => new ProvisioningError(message),
       });
-      // The minted token is used for THIS server-side fetch only — it is never
-      // written into the sandbox (the sandbox redeems its capability at the token
-      // broker instead), so nothing is persisted to a `.gh-token` file.
+      // Follow a GitHub rename recorded by the mint; the token serves this fetch only.
+      await followGitHubOrigin(git, dirs.clonePath, url);
       let defaultBranch = configuredDefaultBranch;
       if (!defaultBranch) {
         if (remoteIsEmpty) {

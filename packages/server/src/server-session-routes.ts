@@ -1,3 +1,4 @@
+import type { PullRequestStatus } from './forge-provider.js';
 import { mayAllowPermission } from './permission-decision-authority.js';
 import { NO_PERSONAL_MODEL, personModelRefusal } from './turn-sandbox.js';
 import { isVulnerabilityWorkspace } from './vulnerability-project.js';
@@ -73,6 +74,7 @@ export interface SessionRoutesWiring {
     | 'withPrVisibility'
     | 'invalidatePrSummaryAction'
     | 'invalidateBranchCache'
+    | 'resolvePullRequests'
   >;
   beginProjectSpawn: (projectId: string) => () => void;
   pushFirePoints: PushFirePoints | undefined;
@@ -125,7 +127,24 @@ export function installSessionRoutes(
     withPrVisibility,
     invalidatePrSummaryAction,
     invalidateBranchCache,
+    resolvePullRequests,
   } = sessionOverview;
+  const repositoryPRReads = new Map<
+    string,
+    {
+      read: Promise<Awaited<ReturnType<typeof resolvePullRequests>> | null>;
+      expires: number;
+      waitingForResult: boolean;
+    }
+  >();
+  const stopRepositoryPRInvalidation = ctx.resources.onInvalidate((path) => {
+    const [, collection, id, resource] = path.split('/');
+    if (collection === 'sessions' && id && resource === 'branches') repositoryPRReads.delete(id);
+  });
+  app.addHook('onClose', (_instance, done) => {
+    stopRepositoryPRInvalidation();
+    done();
+  });
   installCodeWorkspaces(app, ctx, { invalidateBranchCache });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
@@ -404,40 +423,73 @@ export function installSessionRoutes(
         reply.code(503);
         return { error: 'branch switching is not configured' };
       }
-      if (!(await worktreeExists(session.worktree))) {
-        return {
-          current: '',
-          switchable: [],
-          previewable: [],
-          workspaceMissing: true,
-          currentPr: null,
-          pullRequest: null,
-        };
-      }
       const readStage = <T>(stage: BranchReadStage, read: () => Promise<T>): Promise<T> =>
         measureBranchReadStage(stage, read, (timing) =>
           request.log.info(timing, 'verity: slow branch read stage'),
         );
-      const branchState = await readStage('metadata', () =>
-        readBranchMetadata(branches, session.worktree).catch((error: unknown) => {
-          request.log.warn(
-            {
-              sessionId: id,
-              worktree: session.worktree,
-              errorType: error instanceof Error ? error.constructor.name : typeof error,
-              message: error instanceof Error ? error.message : String(error),
-            },
-            'verity: branch list degraded because git metadata is unavailable',
-          );
-          return null;
-        }),
-      );
+      const branchState = (await worktreeExists(session.worktree))
+        ? await readStage('metadata', () =>
+            readBranchMetadata(branches, session.worktree).catch((error: unknown) => {
+              request.log.warn(
+                {
+                  sessionId: id,
+                  worktree: session.worktree,
+                  errorType: error instanceof Error ? error.constructor.name : typeof error,
+                  message: error instanceof Error ? error.message : String(error),
+                },
+                'verity: branch list degraded because git metadata is unavailable',
+              );
+              return null;
+            }),
+          )
+        : null;
+      const readRepositoryPRs = (pullRequest?: PullRequestStatus | null) =>
+        readStage('pr', async () => {
+          const key = encodeURIComponent(session.sessionId);
+          let entry = repositoryPRReads.get(key);
+          if (!entry || entry.expires < Date.now()) {
+            const started: NonNullable<ReturnType<typeof repositoryPRReads.get>> = {
+              read: resolvePullRequests(session, pullRequest),
+              expires: Infinity,
+              waitingForResult: false,
+            };
+            repositoryPRReads.set(key, started);
+            if (repositoryPRReads.size > 512)
+              repositoryPRReads.delete(repositoryPRReads.keys().next().value!);
+            started.read = started.read
+              .catch((err: unknown) => {
+                request.log.warn(
+                  { err, sessionId: id },
+                  'Session repository pull requests unavailable',
+                );
+                return null;
+              })
+              .finally(() => {
+                started.expires = Date.now() + 5000;
+                if (started.waitingForResult && repositoryPRReads.get(key) === started)
+                  ctx.resources.refresh(`/sessions/${key}/branches`);
+              });
+            entry = started;
+          }
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          const budget = new Promise<null>((resolve) => {
+            timeout = setTimeout(() => {
+              entry.waitingForResult = true;
+              resolve(null);
+            }, 100);
+          });
+          return Promise.race([entry.read, budget]).finally(() => clearTimeout(timeout));
+        });
       if (branchState === null) {
+        const pullRequests = await readRepositoryPRs();
         return {
           current: '',
           switchable: [],
           previewable: [],
           workspaceMissing: true,
+          ...(pullRequests === undefined
+            ? {}
+            : { pullRequests: pullRequests?.map((row) => row.status) ?? null }),
           currentPr: null,
           pullRequest: null,
         };
@@ -464,6 +516,7 @@ export function installSessionRoutes(
           : undefined;
       const pullRequest =
         rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
+      const pullRequests = await readRepositoryPRs(pullRequest);
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)
@@ -532,6 +585,9 @@ export function installSessionRoutes(
         previewable,
         ...(currentPr !== undefined ? { currentPr } : {}),
         ...(pullRequest !== undefined ? { pullRequest } : {}),
+        ...(pullRequests === undefined
+          ? {}
+          : { pullRequests: pullRequests?.map(({ status }) => status) ?? null }),
         ...(identity !== null ? { owner: identity.owner, repo: identity.repo } : {}),
         ...(forgeHost !== null && forgeHost !== 'unknown'
           ? { codeHost: { provider: 'forgejo' as const, baseUrl: forgeHost.baseUrl } }
@@ -544,6 +600,10 @@ export function installSessionRoutes(
   const { mergeLocalSession } = registerSessionMergeRoutes(app, {
     eventStore: deps.eventStore,
     mergePr: deps.mergePr,
+    projectPullRequests: deps.projectPullRequests,
+    resolvePullRequests,
+    invalidateBranchResource: (id) =>
+      ctx.resources.invalidate(`/sessions/${encodeURIComponent(id)}/branches`),
     provisioner: deps.provisioner,
     branchPrStatus: deps.branchPrStatus,
     branchPrStatusForBranches: deps.branchPrStatusForBranches,

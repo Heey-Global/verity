@@ -1,3 +1,4 @@
+import { File } from 'expo-file-system';
 // The attach menu's recent-image strip: the newest library images, screenshots
 // first, kept current while the menu is open so a screenshot taken meanwhile
 // shows up at the front. Attaching stays a deliberate tap; nothing here attaches.
@@ -7,7 +8,7 @@ import { AppState, Linking, Platform } from 'react-native';
 
 const RECENT_IMAGE_LIMIT = 10;
 
-export interface RecentImage {
+interface RecentImage {
   id: string;
   uri: string;
 }
@@ -73,7 +74,10 @@ async function loadRecentImages(ask: boolean): Promise<RecentImages> {
 }
 
 /** Recent images while `active` (the menu is open), reloaded on library changes. */
-export function useRecentImages(active: boolean): {
+export function useRecentImages(
+  active: boolean,
+  selected: readonly RecentImage[],
+): {
   state: RecentImages;
   openSettings: () => void;
   manageLimited: () => void;
@@ -83,10 +87,44 @@ export function useRecentImages(active: boolean): {
   );
   // A slower earlier load must not overwrite the result of a later one.
   const generation = useRef(0);
+  const latestSelection = useRef(selected);
+  useEffect(() => {
+    latestSelection.current = selected;
+  }, [selected]);
   const reload = useCallback((ask: boolean) => {
     const current = ++generation.current;
     loadRecentImages(ask)
-      .then((next) => {
+      .then(async (next) => {
+        if (current !== generation.current) return;
+        if (next.kind === 'ready') {
+          const recentIds = new Set(next.images.map(({ id }) => id));
+          const checked = new Map<string, RecentImage>();
+          let pending = latestSelection.current.filter(({ id }) => !recentIds.has(id));
+          while (pending.length > 0) {
+            await Promise.all(
+              pending.map(async ({ id }) => {
+                recentIds.add(id);
+                try {
+                  const info = await MediaLibrary.getAssetInfoAsync(id, {
+                    shouldDownloadFromNetwork: false,
+                  });
+                  checked.set(id, { id, uri: info.uri });
+                  // Expo exports a temporary paired video when looking up a Live Photo.
+                  const pairedUri = info.pairedVideoAsset?.uri;
+                  if (pairedUri?.startsWith('file://')) new File(pairedUri).delete();
+                } catch {
+                  // Deleted assets and assets outside the current permission are unavailable.
+                }
+              }),
+            );
+            if (current !== generation.current) return;
+            pending = latestSelection.current.filter(({ id }) => !recentIds.has(id));
+          }
+          for (const { id } of latestSelection.current) {
+            const image = checked.get(id);
+            if (image) next.images.push(image);
+          }
+        }
         if (current === generation.current) setState(next);
       })
       // An unreadable library leaves the camera tile, not an alert, and not a

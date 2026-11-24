@@ -398,6 +398,8 @@ export {
   type SessionMockupState,
   type SessionMockupReview,
   type SessionMockups,
+  MOCKUP_HTML_ATTACHMENT,
+  attachmentContentAddress,
   type MockupScreenRecord,
   type MockupVerdict,
   storedMockupScreens,
@@ -405,3 +407,8 @@ export {
 } from './session-mockups.js';
 export { isSessionLinkProject } from './project-session-links.js';
 export type { ChangeSubmission, ChangeSubmissionState } from './change-submissions.js';
+export {
+  GitHubRepositoryIdentityStore,
+  type GitHubRepositoryObservation,
+  type GitHubRepositoryReconciliation,
+} from './github-repository-identity.js';
