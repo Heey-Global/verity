@@ -11,11 +11,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { fixture } from './dependency-fixture.js';
 
 const storage = resolve('agent-seed/bin/verity-dependency-storage.mjs');
-function probe(code: string, args: string[] = []) {
+function probe(code: string, args: string[] = [], environment: NodeJS.ProcessEnv = process.env) {
   return execFileSync(
     process.execPath,
     [
@@ -24,7 +25,7 @@ function probe(code: string, args: string[] = []) {
       `import * as s from ${JSON.stringify('file://' + storage)};\n${code}`,
       ...args,
     ],
-    { encoding: 'utf8', stdio: 'pipe' },
+    { encoding: 'utf8', stdio: 'pipe', env: environment },
   );
 }
 const lock = (version: string) =>
@@ -108,7 +109,7 @@ describe('dependency copy capacity admission', () => {
     linkSync(join(tree, 'file'), join(tree, 'alias'));
     symlinkSync('/unreadable-foreign-path', join(tree, 'outside'));
     const result = JSON.parse(
-      probe(`console.log(JSON.stringify(s.measureTrees([process.argv[1]])));`, [tree]),
+      probe(`console.log(JSON.stringify(await s.measureTrees([process.argv[1]])));`, [tree]),
     ) as { bytes: number; allocatedBytes: number; inodes: number };
     expect(result.inodes).toBe(4);
     expect(result.bytes).toBeGreaterThan(result.allocatedBytes);
@@ -117,9 +118,184 @@ describe('dependency copy capacity admission', () => {
         statSync(join(tree, 'file')).blocks * 512 +
         lstatSync(join(tree, 'outside')).blocks * 512,
     );
-    expect(() => probe(`s.measureTrees([process.argv[1]],{entries:2});`, [tree])).toThrow(
+    expect(() => probe(`await s.measureTrees([process.argv[1]],{entries:2});`, [tree])).toThrow(
       /inventory is incomplete/u,
     );
+  });
+
+  it('finishes metadata traversal when per-file Node calls would exhaust the deadline', () => {
+    const f = fixture();
+    const tree = join(f.worktree, 'slow-metadata');
+    mkdirSync(tree);
+    for (let index = 0; index < 30; index++)
+      writeFileSync(join(tree, `file-${index}\nwith-newline`), 'content');
+    const preload = join(f.root, 'slow-metadata.mjs');
+    writeFileSync(
+      preload,
+      `
+      import fs from 'node:fs';
+      import {syncBuiltinESMExports} from 'node:module';
+      const original = fs.lstatSync;
+      const clock = Date.now;
+      let delay = 0;
+      fs.lstatSync = (...args) => { delay += 1000; return original(...args); };
+      Date.now = () => clock() + delay;
+      syncBuiltinESMExports();
+    `,
+    );
+    const result = JSON.parse(
+      probe(
+        `
+      console.log(JSON.stringify(s.measureTrees([process.argv[1]])));
+    `,
+        [tree],
+        {
+          ...process.env,
+          NODE_OPTIONS: '--import=' + pathToFileURL(preload).href,
+        },
+      ),
+    ) as { inodes: number; bytes: number };
+    expect(result.inodes).toBe(31);
+    expect(result.bytes).toBeGreaterThanOrEqual(31 * 4096);
+  });
+
+  it('reports the measurement phase and refuses incomplete scans', () => {
+    const f = fixture();
+    const tree = join(f.worktree, 'bounded-metadata');
+    mkdirSync(tree);
+    writeFileSync(join(tree, 'file'), 'content');
+    expect(() =>
+      probe(
+        `await s.measureTrees([process.argv[1]], {
+      entries: 1, phase: 'cache activation'
+    });`,
+        [tree],
+      ),
+    ).toThrow(/cache activation: entry limit 1 exceeded after 2 entries/u);
+    expect(() =>
+      probe(
+        `await s.measureTrees([process.argv[1]], {
+      milliseconds: 0, phase: 'retained recovery trees'
+    });`,
+        [tree],
+      ),
+    ).toThrow(/retained recovery trees: time limit 0 ms reached/u);
+  });
+
+  it.each(['entry cap', 'timeout', 'failed exit', 'filesystem boundary'])(
+    'stops a running scanner and refuses partial metadata on %s',
+    (failure) => {
+      const f = fixture();
+      const tree = join(f.worktree, 'partial-metadata');
+      mkdirSync(tree);
+      const stat = statSync(tree);
+      const line = `${failure === 'filesystem boundary' ? stat.dev + 1 : stat.dev} ${stat.ino} ${stat.size} ${stat.blocks} d\n`;
+      const source =
+        `process.stdout.write(${JSON.stringify(line.repeat(failure === 'entry cap' ? 2 : 1))});` +
+        (failure === 'failed exit' ? 'process.exitCode = 1;' : 'setInterval(() => {}, 1000);');
+      const marker = join(f.root, 'scanner-closed');
+      const preload = join(f.root, 'scanner-preload.mjs');
+      writeFileSync(
+        preload,
+        `
+        import childProcess from 'node:child_process';
+        import {syncBuiltinESMExports} from 'node:module';
+        import {writeFileSync} from 'node:fs';
+        const original = childProcess.spawn;
+        childProcess.spawn = (_file, _args, options) => {
+          const scanner = original(process.execPath, ['-e', ${JSON.stringify(source)}], options);
+          ${
+            failure === 'timeout'
+              ? `scanner.stdout.once('data', () => {
+            const clock = Date.now;
+            Date.now = () => clock() + 10000;
+          });`
+              : ''
+          }
+          scanner.on('close', (code, signal) => writeFileSync(${JSON.stringify(marker)}, String(code === 1 || signal === 'SIGKILL')));
+          return scanner;
+        };
+        syncBuiltinESMExports();
+      `,
+      );
+      const output = probe(
+        `
+        import {readFileSync} from 'node:fs';
+        process.env.NODE_OPTIONS = ${JSON.stringify('--import=' + pathToFileURL(preload).href)};
+        try {
+          s.measureTrees([process.argv[1]], {
+            entries: 1, milliseconds: 10000, phase: 'cache activation'
+          });
+          console.log('unexpected admission');
+        } catch (error) {
+          console.log(error.message);
+          console.log(readFileSync(${JSON.stringify(marker)}, 'utf8'));
+        }
+      `,
+        [tree],
+      );
+      const reason =
+        failure === 'entry cap'
+          ? 'entry limit 1 exceeded after 2 entries'
+          : failure === 'timeout'
+            ? 'time limit 10000 ms reached after 1 entries'
+            : 'metadata traversal failed';
+      expect(output).toContain(
+        failure === 'filesystem boundary'
+          ? 'Dependency capacity inventory crosses a filesystem.'
+          : `cache activation: ${reason}`,
+      );
+      expect(output.trim().endsWith('true')).toBe(true);
+    },
+  );
+
+  it('stops the scanner when its measurement worker cannot run cleanup', async () => {
+    const f = fixture();
+    const tree = join(f.worktree, 'stalled-worker');
+    mkdirSync(tree);
+    const scannerPid = join(f.root, 'scanner-pid');
+    const preload = join(f.root, 'stalled-preload.mjs');
+    const stat = statSync(tree);
+    const line = `${stat.dev} ${stat.ino} ${stat.size} ${stat.blocks} d\n`;
+    const source = `require('node:fs').writeFileSync(${JSON.stringify(scannerPid)}, String(process.pid)); process.stdout.write(${JSON.stringify(line)}); setInterval(() => {}, 1000);`;
+    writeFileSync(
+      preload,
+      `
+      import childProcess from 'node:child_process';
+      import {syncBuiltinESMExports} from 'node:module';
+      const original = childProcess.spawn;
+      childProcess.spawn = (_file, _args, options) => {
+        const scanner = original(process.execPath, ['-e', ${JSON.stringify(source)}], options);
+        scanner.stdout.once('data', () => process.kill(process.pid, 'SIGSTOP'));
+        return scanner;
+      };
+      syncBuiltinESMExports();
+    `,
+    );
+    expect(() =>
+      probe(
+        `
+      process.env.NODE_OPTIONS = ${JSON.stringify('--import=' + pathToFileURL(preload).href)};
+      s.measureTrees([process.argv[1]], {milliseconds: 5000});
+    `,
+        [tree],
+      ),
+    ).toThrow(/measurement process failed/u);
+    const pid = readFileSync(scannerPid, 'utf8');
+    await expect
+      .poll(
+        () => {
+          try {
+            const state = readFileSync('/proc/' + pid + '/stat', 'utf8').split(') ')[1]![0];
+            return ['Z', 'X'].includes(state!);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+            throw error;
+          }
+        },
+        { interval: 10, timeout: 2000 },
+      )
+      .toBe(true);
   });
 
   it('rejects a copy before replacing an active installation when reserve is unavailable', () => {
