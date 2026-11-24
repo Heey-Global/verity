@@ -157,6 +157,39 @@ it('protects a Secret Job catalog connection even without project bindings', asy
   }
 });
 
+it('checks a same-workplace replacement against catalog-only configs', async () => {
+  const connectionId = await store.dopplerConnections.add({
+    label: 'Catalog',
+    token: 'dp.sa.payments',
+    workplace: { slug: 'wp-platform-next', name: null },
+  });
+  await ctx.db
+    .insertInto('secret_provider_bindings')
+    .values({
+      id: 'catalog',
+      project_id: 'p1',
+      provider: 'doppler',
+      credential_ref: 'catalog-credential',
+      version: 1,
+      state: 'active',
+      doppler_project: 'billing',
+      doppler_config: 'dev',
+    })
+    .execute();
+  const app = server(undefined, connectionId);
+  try {
+    const replacement = await call(app, 'admin', 'PATCH', `/doppler/connections/${connectionId}`, {
+      token: 'dp.sa.platform-next',
+      confirmTokenReplacement: true,
+    });
+    expect(replacement.statusCode).toBe(400);
+    expect(replacement.json()).toMatchObject({ error: expect.stringContaining('billing/dev') });
+    expect((await store.dopplerConnections.get(connectionId))?.tokenRevision).toBeUndefined();
+  } finally {
+    await app.close();
+  }
+});
+
 it('rejects a valid instance token when it cannot identify its Doppler workplace', async () => {
   const app = Fastify();
   registerDopplerRoutes(app, { eventStore: store, dopplerValidate: async () => ({ ok: true }) });

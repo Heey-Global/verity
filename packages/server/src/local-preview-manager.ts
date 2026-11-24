@@ -1,4 +1,4 @@
-import { managedRunApproved } from './managed-dev-server-secrets.js';
+import { ManagedPreviewAuthorityError, managedRunApproved } from './managed-dev-server-secrets.js';
 import { localTargetConfirmedMissing } from './local-preview-activity.js';
 import {
   PreviewNetworkProtectionError,
@@ -785,6 +785,12 @@ export class LocalPreviewManager {
         delete state.missingSince;
         this.unverifiedTargets.delete(state.share.id);
       } catch (error) {
+        if (error instanceof ManagedPreviewAuthorityError) {
+          this.unverifiedTargets.delete(state.share.id);
+          await this.release(state.share.id);
+          this.reserved.add(state.port);
+          continue;
+        }
         if (error instanceof PreviewNetworkProtectionError) {
           await this.stop(state.share.id);
           continue;

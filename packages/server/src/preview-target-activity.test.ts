@@ -3,7 +3,7 @@ import type { PublicPreviewShareRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionDevServer } from './listening-ports.js';
 import type { PreviewShareManagerOptions } from './preview-share-manager.js';
-import { previewTargetIsLive } from './preview-target-activity.js';
+import { authorizedPreviewPort, previewTargetIsLive } from './preview-target-activity.js';
 
 function fixture() {
   const share = {
@@ -57,6 +57,11 @@ function fixture() {
 }
 
 describe('preview target activity', () => {
+  it('does not activate a managed share for an untagged listener on its port', async () => {
+    const f = fixture();
+    expect(await authorizedPreviewPort(f.options.store, 'p', 's', f.port, 'm')).toBe(false);
+  });
+
   it('requires a live session-owned port, without changing retained share intent', async () => {
     const f = fixture();
     expect(await f.live()).toBe(true);

@@ -349,7 +349,10 @@ function ProjectConnections({ client, project }: { client: VerityClient; project
         if (mcp.status === 'fulfilled' && mcp.value.length > 0)
           choices.push({ label: 'MCP tools', section: 'mcp' });
         // Adding the binding picks the connection first when there are several.
-        if (doppler.status === 'fulfilled' && doppler.value.length > 0)
+        if (
+          doppler.status === 'fulfilled' &&
+          doppler.value.some((connection) => connection.hasToken)
+        )
           choices.push({ label: 'Doppler secrets', section: 'doppler' });
         if (active) setConnections(choices);
       });

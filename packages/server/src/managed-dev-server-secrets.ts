@@ -132,6 +132,8 @@ export async function managedRunProviderCurrent(
   }
 }
 
+export class ManagedPreviewAuthorityError extends PreviewShareConflictError {}
+
 export async function managedPreviewInstance(
   store: EventStore,
   input: Pick<CreatePreviewShareInput, 'managedInstanceId' | 'sessionId'>,
@@ -139,12 +141,12 @@ export async function managedPreviewInstance(
   if (!input.managedInstanceId) return undefined;
   const instance = await store.managedDevServers.getInstance(input.managedInstanceId);
   if (!instance || instance.sessionId !== input.sessionId || instance.state !== 'running')
-    throw new PreviewShareConflictError('managed server is not running in this session');
+    throw new ManagedPreviewAuthorityError('managed server is not running in this session');
   const current = await managedRunProviderCurrent(store, instance);
   if (current === undefined)
-    throw new PreviewShareConflictError('Doppler access could not be verified. Try again.');
+    throw new ManagedPreviewAuthorityError('Doppler access could not be verified. Try again.');
   if (!current)
-    throw new PreviewShareConflictError(
+    throw new ManagedPreviewAuthorityError(
       'Doppler access changed. Review and restart the managed server.',
     );
   return instance;

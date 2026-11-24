@@ -132,12 +132,7 @@ export async function authorizedPreviewPort(
   target: SessionDevServer | undefined,
   expectedInstanceId?: string,
 ): Promise<boolean> {
-  if (
-    !target ||
-    (expectedInstanceId &&
-      target.managedInstanceId &&
-      expectedInstanceId !== target.managedInstanceId)
-  )
+  if (!target || (expectedInstanceId && expectedInstanceId !== target.managedInstanceId))
     return false;
   const managed = await managedPreviewInstance(store, {
     sessionId,

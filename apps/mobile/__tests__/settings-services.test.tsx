@@ -257,7 +257,7 @@ describe('settings/services — Doppler connections', () => {
     id: 'platform',
     label: 'Platform',
     hasToken: true,
-    workplaceSlug: null,
+    workplaceSlug: 'northstar',
     workplaceName: 'Northstar',
     createdAt: '2026-01-01T00:00:00.000Z',
     projectCount: 2,

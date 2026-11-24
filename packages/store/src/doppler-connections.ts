@@ -57,6 +57,7 @@ interface DopplerConnectionPatch {
 interface ValidatedDopplerConnection {
   bindingIds: readonly string[];
   tokenRevision: string | null;
+  catalogConfigs?: readonly string[];
 }
 
 const connectionColumns = [
@@ -153,6 +154,19 @@ export class DopplerConnectionStore {
     return (await this.updateRecord(id, patch, expected)) !== undefined;
   }
 
+  async catalogConfigs(db: Kysely<Database> = this.db): Promise<string[]> {
+    const rows = await db
+      .selectFrom('secret_provider_bindings')
+      .select(['doppler_project', 'doppler_config'])
+      .distinct()
+      .where('provider', '=', 'doppler')
+      .where('state', '=', 'active')
+      .orderBy('doppler_project')
+      .orderBy('doppler_config')
+      .execute();
+    return rows.map((row) => `${row.doppler_project}/${row.doppler_config}`);
+  }
+
   /** Replace the token only while the externally validated topology still matches. */
   async updateRecord(
     id: string,
@@ -177,6 +191,15 @@ export class DopplerConnectionStore {
         if (existing.token_revision !== expected.tokenRevision)
           throw new DopplerConnectionTokenChangedError();
         assertConfirmedUsage(bindings, expected.bindingIds);
+        if (expected.catalogConfigs !== undefined) {
+          await sql`lock table secret_provider_bindings in share mode`.execute(tx);
+          const current = await this.catalogConfigs(tx);
+          if (
+            current.length !== expected.catalogConfigs.length ||
+            current.some((config, index) => config !== expected.catalogConfigs?.[index])
+          )
+            throw new DopplerConnectionUsageChangedError();
+        }
       }
       const updated = await tx
         .updateTable('doppler_connections')
@@ -338,7 +361,17 @@ export class DopplerConnectionStore {
         .where('connection_id', '=', id)
         .execute();
       if (expectedBindingIds !== undefined) assertConfirmedUsage(bindings, expectedBindingIds);
-      const projects = new Set(bindings.map((binding) => binding.project_id));
+      const projects = [...new Set(bindings.map((binding) => binding.project_id))].sort();
+      const existingProjects =
+        projects.length === 0
+          ? []
+          : await tx
+              .selectFrom('projects')
+              .select('id')
+              .where('id', 'in', projects)
+              .orderBy('id')
+              .forUpdate()
+              .execute();
       for (const binding of bindings) {
         await deleteDopplerBindingGrants(tx, binding.project_id, {
           connectionId: id,
@@ -356,7 +389,7 @@ export class DopplerConnectionStore {
           .set({ doppler_service_token: null })
           .where('id', '=', 'global')
           .execute();
-      for (const projectId of projects) await promoteDefaultBinding(tx, projectId);
+      for (const { id: projectId } of existingProjects) await promoteDefaultBinding(tx, projectId);
       return true;
     });
   }

@@ -297,15 +297,21 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       }
 
       const listNames = deps.listNames ?? listDopplerProjectSecretNames;
-      const configs = new Map(
-        bindings.map((binding) => [`${binding.dopplerProject}/${binding.dopplerConfig}`, binding]),
-      );
-      for (const [reference, binding] of configs) {
+      const catalogConfigs =
+        id === deps.secretJobDopplerConnectionId
+          ? await store.dopplerConnections.catalogConfigs()
+          : undefined;
+      const configs = new Set([
+        ...bindings.map((binding) => `${binding.dopplerProject}/${binding.dopplerConfig}`),
+        ...(catalogConfigs ?? []),
+      ]);
+      for (const reference of configs) {
+        const [dopplerProject, dopplerConfig] = reference.split('/');
         const bytes = Buffer.from(token, 'utf8');
         try {
           await listNames({
-            dopplerProject: binding.dopplerProject,
-            dopplerConfig: binding.dopplerConfig,
+            dopplerProject: dopplerProject!,
+            dopplerConfig: dopplerConfig!,
             token: bytes,
           });
         } catch {
@@ -322,6 +328,7 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
         {
           bindingIds: bindings.map(({ id }) => id),
           tokenRevision: connection.tokenRevision ?? null,
+          ...(catalogConfigs === undefined ? {} : { catalogConfigs }),
         },
       );
       return updated === undefined

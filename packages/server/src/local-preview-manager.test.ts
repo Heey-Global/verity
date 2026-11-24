@@ -1,3 +1,4 @@
+import { ManagedPreviewAuthorityError } from './managed-dev-server-secrets.js';
 import { withPreviewProjectMutation } from './preview-project-mutation.js';
 import { DockerError } from './docker.js';
 import { observeProjectActivity } from './project-idle-sleep.js';
@@ -162,6 +163,19 @@ it('retries Docker cleanup after the edge has already closed', async () => {
   await expect(manager.stop(share.id)).resolves.toBe(true);
   expect(manager.list('s1')).toEqual([]);
   expect(new URL((await manager.create('s1', { targetPort: 3000 })).url).port).toBe('18100');
+});
+
+it('suspends an ad hoc local share when the managed listener cannot be authorized', async () => {
+  const { manager, options, docker } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValue(
+    new ManagedPreviewAuthorityError('Doppler access changed'),
+  );
+  await manager.reconcile();
+  expect(docker.removeContainer).toHaveBeenCalledWith('c1');
+  expect(await options.store.listLocalPreviewShares()).toEqual([
+    expect.objectContaining({ id: share.id, state: 'active' }),
+  ]);
 });
 
 it('revokes immediately when another process takes over the target', async () => {

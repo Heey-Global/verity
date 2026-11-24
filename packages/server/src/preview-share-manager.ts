@@ -233,7 +233,7 @@ export class PreviewShareManager {
       staticMount = this.staticMount(root, path);
     } else if (
       target.targetPort !== undefined &&
-      !(await this.reachableSessionPort(project, session, target.targetPort))
+      !(await this.sessionPortAuthorized(project, session, target.targetPort))
     ) {
       throw new PreviewShareConflictError('nothing in this session listens on that port');
     }
@@ -367,10 +367,20 @@ export class PreviewShareManager {
     const servers = this.options.listSessionServers
       ? await this.options.listSessionServers(session.sessionId, { fresh: true })
       : await this.sessionServers(project, session.worktree, { fresh: true });
-    return servers.find(
-      (server) =>
-        server.port === port && (server.reachable || this.options.prepareTargetPort !== undefined),
-    );
+    const forwarded = this.options.prepareTargetPort !== undefined;
+    return servers.find((server) => server.port === port && (server.reachable || forwarded));
+  }
+
+  private async sessionPortAuthorized(
+    project: ProjectRecord,
+    session: SessionRecord,
+    port: number,
+    managedId?: string,
+  ) {
+    const target = await this.reachableSessionPort(project, session, port);
+    const { store } = this.options;
+    const { sessionId } = session;
+    return authorizedPreviewPort(store, project.id, sessionId, target, managedId);
   }
 
   async create(input: CreatePreviewShareInput): Promise<PublicPreviewShare> {
@@ -731,13 +741,7 @@ export class PreviewShareManager {
       }
       if (
         port !== undefined &&
-        !(await authorizedPreviewPort(
-          this.options.store,
-          project.id,
-          session!.sessionId,
-          await this.reachableSessionPort(project, session!, port),
-          managed?.id,
-        ))
+        !(await this.sessionPortAuthorized(project, session!, port, managed?.id))
       ) {
         throw new Error('the session port stopped listening while the share was being created');
       }
@@ -1173,12 +1177,7 @@ export class PreviewShareManager {
               devServer.containerPort !== String(share.targetPort) ||
               !(await this.options.isDevServerRunning({ project, devServer }));
           } else if (session && share.targetPort !== null) {
-            offline = !(await authorizedPreviewPort(
-              this.options.store,
-              project.id,
-              session.sessionId,
-              await this.reachableSessionPort(project, session, share.targetPort),
-            ));
+            offline = !(await this.sessionPortAuthorized(project, session, share.targetPort));
           }
         }
       }
