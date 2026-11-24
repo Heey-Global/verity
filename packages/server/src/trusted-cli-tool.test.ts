@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  brokeredDopplerSnapshot,
-  type BrokeredDopplerBinding,
-} from './brokered-doppler-binding.js';
+import type { BrokeredDopplerBinding } from './brokered-doppler-binding.js';
+import { referencedSnapshot } from './brokered-http-tool.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 
 describe('trusted CLI tool', () => {
@@ -232,10 +230,10 @@ describe('trusted CLI tool', () => {
       input,
       approvedBinding,
     });
-    const approved = brokeredDopplerSnapshot([
-      { connectionId: 'payments', dopplerProject: 'billing', dopplerConfig: 'dev' },
-      { connectionId: 'platform', dopplerProject: 'portal', dopplerConfig: 'prd' },
-    ]);
+    const approved = referencedSnapshot(
+      [portal, billing],
+      input.secrets.map(({ secretAlias }) => secretAlias),
+    );
 
     it('resolves every reference in its own binding with its own connection', async () => {
       let bindings = [portal, billing];

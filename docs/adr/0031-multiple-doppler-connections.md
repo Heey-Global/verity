@@ -43,13 +43,14 @@ of the same name is the usual case. The turn context lists the default's names
 bare and every other binding's in full.
 
 **Approvals and grants.** An approval is bound to the bindings the call reads,
-identified by connection, Doppler project and config, not to the project as a
-whole: adding an unrelated binding leaves pending approvals and standing grants
-in force, while changing or removing a binding the call reads invalidates them.
+identified by connection, Doppler project, config, and instance token revision.
+Changing or removing a binding the call reads invalidates its approval. Adding
+an unrelated binding leaves that approval in force.
 Grants are kept under the binding's id together with the reference as written,
 so a grant for `API_KEY` never covers `billing/dev/API_KEY`. A call reading
-several bindings uses an id that lists all of them and applies only while every
-one is still bound. Existing grants move to the default binding on upgrade.
+several bindings records which one resolves any bare references. A grant applies
+while every referenced binding is still in place and bare references resolve to
+the same binding. Existing grants move to the default binding on upgrade.
 Managed dev server approvals stay bound to the default binding's project and
 config as their card shows; references to other bindings are resolved at start
 and checked unchanged afterwards.
