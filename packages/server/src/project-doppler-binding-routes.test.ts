@@ -140,6 +140,25 @@ describe('Doppler connections (ADR 0031)', () => {
     expect(listed.json().connections).toHaveLength(1);
   });
 
+  it('only replaces an instance token after explicit confirmation', async () => {
+    const app = server();
+    try {
+      const id = await addConnection(app, 'Platform', 'dp.sa.platform');
+      const url = `/doppler/connections/${id}`;
+      const replacement = { token: 'dp.sa.payments' };
+      expect((await call(app, 'admin', 'PATCH', url, replacement)).statusCode).toBe(409);
+      expect((await store.dopplerConnections.get(id))?.workplaceSlug).toBe('wp-platform');
+      const confirmed = await call(app, 'admin', 'PATCH', url, {
+        ...replacement,
+        confirmTokenReplacement: true,
+      });
+      expect(confirmed.statusCode).toBe(200);
+      expect((await store.dopplerConnections.get(id))?.workplaceSlug).toBe('wp-payments');
+    } finally {
+      await app.close();
+    }
+  });
+
   // Connections hold the administrator's tokens; nobody else may see or change them.
   it('is for administrators only', async () => {
     const app = server();

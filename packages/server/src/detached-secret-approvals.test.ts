@@ -59,7 +59,7 @@ function harness({
         provider = next;
       },
       resumeDetachedPermission: resume,
-    } as Conductor,
+    },
     store: { getSession } as unknown as Parameters<
       typeof configureDetachedSecretApprovals
     >[0]['store'],

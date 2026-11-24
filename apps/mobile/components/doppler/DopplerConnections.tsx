@@ -7,7 +7,7 @@ import {
   type DopplerConnectionUsage,
   type VerityClient,
 } from '@verity/mobile';
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -30,6 +30,7 @@ type Mode =
   | { kind: 'menu'; connection: DopplerConnection }
   | { kind: 'rename'; connection: DopplerConnection }
   | { kind: 'token'; connection: DopplerConnection }
+  | { kind: 'confirm-token'; connection: DopplerConnection }
   | { kind: 'delete'; connection: DopplerConnection; usage: DopplerConnectionUsage['projects'] };
 
 const projects = (count: number) => (count === 1 ? '1 project' : `${count} projects`);
@@ -55,16 +56,22 @@ export function DopplerConnections({
   const [label, setLabel] = useState('');
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
+  const [checkingUsage, setCheckingUsage] = useState(false);
+  const dialogGeneration = useRef(0);
   const [error, setError] = useState<string>();
   const connections = resource.data ?? [];
 
   const open = (next: Mode) => {
+    dialogGeneration.current++;
+    setCheckingUsage(false);
     setError(undefined);
     setToken('');
     setLabel(next.kind === 'rename' ? next.connection.label : '');
     setMode(next);
   };
   const close = () => {
+    dialogGeneration.current++;
+    setCheckingUsage(false);
     setMode(undefined);
     setToken('');
   };
@@ -82,15 +89,19 @@ export function DopplerConnections({
     }
   };
   const askDelete = async (connection: DopplerConnection, notice?: string) => {
-    setBusy(true);
+    const generation = ++dialogGeneration.current;
+    setCheckingUsage(true);
+    setError(undefined);
     try {
       const usage = await client.doppler.connectionUsage(connection.id);
+      if (generation !== dialogGeneration.current) return;
       open({ kind: 'delete', connection, usage: usage.projects });
       setError(notice);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not check where it is used.');
+      if (generation === dialogGeneration.current)
+        setError(cause instanceof Error ? cause.message : 'Could not check where it is used.');
     } finally {
-      setBusy(false);
+      if (generation === dialogGeneration.current) setCheckingUsage(false);
     }
   };
 
@@ -98,6 +109,7 @@ export function DopplerConnections({
     connection: DopplerConnection,
     usage: DopplerConnectionUsage['projects'],
   ) => {
+    const generation = dialogGeneration.current;
     setBusy(true);
     setError(undefined);
     try {
@@ -105,9 +117,10 @@ export function DopplerConnections({
         connection.id,
         usage.flatMap((project) => project.bindings.map((binding) => binding.id)),
       );
-      close();
+      if (generation === dialogGeneration.current) close();
       resource.reload();
     } catch (cause) {
+      if (generation !== dialogGeneration.current) return;
       if (cause instanceof VerityApiError && cause.status === 409) {
         setMode({ kind: 'menu', connection });
         await askDelete(
@@ -164,26 +177,67 @@ export function DopplerConnections({
     );
     footer = (
       <Button
-        label={renaming ? 'Save' : adding ? 'Validate and add' : 'Validate and replace'}
+        label={renaming ? 'Save' : adding ? 'Validate and add' : 'Continue'}
         fullWidth
         disabled={
           busy ||
-          (renaming || adding ? label.trim() === '' : false) ||
+          ((renaming || adding) && label.trim() === '') ||
           (!renaming && token.trim() === '')
         }
-        onPress={() =>
+        onPress={() => {
+          if (mode.kind === 'token') {
+            setError(undefined);
+            setMode({ kind: 'confirm-token', connection: mode.connection });
+            return;
+          }
           void run(
             () =>
-              adding
+              mode.kind === 'add'
                 ? client.doppler.addConnection({ label: label.trim(), token: token.trim() })
-                : client.doppler.updateConnection(
-                    mode.connection.id,
-                    renaming ? { label: label.trim() } : { token: token.trim() },
-                  ),
+                : client.doppler.updateConnection(mode.connection.id, { label: label.trim() }),
             'Could not save the Doppler connection.',
-          )
-        }
+          );
+        }}
       />
+    );
+  } else if (mode?.kind === 'confirm-token') {
+    const { connection } = mode;
+    title = `Replace token for ${connection.label}?`;
+    body = (
+      <HintBox
+        title="Personal tokens may be disconnected"
+        message="If Verity cannot verify that the new token belongs to the same Doppler workplace, it clears personal tokens for this connection. Affected people will need to reconnect their tokens."
+      />
+    );
+    footer = (
+      <View style={styles.fields}>
+        <Button
+          label="Confirm token replacement"
+          fullWidth
+          variant="destructive"
+          disabled={busy}
+          onPress={() =>
+            void run(
+              () =>
+                client.doppler.updateConnection(connection.id, {
+                  token: token.trim(),
+                  confirmTokenReplacement: true,
+                }),
+              'Could not replace the Doppler token.',
+            )
+          }
+        />
+        <Button
+          label="Back"
+          variant="text"
+          fullWidth
+          disabled={busy}
+          onPress={() => {
+            setError(undefined);
+            setMode({ kind: 'token', connection });
+          }}
+        />
+      </View>
     );
   } else if (mode?.kind === 'menu') {
     const { connection } = mode;
@@ -215,7 +269,7 @@ export function DopplerConnections({
         label="Delete connection"
         variant="destructive"
         fullWidth
-        disabled={busy}
+        disabled={busy || checkingUsage}
         onPress={() => void askDelete(connection)}
       />
     );

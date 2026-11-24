@@ -289,6 +289,62 @@ describe('settings/services — Doppler connections', () => {
     );
   });
 
+  it('requires a separate confirmation before replacing an instance token', async () => {
+    const updateConnection = jest.fn().mockResolvedValue(platform);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        doppler: { listConnections: jest.fn().mockResolvedValue([platform]), updateConnection },
+      }),
+    );
+    render(<ServicesSettingsScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Manage Platform/));
+    fireEvent.press(screen.getByLabelText(/^Replace token/));
+    fireEvent.changeText(await screen.findByLabelText(/^Doppler token/), 'dp.sa.replacement');
+    fireEvent.press(screen.getByLabelText(/^Continue/));
+    expect(await screen.findByText('Personal tokens may be disconnected')).toBeOnTheScreen();
+    expect(updateConnection).not.toHaveBeenCalled();
+
+    fireEvent.press(screen.getByLabelText(/^Back/));
+    fireEvent.press(await screen.findByLabelText(/^Continue/));
+    fireEvent.press(await screen.findByLabelText(/^Confirm token replacement/));
+    await waitFor(() =>
+      expect(updateConnection).toHaveBeenCalledWith('platform', {
+        token: 'dp.sa.replacement',
+        confirmTokenReplacement: true,
+      }),
+    );
+  });
+
+  it('discards a pending delete usage lookup when the connection menu is dismissed', async () => {
+    let finishUsage: (value: { projects: [] }) => void = () => {
+      throw new Error('lookup not started');
+    };
+    const connectionUsage = jest.fn(
+      () =>
+        new Promise<{ projects: [] }>((resolve) => {
+          finishUsage = resolve;
+        }),
+    );
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        doppler: { listConnections: jest.fn().mockResolvedValue([platform]), connectionUsage },
+      }),
+    );
+    render(<ServicesSettingsScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Manage Platform/));
+    fireEvent.press(screen.getByLabelText(/^Delete connection/));
+    expect(connectionUsage).toHaveBeenCalledWith('platform');
+    fireEvent.press(screen.getAllByLabelText('Close').at(-1)!);
+    fireEvent.press(screen.getByLabelText(/^Add connection/));
+    await act(async () => {
+      finishUsage({ projects: [] });
+    });
+    expect(screen.getByText('Add Doppler connection')).toBeOnTheScreen();
+    expect(screen.queryByText('Delete Platform?')).toBeNull();
+  });
+
   it('warns with the affected projects and deletes after confirming', async () => {
     const removeConnection = jest.fn().mockResolvedValue(undefined);
     const connectionUsage = jest.fn().mockResolvedValue({

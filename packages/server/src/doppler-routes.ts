@@ -28,7 +28,11 @@ const labelSchema = z.string().trim().min(1).max(80);
 const tokenSchema = z.string().trim().min(1).max(4096);
 const addBody = z.object({ label: labelSchema, token: tokenSchema }).strict();
 const patchBody = z
-  .object({ label: labelSchema.optional(), token: tokenSchema.optional() })
+  .object({
+    label: labelSchema.optional(),
+    token: tokenSchema.optional(),
+    confirmTokenReplacement: z.literal(true).optional(),
+  })
   .strict()
   .refine((value) => value.label !== undefined || value.token !== undefined);
 const deleteBody = z.object({ bindingIds: z.array(connectionParams.shape.id) }).strict();
@@ -122,13 +126,17 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
   app.get(
     '/doppler/configs',
     async (request): Promise<{ configs: DopplerConfigSummary[] } | { error: string }> => {
-      const query = request.query as { project?: unknown; connectionId?: unknown };
-      const project = typeof query.project === 'string' ? query.project : '';
-      if (project.length === 0) return { error: 'project is required' };
-      const connectionId =
-        typeof query.connectionId === 'string' && query.connectionId.length > 0
-          ? query.connectionId
-          : undefined;
+      const query = connectionQuery
+        .extend({ project: z.string().min(1) })
+        .safeParse(request.query ?? {});
+      if (!query.success)
+        return {
+          error:
+            query.error.issues[0]?.path[0] === 'project'
+              ? 'project is required'
+              : 'invalid connection',
+        };
+      const { project, connectionId } = query.data;
       if (deps.dopplerListConfigs === undefined) return { error: 'not configured' };
       try {
         const resolved = await withDopplerAccountToken(connectionId, (token) =>
@@ -197,6 +205,10 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       return reply.code(400).send({ error: 'invalid Doppler connection' });
     let workplace: { slug: string | null; name: string | null } | undefined;
     if (input.data.token !== undefined) {
+      if (!input.data.confirmTokenReplacement)
+        return reply.code(409).send({
+          error: 'Confirm token replacement. Members may need to reconnect their personal tokens.',
+        });
       const checked = await checkedToken(input.data.token);
       if ('error' in checked) return reply.code(400).send({ error: checked.error });
       workplace = checked.workplace;

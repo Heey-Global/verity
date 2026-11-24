@@ -1,9 +1,5 @@
 import { InMemoryEventBus, type Conductor } from '@verity/session';
-import {
-  EventStore,
-  LEGACY_DOPPLER_CONNECTION_ID,
-  createSealableSecretCipher,
-} from '@verity/store';
+import { EventStore, createSealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -13,7 +9,6 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 
 import { createBrokeredHttpTool, referencedSnapshot } from './brokered-http-tool.js';
-import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { startProjectInternalUnixListener } from './internal-listener.js';
 import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
@@ -61,6 +56,9 @@ async function exercise(toolName: Tool, drift: Drift, snapshotAvailable = true) 
   // The settings write keeps the default binding (ADR 0031), which is what changes.
   const getProjectBindings = async (projectId: string) =>
     store.projectDopplerBindings.list(projectId);
+  const approvedSnapshot = JSON.stringify(
+    referencedSnapshot(await getProjectBindings('p1'), ['TEST_API_KEY']),
+  );
   const resolveSecret = vi.fn(async () => {
     if (drift === 'resolution') await changeBinding();
     return Buffer.from('synthetic-secret');
@@ -191,15 +189,7 @@ async function exercise(toolName: Tool, drift: Drift, snapshotAvailable = true) 
     if (snapshotAvailable) {
       expect(approvals).toHaveBeenCalledWith(
         expect.objectContaining({
-          brokeredGrantBindingId: brokeredDopplerBindingId({
-            bindings: [
-              {
-                connectionId: LEGACY_DOPPLER_CONNECTION_ID,
-                dopplerProject: 'project',
-                dopplerConfig: 'staging',
-              },
-            ],
-          }),
+          brokeredGrantBindingId: approvedSnapshot,
         }),
       );
     }

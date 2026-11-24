@@ -468,6 +468,34 @@ describe('managed servers with secret bindings', () => {
     },
   );
 
+  it('uses effective provider approval for the instance and its local switch', async () => {
+    await withResolver(async () => [{ env: 'API_KEY', value: 'synthetic' }]);
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    await manager.approve('s1', 'api', {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    });
+    await manager.start('s1', 'api', 'agent');
+    const run = sandbox.started[0]!;
+    sandbox.listen(run.instanceId, Number(run.env.PORT));
+    await manager.tick();
+    expect((await manager.view('s1'))[0]).toMatchObject({
+      approved: true,
+      instance: { state: 'running', awaitingApproval: false, localOn: true },
+    });
+    await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
+    expect((await manager.view('s1'))[0]).toMatchObject({
+      approved: false,
+      instance: { state: 'running', awaitingApproval: true, localOn: false },
+    });
+  });
+
   it('never launches a partial secret set or stores resolver diagnostics', async () => {
     await withResolver(async () => {
       throw new Error('synthetic-private-value');

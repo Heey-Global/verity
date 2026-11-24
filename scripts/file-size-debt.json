@@ -33,7 +33,7 @@
   "packages/server/src/server-activity.test.ts": 3020,
   "packages/server/src/server-branches.test.ts": 3148,
   "packages/server/src/server-infrastructure.test.ts": 2148,
-  "packages/server/src/server-mcp-routes.ts": 2167,
+  "packages/server/src/server-mcp-routes.ts": 2162,
   "packages/server/src/server-projects.test.ts": 3958,
   "packages/server/src/server-sessions.test.ts": 3715,
   "packages/server/src/uplink-control-client.test.ts": 3380,

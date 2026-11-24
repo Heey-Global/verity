@@ -74,6 +74,8 @@ export function createEmbeddedSecretJobs({
     config.secretJobs?.doppler !== undefined ? createPostgresSecretProviderCatalog(db) : undefined;
   if (config.secretJobs !== undefined) {
     const secretJobsConfig = config.secretJobs;
+    const dopplerConnectionId =
+      secretJobsConfig.doppler?.connectionId ?? LEGACY_DOPPLER_CONNECTION_ID;
     if (runtimeDocker === undefined || config.dockerBaseUrl === undefined) {
       throw new Error('unreachable: missing Secret Job Docker configuration');
     }
@@ -94,7 +96,7 @@ export function createEmbeddedSecretJobs({
               catalog: secretProviderCatalog!,
               // The catalog retains its instance connection independently of project defaults.
               readCredential: (_ref, { projectId, userId }) =>
-                dopplerCredentialFor(userId, projectId, LEGACY_DOPPLER_CONNECTION_ID),
+                dopplerCredentialFor(userId, projectId, dopplerConnectionId),
             })
           : secretJobsConfig.resolveSecrets!,
       sealEnvelope,
@@ -183,13 +185,14 @@ export function installEmbeddedSecretJobs(
   }
   if (secretProviderCatalog !== undefined) {
     const dopplerOptions = config.secretJobs!.doppler!;
+    const dopplerConnectionId = dopplerOptions.connectionId ?? LEGACY_DOPPLER_CONNECTION_ID;
     registerSecretProviderRoutes(
       app,
       secretProviderCatalog,
       createDopplerSecretNameLister({
         ...dopplerOptions,
         readCredential: (_ref, { projectId, userId }) =>
-          dopplerCredentialFor(userId, projectId, LEGACY_DOPPLER_CONNECTION_ID),
+          dopplerCredentialFor(userId, projectId, dopplerConnectionId),
       }),
       async (header, projectId) => {
         const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];

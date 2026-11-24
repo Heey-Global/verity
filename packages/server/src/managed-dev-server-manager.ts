@@ -351,10 +351,8 @@ export class ManagedDevServerManager {
     const names = new Map(sessions.map((session) => [session.sessionId, session.name ?? null]));
     return Promise.all(
       entries.map(async (entry) => {
-        const providerSnapshot = await this.currentProviderSnapshot(
-          project.id,
-          entry.secretBindings,
-        );
+        const snapshot = await this.currentProviderSnapshot(project.id, entry.secretBindings);
+        const approved = entry.approved && (await this.providerApproved(entry, snapshot));
         const own = instances.find(
           (instance) => instance.serverId === entry.id && instance.sessionId === sessionId,
         );
@@ -363,11 +361,11 @@ export class ManagedDevServerManager {
           name: entry.name,
           command: entry.command,
           secretBindings: entry.secretBindings,
-          providerSnapshot,
+          providerSnapshot: snapshot,
           workdir: entry.workdir,
-          approved: entry.approved && (await this.providerApproved(entry, providerSnapshot)),
+          approved,
           accessSwitches: true as const,
-          instance: own ? this.instanceView(entry, own) : null,
+          instance: own ? this.instanceView({ ...entry, approved }, own) : null,
           elsewhere: instances
             .filter(
               (instance) =>

@@ -148,7 +148,7 @@ export function dopplerClient(request: Request) {
     /** Renames a connection or replaces its token. */
     updateConnection: async (
       id: string,
-      patch: { label?: string; token?: string },
+      patch: { label?: string; token?: string; confirmTokenReplacement?: boolean },
     ): Promise<DopplerConnection> => {
       const res = await request(connection(id), json('PATCH', patch));
       return dopplerConnectionSchema.parse(await res.json());

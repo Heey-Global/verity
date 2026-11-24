@@ -31,7 +31,10 @@ connections, so every reference names exactly one binding. The former
 old settings fields can replace the binding when there is at most one connection
 and one binding. Ambiguous writes direct the user to the current connection picker. Bindings live in
 `project_doppler_bindings`; the versioned secret-job catalog in
-`secret_provider_bindings` keeps its own semantics and is not reused.
+`secret_provider_bindings` keeps its own semantics and is not reused. Embedded
+Secret Job catalogs use `secretJobs.doppler.connectionId` on new installations.
+Existing catalogs default to the migrated legacy connection. Project default
+changes do not change the catalog connection.
 
 **References.** Agents write a secret as `NAME` for the default binding or as
 `project/config/NAME` for any binding, the default included. There is no short

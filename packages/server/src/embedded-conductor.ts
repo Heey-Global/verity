@@ -20,9 +20,18 @@ import { readOrMigrateProjectOverview } from './project-overview-file.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
 import { branchRenameAppliesToSession } from './embedded-support.js';
 import { personForCredential } from './personless-credential.js';
-import { brokeredGrantBindingApplies } from './brokered-doppler-binding.js';
+import {
+  brokeredDopplerBindingId,
+  brokeredGrantBindingApplies,
+  tryParseBrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
 import { resolveTurnSandbox } from './turn-sandbox.js';
 import { sandboxPersonTag } from './sandbox-identity.js';
+
+function grantLookupId(value: string): string {
+  const snapshot = tryParseBrokeredDopplerBinding(value);
+  return snapshot === undefined ? value : brokeredDopplerBindingId(snapshot);
+}
 
 type RunnerContext = Parameters<typeof createEmbeddedRunnerConductorWiring>[0];
 
@@ -122,7 +131,9 @@ export function createEmbeddedConductorBindings(ctx: {
       // A grant is per Doppler binding (ADR 0031): the call's own binding id when the
       // gateway supplied it, else the one its references read from now.
       const bindingId =
-        input.bindingId ?? (await brokeredGrantBindingIdFor(input.projectId, [input.secretAlias]));
+        input.bindingId === undefined
+          ? await brokeredGrantBindingIdFor(input.projectId, [input.secretAlias])
+          : grantLookupId(input.bindingId);
       return bindingId === undefined ||
         !brokeredGrantBindingApplies(bindingId, await brokeredGrantBindingIds(input.projectId))
         ? false
@@ -135,15 +146,16 @@ export function createEmbeddedConductorBindings(ctx: {
           });
     },
     persistBrokeredHttpGrant: async (input) => {
-      const bindingId =
-        input.bindingId ?? (await brokeredGrantBindingIdFor(input.projectId, [input.secretAlias]));
-      if (
-        bindingId === undefined ||
-        !brokeredGrantBindingApplies(bindingId, await brokeredGrantBindingIds(input.projectId))
-      ) {
+      // The approval snapshot identifies the exact binding rows before the card waits.
+      const approvedBinding =
+        input.bindingId === undefined ? undefined : tryParseBrokeredDopplerBinding(input.bindingId);
+      if (approvedBinding === undefined)
         throw new Error('Doppler access changed before saving approval');
-      }
-      await brokeredHttpGrants.grant({ ...input, bindingId });
+      await brokeredHttpGrants.grant({
+        ...input,
+        bindingId: brokeredDopplerBindingId(approvedBinding),
+        approvedBinding,
+      });
     },
     // Auto-name an unnamed session from its opening turn: the conductor derives a
     // 2–3 word title from the first chat using the session's OWN model (routed via

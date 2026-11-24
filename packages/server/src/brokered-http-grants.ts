@@ -5,9 +5,11 @@ import { lockDopplerTopology, ProjectDopplerBindingStore, type Database } from '
 import type { Kysely } from 'kysely';
 
 import {
+  brokeredDopplerBindingId,
   brokeredGrantBindingApplies,
   currentDopplerGrantBindingIds,
   defaultDopplerGrantMember,
+  type BrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
 
 const PROJECT_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -96,6 +98,7 @@ export function createBrokeredHttpGrantStore(
     async grant(input: {
       projectId: string;
       bindingId: string;
+      approvedBinding?: BrokeredDopplerBinding;
       sessionId: string;
       /** The person granting it; the grant applies only in their turns (ADR 0023 §3). */
       userId: string;
@@ -177,11 +180,18 @@ export function createBrokeredHttpGrantStore(
             if (options.requireCurrentDopplerBinding) {
               await lockDopplerTopology(tx);
               const current = await new ProjectDopplerBindingStore(tx).list(input.projectId);
+              const approved = input.approvedBinding;
+              if (approved === undefined || brokeredDopplerBindingId(approved) !== input.bindingId)
+                throw new Error('Doppler access changed before saving approval');
+              const approvedRows = new Set(approved.bindings.map((binding) => binding.bindingId));
+              const matchingRows = current.filter((binding) => approvedRows.has(binding.id));
+              const key =
+                approved.bindings.length === 1 && approved.bindings[0]?.includesBareReference
+                  ? defaultDopplerGrantMember(input.bindingId)
+                  : input.bindingId;
               if (
-                !brokeredGrantBindingApplies(
-                  input.bindingId,
-                  currentDopplerGrantBindingIds(current),
-                )
+                matchingRows.length !== approvedRows.size ||
+                !brokeredGrantBindingApplies(key, currentDopplerGrantBindingIds(matchingRows))
               ) {
                 throw new Error('Doppler access changed before saving approval');
               }

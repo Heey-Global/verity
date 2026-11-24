@@ -52,7 +52,9 @@ export function brokeredDopplerBindingId(snapshot: {
     ...new Set(
       snapshot.bindings.map((binding) => {
         const id = dopplerBindingGrantId(binding);
-        return binding.includesBareReference ? defaultDopplerGrantMember(id) : id;
+        return snapshot.bindings.length > 1 && binding.includesBareReference
+          ? defaultDopplerGrantMember(id)
+          : id;
       }),
     ),
   ].sort();

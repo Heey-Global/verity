@@ -449,7 +449,7 @@ export function ProjectDopplerBindings({
         />
       ) : null}
       {personalError ? (
-        <HintBox title={personalError}>
+        <HintBox title="Doppler token status" message={personalError}>
           <Button
             label="Retry loading tokens"
             variant="secondary"

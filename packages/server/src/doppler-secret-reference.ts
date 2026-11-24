@@ -97,11 +97,9 @@ export function referencedBindings(
     reference,
     ...resolveSecretReference(bindings, reference),
   }));
-  const multiple = new Set(resolved.map(({ binding }) => binding.id)).size > 1;
   for (const { reference, binding } of resolved) {
     const key = `${binding.connectionId}\0${binding.dopplerProject}\0${binding.dopplerConfig}`;
-    const usesDefault =
-      multiple && (!reference.includes('/') || byKey.get(key)?.includesBareReference);
+    const usesDefault = !reference.includes('/') || byKey.get(key)?.includesBareReference;
     byKey.set(key, {
       bindingId: binding.id,
       connectionId: binding.connectionId,

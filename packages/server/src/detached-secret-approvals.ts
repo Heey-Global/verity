@@ -11,7 +11,6 @@ import type {
 } from './brokered-tool-approval-store.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
 import {
-  brokeredDopplerBindingId,
   brokeredSecretSource,
   tryParseBrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
@@ -19,7 +18,7 @@ import {
 /** Restoring a card never restores a caller or executes a tool. Approval is a receipt
  * for an exact future invocation, checked again by the gateway at consumption. */
 export function configureDetachedSecretApprovals(input: {
-  conductor: Conductor;
+  conductor: Pick<Conductor, 'configureDetachedPermissions' | 'resumeDetachedPermission'>;
   store: Pick<EventStore, 'getSession'>;
   approvals: BrokeredToolApprovalStore;
   gateway: Pick<McpGatewayDeps, 'authorizationSnapshot'>;
@@ -39,7 +38,7 @@ export function configureDetachedSecretApprovals(input: {
         input: JSON.parse(record.canonicalInput) as Record<string, unknown>,
         ...(binding && {
           secretSource: brokeredSecretSource(binding),
-          brokeredGrantBindingId: brokeredDopplerBindingId(binding),
+          brokeredGrantBindingId: record.authorizationSnapshot,
         }),
       };
     } catch {

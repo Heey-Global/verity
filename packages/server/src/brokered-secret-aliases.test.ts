@@ -81,4 +81,42 @@ describe('brokered secret alias names per person', () => {
       'platform',
     ]);
   });
+  it('refreshes cached names when the default or available bindings change', async () => {
+    const platform = {
+      id: 'platform',
+      connectionId: 'c1',
+      dopplerProject: 'portal',
+      dopplerConfig: 'prod',
+      isDefault: true,
+    };
+    const payments = {
+      id: 'payments',
+      connectionId: 'c2',
+      dopplerProject: 'billing',
+      dopplerConfig: 'dev',
+      isDefault: false,
+    };
+    const listNames = vi.fn(async ({ dopplerProject }: { dopplerProject: string }) =>
+      dopplerProject === 'portal' ? ['PORTAL_KEY'] : ['PAYMENTS_KEY'],
+    );
+    const getProjectBindings = vi.fn(async () => [platform, payments]);
+    const aliases = createBrokeredSecretAliases({
+      getProjectBindings,
+      credentialFor: async () => Buffer.from('synthetic'),
+      listNames,
+      now: () => 0,
+    });
+    const actor = { userId: 'lena' };
+    expect(await aliases('p1', actor)).toEqual(['PORTAL_KEY', 'billing/dev/PAYMENTS_KEY']);
+    getProjectBindings.mockResolvedValue([
+      { ...platform, isDefault: false },
+      { ...payments, isDefault: true },
+    ]);
+    expect(await aliases('p1', actor)).toEqual(['PAYMENTS_KEY', 'portal/prod/PORTAL_KEY']);
+    getProjectBindings.mockResolvedValue([{ ...payments, isDefault: true }]);
+    expect(await aliases('p1', actor)).toEqual(['PAYMENTS_KEY']);
+    getProjectBindings.mockResolvedValue([]);
+    expect(await aliases('p1', actor)).toEqual([]);
+    expect(listNames).toHaveBeenCalledTimes(5);
+  });
 });

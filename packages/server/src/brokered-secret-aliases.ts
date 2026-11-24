@@ -7,8 +7,8 @@ import { secretReferenceNames } from './doppler-secret-reference.js';
  * binding's as `project/config/NAME` (ADR 0031). Resolved with the turn's person's
  * Doppler token for each binding's connection (ADR 0023 §3) and cached per person
  * and project: two people's tokens can see different names, and one person's list
- * must never answer for another. Briefly cached; a binding whose names cannot be
- * listed, a missing token included, is left out without failing the others.
+ * must never answer for another. The cached names follow the current bindings.
+ * A binding whose names cannot be listed is left out without failing the others.
  */
 export function createBrokeredSecretAliases(options: {
   getProjectBindings(projectId: string): Promise<readonly BrokeredHttpProjectBinding[]>;
@@ -25,22 +25,35 @@ export function createBrokeredSecretAliases(options: {
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
-  const cache = new Map<string, { names: readonly string[]; expiresAt: number }>();
+  const cache = new Map<
+    string,
+    { topology: string; names: readonly string[]; expiresAt: number }
+  >();
   return async (
     projectId: string,
     initiatedBy: { readonly userId: string } | undefined,
   ): Promise<readonly string[]> => {
     const userId = initiatedBy?.userId ?? null;
     const cacheKey = `${userId ?? ''}\0${projectId}`;
-    const cached = cache.get(cacheKey);
-    if (cached !== undefined && cached.expiresAt > now()) return cached.names;
-    if (cached !== undefined) cache.delete(cacheKey);
     let bindings: readonly BrokeredHttpProjectBinding[];
     try {
       bindings = await options.getProjectBindings(projectId);
     } catch {
       return [];
     }
+    const topology = JSON.stringify(
+      bindings.map((binding) => [
+        binding.id,
+        binding.connectionId,
+        binding.dopplerProject,
+        binding.dopplerConfig,
+        binding.isDefault,
+        binding.tokenRevision,
+      ]),
+    );
+    const cached = cache.get(cacheKey);
+    if (cached?.topology === topology && cached.expiresAt > now()) return cached.names;
+    cache.delete(cacheKey);
     if (bindings.length === 0) return [];
     let ttlMs = 60_000;
     const entries = await Promise.all(
@@ -69,7 +82,7 @@ export function createBrokeredSecretAliases(options: {
       const oldestKey = cache.keys().next().value;
       if (oldestKey !== undefined) cache.delete(oldestKey);
     }
-    cache.set(cacheKey, { names, expiresAt: now() + ttlMs });
+    cache.set(cacheKey, { topology, names, expiresAt: now() + ttlMs });
     return names;
   };
 }

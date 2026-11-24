@@ -4,6 +4,7 @@ import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { Kysely } from 'kysely';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { referencedSnapshot } from './brokered-http-tool.js';
 import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
 
 let ctx: TestDb;
@@ -52,7 +53,12 @@ it('does not leave a grant when persistence overlaps removal of the binding', as
   });
   const config = { connectionId, dopplerProject: 'app', dopplerConfig: 'prd' };
   const binding = await ctx.store.projectDopplerBindings.add(target.projectId, config);
-  const grant = { ...acp, bindingId: dopplerBindingGrantId(binding), scope: 'project' as const };
+  const grant = {
+    ...acp,
+    bindingId: dopplerBindingGrantId(binding),
+    approvedBinding: referencedSnapshot([binding], [acp.secretAlias]),
+    scope: 'project' as const,
+  };
   const grants = createBrokeredHttpGrantStore(ctx.db, { requireCurrentDopplerBinding: true });
   const [, removal] = await Promise.allSettled([
     grants.grant(grant),
@@ -60,6 +66,42 @@ it('does not leave a grant when persistence overlaps removal of the binding', as
   ]);
   expect(removal).toEqual({ status: 'fulfilled', value: true });
   await ctx.store.projectDopplerBindings.add(target.projectId, config);
+  expect(await grants.check(grant)).toBe(false);
+  await expect(grants.grant(grant)).rejects.toThrow(
+    'Doppler access changed before saving approval',
+  );
+  expect(await grants.check(grant)).toBe(false);
+});
+
+it('rejects an approval that used the former default even for a qualified alias in the call', async () => {
+  const connectionId = await ctx.store.dopplerConnections.add({
+    label: 'Platform',
+    token: 'synthetic-test-token',
+    workplace: { slug: null, name: null },
+  });
+  const first = await ctx.store.projectDopplerBindings.add(target.projectId, {
+    connectionId,
+    dopplerProject: 'app',
+    dopplerConfig: 'prd',
+  });
+  const next = await ctx.store.projectDopplerBindings.add(target.projectId, {
+    connectionId,
+    dopplerProject: 'app',
+    dopplerConfig: 'stg',
+  });
+  const secretAlias = `app/prd/${acp.secretAlias}`;
+  const grant = {
+    ...acp,
+    secretAlias,
+    bindingId: dopplerBindingGrantId(first),
+    approvedBinding: referencedSnapshot([first, next], [secretAlias, acp.secretAlias]),
+    scope: 'project' as const,
+  };
+  const grants = createBrokeredHttpGrantStore(ctx.db, { requireCurrentDopplerBinding: true });
+  await ctx.store.projectDopplerBindings.setDefault(target.projectId, next.id);
+  await expect(grants.grant(grant)).rejects.toThrow(
+    'Doppler access changed before saving approval',
+  );
   expect(await grants.check(grant)).toBe(false);
 });
 

@@ -11,7 +11,11 @@ import { Conductor, InMemoryEventBus } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 
-import { brokeredDopplerSnapshot } from './brokered-doppler-binding.js';
+import {
+  brokeredDopplerBindingId,
+  brokeredDopplerSnapshot,
+  parseBrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
 import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
 import { createBrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
 import { markInternalConnections } from './internal-listener.js';
@@ -125,7 +129,12 @@ async function harness(toolName: Tool, recordExecution = false) {
           }),
     persistBrokeredHttpGrant: async (input) => {
       if (input.bindingId === undefined) throw new Error('missing provider binding');
-      await persist({ ...input, bindingId: input.bindingId });
+      const approvedBinding = parseBrokeredDopplerBinding(input.bindingId);
+      await persist({
+        ...input,
+        bindingId: brokeredDopplerBindingId(approvedBinding),
+        approvedBinding,
+      });
     },
   });
   // Keep backend execution out of this route-composition test; the actual
