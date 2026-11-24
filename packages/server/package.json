@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@fastify/compress": "9.3.0",
-    "@fastify/rate-limit": "11.2.2",
+    "@fastify/rate-limit": "11.3.0",
     "@fastify/websocket": "11.3.7",
     "@napi-rs/canvas": "1.1.1",
     "@verity/events": "*",
