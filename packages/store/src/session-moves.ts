@@ -1,3 +1,4 @@
+import { DeletedProjectError } from './deleted-project-error.js';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from './schema.js';
 
@@ -17,6 +18,152 @@ export interface SessionRelayoutInput {
  */
 export class SessionMoveStore {
   constructor(private readonly db: Kysely<Database>) {}
+
+  async listPreparedSessionMoves() {
+    return await this.db
+      .selectFrom('session_moves')
+      .selectAll()
+      .where('result_json', 'is', null)
+      .execute();
+  }
+
+  async listMovePreviewRestarts() {
+    return await this.db
+      .selectFrom('session_moves')
+      .selectAll()
+      .where('preview_restart_json', 'is not', null)
+      .execute();
+  }
+
+  async setMovePreviewRestart(
+    sessionId: string,
+    operationId: string,
+    serverIds: string[] | null,
+  ): Promise<void> {
+    await this.db
+      .updateTable('session_moves')
+      .set({ preview_restart_json: serverIds === null ? null : JSON.stringify(serverIds) })
+      .where('session_id', '=', sessionId)
+      .where('operation_id', '=', operationId)
+      .execute();
+  }
+
+  async getSessionMove(sessionId: string, operationId: string) {
+    return await this.db
+      .selectFrom('session_moves')
+      .selectAll()
+      .where('session_id', '=', sessionId)
+      .where('operation_id', '=', operationId)
+      .executeTakeFirst();
+  }
+
+  async getSessionMoveNotice(sessionId: string): Promise<string | undefined> {
+    const row = await this.db
+      .selectFrom('session_moves')
+      .select('notice')
+      .where('session_id', '=', sessionId)
+      .where('result_json', 'is not', null)
+      .orderBy('created_at', 'desc')
+      .executeTakeFirst();
+    return row?.notice;
+  }
+
+  /** Reserve a destination before touching disk, so an interrupted preparation remains identifiable. */
+  async prepareSessionMove(
+    input: {
+      sessionId: string;
+      operationId: string;
+      sourceProjectId: string;
+      sourceWorktree: string;
+      targetProjectId: string;
+      targetWorktree: string;
+      branch: string;
+      onCommits: string;
+    },
+    readBackendStates: (sessionId: string) => Promise<readonly { backendSessionId: string }[]>,
+  ): Promise<void> {
+    await this.db
+      .insertInto('session_moves')
+      .values({
+        session_id: input.sessionId,
+        operation_id: input.operationId,
+        source_project_id: input.sourceProjectId,
+        source_worktree: input.sourceWorktree,
+        target_project_id: input.targetProjectId,
+        target_worktree: input.targetWorktree,
+        branch: input.branch,
+        on_commits: input.onCommits,
+        backend_ids_json: JSON.stringify([
+          input.sessionId,
+          ...(await readBackendStates(input.sessionId)).map((binding) => binding.backendSessionId),
+        ]),
+        notice: '',
+        result_json: null,
+      })
+      .execute();
+  }
+
+  /**
+   * Set (or clear, with `null`) a session's project binding. Returns `true` if a
+   * row matched (`UPDATE` affected a row), `false` if the session id is unknown.
+   * Pure metadata: never touches the durable event log. Used by the
+   * provisioning+dispatch paths (slice 3) to attach a session to its project when
+   * `POST /sessions` triggers auto-provisioning.
+   *
+   * The non-null case can throw a Postgres FK-violation error if `projectId`
+   * refers to a project row that no longer exists (race with a concurrent
+   * `deleteProject` in slice 3, or a buggy caller) — the boolean return only
+   * signals session-unknown, NOT project-unknown. Callers MUST handle the throw
+   * separately; the typical response is to surface it as a 4xx (or retry with
+   * the project re-resolved via GitHub sync).
+   */
+  async setSessionProject(sessionId: string, projectId: string | null): Promise<boolean> {
+    if (projectId !== null) {
+      return await this.db.transaction().execute(async (tx) => {
+        const project = await tx
+          .selectFrom('projects')
+          .select('hidden_at')
+          .forShare()
+          .where('id', '=', projectId)
+          .executeTakeFirst();
+        if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
+        await tx
+          .selectFrom('sessions')
+          .select('session_id')
+          .where('session_id', '=', sessionId)
+          .forUpdate()
+          .executeTakeFirst();
+        await tx
+          .deleteFrom('session_links')
+          .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
+          .execute();
+        const result = await tx
+          .updateTable('sessions')
+          .set({ project_id: projectId })
+          .where('session_id', '=', sessionId)
+          .executeTakeFirst();
+        return result.numUpdatedRows > 0n;
+      });
+    }
+    return this.db.transaction().execute(async (tx) => {
+      await tx
+        .selectFrom('sessions')
+        .select('session_id')
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      await tx
+        .deleteFrom('session_links')
+        .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
+        .execute();
+      const result = await tx
+        .updateTable('sessions')
+        .set({ project_id: null })
+        .where('session_id', '=', sessionId)
+        .executeTakeFirst();
+      return result.numUpdatedRows > 0n;
+    });
+  }
 
   async commit(
     sessionId: string,
