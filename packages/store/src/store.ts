@@ -1,4 +1,5 @@
-import { DeletedProjectError } from './deleted-project-error.js';
+import { SessionLifecycleStore } from './session-lifecycle.js';
+import { sessionEventAppendLock, sessionEventAppendLockKey } from './session-event-lock.js';
 export { DeletedProjectError } from './deleted-project-error.js';
 import { ProjectAccessStore } from './project-access.js';
 import { ProjectLifecycleStore } from './project-lifecycle.js';
@@ -49,7 +50,6 @@ import {
   type PendingSessionLinkMessage,
 } from './session-links.js';
 import { ProjectTeamStore, type ProjectPermission } from './project-team.js';
-import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
 import {
   MESSAGE_PROJECTION_VERSION,
   pendingMessageProjectionByDb,
@@ -91,7 +91,7 @@ import { QAAssignmentStore } from './qa-assignments.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
-import { recordSessionCreator, SessionPeopleStore } from './session-people.js';
+import { SessionPeopleStore } from './session-people.js';
 import { ChangeSubmissionStore } from './change-submissions.js';
 import { GitHubRepositoryIdentityStore } from './github-repository-identity.js';
 import { isInstallationPlaceholder } from './installation-placeholders.js';
@@ -116,7 +116,6 @@ import {
   type BoundedHistoryResult,
 } from '@verity/events';
 import { createHash, randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
 import {
   type AgentEvent,
   SESSION_PROJECTION_EVENT_TYPES,
@@ -893,8 +892,6 @@ const ABANDONED_TURN_FENCE_HASH = 'verity:abandoned-turn-fence';
  * there is no real instance to name. Excluded from the turn→instance binding check. */
 const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
 
-const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
-
 /** The person a backend-state key is scoped to, or '' for the unscoped key. */
 function backendStateScope(backend: string): string {
   const separator = backend.indexOf('#');
@@ -1089,22 +1086,6 @@ export class EventStore implements EventSink {
         this.runnerFrameIngestTails.delete(turnId);
       }
     }
-  }
-
-  /**
-   * Transaction-scoped lock every append to one session's log takes first, so appends
-   * from overlapping Server generations cannot interleave either. Taken BEFORE a
-   * per-turn frame lock wherever both are held, so the two never deadlock.
-   */
-  private async sessionEventAppendLock(tx: Kysely<Database>, sessionId: string): Promise<void> {
-    await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
-      tx,
-    );
-  }
-
-  /** The one string every event-append lock hashes, transaction-scoped or inline. */
-  private sessionEventAppendLockKey(sessionId: string): string {
-    return `events:${sessionId}`;
   }
 
   private enqueuePersistedMessageEvent(
@@ -1396,57 +1377,7 @@ export class EventStore implements EventSink {
    * reap and outlive its project, which is the whole bug.
    */
   async createSession(session: SessionInput): Promise<void> {
-    const values = {
-      session_id: session.sessionId,
-      worktree: session.worktree,
-      model: session.model,
-      initial_model: session.model,
-      name: session.name ?? null,
-      project_id: session.projectId ?? null,
-    };
-    const projectId = session.projectId;
-    const insert = async (tx: Kysely<Database>): Promise<void> => {
-      // Never occupy the serving pool waiting behind long physical cleanup.
-      const admission = await sql<{
-        locked: boolean;
-      }>`select pg_try_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(session.sessionId)})) as locked`.execute(
-        tx,
-      );
-      if (admission.rows[0]?.locked !== true) throw new Error('Session is being deleted');
-      await this.sessionWorktreeLock(tx, session.worktree);
-      if (
-        await tx
-          .selectFrom('session_deletions')
-          .select('session_id')
-          .where('session_id', '=', session.sessionId)
-          .executeTakeFirst()
-      )
-        throw new Error('Session is being deleted');
-      if (
-        await tx
-          .selectFrom('session_deletions')
-          .select('session_id')
-          .where('worktree', '=', resolve(session.worktree))
-          .where('cleanup_pending', '=', true)
-          .executeTakeFirst()
-      )
-        throw new Error('Session worktree is being deleted');
-      if (projectId !== undefined && projectId !== null) {
-        const project = await tx
-          .selectFrom('projects')
-          .select('hidden_at')
-          // SHARE, not UPDATE: unrelated spawns only serialize against a project delete.
-          .forShare()
-          .where('id', '=', projectId)
-          .executeTakeFirst();
-        if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
-      }
-      await tx.insertInto('sessions').values(values).execute();
-      if (session.createdByUserId)
-        await recordSessionCreator(tx, session.sessionId, session.createdByUserId);
-    };
-    if (this.db.isTransaction) await insert(this.db);
-    else await this.db.transaction().execute(insert);
+    return this.sessionLifecycle.createSession(session);
   }
 
   /** The immutable model choice of the newest ordinary session in a scope.
@@ -2203,6 +2134,10 @@ export class EventStore implements EventSink {
     resultJson: string,
   ): Promise<void> {
     await this.sessionMoves.commit(sessionId, operationId, notice, resultJson);
+  }
+
+  private get sessionLifecycle(): SessionLifecycleStore {
+    return new SessionLifecycleStore(() => this.db);
   }
 
   get sessionMoves(): SessionMoveStore {
@@ -3141,115 +3076,29 @@ export class EventStore implements EventSink {
    */
   /** Permanent admission tombstone; cleanup payload survives the session FK cascade. */
   async queueSessionDeletion(sessionId: string, payload: string): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      await this.sessionEventAppendLock(tx, sessionId);
-      if (
-        await tx
-          .selectFrom('session_deletions')
-          .select('session_id')
-          .where('session_id', '=', sessionId)
-          .executeTakeFirst()
-      )
-        return;
-      const parsed = JSON.parse(payload) as SessionDeletionState;
-      const session = await tx
-        .selectFrom('sessions')
-        .select('worktree')
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst();
-      const path = parsed.session?.worktree ?? session?.worktree;
-      const worktree = path === undefined ? null : resolve(path);
-      if (worktree !== null) {
-        await this.sessionWorktreeLock(tx, worktree);
-        if (
-          await tx
-            .selectFrom('session_deletions')
-            .select('session_id')
-            .where('worktree', '=', worktree)
-            .where('cleanup_pending', '=', true)
-            .executeTakeFirst()
-        )
-          throw new Error('Session worktree is being deleted');
-      }
-      await tx
-        .insertInto('session_deletions')
-        .values({ session_id: sessionId, payload, worktree })
-        .execute();
-    });
-  }
-
-  private async sessionWorktreeLock(tx: Kysely<Database>, path: string): Promise<void> {
-    const result = await sql<{
-      locked: boolean;
-    }>`select pg_try_advisory_xact_lock(hashtext(${'session-worktree:' + resolve(path)})) as locked`.execute(
-      tx,
-    );
-    if (result.rows[0]?.locked !== true) throw new Error('Session worktree is being deleted');
+    return this.sessionLifecycle.queueSessionDeletion(sessionId, payload);
   }
 
   async isWorktreeBeingDeleted(path: string): Promise<boolean> {
-    return (
-      (await this.db
-        .selectFrom('session_deletions')
-        .select('session_id')
-        .where('worktree', '=', resolve(path))
-        .where('cleanup_pending', '=', true)
-        .executeTakeFirst()) !== undefined
-    );
+    return this.sessionLifecycle.isWorktreeBeingDeleted(path);
   }
 
   async getSessionDeletion(
     sessionId: string,
   ): Promise<{ payload: string; cleanupPending: boolean } | undefined> {
-    const row = await this.db
-      .selectFrom('session_deletions')
-      .select(['payload', 'cleanup_pending'])
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return row === undefined
-      ? undefined
-      : { payload: row.payload, cleanupPending: row.cleanup_pending };
+    return this.sessionLifecycle.getSessionDeletion(sessionId);
   }
 
   async isSessionDeleting(sessionId: string): Promise<boolean> {
-    return (
-      (await this.db
-        .selectFrom('session_deletions')
-        .select('session_id')
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst()) !== undefined
-    );
+    return this.sessionLifecycle.isSessionDeleting(sessionId);
   }
 
   async listPendingSessionDeletions(): Promise<{ sessionId: string; payload: string }[]> {
-    const rows = await this.db
-      .selectFrom('session_deletions')
-      .select(['session_id', 'payload'])
-      .where('cleanup_pending', '=', true)
-      .execute();
-    return rows.map((row) => ({ sessionId: row.session_id, payload: row.payload }));
+    return this.sessionLifecycle.listPendingSessionDeletions();
   }
 
   async updateSessionDeletionPayload(sessionId: string, payload: string): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      await this.sessionEventAppendLock(tx, sessionId);
-      const current = await tx
-        .selectFrom('session_deletions')
-        .select(['payload', 'cleanup_pending'])
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!current?.cleanup_pending) return;
-      const merged = mergeSessionDeletionState(
-        JSON.parse(current.payload) as SessionDeletionState,
-        JSON.parse(payload) as SessionDeletionState,
-      );
-      await tx
-        .updateTable('session_deletions')
-        .set({ payload: JSON.stringify(merged) })
-        .where('session_id', '=', sessionId)
-        .execute();
-    });
+    return this.sessionLifecycle.updateSessionDeletionPayload(sessionId, payload);
   }
 
   async finishSessionDeletionCleanup(sessionId: string): Promise<void> {
@@ -3263,169 +3112,11 @@ export class EventStore implements EventSink {
     sessionId: string,
     work: (payload: string) => Promise<boolean>,
   ): Promise<boolean> {
-    let tails = sessionDeletionCleanupTails.get(this.db);
-    if (!tails) {
-      tails = new Map();
-      sessionDeletionCleanupTails.set(this.db, tails);
-    }
-    const previous = tails.get(sessionId) ?? Promise.resolve();
-    let release!: () => void;
-    const completion = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const queued = previous.catch(() => undefined).then(() => completion);
-    tails.set(sessionId, queued);
-    await previous.catch(() => undefined);
-    try {
-      return await this.db.connection().execute(async (connection) => {
-        const sessionKey = `session-cleanup:${sessionId}`;
-        await sql`select pg_advisory_lock(hashtext(${sessionKey}))`.execute(connection);
-        let worktree: string | null = null;
-        try {
-          const owned = await connection
-            .selectFrom('session_deletions')
-            .select(['worktree', 'payload', 'cleanup_pending'])
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst();
-          if (!owned?.cleanup_pending) return true;
-          worktree = owned.worktree;
-          if (worktree !== null)
-            await sql`select pg_advisory_lock(hashtext(${'session-worktree:' + worktree}))`.execute(
-              connection,
-            );
-          // A completed tombstone is permanent: stale requests cannot restart cleanup
-          // after a different session legitimately reused the released worktree path.
-          const current = await connection
-            .selectFrom('session_deletions')
-            .select(['payload', 'cleanup_pending'])
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst();
-          if (!current?.cleanup_pending) return true;
-          if (!(await work(current.payload))) return false;
-          await connection
-            .updateTable('session_deletions')
-            .set({ cleanup_pending: false, payload: '{}', worktree: null })
-            .where('session_id', '=', sessionId)
-            .execute();
-          return true;
-        } finally {
-          try {
-            if (worktree !== null)
-              await sql`select pg_advisory_unlock(hashtext(${'session-worktree:' + worktree}))`.execute(
-                connection,
-              );
-          } finally {
-            await sql`select pg_advisory_unlock(hashtext(${sessionKey}))`.execute(connection);
-          }
-        }
-      });
-    } finally {
-      release();
-      if (tails.get(sessionId) === queued) tails.delete(sessionId);
-    }
+    return this.sessionLifecycle.withSessionDeletionCleanup(sessionId, work);
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    await waitForPendingMessageProjections(this.db);
-    return this.db.transaction().execute(async (tx) => {
-      await this.sessionEventAppendLock(tx, sessionId);
-      // Freeze FK-backed creations before capturing the IDs the cascade will erase.
-      // A start committed after the initial HTTP snapshot must still be cleaned up.
-      await tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .execute();
-      const deletion = await tx
-        .selectFrom('session_deletions')
-        .select('payload')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (deletion) {
-        const payload = JSON.parse(deletion.payload) as SessionDeletionState;
-        if (payload.session?.sessionId === sessionId) {
-          const bindings = await tx
-            .selectFrom('session_backend_state')
-            .select(['backend', 'backend_session_id'])
-            .where('session_id', '=', sessionId)
-            .execute();
-          payload.artifactBindings =
-            mergeSessionDeletionState(payload, {
-              artifactBindings: bindings.map((row) => ({
-                backend: row.backend,
-                backendSessionId: row.backend_session_id,
-              })),
-            }).artifactBindings ?? [];
-          const previews = await tx
-            .selectFrom('local_preview_shares')
-            .select('id')
-            .where('session_id', '=', sessionId)
-            .execute();
-          const instances = await tx
-            .selectFrom('managed_dev_server_instances')
-            .select(['id', 'project_id'])
-            .where('session_id', '=', sessionId)
-            .execute();
-          payload.previewIds = [
-            ...new Set([...(payload.previewIds ?? []), ...previews.map((row) => row.id)]),
-          ];
-          if (payload.managed || instances.length > 0)
-            payload.managed = {
-              sessionId,
-              projectId:
-                payload.managed?.projectId ??
-                instances[0]?.project_id ??
-                payload.session.projectId ??
-                null,
-              instanceIds: [
-                ...new Set([
-                  ...(payload.managed?.instanceIds ?? []),
-                  ...instances.map((row) => row.id),
-                ]),
-              ],
-            };
-          await tx
-            .updateTable('session_deletions')
-            .set({ payload: JSON.stringify(payload) })
-            .where('session_id', '=', sessionId)
-            .execute();
-        }
-      }
-      await tx.deleteFrom('transcript_lines').where('session_id', '=', sessionId).execute();
-      await tx.deleteFrom('events').where('session_id', '=', sessionId).execute();
-      // A session-scoped secret permission (ADR 0011 D2) is supposed to die with its
-      // session, but nothing else expires it: it carries no expiry and no foreign key.
-      // Left behind it would stay listed as live forever, and would auto-approve again
-      // if this id were ever restored or reused. Ending it belongs in this transaction.
-      await tx
-        .updateTable('secret_provider_permissions')
-        .set({ state: 'revoked', updated_at: new Date().toISOString() })
-        .where('session_id', '=', sessionId)
-        .where('state', '=', 'active')
-        .execute();
-      // The agent's unfinished steps were its plan for this session and end with
-      // it; the operator's own tasks only lose the assignment (FK set null).
-      await tx
-        .updateTable('tasks')
-        .set((eb) => ({
-          status: 'dropped',
-          completed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          revision: eb('revision', '+', 1),
-        }))
-        .where('session_id', '=', sessionId)
-        .where('origin', '=', 'agent')
-        .where('status', 'in', ['open', 'in_progress'])
-        .execute();
-      await sql`delete from project_inquiries where target_session_id=${sessionId}`.execute(tx);
-      const result = await tx
-        .deleteFrom('sessions')
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst();
-      return result.numDeletedRows > 0n;
-    });
+    return this.sessionLifecycle.deleteSession(sessionId);
   }
 
   /** Accept a background dispatch, its prompt and recovery marker in one commit.
@@ -3464,7 +3155,7 @@ export class EventStore implements EventSink {
           ts: receipt.created_at.getTime(),
           existing: true,
         };
-      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
+      await sql`select pg_advisory_xact_lock(hashtext(${sessionEventAppendLockKey(sessionId)}))`.execute(
         trx,
       );
       const predecessor = await trx
@@ -3537,7 +3228,7 @@ export class EventStore implements EventSink {
     const { type, payload } = await this.prepareEventRow(event);
     const row = await this.withSessionEventAppend(sessionId, () =>
       this.db.transaction().execute(async (tx) => {
-        await this.sessionEventAppendLock(tx, sessionId);
+        await sessionEventAppendLock(tx, sessionId);
         const existing = await findRecordedApprovalDecision(tx, sessionId, event);
         if (existing) return { ...existing, existing: true as const };
         const result = await sql<{ id: number; created_at: Date }>`
@@ -3593,7 +3284,7 @@ export class EventStore implements EventSink {
     const { type, payload } = await this.prepareEventRow(event);
     const result = await this.withSessionEventAppend(sessionId, () =>
       this.db.transaction().execute(async (tx) => {
-        await this.sessionEventAppendLock(tx, sessionId);
+        await sessionEventAppendLock(tx, sessionId);
         return await sql<{ id: number; created_at: Date }>`
           insert into events (session_id, type, payload)
           select ${sessionId}, ${type}, ${payload}::jsonb
@@ -3742,7 +3433,7 @@ export class EventStore implements EventSink {
         // conditional append yet ordered ahead of it — and the two locks cannot be
         // taken in opposite orders.
         if (eventRow !== undefined || frame.terminal === true) {
-          await this.sessionEventAppendLock(tx, sessionId);
+          await sessionEventAppendLock(tx, sessionId);
         }
         await sql`select pg_advisory_xact_lock(hashtext(${frame.turnId}))`.execute(tx);
         if (
@@ -4016,7 +3707,7 @@ export class EventStore implements EventSink {
           // append lock first, then turn lock. The former makes the MAX(events.id)
           // predicate atomic with every canonical event writer; the latter makes
           // the fence atomic with every frame claim.
-          await this.sessionEventAppendLock(tx, anchor.sessionId);
+          await sessionEventAppendLock(tx, anchor.sessionId);
           await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);
           const marker = await tx
             .selectFrom('running_turns')
@@ -4095,7 +3786,7 @@ export class EventStore implements EventSink {
     await this.withSessionEventAppend(anchor.sessionId, () =>
       this.withRunnerFrameTurn(turnId, () =>
         this.db.transaction().execute(async (tx) => {
-          await this.sessionEventAppendLock(tx, anchor.sessionId);
+          await sessionEventAppendLock(tx, anchor.sessionId);
           await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);
           const removed = await tx
             .deleteFrom('runner_frames')
@@ -4957,7 +4648,7 @@ export class EventStore implements EventSink {
     const persisted: { seq: number; createdAt: Date; event: AgentEvent }[] = [];
     const accepted = await this.db.transaction().execute(async (tx) => {
       // A newer user prompt revokes chat consent before any tasks or work commit.
-      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
+      await sql`select pg_advisory_xact_lock(hashtext(${sessionEventAppendLockKey(input.sessionId)}))`.execute(
         tx,
       );
       if (consent !== undefined) {
@@ -5038,7 +4729,7 @@ export class EventStore implements EventSink {
             taskIds: taskIds.slice(offset, offset + 100),
           };
           const eventRow = await this.prepareEventRow(event);
-          await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
+          await sql`select pg_advisory_xact_lock(hashtext(${sessionEventAppendLockKey(input.sessionId)}))`.execute(
             tx,
           );
           const row = await tx
@@ -5332,7 +5023,7 @@ export class EventStore implements EventSink {
     const payload = scrubNulEscapes(redactSecrets(JSON.stringify(event)));
     const persisted = await this.withSessionEventAppend(sessionId, () =>
       this.db.transaction().execute(async (tx) => {
-        await this.sessionEventAppendLock(tx, sessionId);
+        await sessionEventAppendLock(tx, sessionId);
         const del = await tx.deleteFrom('queued_turns').where('id', '=', id).executeTakeFirst();
         if (del.numDeletedRows === 0n) return undefined;
         const row = await tx
