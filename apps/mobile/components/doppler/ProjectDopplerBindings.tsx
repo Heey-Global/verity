@@ -1,8 +1,7 @@
 // A project's Doppler bindings (docs/adr/0031-multiple-doppler-connections.md):
 // any Doppler project and config of any instance connection, one of them the
 // default. Agents write `NAME` for the default and `project/config/NAME` for the
-// others. Each person connects their own token per connection; a missing one is
-// shown at the top, and every binding says whether the viewer's token reaches it.
+// others. Each person manages their own token for every connection the project uses.
 import type {
   DopplerConnection,
   PersonalDopplerTokens,
@@ -35,17 +34,6 @@ type Mode =
   | { kind: 'remove'; binding: ProjectDopplerBinding }
   | { kind: 'token'; connection: Personal };
 
-/** What the viewer's own token means for a binding; null when nothing to say. */
-export function personalTokenState(
-  binding: ProjectDopplerBinding,
-  tokens: readonly Personal[] | undefined,
-): string | null {
-  const mine = tokens?.find((entry) => entry.connectionId === binding.connectionId);
-  if (mine === undefined) return null;
-  if (mine.connected) return 'Your token connected';
-  return mine.usesInstanceToken ? 'Instance token' : 'Your token missing';
-}
-
 export function ProjectDopplerBindings({
   client,
   projectId,
@@ -56,11 +44,14 @@ export function ProjectDopplerBindings({
   const bindings = useScanResource(
     useCallback(() => client.doppler.listBindings(projectId), [client, projectId]),
   );
-  const [tokens, setTokens] = useState<Personal[]>();
+  const [personal, setPersonal] = useState<PersonalDopplerTokens>();
+  const [personalError, setPersonalError] = useState<string>();
+  const [personalVersion, setPersonalVersion] = useState(0);
   const [connections, setConnections] = useState<DopplerConnection[]>();
   const [mode, setMode] = useState<Mode>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [failedLookup, setFailedLookup] = useState<'projects' | 'configs'>();
   const [token, setToken] = useState('');
   const [picked, setPicked] = useState<{ connection?: string; project?: string; config?: string }>(
     {},
@@ -68,6 +59,7 @@ export function ProjectDopplerBindings({
   const [options, setOptions] = useState<{ projects?: string[]; configs?: string[] }>({});
   const pickerRequest = useRef(0);
   const list = bindings.data ?? [];
+  const canManage = personal?.canManageBindings === true;
   const bindingKey = list.map((binding) => binding.id).join(',');
 
   // Personal tokens follow the bindings: one per connection they use.
@@ -75,12 +67,22 @@ export function ProjectDopplerBindings({
     let active = true;
     void client.doppler
       .personalTokens(projectId)
-      .then((value) => active && setTokens(value.connections))
-      .catch(() => active && setTokens(undefined));
+      .then((value) => {
+        if (active) {
+          setPersonal(value);
+          setPersonalError(undefined);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setPersonal(undefined);
+          setPersonalError('Could not load your Doppler tokens.');
+        }
+      });
     return () => {
       active = false;
     };
-  }, [client, projectId, bindingKey]);
+  }, [client, projectId, bindingKey, personalVersion]);
 
   const close = () => {
     pickerRequest.current++;
@@ -90,6 +92,7 @@ export function ProjectDopplerBindings({
   const open = (next: Mode) => {
     const request = ++pickerRequest.current;
     setError(undefined);
+    setFailedLookup(undefined);
     setToken('');
     setPicked({});
     setOptions({});
@@ -127,28 +130,32 @@ export function ProjectDopplerBindings({
   const pickConnection = async (connectionId: string) => {
     const request = ++pickerRequest.current;
     setError(undefined);
+    setFailedLookup(undefined);
     setPicked({ connection: connectionId });
     setOptions({});
     const result = await client.listDopplerProjects(connectionId).catch(() => undefined);
     if (request !== pickerRequest.current) return;
-    if (result === undefined || 'error' in result)
+    if (result === undefined || 'error' in result) {
+      setFailedLookup('projects');
       setError(result?.error === 'locked' ? 'Unlock the secret store first.' : result?.error);
-    else setOptions({ projects: result.projects.map((project) => project.slug) });
+    } else setOptions({ projects: result.projects.map((project) => project.slug) });
   };
   const pickProject = async (project: string) => {
     const request = ++pickerRequest.current;
     setError(undefined);
+    setFailedLookup(undefined);
     setPicked((current) => ({ ...current, project, config: undefined }));
     setOptions((current) => ({ projects: current.projects }));
     const result = await client
       .listDopplerConfigs(project, picked.connection)
       .catch(() => undefined);
     if (request !== pickerRequest.current) return;
-    if (result === undefined || 'error' in result) setError(result?.error);
-    else setOptions((current) => ({ ...current, configs: result.configs.map((c) => c.name) }));
+    if (result === undefined || 'error' in result) {
+      setFailedLookup('configs');
+      setError(result?.error === 'locked' ? 'Unlock the secret store first.' : result?.error);
+    } else setOptions((current) => ({ ...current, configs: result.configs.map((c) => c.name) }));
   };
 
-  const missing = (tokens ?? []).filter((entry) => !entry.connected && !entry.usesInstanceToken);
   let title = '';
   let body: ReactNode = null;
   let footer: ReactNode = null;
@@ -206,6 +213,21 @@ export function ProjectDopplerBindings({
             />
           </>
         ) : null}
+        {failedLookup ? (
+          <HintBox
+            title={
+              failedLookup === 'projects'
+                ? 'Could not load Doppler projects'
+                : 'Could not load Doppler configs'
+            }
+            message={
+              error ??
+              (failedLookup === 'projects'
+                ? 'Retry loading projects for this connection.'
+                : 'Retry loading configs for this project.')
+            }
+          />
+        ) : null}
         {picked.project && picked.config ? (
           <Text variant="body" tone="muted">
             {`Agents write secrets as ${picked.project}/${picked.config}/API_KEY`}
@@ -213,7 +235,17 @@ export function ProjectDopplerBindings({
         ) : null}
       </View>
     );
-    footer = (
+    footer = failedLookup ? (
+      <Button
+        label="Retry"
+        fullWidth
+        onPress={() => {
+          if (failedLookup === 'projects' && picked.connection)
+            void pickConnection(picked.connection);
+          if (failedLookup === 'configs' && picked.project) void pickProject(picked.project);
+        }}
+      />
+    ) : (
       <Button
         label="Add binding"
         fullWidth
@@ -300,56 +332,72 @@ export function ProjectDopplerBindings({
     );
   } else if (mode?.kind === 'token') {
     const { connection } = mode;
-    title = `Your token for ${connection.label}`;
+    title = `Your ${connection.label} token`;
     body = (
       <View style={styles.fields}>
         <TextField
-          label="Your Doppler token"
-          placeholder="dp.st.…"
+          label={connection.connected ? 'New Doppler token' : 'Your Doppler token'}
+          placeholder="Paste a token"
           value={token}
           onChangeText={setToken}
           secret
           literal
         />
-        <Text variant="body" tone="muted">
-          {`Only your own sessions use this token. Verity checks that it can read ${connection.bindings.join(', ')} before saving.`}
-        </Text>
+        {connection.connected ? (
+          <HintBox
+            title="Disconnecting affects your sessions"
+            message={
+              canManage
+                ? 'Your sessions may lose access to these configs. They will use the instance token if one is available.'
+                : `Your sessions will lose access to ${connection.bindings.join(', ')} until you connect another token.`
+            }
+          />
+        ) : (
+          <Text variant="body" tone="muted">
+            {`Only your own sessions use this token. Verity checks that it can read ${connection.bindings.join(', ')} before saving.`}
+          </Text>
+        )}
       </View>
     );
     footer = (
-      <Button
-        label="Validate and connect"
-        fullWidth
-        disabled={busy || token.trim() === ''}
-        onPress={() =>
-          void run(async () => {
-            const result = await client.doppler.connectPersonalToken(
-              projectId,
-              connection.connectionId,
-              token.trim(),
-            );
-            setTokens(result.connections);
-          }, 'Could not connect the Doppler token.')
-        }
-      />
+      <View style={styles.fields}>
+        <Button
+          label={connection.connected ? 'Validate and replace' : 'Validate and connect'}
+          fullWidth
+          disabled={busy || token.trim() === ''}
+          onPress={() =>
+            void run(async () => {
+              const result = await client.doppler.connectPersonalToken(
+                projectId,
+                connection.connectionId,
+                token.trim(),
+              );
+              setPersonal(result);
+              setPersonalVersion((current) => current + 1);
+            }, 'Could not save the Doppler token.')
+          }
+        />
+        {connection.connected ? (
+          <Button
+            label="Disconnect token"
+            variant="destructive"
+            fullWidth
+            disabled={busy}
+            onPress={() =>
+              void run(async () => {
+                await client.doppler.disconnectPersonalToken(projectId, connection.connectionId);
+                setPersonalVersion((current) => current + 1);
+              }, 'Could not disconnect the Doppler token.')
+            }
+          />
+        ) : null}
+      </View>
     );
   }
 
   return (
     <View style={styles.fields}>
-      {missing.map((connection) => (
-        <HintBox
-          key={connection.connectionId}
-          title="Your Doppler token is missing"
-          message={`Your sessions cannot read secrets from ${connection.bindings.join(', ')} until you connect your own token for ${connection.label}.`}
-        >
-          <Button
-            label={`Connect token for ${connection.label}`}
-            icon="key"
-            onPress={() => open({ kind: 'token', connection })}
-          />
-        </HintBox>
-      ))}
+      <SectionHeader title="Doppler bindings" />
       {bindings.error ? <Text tone="attention">{bindings.error}</Text> : null}
       <Group>
         {list.length === 0 ? (
@@ -358,44 +406,68 @@ export function ProjectDopplerBindings({
             leading={{ icon: 'layers' }}
           />
         ) : (
-          list.map((binding) => {
-            const state = personalTokenState(binding, tokens);
-            return (
-              <Row
-                key={binding.id}
-                title={binding.reference}
-                subtitle={
-                  state === null ? binding.connectionLabel : `${binding.connectionLabel} · ${state}`
-                }
-                leading={{ icon: 'layers' }}
-                tag={binding.isDefault ? <StatusTag intent="ready" label="Default" /> : undefined}
-                trailing={
+          list.map((binding) => (
+            <Row
+              key={binding.id}
+              title={binding.reference}
+              subtitle={binding.connectionLabel}
+              leading={{ icon: 'layers' }}
+              tag={binding.isDefault ? <StatusTag intent="ready" label="Default" /> : undefined}
+              trailing={
+                canManage ? (
                   <IconButton
                     icon="more-horizontal"
                     accessibilityLabel={`Manage ${binding.reference}`}
                     disabled={busy}
                     onPress={() => open({ kind: 'menu', binding })}
                   />
-                }
-              />
-            );
-          })
+                ) : undefined
+              }
+            />
+          ))
         )}
       </Group>
-      <Button
-        label="Add binding"
-        icon="plus"
-        variant="secondary"
-        disabled={busy}
-        onPress={() => open({ kind: 'add' })}
-      />
+      {canManage ? (
+        <Button
+          label="Add binding"
+          icon="plus"
+          variant="secondary"
+          disabled={busy}
+          onPress={() => open({ kind: 'add' })}
+        />
+      ) : null}
+      {personalError ? <Text tone="attention">{personalError}</Text> : null}
+      {personal && personal.connections.length > 0 ? (
+        <>
+          <SectionHeader title="Your Doppler tokens" />
+          <Group>
+            {personal.connections.map((connection) => (
+              <Row
+                key={connection.connectionId}
+                title={connection.label}
+                subtitle={
+                  connection.connected
+                    ? 'Your token connected'
+                    : connection.usesInstanceToken
+                      ? 'Using instance token'
+                      : 'Connect your token'
+                }
+                leading={{ icon: 'key' }}
+                navigates
+                disabled={busy}
+                onPress={() => open({ kind: 'token', connection })}
+              />
+            ))}
+          </Group>
+        </>
+      ) : null}
       <Sheet
-        visible={mode !== undefined}
+        visible={mode?.kind === 'token' || (canManage && mode !== undefined)}
         title={title}
         onClose={close}
         footer={
           <View style={styles.fields}>
-            {error ? <Text tone="attention">{error}</Text> : null}
+            {error && !failedLookup ? <Text tone="attention">{error}</Text> : null}
             {footer}
           </View>
         }

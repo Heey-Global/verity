@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   normalizeManagedDevServerSecretBindings,
   type ManagedDevServerSecretBinding,
@@ -10,17 +11,24 @@ import {
 } from './brokered-http-tool.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 
-/**
- * The provider authority a dev server's approval is bound to: the default
- * binding's project and config, as shown on the approval card. References to
- * other bindings are resolved with the bindings at start and checked unchanged
- * after resolution.
- */
-export function managedDevServerProviderAuthority(
-  bindings: readonly BrokeredHttpProjectBinding[],
-): string | undefined {
-  const binding = bindings.find((candidate) => candidate.isDefault);
-  return binding ? JSON.stringify([binding.dopplerProject, binding.dopplerConfig]) : undefined;
+/** The snapshot shown during approval and checked again against the actual secret sources. */
+export function managedDevServerProviderSnapshot(
+  projectBindings: readonly BrokeredHttpProjectBinding[],
+  secretBindings: readonly ManagedDevServerSecretBinding[],
+) {
+  const references = secretBindings.map((entry) => entry.secretAlias);
+  const snapshot = referencedSnapshot(projectBindings, references);
+  const primary =
+    snapshot.bindings.find((binding) => binding.includesBareReference) ?? snapshot.bindings[0]!;
+  const authority =
+    'managed-doppler-v1:' +
+    createHash('sha256').update(brokeredDopplerBindingId(snapshot)).digest('hex');
+  return {
+    provider: 'doppler' as const,
+    project: primary.dopplerProject,
+    config: primary.dopplerConfig,
+    authority,
+  };
 }
 
 /** Fresh project-bound resolution; buffers are consumed and never retained in registration. */
@@ -33,20 +41,15 @@ export function createManagedDevServerSecretResolver(options: {
   return async (
     projectId: string,
     bindings: readonly ManagedDevServerSecretBinding[],
-    approvedAuthority: string | undefined,
+    approvedAuthority: string,
     startedBy: string | null,
   ) => {
     const normalized = normalizeManagedDevServerSecretBindings(bindings);
     const buffers: Uint8Array[] = [];
     try {
       const projectBindings = await options.getProjectBindings(projectId);
-      if (
-        approvedAuthority !== undefined &&
-        approvedAuthority !== managedDevServerProviderAuthority(projectBindings)
-      )
-        throw new Error('provider binding changed');
-      const references = normalized.map((entry) => entry.secretAlias);
-      const used = brokeredDopplerBindingId(referencedSnapshot(projectBindings, references));
+      const used = managedDevServerProviderSnapshot(projectBindings, normalized).authority;
+      if (approvedAuthority !== used) throw new Error('provider binding changed');
       const secrets: { env: string; value: string }[] = [];
       for (const entry of normalized) {
         const raw = await resolveReferencedSecret(options.resolveSecret, projectBindings, {
@@ -61,11 +64,7 @@ export function createManagedDevServerSecretResolver(options: {
         secrets.push({ env: entry.env, value });
       }
       const current = await options.getProjectBindings(projectId);
-      if (
-        managedDevServerProviderAuthority(current) !==
-          managedDevServerProviderAuthority(projectBindings) ||
-        brokeredDopplerBindingId(referencedSnapshot(current, references)) !== used
-      )
+      if (managedDevServerProviderSnapshot(current, normalized).authority !== used)
         throw new Error('provider binding changed');
       return secrets;
     } catch {

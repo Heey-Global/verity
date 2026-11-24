@@ -20,8 +20,10 @@ export function dopplerBindingGrantId(binding: DopplerBindingIdentity): string {
     .update(binding.dopplerProject)
     .update('\0')
     .update(binding.dopplerConfig);
-  if (binding.tokenRevision != null) hash.update('\0').update(binding.tokenRevision);
-  return `project-doppler:${hash.digest('hex')}`;
+  const id = `project-doppler:${hash.digest('hex')}`;
+  if (binding.tokenRevision == null) return id;
+  const revision = createHash('sha256').update(binding.tokenRevision).digest('hex');
+  return `${id}@${revision}`;
 }
 
 /** The id before connections existed: project and config only. */
@@ -31,4 +33,14 @@ export function legacyDopplerBindingGrantId(dopplerProject: string, dopplerConfi
     .update('\0')
     .update(dopplerConfig)
     .digest('hex')}`;
+}
+
+/** Whether a single-binding or composite grant reads from a binding at any revision. */
+export function dopplerGrantUsesBinding(grantId: string, stableBindingId: string): boolean {
+  const prefix = 'project-doppler-set:';
+  const members = grantId.startsWith(prefix) ? grantId.slice(prefix.length).split(',') : [grantId];
+  return members.some((member) => {
+    const identity = member.startsWith('default:') ? member.slice('default:'.length) : member;
+    return identity === stableBindingId || identity.startsWith(`${stableBindingId}@`);
+  });
 }

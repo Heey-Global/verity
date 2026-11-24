@@ -143,11 +143,12 @@ export function makeClient(opts: ProjectClientOverrides = {}): VerityClient {
     doppler: {
       listConnections: jest.fn().mockResolvedValue([dopplerConnection()]),
       listBindings: jest.fn().mockResolvedValue([]),
-      personalTokens: jest.fn().mockResolvedValue({ connections: [] }),
+      personalTokens: jest.fn().mockResolvedValue({ canManageBindings: true, connections: [] }),
       addBinding: jest.fn(notImplemented('doppler.addBinding')),
       setDefaultBinding: jest.fn(notImplemented('doppler.setDefaultBinding')),
       removeBinding: jest.fn(notImplemented('doppler.removeBinding')),
       connectPersonalToken: jest.fn(notImplemented('doppler.connectPersonalToken')),
+      disconnectPersonalToken: jest.fn(notImplemented('doppler.disconnectPersonalToken')),
       ...opts.doppler,
     },
     deleteProject: opts.deleteProject ?? jest.fn(notImplemented('deleteProject')),

@@ -4648,7 +4648,9 @@ it('preserves compact Google presentation in session detail while accepting olde
 });
 
 it('preserves the provider snapshot returned with managed server views', async () => {
-  const providerSnapshot = { provider: 'doppler', project: 'demo', config: 'staging' };
+  // The approval dialog sends this authority back after the user confirms.
+  // Keep it when parsing the server view so the confirmation can be validated.
+  const snapshot = { provider: 'doppler', project: 'p', config: 'c', authority: 'scope' };
   const server = {
     id: 'srv',
     name: 'API',
@@ -4656,15 +4658,13 @@ it('preserves the provider snapshot returned with managed server views', async (
     workdir: '.',
     approved: false,
     secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
-    providerSnapshot,
+    providerSnapshot: snapshot,
     instance: null,
     elsewhere: [],
   };
   const { fetch } = fakeFetchSequence(json({ servers: [server] }));
   const client = new VerityClient({ baseUrl: 'http://host', fetch });
-  expect((await client.listManagedDevServers('s'))?.[0]?.providerSnapshot).toEqual(
-    providerSnapshot,
-  );
+  expect((await client.listManagedDevServers('s'))?.[0]?.providerSnapshot).toEqual(snapshot);
 });
 
 it('loads MCP app documents and sends tool actions through authenticated session-scoped requests', async () => {

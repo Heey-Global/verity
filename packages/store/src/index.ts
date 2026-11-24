@@ -323,9 +323,13 @@ export {
   type UserProfile,
 } from './user-profile.js';
 export { UserGitIdentityStore, type UserGitIdentity } from './user-git-identity.js';
-export { UserDopplerConnectionStore } from './user-doppler-connection.js';
+export {
+  DopplerBindingsChangedError,
+  UserDopplerConnectionStore,
+} from './user-doppler-connection.js';
 export {
   DopplerConnectionStore,
+  lockDopplerTopology,
   type DopplerConnectionRecord,
   type DopplerConnectionUsage,
   type DopplerWorkplace,

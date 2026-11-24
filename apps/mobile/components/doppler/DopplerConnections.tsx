@@ -38,7 +38,13 @@ export function connectionSummary(connection: DopplerConnection): string {
   return parts.join(' · ');
 }
 
-export function DopplerConnections({ client }: { client: VerityClient }) {
+export function DopplerConnections({
+  client,
+  writable,
+}: {
+  client: VerityClient;
+  writable: boolean;
+}) {
   const resource = useScanResource(useCallback(() => client.doppler.listConnections(), [client]));
   const [mode, setMode] = useState<Mode>();
   const [label, setLabel] = useState('');
@@ -248,12 +254,14 @@ export function DopplerConnections({ client }: { client: VerityClient }) {
               subtitle={connectionSummary(connection)}
               leading={{ icon: 'link' }}
               trailing={
-                <IconButton
-                  icon="more-horizontal"
-                  accessibilityLabel={`Manage ${connection.label}`}
-                  disabled={busy}
-                  onPress={() => open({ kind: 'menu', connection })}
-                />
+                writable ? (
+                  <IconButton
+                    icon="more-horizontal"
+                    accessibilityLabel={`Manage ${connection.label}`}
+                    disabled={busy}
+                    onPress={() => open({ kind: 'menu', connection })}
+                  />
+                ) : undefined
               }
             />
           ))
@@ -263,11 +271,11 @@ export function DopplerConnections({ client }: { client: VerityClient }) {
         label="Add connection"
         icon="plus"
         variant="secondary"
-        disabled={busy}
+        disabled={busy || !writable}
         onPress={() => open({ kind: 'add' })}
       />
       <Sheet
-        visible={mode !== undefined}
+        visible={writable && mode !== undefined}
         title={title}
         onClose={close}
         footer={

@@ -1,4 +1,4 @@
-import type { Database } from '@verity/store';
+import { dopplerBindingGrantId, type Database } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { Kysely } from 'kysely';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -42,6 +42,25 @@ const target = {
 };
 
 const acp = { ...target, channel: 'acp' as const };
+
+it('does not leave a grant when persistence overlaps removal of the binding', async () => {
+  const connectionId = await ctx.store.dopplerConnections.add({
+    label: 'Platform',
+    token: 'synthetic-test-token',
+    workplace: { slug: null, name: null },
+  });
+  const config = { connectionId, dopplerProject: 'app', dopplerConfig: 'prd' };
+  const binding = await ctx.store.projectDopplerBindings.add(target.projectId, config);
+  const grant = { ...acp, bindingId: dopplerBindingGrantId(binding), scope: 'project' as const };
+  const grants = createBrokeredHttpGrantStore(ctx.db, { requireCurrentDopplerBinding: true });
+  const [, removal] = await Promise.allSettled([
+    grants.grant(grant),
+    ctx.store.projectDopplerBindings.remove(target.projectId, binding.id),
+  ]);
+  expect(removal).toEqual({ status: 'fulfilled', value: true });
+  await ctx.store.projectDopplerBindings.add(target.projectId, config);
+  expect(await grants.check(grant)).toBe(false);
+});
 
 /**
  * The same database, except that writing a `brokered_grant_approvals` row always

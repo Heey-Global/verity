@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely } from 'kysely';
 import type { SecretCipher } from './crypto.js';
-import { dopplerBindingGrantId } from './doppler-binding-identity.js';
+import { dopplerBindingGrantId, dopplerGrantUsesBinding } from './doppler-binding-identity.js';
 import { LEGACY_DOPPLER_CONNECTION_ID } from './doppler-connections-migration.js';
 import type { Database } from './schema.js';
 
@@ -176,33 +176,25 @@ export class DopplerConnectionStore {
    */
   async remove(id: string): Promise<boolean> {
     return this.db.transaction().execute(async (tx) => {
+      await lockDopplerTopology(tx);
       const exists = await tx
         .selectFrom('doppler_connections')
-        .select('token_revision')
+        .select('id')
         .where('id', '=', id)
-        .forUpdate()
         .executeTakeFirst();
       if (exists === undefined) return false;
       const bindings = await tx
         .selectFrom('project_doppler_bindings')
-        .select(['project_id', 'doppler_project', 'doppler_config', 'is_default'])
+        .select(['project_id', 'doppler_project', 'doppler_config'])
         .where('connection_id', '=', id)
         .execute();
+      const projects = new Set(bindings.map((binding) => binding.project_id));
       for (const binding of bindings) {
-        await tx
-          .deleteFrom('secret_provider_permissions')
-          .where('project_id', '=', binding.project_id)
-          .where(
-            'binding_id',
-            '=',
-            dopplerBindingGrantId({
-              connectionId: id,
-              tokenRevision: exists.token_revision,
-              dopplerProject: binding.doppler_project,
-              dopplerConfig: binding.doppler_config,
-            }),
-          )
-          .execute();
+        await deleteDopplerBindingGrants(tx, binding.project_id, {
+          connectionId: id,
+          dopplerProject: binding.doppler_project,
+          dopplerConfig: binding.doppler_config,
+        });
       }
       await tx.deleteFrom('user_doppler_connections').where('connection_id', '=', id).execute();
       await tx.deleteFrom('project_doppler_bindings').where('connection_id', '=', id).execute();
@@ -214,10 +206,36 @@ export class DopplerConnectionStore {
           .set({ doppler_service_token: null })
           .where('id', '=', 'global')
           .execute();
-      const projects = new Set(bindings.filter((b) => b.is_default).map((b) => b.project_id));
       for (const projectId of projects) await promoteDefaultBinding(tx, projectId);
       return true;
     });
+  }
+}
+
+/**
+ * Serialize connection and binding topology changes before any project lock.
+ * This also closes the race between saving a personal token and removing its binding.
+ */
+export async function lockDopplerTopology(tx: Kysely<Database>): Promise<void> {
+  await sql`lock table doppler_connections in share row exclusive mode`.execute(tx);
+}
+
+export async function deleteDopplerBindingGrants(
+  tx: Kysely<Database>,
+  projectId: string,
+  binding: { connectionId: string; dopplerProject: string; dopplerConfig: string },
+): Promise<void> {
+  const bindingId = dopplerBindingGrantId(binding);
+  const grants = await tx
+    .selectFrom('secret_provider_permissions')
+    .select(['id', 'binding_id'])
+    .where('project_id', '=', projectId)
+    .execute();
+  const affected = grants
+    .filter((grant) => dopplerGrantUsesBinding(grant.binding_id, bindingId))
+    .map((grant) => grant.id);
+  if (affected.length > 0) {
+    await tx.deleteFrom('secret_provider_permissions').where('id', 'in', affected).execute();
   }
 }
 

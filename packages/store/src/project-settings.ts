@@ -1,3 +1,4 @@
+import { lockDopplerTopology } from './doppler-connections.js';
 import { syncDefaultDopplerBinding } from './project-doppler-bindings.js';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from './schema.js';
@@ -251,13 +252,15 @@ export class ProjectSettingsStore {
       allowed_agents: allowedAgentsColumn(patch.allowedAgents),
     };
     return this.db.transaction().execute(async (tx) => {
-      if (patch.dopplerProject !== undefined || patch.dopplerConfig !== undefined)
+      if (patch.dopplerProject !== undefined || patch.dopplerConfig !== undefined) {
+        await lockDopplerTopology(tx);
         await tx
           .selectFrom('projects')
           .select('id')
           .where('id', '=', projectId)
           .forUpdate()
           .execute();
+      }
       // Ensure and lock the per-project settings row before applying the patch.
       await tx
         .insertInto('project_settings')

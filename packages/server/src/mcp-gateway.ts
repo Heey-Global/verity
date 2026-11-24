@@ -1021,14 +1021,20 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         toolName,
         request: request.data,
       });
-    } catch {
+    } catch (error) {
+      const detail =
+        (toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
+        error instanceof DopplerSecretResolutionError &&
+        error.phase === 'Doppler binding'
+          ? dopplerResolutionMessage(error)
+          : undefined;
       return reject(
         projectId,
         callId,
         'unavailable',
         keyed,
         toolName,
-        toolError(id, 'Tool access changed. Try again.'),
+        toolError(id, detail ?? 'Tool access changed. Try again.'),
       );
     }
     let answer: ExternalPermissionAnswer;

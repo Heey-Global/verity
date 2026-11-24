@@ -21,7 +21,15 @@ export function managedServerApproval(server: ManagedDevServer) {
 
 export function managedServerSecretDescription(seen: ReturnType<typeof managedServerApproval>) {
   if (!seen.secretBindings?.length) return '';
-  return `\n\nSecrets: ${seen.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}\nProvider: Doppler · ${seen.providerSnapshot!.project} / ${seen.providerSnapshot!.config}`;
+  const snapshot = seen.providerSnapshot!;
+  const sources = new Set(
+    seen.secretBindings.map(({ secretAlias }) =>
+      secretAlias.includes('/')
+        ? secretAlias.split('/').slice(0, 2).join(' / ')
+        : `${snapshot.project} / ${snapshot.config}`,
+    ),
+  );
+  return `\n\nSecrets: ${seen.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}\nProvider: Doppler · ${[...sources].join(', ')}`;
 }
 
 /** Both entry points use the same displayed snapshot and native confirmation. */

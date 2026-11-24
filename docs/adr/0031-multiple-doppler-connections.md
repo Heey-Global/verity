@@ -51,9 +51,9 @@ so a grant for `API_KEY` never covers `billing/dev/API_KEY`. A call reading
 several bindings records which one resolves any bare references. A grant applies
 while every referenced binding is still in place and bare references resolve to
 the same binding. Existing grants move to the default binding on upgrade.
-Managed dev server approvals stay bound to the default binding's project and
-config as their card shows; references to other bindings are resolved at start
-and checked unchanged afterwards.
+Managed dev servers check every referenced source against the saved approval
+before launch and again after resolving secrets. Old approvals that identify
+only a project and config require a new approval.
 
 **Personal tokens.** ADR 0023 §3 applies per connection: each member connects
 their own token for each connection the project's bindings use, and that token

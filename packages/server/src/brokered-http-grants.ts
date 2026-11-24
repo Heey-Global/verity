@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
 import type { BrokeredGrantChannel } from '@verity/events';
-import type { Database } from '@verity/store';
+import { lockDopplerTopology, ProjectDopplerBindingStore, type Database } from '@verity/store';
 import type { Kysely } from 'kysely';
 
-import { brokeredGrantBindingApplies } from './brokered-doppler-binding.js';
+import {
+  brokeredGrantBindingApplies,
+  currentDopplerGrantBindingIds,
+} from './brokered-doppler-binding.js';
 
 const PROJECT_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
@@ -51,9 +54,8 @@ export type { BrokeredGrantChannel } from '@verity/events';
  * It carries no secret material: the alias NAME is already operator-visible by ADR 0011 D3.
  *
  * `appliesNow` is false for a grant that would not auto-approve anything today because it
- * names a provider binding the project has since replaced. Such a grant is still listed, and
- * still revocable, precisely because it is not permanently dead: binding ids are derived
- * deterministically, so restoring the earlier binding brings the grant back into force.
+ * names a provider binding that is no longer applicable. Grant records affected by
+ * binding removal are deleted by the same transaction that removes the binding.
  */
 export interface BrokeredGrantRecord {
   id: string;
@@ -84,7 +86,10 @@ export interface BrokeredGrantRecord {
  * for the duration of its selected scope, and `forever` is refused outright.
  * The former native channel is retired and cannot reach this API.
  */
-export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
+export function createBrokeredHttpGrantStore(
+  db: Kysely<Database>,
+  options: { requireCurrentDopplerBinding?: boolean } = {},
+) {
   const inFlightGrants = new Map<string, Promise<void>>();
   return {
     async grant(input: {
@@ -168,6 +173,18 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
         .catch(() => undefined)
         .then(() =>
           db.transaction().execute(async (tx) => {
+            if (options.requireCurrentDopplerBinding) {
+              await lockDopplerTopology(tx);
+              const current = await new ProjectDopplerBindingStore(tx).list(input.projectId);
+              if (
+                !brokeredGrantBindingApplies(
+                  input.bindingId,
+                  currentDopplerGrantBindingIds(current),
+                )
+              ) {
+                throw new Error('Doppler access changed before saving approval');
+              }
+            }
             // Expired rows remain historically active until renewal. Revoke matching
             // expired rows first so the partial unique index permits one replacement.
             await tx

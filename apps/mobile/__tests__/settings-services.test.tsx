@@ -263,6 +263,17 @@ describe('settings/services — Doppler connections', () => {
     projectCount: 2,
   };
 
+  it('lists connections and disables changes while the secret store is sealed', async () => {
+    const listConnections = jest.fn().mockResolvedValue([platform]);
+    mockCreateVerityClient.mockReturnValue(makeClient('sealed', { doppler: { listConnections } }));
+    render(<ServicesSettingsScreen />);
+
+    expect(await screen.findByText('Platform')).toBeOnTheScreen();
+    expect(screen.getByText('Secret store is locked')).toBeOnTheScreen();
+    expect(screen.getByLabelText(/^Add connection/)).toBeDisabled();
+    expect(screen.queryByLabelText(/^Manage Platform/)).toBeNull();
+  });
+
   it('adds a connection with a label and a token', async () => {
     const addConnection = jest.fn().mockResolvedValue({ ...platform, projectCount: 0 });
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { doppler: { addConnection } }));

@@ -13,6 +13,7 @@ import { Platform, Pressable, Text, View } from 'react-native';
 
 import { AgentLoginPanel } from '../../components/AgentLoginPanel';
 import { DopplerConnections } from '../doppler/DopplerConnections';
+import { Button, HintBox } from '../ui';
 import { SecretStoreSection } from '../../components/settings/SecretStoreSection';
 import { ProviderUsagePanel } from '../../components/settings/ProviderUsagePanel';
 import {
@@ -108,7 +109,19 @@ export function ConnectionSettingsDetail({
       }}
     >
       {section === 'secret' ? <SecretStoreSection client={client} /> : null}
-      {managed && !writable && section !== 'secret' ? (
+      {managed && !writable && section === 'doppler' ? (
+        <HintBox
+          title="Secret store is locked"
+          message="Unlock the secret store to add a connection or change a token."
+        >
+          <Button
+            label="Unlock secret store"
+            variant="secondary"
+            onPress={() => router.push('/settings/secret-store')}
+          />
+        </HintBox>
+      ) : null}
+      {managed && !writable && section !== 'secret' && section !== 'doppler' ? (
         <SettingsListPanel>
           <SettingsNavRow
             icon="key"
@@ -305,7 +318,9 @@ export function ConnectionSettingsDetail({
         </SettingsGroup>
       ) : null}
 
-      {managed && section === 'doppler' ? <DopplerConnections client={client} /> : null}
+      {managed && section === 'doppler' ? (
+        <DopplerConnections client={client} writable={writable} />
+      ) : null}
 
       {section === 'transcription' ? (
         <SettingsListPanel>

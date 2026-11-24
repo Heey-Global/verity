@@ -1,3 +1,4 @@
+import { DopplerBindingsChangedError } from '@verity/store';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 import { registerDopplerConnectionRoutes } from './doppler-connection-routes.js';
@@ -20,7 +21,7 @@ const binding = (
   createdAt: new Date(0),
 });
 
-function harness() {
+function harness({ changeBindings = false } = {}) {
   const tokens = new Map<string, string>();
   const bindings = [
     binding('b1', 'platform', 'demo', 'dev', true),
@@ -29,6 +30,12 @@ function harness() {
   ];
   const store = {
     isActiveAdministrator: async (userId: string) => userId === 'admin',
+    dopplerConnections: {
+      list: async () => [
+        { id: 'platform', hasToken: true },
+        { id: 'payments', hasToken: false },
+      ],
+    },
     projectDopplerBindings: {
       list: async (projectId: string) => (projectId === 'p1' ? bindings : []),
     },
@@ -39,7 +46,17 @@ function harness() {
             .filter((key) => key.startsWith(`${userId}/${projectId}/`))
             .map((key) => [key.split('/')[2]!, { updatedAt: new Date(0) }]),
         ),
-      set: async (userId: string, projectId: string, connectionId: string, token: string) => {
+      set: async (
+        userId: string,
+        projectId: string,
+        connectionId: string,
+        token: string,
+        expectedBindingIds: readonly string[],
+      ) => {
+        expect(expectedBindingIds).toEqual(
+          bindings.filter((binding) => binding.connectionId === connectionId).map(({ id }) => id),
+        );
+        if (changeBindings) throw new DopplerBindingsChangedError();
         tokens.set(`${userId}/${projectId}/${connectionId}`, token);
       },
       delete: async (userId: string, projectId: string, connectionId: string) => {
@@ -115,6 +132,17 @@ describe('personal Doppler connection routes', () => {
     }
   });
 
+  it('asks the person to retry when bindings change during token validation', async () => {
+    const { app, tokens } = harness({ changeBindings: true });
+    try {
+      const response = await put(app, 'lena', { token: 'dp.st.good', connectionId: 'platform' });
+      expect(response.statusCode).toBe(409);
+      expect(tokens.size).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
   // The token is the person's own credential: it is stored for them alone, checked
   // against the project's configs first, and never returned.
   it('stores a working token for the signed-in person only and never returns it', async () => {
@@ -130,6 +158,7 @@ describe('personal Doppler connection routes', () => {
     expect(saved.body).not.toContain('dp.st.good');
     expect(saved.json()).toMatchObject({
       connected: true,
+      canManageBindings: false,
       binding: { dopplerProject: 'demo', dopplerConfig: 'dev' },
       usesInstanceToken: false,
       connections: [
@@ -143,7 +172,15 @@ describe('personal Doppler connection routes', () => {
       url: '/projects/p1/doppler/connection',
       headers: { 'x-test-user': 'admin' },
     });
-    expect(admin.json()).toMatchObject({ connected: false, usesInstanceToken: true });
+    expect(admin.json()).toMatchObject({
+      connected: false,
+      canManageBindings: true,
+      usesInstanceToken: true,
+      connections: [
+        { connectionId: 'platform', usesInstanceToken: true },
+        { connectionId: 'payments', usesInstanceToken: false },
+      ],
+    });
 
     const removed = await app.inject({
       method: 'DELETE',

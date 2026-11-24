@@ -1,7 +1,7 @@
 import { dopplerBindingGrantId } from '@verity/store';
 import { z } from 'zod';
 
-import type { ApprovedDopplerBinding } from './doppler-secret-reference.js';
+import type { ApprovedDopplerBinding, ProjectDopplerBinding } from './doppler-secret-reference.js';
 
 const bindingSchema = z
   .object({
@@ -52,6 +52,17 @@ const BINDING_SET_PREFIX = 'project-doppler-set:';
 
 export function defaultDopplerGrantMember(bindingId: string): string {
   return `default:${bindingId}`;
+}
+
+export function currentDopplerGrantBindingIds(
+  bindings: readonly ProjectDopplerBinding[],
+): ReadonlySet<string> {
+  return new Set(
+    bindings.flatMap((binding) => {
+      const id = dopplerBindingGrantId(binding);
+      return binding.isDefault ? [id, defaultDopplerGrantMember(id)] : [id];
+    }),
+  );
 }
 
 /**

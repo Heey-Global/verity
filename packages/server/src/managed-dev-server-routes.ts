@@ -103,6 +103,10 @@ export function registerManagedDevServerRoutes(
               provider: z.literal('doppler'),
               project: z.string().min(1),
               config: z.string().min(1),
+              authority: z
+                .string()
+                .regex(/^managed-doppler-v1:[a-f0-9]{64}$/)
+                .optional(),
             })
             .strict()
             .nullable()

@@ -1,12 +1,19 @@
 import type { FastifyInstance } from 'fastify';
-import { AmbiguousDopplerConnectionError, type EventStore } from '@verity/store';
+import {
+  AmbiguousDopplerConnectionError,
+  DopplerBindingsChangedError,
+  type EventStore,
+} from '@verity/store';
 import { z } from 'zod';
 import './fastify-augmentation.js';
 import { viewerId } from './view-state-routes.js';
 
 type DopplerConnectionStore = Pick<
   EventStore,
-  'userDopplerConnections' | 'projectDopplerBindings' | 'isActiveAdministrator'
+  | 'userDopplerConnections'
+  | 'projectDopplerBindings'
+  | 'isActiveAdministrator'
+  | 'dopplerConnections'
 >;
 
 const params = z.object({ id: z.string().min(1).max(200) }).strict();
@@ -43,6 +50,13 @@ export function registerDopplerConnectionRoutes(
       deps.store.userDopplerConnections.statuses(userId, projectId),
       deps.store.isActiveAdministrator(userId),
     ]);
+    const instanceTokens = new Set(
+      administrator
+        ? (await deps.store.dopplerConnections.list())
+            .filter((connection) => connection.hasToken)
+            .map(({ id }) => id)
+        : [],
+    );
     const connections = new Map<
       string,
       {
@@ -64,7 +78,7 @@ export function registerDopplerConnectionRoutes(
         updatedAt: status?.updatedAt.toISOString() ?? null,
         // Without a token of their own, the administrator's turns keep using the
         // connection's instance token, which is theirs; nobody else's ever do.
-        usesInstanceToken: status === undefined && administrator,
+        usesInstanceToken: status === undefined && instanceTokens.has(binding.connectionId),
       };
       entry.bindings.push(`${binding.dopplerProject}/${binding.dopplerConfig}`);
       connections.set(binding.connectionId, entry);
@@ -72,6 +86,7 @@ export function registerDopplerConnectionRoutes(
     const fallback = bindings.find((binding) => binding.isDefault);
     const primary = fallback === undefined ? undefined : connections.get(fallback.connectionId);
     return {
+      canManageBindings: administrator,
       connections: [...connections.values()],
       // The default binding's connection, as clients for a single binding read it.
       connected: primary?.connected ?? false,
@@ -80,7 +95,7 @@ export function registerDopplerConnectionRoutes(
         fallback === undefined
           ? null
           : { dopplerProject: fallback.dopplerProject, dopplerConfig: fallback.dopplerConfig },
-      usesInstanceToken: primary?.usesInstanceToken ?? administrator,
+      usesInstanceToken: primary?.usesInstanceToken ?? false,
     };
   };
   const connectionFor = async (projectId: string, connectionId: string | undefined) => {
@@ -131,7 +146,19 @@ export function registerDopplerConnectionRoutes(
       }
     }
     const userId = viewerId(request);
-    await deps.store.userDopplerConnections.set(userId, projectId, connectionId, input.data.token);
+    try {
+      await deps.store.userDopplerConnections.set(
+        userId,
+        projectId,
+        connectionId,
+        input.data.token,
+        bindings.map(({ id }) => id),
+      );
+    } catch (error) {
+      if (error instanceof DopplerBindingsChangedError)
+        return reply.code(409).send({ error: error.message });
+      throw error;
+    }
     reply.header('cache-control', 'no-store');
     return view(userId, projectId);
   });

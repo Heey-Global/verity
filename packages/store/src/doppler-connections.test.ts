@@ -13,6 +13,7 @@ import {
 } from './project-doppler-bindings.js';
 import { EventStore } from './store.js';
 import { createRawDb, createTestDb, truncateAll, type TestDb } from './testing.js';
+import { DopplerBindingsChangedError } from './user-doppler-connection.js';
 
 const cipher = createSecretCipher('ab'.repeat(32));
 let ctx: TestDb;
@@ -114,13 +115,37 @@ describe('project Doppler bindings', () => {
     });
   });
 
+  it('invalidates a token when its last binding is removed and rejects a concurrent save of that token', async () => {
+    const connectionId = await connections.add({
+      label: 'Platform',
+      token: 'dp.sa.a',
+      workplace: { slug: null, name: null },
+    });
+    const config = { connectionId, dopplerProject: 'app', dopplerConfig: 'prd' };
+    const first = await bindings.add('p1', config);
+    const second = await bindings.add('p1', { ...config, dopplerConfig: 'stg' });
+    const tokens = ctx.store.userDopplerConnections;
+    await tokens.set('lena', 'p1', connectionId, 'dp.st.lena', [first.id, second.id]);
+    await bindings.remove('p1', first.id);
+    expect(await tokens.tokenBytes('lena', 'p1', connectionId)).toBeDefined();
+    await bindings.remove('p1', second.id);
+    await bindings.add('p1', config);
+    await expect(
+      tokens.set('lena', 'p1', connectionId, 'dp.st.lena', [second.id]),
+    ).rejects.toBeInstanceOf(DopplerBindingsChangedError);
+    expect(await tokens.tokenBytes('lena', 'p1', connectionId)).toBeUndefined();
+  });
+
   it('accepts legacy settings for one binding and refuses ambiguous changes', async () => {
     const platform = await connections.add({
       label: 'Platform',
       token: 'dp.sa.a',
       workplace: { slug: null, name: null },
     });
-    await ctx.store.updateProjectSettings('p1', { dopplerProject: 'app', dopplerConfig: 'stg' });
+    await ctx.store.updateProjectSettings('p1', { dopplerProject: 'app' });
+    expect(await mirrored('p1')).toEqual(['app', null]);
+    expect(await bindings.list('p1')).toEqual([]);
+    await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'stg' });
     const [created] = await bindings.list('p1');
     expect(created).toMatchObject({
       connectionId: platform,
@@ -179,6 +204,32 @@ describe('Doppler connections', () => {
     expect(await connections.update('missing', { label: 'x' })).toBe(false);
   });
 
+  it('keeps a surviving default when default selection overlaps connection deletion', async () => {
+    const platform = await connections.add({
+      label: 'Platform',
+      token: 'dp.sa.a',
+      workplace: { slug: null, name: null },
+    });
+    const payments = await connections.add({
+      label: 'Payments',
+      token: 'dp.sa.b',
+      workplace: { slug: null, name: null },
+    });
+    const surviving = await bindings.add('p1', {
+      connectionId: platform,
+      dopplerProject: 'portal',
+      dopplerConfig: 'prd',
+    });
+    const removed = await bindings.add('p1', {
+      connectionId: payments,
+      dopplerProject: 'billing',
+      dopplerConfig: 'dev',
+    });
+    await Promise.all([bindings.setDefault('p1', removed.id), connections.remove(payments)]);
+    expect(await bindings.list('p1')).toEqual([surviving]);
+    expect(await mirrored('p1')).toEqual(['portal', 'prd']);
+  });
+
   // Deleting a connection in use is allowed after the warning, and must leave
   // nothing behind that could still resolve or auto-approve through it.
   it('removes its bindings, personal tokens and grants in every project', async () => {
@@ -220,25 +271,27 @@ describe('Doppler connections', () => {
       granted_by: 'lena',
       state: 'active',
     });
+    const platformBinding = {
+      connectionId: platform,
+      dopplerProject: 'portal',
+      dopplerConfig: 'prd',
+    };
+    const paymentsGrantId = dopplerBindingGrantId({
+      connectionId: payments,
+      dopplerProject: 'billing',
+      dopplerConfig: 'dev',
+    });
+    await connections.update(platform, { token: 'dp.sa.rotated' });
+    const [rotated] = await bindings.list('p1');
+    if (rotated === undefined) throw new Error('Missing platform binding');
+    const rotatedGrantId = dopplerBindingGrantId(rotated);
     await ctx.db
       .insertInto('secret_provider_permissions')
       .values([
-        grant(
-          'g-platform',
-          dopplerBindingGrantId({
-            connectionId: platform,
-            dopplerProject: 'portal',
-            dopplerConfig: 'prd',
-          }),
-        ),
-        grant(
-          'g-payments',
-          dopplerBindingGrantId({
-            connectionId: payments,
-            dopplerProject: 'billing',
-            dopplerConfig: 'dev',
-          }),
-        ),
+        grant('g-platform-previous', dopplerBindingGrantId(platformBinding)),
+        grant('g-platform-current', rotatedGrantId),
+        grant('g-payments', paymentsGrantId),
+        grant('g-mixed', `project-doppler-set:default:${rotatedGrantId},${paymentsGrantId}`),
       ])
       .execute();
 

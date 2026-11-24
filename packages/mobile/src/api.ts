@@ -925,8 +925,8 @@ const sessionDevServerSchema = z.object({
   managedInstanceId: z.string().optional(),
 });
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
-
 const managedServerProviderSnapshotSchema = z.object({
+  authority: z.string().optional(),
   provider: z.literal('doppler'),
   project: z.string().min(1),
   config: z.string().min(1),

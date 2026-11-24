@@ -50,6 +50,7 @@ export type ProjectDopplerBinding = z.infer<typeof projectDopplerBindingSchema>;
 
 /** The signed-in person's own Doppler tokens for a project, one per connection. */
 export const personalDopplerTokensSchema = z.object({
+  canManageBindings: z.boolean().optional(),
   connections: z
     .array(
       z.object({

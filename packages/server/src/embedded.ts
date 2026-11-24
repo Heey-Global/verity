@@ -888,9 +888,10 @@ export async function buildEmbeddedServer(
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
-      providerAuthority: async (projectId) =>
-        devServerSecrets.managedDevServerProviderAuthority(
+      providerSnapshot: async (projectId, bindings) =>
+        devServerSecrets.managedDevServerProviderSnapshot(
           await getBrokeredProjectBindings(projectId),
+          bindings,
         ),
       resolveSecrets: devServerSecrets.createManagedDevServerSecretResolver({
         getProjectBindings: getBrokeredProjectBindings,

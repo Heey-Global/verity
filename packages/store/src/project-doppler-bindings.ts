@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { Kysely } from 'kysely';
 import { LEGACY_DOPPLER_CONNECTION_ID } from './doppler-connections-migration.js';
-import { promoteDefaultBinding } from './doppler-connections.js';
+import {
+  deleteDopplerBindingGrants,
+  lockDopplerTopology,
+  promoteDefaultBinding,
+} from './doppler-connections.js';
 import type { Database } from './schema.js';
 
 export interface ProjectDopplerBindingRecord {
@@ -80,6 +84,7 @@ export class ProjectDopplerBindingStore {
   ): Promise<ProjectDopplerBindingRecord> {
     const id = randomUUID();
     await this.db.transaction().execute(async (tx) => {
+      await lockDopplerTopology(tx);
       await lockProject(tx, projectId);
       await insertBinding(tx, projectId, id, input);
       await promoteDefaultBinding(tx, projectId);
@@ -92,6 +97,7 @@ export class ProjectDopplerBindingStore {
   /** False when the binding does not belong to the project. */
   async setDefault(projectId: string, bindingId: string): Promise<boolean> {
     return this.db.transaction().execute(async (tx) => {
+      await lockDopplerTopology(tx);
       await lockProject(tx, projectId);
       const target = await tx
         .selectFrom('project_doppler_bindings')
@@ -119,17 +125,48 @@ export class ProjectDopplerBindingStore {
   /** Removing the default promotes the oldest remaining binding. */
   async remove(projectId: string, bindingId: string): Promise<boolean> {
     return this.db.transaction().execute(async (tx) => {
+      await lockDopplerTopology(tx);
       await lockProject(tx, projectId);
-      const removed = await tx
-        .deleteFrom('project_doppler_bindings')
-        .where('project_id', '=', projectId)
-        .where('id', '=', bindingId)
-        .executeTakeFirst();
-      if (removed.numDeletedRows === 0n) return false;
+      if (!(await removeBinding(tx, projectId, bindingId))) return false;
       await promoteDefaultBinding(tx, projectId);
       return true;
     });
   }
+}
+
+async function removeBinding(
+  tx: Kysely<Database>,
+  projectId: string,
+  bindingId: string,
+  retainedConnectionId?: string,
+): Promise<boolean> {
+  const removed = await tx
+    .deleteFrom('project_doppler_bindings')
+    .where('project_id', '=', projectId)
+    .where('id', '=', bindingId)
+    .returning(['connection_id', 'doppler_project', 'doppler_config'])
+    .executeTakeFirst();
+  if (removed === undefined) return false;
+  await deleteDopplerBindingGrants(tx, projectId, {
+    connectionId: removed.connection_id,
+    dopplerProject: removed.doppler_project,
+    dopplerConfig: removed.doppler_config,
+  });
+  if (removed.connection_id === retainedConnectionId) return true;
+  const remaining = await tx
+    .selectFrom('project_doppler_bindings')
+    .select('id')
+    .where('project_id', '=', projectId)
+    .where('connection_id', '=', removed.connection_id)
+    .executeTakeFirst();
+  if (remaining === undefined) {
+    await tx
+      .deleteFrom('user_doppler_connections')
+      .where('project_id', '=', projectId)
+      .where('connection_id', '=', removed.connection_id)
+      .execute();
+  }
+  return true;
 }
 
 async function lockProject(tx: Kysely<Database>, projectId: string): Promise<void> {
@@ -203,9 +240,10 @@ export async function syncDefaultDopplerBinding(
   if (other !== undefined || anotherConnection !== undefined)
     throw new AmbiguousDopplerConnectionError();
 
+  const complete = dopplerProject !== null && dopplerConfig !== null;
   if (current !== undefined)
-    await tx.deleteFrom('project_doppler_bindings').where('id', '=', current.id).execute();
-  if (dopplerProject !== null && dopplerConfig !== null) {
+    await removeBinding(tx, projectId, current.id, complete ? connection?.id : undefined);
+  if (complete) {
     if (connection === undefined)
       await tx
         .insertInto('doppler_connections')
@@ -224,5 +262,5 @@ export async function syncDefaultDopplerBinding(
       true,
     );
   }
-  await promoteDefaultBinding(tx, projectId);
+  // Preserve a partial pair for older clients that write the two fields separately.
 }
