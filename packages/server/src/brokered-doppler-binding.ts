@@ -68,6 +68,13 @@ export function defaultDopplerGrantMember(bindingId: string): string {
   return `default:${bindingId}`;
 }
 
+function brokeredDopplerApplicabilityId(snapshot: BrokeredDopplerBinding): string {
+  const bindingId = brokeredDopplerBindingId(snapshot);
+  return snapshot.bindings.length === 1 && snapshot.bindings[0]?.includesBareReference
+    ? defaultDopplerGrantMember(bindingId)
+    : bindingId;
+}
+
 export function currentDopplerGrantBindingIds(
   bindings: readonly ProjectDopplerBinding[],
 ): ReadonlySet<string> {
@@ -91,6 +98,21 @@ export function brokeredGrantBindingApplies(
   if (!bindingId.startsWith(BINDING_SET_PREFIX)) return current.has(bindingId);
   const members = bindingId.slice(BINDING_SET_PREFIX.length).split(',');
   return members.length > 1 && members.every((member) => current.has(member));
+}
+
+export function brokeredDopplerSnapshotApplies(
+  approved: BrokeredDopplerBinding,
+  bindings: readonly ProjectDopplerBinding[],
+): boolean {
+  const ids = new Set(approved.bindings.map(({ bindingId }) => bindingId));
+  const current = bindings.filter(({ id }) => ids.has(id));
+  return (
+    current.length === ids.size &&
+    brokeredGrantBindingApplies(
+      brokeredDopplerApplicabilityId(approved),
+      currentDopplerGrantBindingIds(current),
+    )
+  );
 }
 
 export function assertBrokeredDopplerBinding(

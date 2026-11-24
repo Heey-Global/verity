@@ -1,7 +1,14 @@
 import { createHash } from 'node:crypto';
+import type {
+  ManagedDevServerManagerOptions,
+  ManagedServerProviderSnapshot,
+} from './managed-dev-server-manager.js';
 import {
   normalizeManagedDevServerSecretBindings,
   type ManagedDevServerSecretBinding,
+  type ManagedDevServerInstanceRecord,
+  type ManagedDevServerRecord,
+  type EventStore,
 } from '@verity/store';
 import {
   referencedSnapshot,
@@ -71,4 +78,73 @@ export function createManagedDevServerSecretResolver(options: {
       for (const buffer of buffers) buffer.fill(0);
     }
   };
+}
+
+/** A running process may expose only the authority used to resolve its own secrets. */
+export async function managedRunProviderCurrent(
+  store: Pick<EventStore, 'projectDopplerBindings' | 'managedDevServers'>,
+  instance: ManagedDevServerInstanceRecord,
+): Promise<boolean> {
+  if (instance.lastRunSecretBindings.length === 0) return true;
+  const authority = instance.lastRunProviderAuthority;
+  if (!authority) return false;
+  try {
+    return (
+      authority === (await store.managedDevServers.approvedProviderAuthority(instance.serverId)) &&
+      authority ===
+        managedDevServerProviderSnapshot(
+          await store.projectDopplerBindings.list(instance.projectId),
+          instance.lastRunSecretBindings,
+        ).authority
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function managedRunApproved(
+  store: Pick<EventStore, 'projectDopplerBindings' | 'managedDevServers'>,
+  instance: ManagedDevServerInstanceRecord,
+): Promise<boolean> {
+  return !!(
+    instance.lastRunCommand &&
+    instance.lastRunWorkdir &&
+    (await store.managedDevServers.isApproved(
+      instance.serverId,
+      instance.lastRunCommand,
+      instance.lastRunWorkdir,
+      instance.lastRunSecretBindings,
+    )) &&
+    (await managedRunProviderCurrent(store, instance))
+  );
+}
+
+export async function currentManagedProviderSnapshot(
+  options: Pick<ManagedDevServerManagerOptions, 'providerSnapshot'>,
+  projectId: string,
+  bindings: readonly ManagedDevServerSecretBinding[],
+): Promise<ManagedServerProviderSnapshot | null> {
+  if (bindings.length === 0) return null;
+  try {
+    return (await options.providerSnapshot?.(projectId, bindings)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function managedProviderApproved(
+  options: Pick<ManagedDevServerManagerOptions, 'providerSnapshot' | 'store'>,
+  entry: ManagedDevServerRecord,
+  snapshot?: ManagedServerProviderSnapshot | null,
+): Promise<boolean> {
+  if (entry.secretBindings.length === 0) return true;
+  const current =
+    snapshot === undefined
+      ? await currentManagedProviderSnapshot(options, entry.projectId, entry.secretBindings)
+      : snapshot;
+  return (
+    current?.authority !== undefined &&
+    current.authority ===
+      (await options.store.managedDevServers.approvedProviderAuthority(entry.id))
+  );
 }

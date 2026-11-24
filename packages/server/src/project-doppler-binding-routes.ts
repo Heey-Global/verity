@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  DopplerBindingDefaultChangedError,
   DopplerConnectionTokenChangedError,
   DuplicateDopplerBindingError,
   SealedError,
@@ -21,6 +22,7 @@ const addBody = z
   .object({ connectionId: z.string().min(1).max(200), dopplerProject: slug, dopplerConfig: slug })
   .strict();
 const patchBody = z.object({ isDefault: z.literal(true) }).strict();
+const removeBody = z.object({ isDefault: z.boolean() }).strict().optional();
 
 export interface DopplerBindingRouteContext {
   store: Pick<EventStore, 'getProject' | 'projectDopplerBindings' | 'dopplerConnections'>;
@@ -129,9 +131,23 @@ export function installDopplerBindings(app: FastifyInstance, ctx: DopplerBinding
 
   app.delete('/projects/:id/doppler/bindings/:bindingId', async (request, reply) => {
     const params = bindingParams.safeParse(request.params);
-    if (!params.success) return reply.code(400).send({ error: 'invalid Doppler binding' });
-    if (!(await ctx.store.projectDopplerBindings.remove(params.data.id, params.data.bindingId)))
-      return reply.code(404).send({ error: 'Doppler binding not found' });
+    const input = removeBody.safeParse(request.body);
+    if (!params.success || !input.success)
+      return reply.code(400).send({ error: 'invalid Doppler binding' });
+    try {
+      if (
+        !(await ctx.store.projectDopplerBindings.remove(
+          params.data.id,
+          params.data.bindingId,
+          input.data?.isDefault,
+        ))
+      )
+        return reply.code(404).send({ error: 'Doppler binding not found' });
+    } catch (error) {
+      if (error instanceof DopplerBindingDefaultChangedError)
+        return reply.code(409).send({ error: error.message });
+      throw error;
+    }
     return reply.code(204).send();
   });
 }

@@ -1,29 +1,22 @@
+// Connected services for this project, including Doppler bindings and each
+// person's own Doppler tokens.
 import { ProjectGoogleDriveFolders } from '../../../../components/settings/ProjectGoogleDriveFolders';
 import { ProjectDopplerBindings } from '../../../../components/doppler/ProjectDopplerBindings';
-// Connected services, per project: which Doppler projects and configs, Google Drive
-// folder and MCP connections this project may use. The credentials themselves
-// live on the Verity-wide Connected services screen; this screen only binds the
-// project to them, so nothing here ever holds a secret.
 import {
   VerityApiError,
-  type DopplerConfigSummary,
-  type DopplerProjectSummary,
   type HttpMcpConnection,
   type ProjectMcpBinding,
-  type ProjectSettings,
   type VerityClient,
 } from '@verity/mobile';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import {
   SettingsDisclosure,
   SettingsGroup,
-  SettingsListPanel,
   SettingsMessage,
-  SettingsNavRow,
   SettingsScaffold,
 } from '../../../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
@@ -71,7 +64,7 @@ function ProjectServicesView({
   section?: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google';
 }) {
   const { theme } = useUnistyles();
-  const { detail, loading, error, load, onSettingsSaved } = useProjectDetail(client, projectId);
+  const { detail, loading, error, load } = useProjectDetail(client, projectId);
   const title =
     section === 'doppler'
       ? 'Doppler'
@@ -100,7 +93,6 @@ function ProjectServicesView({
       />
     );
   }
-  const { settings } = detail;
   return (
     <SettingsScaffold title={title} detail state={{ error, saving: false }} onRetry={() => load()}>
       {section === undefined || section === 'doppler' ? (

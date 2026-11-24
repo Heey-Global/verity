@@ -1,3 +1,4 @@
+import { managedRunApproved } from './managed-dev-server-secrets.js';
 import { localTargetConfirmedMissing } from './local-preview-activity.js';
 import {
   PreviewNetworkProtectionError,
@@ -653,13 +654,7 @@ export class LocalPreviewManager {
         }
         if (
           instance.desired !== 'running' ||
-          !instance.lastRunCommand ||
-          !instance.lastRunWorkdir ||
-          !(await this.options.store.managedDevServers.isApproved(
-            instance.serverId,
-            instance.lastRunCommand,
-            instance.lastRunWorkdir,
-          ))
+          !(await managedRunApproved(this.options.store, instance))
         ) {
           this.unverifiedTargets.delete(saved.id);
           continue;
@@ -748,13 +743,7 @@ export class LocalPreviewManager {
         if (
           instance.desired !== 'running' ||
           instance.sandboxPort !== state.share.targetPort ||
-          !instance.lastRunCommand ||
-          !instance.lastRunWorkdir ||
-          !(await this.options.store.managedDevServers.isApproved(
-            instance.serverId,
-            instance.lastRunCommand,
-            instance.lastRunWorkdir,
-          ))
+          !(await managedRunApproved(this.options.store, instance))
         ) {
           this.unverifiedTargets.delete(state.share.id);
           await this.release(state.share.id);

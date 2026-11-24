@@ -2741,7 +2741,6 @@ describe('OpenCode ancillary file validation', () => {
     expect(edge.create).not.toHaveBeenCalled();
   });
 });
-
 describe('managed public links', () => {
   function managedFixture() {
     const f = fixture();
@@ -2765,6 +2764,7 @@ describe('managed public links', () => {
       desired: 'stopped',
       detail: null,
       lastRunSecretBindings: [],
+      lastRunProviderAuthority: null,
       lastRunUserId: null,
       lastRunCommand: 'node server.mjs',
       lastRunWorkdir: '.',

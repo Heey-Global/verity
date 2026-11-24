@@ -5,6 +5,7 @@ import {
   assertBrokeredDopplerBinding,
   brokeredDopplerBindingId,
   brokeredDopplerSnapshot,
+  brokeredDopplerSnapshotApplies,
   defaultDopplerGrantMember,
   brokeredGrantBindingApplies,
   brokeredSecretSource,
@@ -110,6 +111,16 @@ describe('approvals and grants per binding', () => {
     expect(brokeredDopplerBindingId(snapshot('portal/prd/API_KEY', 'API_KEY'))).toBe(bare);
     // The same project and config through another connection is another binding.
     expect(dopplerBindingGrantId({ ...billingDev, connectionId: 'platform' })).not.toBe(billing);
+  });
+
+  it('rechecks the default before approving a standing grant for a bare reference', () => {
+    const approved = snapshot('API_KEY');
+    const switched = bindings.map((binding) => ({
+      ...binding,
+      isDefault: binding.id === billingDev.id,
+    }));
+    expect(brokeredDopplerSnapshotApplies(approved, bindings)).toBe(true);
+    expect(brokeredDopplerSnapshotApplies(approved, switched)).toBe(false);
   });
 
   it('applies a grant only while every binding it names is still bound', () => {

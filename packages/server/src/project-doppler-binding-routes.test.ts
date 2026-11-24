@@ -313,6 +313,15 @@ describe('project Doppler bindings (ADR 0031)', () => {
         .bindings.map((binding) => binding.reference),
     ).toEqual(['billing/dev', 'portal/prd']);
     expect((await store.getProjectSettings('p1'))?.dopplerProject).toBe('billing');
+    const staleRemove = await call(
+      app,
+      'admin',
+      'DELETE',
+      `/projects/p1/doppler/bindings/${billing.json().id}`,
+      { isDefault: false },
+    );
+    expect(staleRemove.statusCode).toBe(409);
+    expect((await store.getProjectSettings('p1'))?.dopplerProject).toBe('billing');
     // Another project's binding id is not this project's.
     expect(
       (

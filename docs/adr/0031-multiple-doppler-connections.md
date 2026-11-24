@@ -86,3 +86,12 @@ default binding, with grants and personal tokens carried over. Approval cards
 for a call that reads several bindings list them instead of one project and
 config. Older clients receive a conflict and an instruction to open the
 current connection picker when a change is ambiguous.
+
+## Rollout
+
+Update Core and mobile together. Earlier mobile clients omit the authority
+from dev-server approvals and must update to approve a secret-bearing server
+on the new Core. Existing approvals without identifiable sources require
+review again. Core stops an existing secret-bearing dev server whose launch
+authority is unknown or stale, and a renewed approval applies only to a fresh
+process. Secret-free dev servers do not require a provider authority.

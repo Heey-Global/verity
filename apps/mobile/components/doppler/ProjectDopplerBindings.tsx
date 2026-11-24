@@ -2,11 +2,12 @@
 // any Doppler project and config of any instance connection, one of them the
 // default. Agents write `NAME` for the default and `project/config/NAME` for the
 // others. Each person manages their own token for every connection the project uses.
-import type {
-  DopplerConnection,
-  PersonalDopplerTokens,
-  ProjectDopplerBinding,
-  VerityClient,
+import {
+  VerityApiError,
+  type DopplerConnection,
+  type PersonalDopplerTokens,
+  type ProjectDopplerBinding,
+  type VerityClient,
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useRef, useState, type ReactNode } from 'react';
@@ -32,7 +33,7 @@ type Personal = PersonalDopplerTokens['connections'][number];
 type Mode =
   | { kind: 'add' }
   | { kind: 'menu'; binding: ProjectDopplerBinding }
-  | { kind: 'remove'; binding: ProjectDopplerBinding }
+  | { kind: 'remove'; binding: ProjectDopplerBinding; stale?: true }
   | { kind: 'token'; connection: Personal };
 
 export function ProjectDopplerBindings({
@@ -127,6 +128,49 @@ export function ProjectDopplerBindings({
       bindings.reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : failure);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const refreshRemoval = async (binding: ProjectDopplerBinding) => {
+    const generation = pickerRequest.current;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const current = (await client.doppler.listBindings(projectId)).find(
+        (candidate) => candidate.id === binding.id,
+      );
+      if (generation !== pickerRequest.current) return;
+      bindings.reload();
+      if (!current) {
+        close();
+        return;
+      }
+      setMode({ kind: 'remove', binding: current });
+      setError('The default binding changed. Review the updated details and confirm again.');
+    } catch {
+      if (generation === pickerRequest.current)
+        setError('Could not load the current Doppler bindings.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirmRemoval = async (binding: ProjectDopplerBinding) => {
+    const generation = pickerRequest.current;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await client.doppler.removeBinding(projectId, binding.id, binding.isDefault);
+      if (generation === pickerRequest.current) close();
+      bindings.reload();
+    } catch (cause) {
+      if (generation !== pickerRequest.current) return;
+      if (cause instanceof VerityApiError && cause.status === 409) {
+        setMode({ kind: 'remove', binding, stale: true });
+        await refreshRemoval(binding);
+      } else {
+        setError(cause instanceof Error ? cause.message : 'Could not remove the Doppler binding.');
+      }
     } finally {
       setBusy(false);
     }
@@ -337,24 +381,21 @@ export function ProjectDopplerBindings({
     title = `Remove ${binding.reference}?`;
     body = (
       <Text variant="body" tone="muted">
-        {binding.isDefault
-          ? 'Agents can no longer read its secrets. The oldest remaining binding becomes the default.'
-          : `Agents can no longer read secrets written as ${binding.reference}/NAME.`}
+        {mode.stale
+          ? 'Reload the binding before confirming its removal.'
+          : binding.isDefault
+            ? 'Agents can no longer read its secrets. The oldest remaining binding becomes the default.'
+            : `Agents can no longer read secrets written as ${binding.reference}/NAME.`}
       </Text>
     );
     footer = (
       <View style={styles.fields}>
         <Button
-          label="Remove binding"
-          variant="destructive"
+          label={mode.stale ? 'Reload bindings' : 'Remove binding'}
+          variant={mode.stale ? 'secondary' : 'destructive'}
           fullWidth
           disabled={busy}
-          onPress={() =>
-            void run(
-              () => client.doppler.removeBinding(projectId, binding.id),
-              'Could not remove the Doppler binding.',
-            )
-          }
+          onPress={() => void (mode.stale ? refreshRemoval(binding) : confirmRemoval(binding))}
         />
         <Button label="Cancel" variant="text" fullWidth onPress={close} />
       </View>

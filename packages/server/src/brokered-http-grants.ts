@@ -7,7 +7,7 @@ import type { Kysely } from 'kysely';
 import {
   brokeredDopplerBindingId,
   brokeredGrantBindingApplies,
-  currentDopplerGrantBindingIds,
+  brokeredDopplerSnapshotApplies,
   defaultDopplerGrantMember,
   type BrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
@@ -188,15 +188,7 @@ export function createBrokeredHttpGrantStore(
               const current = await new ProjectDopplerBindingStore(tx).list(input.projectId);
               if (approved === undefined || brokeredDopplerBindingId(approved) !== input.bindingId)
                 throw new Error('Doppler access changed before saving approval');
-              const approvedRows = new Set(approved.bindings.map((binding) => binding.bindingId));
-              const matchingRows = current.filter((binding) => approvedRows.has(binding.id));
-              const key = requiresDefault
-                ? defaultDopplerGrantMember(input.bindingId)
-                : input.bindingId;
-              if (
-                matchingRows.length !== approvedRows.size ||
-                !brokeredGrantBindingApplies(key, currentDopplerGrantBindingIds(matchingRows))
-              ) {
+              if (!brokeredDopplerSnapshotApplies(approved, current)) {
                 throw new Error('Doppler access changed before saving approval');
               }
             }

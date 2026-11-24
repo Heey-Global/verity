@@ -1,9 +1,6 @@
 import type { Conductor } from '@verity/session';
 import type { McpGatewayDeps } from './mcp-gateway.js';
-import {
-  brokeredDopplerBindingId,
-  parseBrokeredDopplerBinding,
-} from './brokered-doppler-binding.js';
+import { parseBrokeredDopplerBinding } from './brokered-doppler-binding.js';
 
 type SecretCall = Parameters<NonNullable<McpGatewayDeps['authorizationSnapshot']>>[0];
 
@@ -23,9 +20,7 @@ export function createBrokeredSecretAuthorization(input: {
     snapshot,
     async covers(call: SecretCall & { authorizationSnapshot?: string }): Promise<boolean> {
       if (call.authorizationSnapshot === undefined) return false;
-      const bindingId = brokeredDopplerBindingId(
-        parseBrokeredDopplerBinding(call.authorizationSnapshot),
-      );
+      const bindingId = JSON.stringify(parseBrokeredDopplerBinding(call.authorizationSnapshot));
       const userId = (await input.initiator(call.sessionId, call.turnId))?.userId ?? null;
       return input.conductor.isCoveredByBrokeredGrant(
         call.sessionId,

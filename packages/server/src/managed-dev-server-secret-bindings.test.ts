@@ -167,6 +167,7 @@ describe('managed servers with secret bindings', () => {
       ConstructorParameters<typeof ManagedDevServerManager>[0]['resolveSecrets']
     >,
     agentPerson?: (sessionId: string) => Promise<string | null | undefined>,
+    localShares?: ManagedLocalShares,
   ) => {
     await manager.close();
     projectBindings = ctx.store.projectDopplerBindings;
@@ -180,6 +181,7 @@ describe('managed servers with secret bindings', () => {
       runtime: sandbox.runtime,
       resolveSecrets,
       ...(agentPerson !== undefined ? { agentPerson } : {}),
+      ...(localShares !== undefined ? { localShares } : {}),
       providerSnapshot: async (projectId, bindings) =>
         managedDevServerProviderSnapshot(await projectBindings.list(projectId), bindings),
       networkPorts: [8100, 8101],
@@ -495,6 +497,60 @@ describe('managed servers with secret bindings', () => {
       instance: { state: 'running', awaitingApproval: true, localOn: false },
     });
   });
+
+  it.each(['drift', 'reapproved', 'legacy'] as const)(
+    'stops obsolete secret-bearing runs and removes local access after %s',
+    async (change) => {
+      await withResolver(
+        async () => [{ env: 'API_KEY', value: 'synthetic' }],
+        undefined,
+        shares.local,
+      );
+      const entry = await manager.add('s1', {
+        name: 'api',
+        command: 'node server.mjs',
+        secretBindings,
+      });
+      const approve = async () => {
+        const view = (await manager.view('s1'))[0]!;
+        await manager.approve('s1', 'api', {
+          command: entry.command,
+          workdir: '.',
+          secretBindings,
+          providerSnapshot: view.providerSnapshot,
+        });
+        return view.providerSnapshot?.authority;
+      };
+      const authority = await approve();
+      await manager.start('s1', 'api', 'agent');
+      const run = sandbox.started[0]!;
+      sandbox.listen(run.instanceId, Number(run.env.PORT));
+      await manager.tick();
+      expect(shares.shares).toHaveLength(1);
+      expect(
+        (await ctx.store.managedDevServers.getInstance(run.instanceId))?.lastRunProviderAuthority,
+      ).toBe(authority);
+
+      if (change === 'legacy')
+        await ctx.store.managedDevServers.updateInstance(run.instanceId, {
+          lastRunProviderAuthority: null,
+        });
+      else await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
+      if (change === 'reapproved') {
+        expect(await approve()).not.toBe(authority);
+        expect((await manager.view('s1'))[0]!.instance?.localOn).toBe(false);
+      }
+      expect(sandbox.started).toHaveLength(1);
+      await manager.tick();
+      expect(shares.shares).toHaveLength(0);
+      expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), run.instanceId);
+      expect((await instanceOf()).state).toBe('stopped');
+      if (change === 'reapproved') {
+        await manager.start('s1', 'api', 'agent');
+        expect(sandbox.started).toHaveLength(2);
+      }
+    },
+  );
 
   it('never launches a partial secret set or stores resolver diagnostics', async () => {
     await withResolver(async () => {

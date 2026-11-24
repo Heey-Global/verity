@@ -497,6 +497,9 @@ it('moves the instance token, project configs, personal tokens and grants on upg
         await upgraded.userDopplerConnections.tokenBytes('lena', 'p1', 'legacy-doppler')
       )?.toString(),
     ).toBe('dp.st.lena');
+    const [migratedBinding] = await upgraded.projectDopplerBindings.list('p1');
+    const personal = await upgraded.userDopplerConnections.statuses('lena', 'p1');
+    expect(personal.get('legacy-doppler')?.validatedBindingIds).toEqual([migratedBinding?.id]);
     const grants = await sql<{ binding_id: string }>`
       select binding_id from secret_provider_permissions`.execute(raw.db);
     expect(grants.rows).toEqual([

@@ -338,6 +338,7 @@ export {
   type DopplerWorkplace,
 } from './doppler-connections.js';
 export {
+  DopplerBindingDefaultChangedError,
   DuplicateDopplerBindingError,
   ProjectDopplerBindingStore,
   UnknownDopplerConnectionError,

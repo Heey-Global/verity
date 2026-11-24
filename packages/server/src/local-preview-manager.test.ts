@@ -348,6 +348,7 @@ it('follows a managed instance new target port while keeping local URL and crede
     localAccess: true,
     lastRunCommand: 'npm start',
     lastRunWorkdir: '.',
+    lastRunSecretBindings: [],
     sessionId: 's1',
     projectId: 'p1',
     sandboxPort: 3000,
@@ -385,7 +386,7 @@ it('follows a managed instance new target port while keeping local URL and crede
   );
 });
 
-it.each(['access', 'approval'] as const)(
+it.each(['access', 'approval', 'legacy provider'] as const)(
   'does not restore managed sharing when %s is revoked',
   async (reason) => {
     const { manager, options, docker } = fixture();
@@ -400,6 +401,8 @@ it.each(['access', 'approval'] as const)(
       localAccess: true,
       lastRunCommand: 'npm start',
       lastRunWorkdir: '.',
+      lastRunSecretBindings:
+        reason === 'legacy provider' ? [{ secretAlias: 'KEY', env: 'KEY' }] : [],
     };
     let approved = true;
     Object.assign(options.store, {
@@ -416,7 +419,7 @@ it.each(['access', 'approval'] as const)(
     });
     await manager.close();
     if (reason === 'access') instance.localAccess = false;
-    else approved = false;
+    else if (reason === 'approval') approved = false;
     docker.createContainer.mockClear();
     const restored = new LocalPreviewManager(options);
     managers.push(restored);
@@ -444,6 +447,7 @@ it('releases an active managed connector when command approval is removed', asyn
     localAccess: true,
     lastRunCommand: 'npm start',
     lastRunWorkdir: '.',
+    lastRunSecretBindings: [],
   };
   let approved = true;
   Object.assign(options.store, {
@@ -917,6 +921,7 @@ it.each([false, true])(
           networkPort: 18100,
           lastRunCommand: 'npm start',
           lastRunWorkdir: '.',
+          lastRunSecretBindings: [],
         }),
         isApproved: async () => true,
         listInstances: async () => [],

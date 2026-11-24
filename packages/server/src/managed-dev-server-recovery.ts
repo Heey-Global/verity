@@ -24,3 +24,23 @@ export async function verifyRecoveryInstances(
   }
   return verified;
 }
+
+export async function stopOrphanManagedProcesses(
+  options: Pick<ManagedDevServerManagerOptions, 'store' | 'runtime'>,
+  project: ProjectRecord,
+  tags: ReadonlySet<string>,
+): Promise<void> {
+  // Rows may have been deleted or stopped while the sandbox was paused.
+  const wanted = new Set(
+    (
+      await options.store.managedDevServers.listInstances({
+        projectId: project.id,
+        desired: 'running',
+      })
+    ).map((instance) => instance.id),
+  );
+  for (const tag of tags) {
+    if (!wanted.has(tag))
+      await options.runtime.stopManagedServer(project, tag).catch(() => undefined);
+  }
+}

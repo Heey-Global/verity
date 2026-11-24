@@ -82,7 +82,7 @@ export function registerDopplerConnectionRoutes(
         // connection's instance token, which is theirs; nobody else's ever do.
         usesInstanceToken: status === undefined && instanceTokens.has(binding.connectionId),
       };
-      if (status !== undefined && binding.createdAt.getTime() > status.updatedAt.getTime())
+      if (status !== undefined && !status.validatedBindingIds.includes(binding.id))
         entry.needsValidation = true;
       entry.bindings.push(`${binding.dopplerProject}/${binding.dopplerConfig}`);
       connections.set(binding.connectionId, entry);

@@ -68,6 +68,12 @@ export const dopplerConnectionsMigration: Migration = {
     );
     await sql`alter table user_doppler_connections
       add primary key (user_id, project_id, connection_id)`.execute(db);
+    await sql`alter table user_doppler_connections
+      add column validated_binding_ids text[] not null default '{}'`.execute(db);
+    // Existing tokens were validated against their project's sole legacy pair.
+    await sql`update user_doppler_connections u set validated_binding_ids = array[b.id]
+      from project_doppler_bindings b where b.project_id = u.project_id
+        and b.connection_id = u.connection_id and b.is_default`.execute(db);
     // Grants were keyed by project and config alone; key them by the binding.
     const bindings = await sql<{
       project_id: string;
@@ -144,6 +150,7 @@ export const dopplerConnectionsMigration: Migration = {
     await sql`alter table user_doppler_connections add primary key (user_id, project_id)`.execute(
       db,
     );
+    await sql`alter table user_doppler_connections drop column validated_binding_ids`.execute(db);
     await sql`alter table user_doppler_connections drop column connection_id`.execute(db);
     await sql`drop table project_doppler_bindings`.execute(db);
     await sql`drop table doppler_connections`.execute(db);

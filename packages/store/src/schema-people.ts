@@ -1,4 +1,4 @@
-import type { ColumnType } from 'kysely';
+import type { ColumnType, Generated } from 'kysely';
 
 // Tables of people in shared projects (ADR 0023), part of `Database` in schema.ts.
 
@@ -151,6 +151,7 @@ interface UserDopplerConnectionsTable {
   connection_id: string;
   /** Encrypted at rest. */
   token: string;
+  validated_binding_ids: Generated<string[]>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 

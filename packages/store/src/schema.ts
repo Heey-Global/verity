@@ -1275,7 +1275,6 @@ export interface TaskAttachment {
   filename: string;
   mimeType: string;
 }
-
 /** One managed dev server bound to one session's worktree. */
 export interface ManagedDevServerInstancesTable {
   last_run_secret_bindings: ColumnType<
@@ -1283,6 +1282,7 @@ export interface ManagedDevServerInstancesTable {
     string | undefined,
     string
   >;
+  last_run_provider_authority: ColumnType<string | null, string | null | undefined, string | null>;
   id: string;
   server_id: ColumnType<string, string, never>;
   project_id: ColumnType<string, string, never>;

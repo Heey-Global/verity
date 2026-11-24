@@ -706,3 +706,16 @@ migrations['0240_session_repository_pull_requests'] = {
 };
 migrations['0241_github_repository_ids'] = githubRepositoryIdentityMigration;
 migrations['0242_doppler_connections'] = dopplerConnectionsMigration;
+
+migrations['0243_managed_dev_server_run_authority'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_server_instances add column last_run_provider_authority text`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_server_instances drop column last_run_provider_authority`.execute(
+      db,
+    );
+  },
+};

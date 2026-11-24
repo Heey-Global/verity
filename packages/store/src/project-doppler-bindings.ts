@@ -38,6 +38,13 @@ export class UnknownDopplerConnectionError extends Error {
   }
 }
 
+export class DopplerBindingDefaultChangedError extends Error {
+  constructor() {
+    super('The default Doppler binding changed. Review the binding before removing it.');
+    this.name = 'DopplerBindingDefaultChangedError';
+  }
+}
+
 /**
  * The Doppler projects and configs a Verity project reads secrets from (ADR 0031).
  * Exactly one active binding is the default whenever the project has any; it is
@@ -86,15 +93,17 @@ export class ProjectDopplerBindingStore {
     expectedTokenRevision?: string | null,
   ): Promise<ProjectDopplerBindingRecord> {
     const id = randomUUID();
-    await this.db.transaction().execute(async (tx) => {
+    return this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
       await lockProject(tx, projectId);
       await insertBinding(tx, projectId, id, input, false, expectedTokenRevision);
       await promoteDefaultBinding(tx, projectId);
+      const added = (await new ProjectDopplerBindingStore(tx).list(projectId)).find(
+        (binding) => binding.id === id,
+      );
+      if (added === undefined) throw new Error('Doppler binding vanished after insert');
+      return added;
     });
-    const added = (await this.list(projectId)).find((binding) => binding.id === id);
-    if (added === undefined) throw new Error('Doppler binding vanished after insert');
-    return added;
   }
 
   /** False when the binding does not belong to the project. */
@@ -126,10 +135,20 @@ export class ProjectDopplerBindingStore {
   }
 
   /** Removing the default promotes the oldest remaining binding. */
-  async remove(projectId: string, bindingId: string): Promise<boolean> {
+  async remove(projectId: string, bindingId: string, expectedDefault?: boolean): Promise<boolean> {
     return this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
       await lockProject(tx, projectId);
+      if (expectedDefault !== undefined) {
+        const current = await tx
+          .selectFrom('project_doppler_bindings')
+          .select('is_default')
+          .where('project_id', '=', projectId)
+          .where('id', '=', bindingId)
+          .executeTakeFirst();
+        if (current === undefined) return false;
+        if (current.is_default !== expectedDefault) throw new DopplerBindingDefaultChangedError();
+      }
       if (!(await removeBinding(tx, projectId, bindingId))) return false;
       await promoteDefaultBinding(tx, projectId);
       return true;

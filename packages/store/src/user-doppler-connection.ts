@@ -36,14 +36,25 @@ export class UserDopplerConnectionStore {
 
   /** The connections the person holds a token for in the project, without
    *  decrypting anything. */
-  async statuses(userId: string, projectId: string): Promise<Map<string, { updatedAt: Date }>> {
+  async statuses(
+    userId: string,
+    projectId: string,
+  ): Promise<Map<string, { updatedAt: Date; validatedBindingIds: readonly string[] }>> {
     const rows = await this.db
       .selectFrom('user_doppler_connections')
-      .select(['connection_id', 'updated_at'])
+      .select(['connection_id', 'updated_at', 'validated_binding_ids'])
       .where('user_id', '=', userId)
       .where('project_id', '=', projectId)
       .execute();
-    return new Map(rows.map((row) => [row.connection_id, { updatedAt: row.updated_at }]));
+    return new Map(
+      rows.map((row) => [
+        row.connection_id,
+        {
+          updatedAt: row.updated_at,
+          validatedBindingIds: row.validated_binding_ids,
+        },
+      ]),
+    );
   }
 
   async set(
@@ -55,6 +66,7 @@ export class UserDopplerConnectionStore {
     expectedTokenRevision?: string | null,
   ): Promise<void> {
     const encrypted = this.cipher.encrypt(token);
+    const validatedBindingIds = [...(expectedBindingIds ?? [])];
     await this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
       if (expectedTokenRevision !== undefined) {
@@ -87,11 +99,16 @@ export class UserDopplerConnectionStore {
           project_id: projectId,
           connection_id: connectionId,
           token: encrypted,
+          validated_binding_ids: validatedBindingIds,
         })
         .onConflict((conflict) =>
           conflict
             .columns(['user_id', 'project_id', 'connection_id'])
-            .doUpdateSet({ token: encrypted, updated_at: sql`now()` }),
+            .doUpdateSet({
+              token: encrypted,
+              validated_binding_ids: validatedBindingIds,
+              updated_at: sql`now()`,
+            }),
         )
         .execute();
     });

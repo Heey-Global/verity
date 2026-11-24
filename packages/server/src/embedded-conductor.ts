@@ -22,16 +22,12 @@ import { branchRenameAppliesToSession } from './embedded-support.js';
 import { personForCredential } from './personless-credential.js';
 import {
   brokeredDopplerBindingId,
+  brokeredDopplerSnapshotApplies,
   brokeredGrantBindingApplies,
   tryParseBrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
 import { resolveTurnSandbox } from './turn-sandbox.js';
 import { sandboxPersonTag } from './sandbox-identity.js';
-
-function grantLookupId(value: string): string {
-  const snapshot = tryParseBrokeredDopplerBinding(value);
-  return snapshot === undefined ? value : brokeredDopplerBindingId(snapshot);
-}
 
 type RunnerContext = Parameters<typeof createEmbeddedRunnerConductorWiring>[0];
 
@@ -130,12 +126,22 @@ export function createEmbeddedConductorBindings(ctx: {
     checkBrokeredHttpGrant: async (input) => {
       // A grant is per Doppler binding (ADR 0031): the call's own binding id when the
       // gateway supplied it, else the one its references read from now.
+      const approved =
+        input.bindingId === undefined ? undefined : tryParseBrokeredDopplerBinding(input.bindingId);
       const bindingId =
-        input.bindingId === undefined
-          ? await brokeredGrantBindingIdFor(input.projectId, [input.secretAlias])
-          : grantLookupId(input.bindingId);
-      return bindingId === undefined ||
-        !brokeredGrantBindingApplies(bindingId, await brokeredGrantBindingIds(input.projectId))
+        approved !== undefined
+          ? brokeredDopplerBindingId(approved)
+          : (input.bindingId ??
+            (await brokeredGrantBindingIdFor(input.projectId, [input.secretAlias])));
+      const applies =
+        approved === undefined
+          ? bindingId !== undefined &&
+            brokeredGrantBindingApplies(bindingId, await brokeredGrantBindingIds(input.projectId))
+          : brokeredDopplerSnapshotApplies(
+              approved,
+              await eventStore.projectDopplerBindings.list(input.projectId),
+            );
+      return bindingId === undefined || !applies
         ? false
         : brokeredHttpGrants.check({
             ...input,

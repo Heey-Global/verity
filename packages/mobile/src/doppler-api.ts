@@ -186,10 +186,15 @@ export function dopplerClient(request: Request) {
       return z.object({ bindings: z.array(projectDopplerBindingSchema) }).parse(await res.json())
         .bindings;
     },
-    removeBinding: async (projectId: string, bindingId: string): Promise<void> => {
-      await request(`${bindings(projectId)}/${encodeURIComponent(bindingId)}`, {
-        method: 'DELETE',
-      });
+    removeBinding: async (
+      projectId: string,
+      bindingId: string,
+      isDefault?: boolean,
+    ): Promise<void> => {
+      await request(
+        `${bindings(projectId)}/${encodeURIComponent(bindingId)}`,
+        isDefault === undefined ? { method: 'DELETE' } : json('DELETE', { isDefault }),
+      );
     },
     /** The signed-in person's own tokens for the project's connections. */
     personalTokens: async (projectId: string): Promise<PersonalDopplerTokens> => {

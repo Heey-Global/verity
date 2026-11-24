@@ -84,6 +84,7 @@ export interface ManagedDevServerInstanceRecord {
   lastRunCommand: string | null;
   lastRunWorkdir: string | null;
   lastRunSecretBindings: ManagedDevServerSecretBinding[];
+  lastRunProviderAuthority: string | null;
   /** The person whose Doppler connection resolves this instance's secrets. */
   lastRunUserId: string | null;
   startedAt: Date | null;
@@ -203,6 +204,7 @@ function instanceRecord(
     lastRunCommand: row.last_run_command,
     lastRunWorkdir: row.last_run_workdir,
     lastRunSecretBindings: row.last_run_secret_bindings,
+    lastRunProviderAuthority: row.last_run_provider_authority,
     lastRunUserId: row.last_run_user_id,
     startedAt: row.started_at,
     accessStartedAt: row.access_started_at,
@@ -218,6 +220,7 @@ export interface ManagedDevServerInstancePatch {
   lastRunCommand?: string | null;
   lastRunWorkdir?: string | null;
   lastRunSecretBindings?: ManagedDevServerSecretBinding[];
+  lastRunProviderAuthority?: string | null;
   lastRunUserId?: string | null;
   startedAt?: Date | null;
   accessStartedAt?: Date | null;
@@ -566,6 +569,9 @@ export class ManagedDevServerStore {
                 normalizeManagedDevServerSecretBindings(patch.lastRunSecretBindings),
               ),
             }
+          : {}),
+        ...(patch.lastRunProviderAuthority !== undefined
+          ? { last_run_provider_authority: patch.lastRunProviderAuthority }
           : {}),
         ...(patch.lastRunUserId !== undefined ? { last_run_user_id: patch.lastRunUserId } : {}),
         ...(patch.startedAt !== undefined

@@ -1,3 +1,4 @@
+import { VerityApiError } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
@@ -301,6 +302,37 @@ describe('project Doppler settings', () => {
     ).toBeOnTheScreen();
     expect(removeBinding).not.toHaveBeenCalled();
     fireEvent.press(screen.getAllByLabelText(/^Remove binding(,|$)/).at(-1)!);
-    await waitFor(() => expect(removeBinding).toHaveBeenCalledWith('p/1', 'b1'));
+    await waitFor(() => expect(removeBinding).toHaveBeenCalledWith('p/1', 'b1', true));
+  });
+
+  it('confirms again if the binding became the default after the removal dialog opened', async () => {
+    const binding = dopplerBinding({ isDefault: false });
+    const listBindings = jest.fn().mockResolvedValue([binding]);
+    const removeBinding = jest
+      .fn()
+      .mockRejectedValueOnce(new VerityApiError(409, 'The default binding changed'))
+      .mockResolvedValue(undefined);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({ doppler: { listBindings, removeBinding } }),
+    );
+    setSearchParams({ id: 'p/1', section: 'doppler' });
+    render(<ProjectServicesScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Manage portal/));
+    fireEvent.press(screen.getByLabelText(/^Remove binding/));
+    expect(
+      await screen.findByText('Agents can no longer read secrets written as portal/prd/NAME.'),
+    ).toBeOnTheScreen();
+    listBindings.mockResolvedValue([{ ...binding, isDefault: true }]);
+    fireEvent.press(screen.getByLabelText(/^Remove binding/));
+
+    expect(
+      await screen.findByText(/The oldest remaining binding becomes the default/),
+    ).toBeOnTheScreen();
+    expect(screen.getByText(/Review the updated details and confirm again/)).toBeOnTheScreen();
+    expect(removeBinding).toHaveBeenCalledTimes(1);
+    expect(removeBinding).toHaveBeenNthCalledWith(1, 'p/1', 'b1', false);
+    fireEvent.press(screen.getByLabelText(/^Remove binding/));
+    await waitFor(() => expect(removeBinding).toHaveBeenNthCalledWith(2, 'p/1', 'b1', true));
   });
 });

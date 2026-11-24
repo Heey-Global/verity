@@ -125,7 +125,7 @@ async function harness(toolName: Tool, recordExecution = false) {
             ...input,
             userId: input.userId,
             channel: input.channel,
-            bindingId: input.bindingId,
+            bindingId: brokeredDopplerBindingId(parseBrokeredDopplerBinding(input.bindingId)),
           }),
     persistBrokeredHttpGrant: async (input) => {
       if (input.bindingId === undefined) throw new Error('missing provider binding');

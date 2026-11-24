@@ -23,6 +23,7 @@ const binding = (
 
 function harness({ changeBindings = false } = {}) {
   const tokens = new Map<string, string>();
+  const validated = new Map<string, readonly string[]>();
   const bindings = [
     binding('b1', 'platform', 'demo', 'dev', true),
     binding('b2', 'platform', 'demo', 'stg'),
@@ -44,7 +45,10 @@ function harness({ changeBindings = false } = {}) {
         new Map(
           [...tokens.keys()]
             .filter((key) => key.startsWith(`${userId}/${projectId}/`))
-            .map((key) => [key.split('/')[2]!, { updatedAt: new Date(0) }]),
+            .map((key) => [
+              key.split('/')[2]!,
+              { updatedAt: new Date(0), validatedBindingIds: validated.get(key) ?? [] },
+            ]),
         ),
       set: async (
         userId: string,
@@ -57,7 +61,9 @@ function harness({ changeBindings = false } = {}) {
           bindings.filter((binding) => binding.connectionId === connectionId).map(({ id }) => id),
         );
         if (changeBindings) throw new DopplerBindingsChangedError();
-        tokens.set(`${userId}/${projectId}/${connectionId}`, token);
+        const key = `${userId}/${projectId}/${connectionId}`;
+        tokens.set(key, token);
+        validated.set(key, expectedBindingIds);
       },
       delete: async (userId: string, projectId: string, connectionId: string) => {
         tokens.delete(`${userId}/${projectId}/${connectionId}`);
@@ -149,7 +155,7 @@ describe('personal Doppler connection routes', () => {
       expect(
         (await put(app, 'lena', { token: 'dp.st.good', connectionId: 'platform' })).statusCode,
       ).toBe(200);
-      bindings[1]!.createdAt = new Date(1000);
+      bindings[1]!.id = 'new-binding-id';
       const response = await app.inject({
         url: '/projects/p1/doppler/connection',
         headers: { 'x-test-user': 'lena' },
