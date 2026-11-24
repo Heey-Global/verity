@@ -7,6 +7,7 @@ import { dopplerBindingGrantId, legacyDopplerBindingGrantId } from './doppler-bi
 import { DopplerConnectionStore } from './doppler-connections.js';
 import { migrationProvider } from './migrations.js';
 import {
+  AmbiguousDopplerConnectionError,
   DuplicateDopplerBindingError,
   ProjectDopplerBindingStore,
 } from './project-doppler-bindings.js';
@@ -113,7 +114,7 @@ describe('project Doppler bindings', () => {
     });
   });
 
-  it('treats the former settings fields as replacing the default binding', async () => {
+  it('accepts legacy settings for one binding and refuses ambiguous changes', async () => {
     const platform = await connections.add({
       label: 'Platform',
       token: 'dp.sa.a',
@@ -132,22 +133,15 @@ describe('project Doppler bindings', () => {
       dopplerProject: 'app',
       dopplerConfig: 'prd',
     });
-    // An already bound pair only takes over the default.
-    await ctx.store.updateProjectSettings('p1', { dopplerProject: 'app', dopplerConfig: 'prd' });
-    expect((await bindings.list('p1')).map((b) => [b.dopplerConfig, b.isDefault])).toEqual([
-      ['prd', true],
-      ['stg', false],
-    ]);
-    // A new pair replaces the default.
-    await ctx.store.updateProjectSettings('p1', { dopplerProject: 'app', dopplerConfig: 'dev' });
-    expect((await bindings.list('p1')).map((b) => [b.dopplerConfig, b.isDefault])).toEqual([
-      ['dev', true],
-      ['stg', false],
-    ]);
-    // Clearing removes the default and promotes what is left.
-    await ctx.store.updateProjectSettings('p1', { dopplerProject: null, dopplerConfig: null });
+    await expect(
+      ctx.store.updateProjectSettings('p1', { dopplerProject: 'app', dopplerConfig: 'prd' }),
+    ).rejects.toThrow(AmbiguousDopplerConnectionError);
+    await expect(
+      ctx.store.updateProjectSettings('p1', { dopplerProject: null, dopplerConfig: null }),
+    ).rejects.toThrow(AmbiguousDopplerConnectionError);
     expect((await bindings.list('p1')).map((b) => [b.dopplerConfig, b.isDefault])).toEqual([
       ['stg', true],
+      ['prd', false],
     ]);
     expect(await mirrored('p1')).toEqual(['app', 'stg']);
   });
@@ -169,7 +163,17 @@ describe('Doppler connections', () => {
     const stored = await ctx.db.selectFrom('doppler_connections').select('token').execute();
     expect(stored.map((row) => row.token).join()).not.toContain('dp.sa.');
     expect((await connections.tokenBytes(id))?.toString()).toBe('dp.sa.secret');
+    await bindings.add('p1', {
+      connectionId: id,
+      dopplerProject: 'portal',
+      dopplerConfig: 'prd',
+    });
+    expect((await bindings.list('p1'))[0]?.tokenRevision).toBeUndefined();
     expect(await connections.update(id, { label: 'Core', token: 'dp.sa.rotated' })).toBe(true);
+    const revision = (await bindings.list('p1'))[0]?.tokenRevision;
+    expect(revision).toBeDefined();
+    await connections.update(id, { label: 'Core' });
+    expect((await bindings.list('p1'))[0]?.tokenRevision).toBe(revision);
     expect((await connections.tokenBytes(id))?.toString()).toBe('dp.sa.rotated');
     expect((await connections.get(id))?.label).toBe('Core');
     expect(await connections.update('missing', { label: 'x' })).toBe(false);

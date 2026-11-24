@@ -6,6 +6,7 @@ import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 export interface ProjectDopplerBinding {
   readonly id: string;
   readonly connectionId: string;
+  readonly tokenRevision?: string;
   readonly dopplerProject: string;
   readonly dopplerConfig: string;
   readonly isDefault: boolean;
@@ -75,6 +76,8 @@ export function resolveSecretReference(
 /** The identity an approval is bound to: connection, project and config. */
 export interface ApprovedDopplerBinding {
   readonly connectionId: string;
+  readonly tokenRevision?: string;
+  readonly includesBareReference?: boolean;
   readonly dopplerProject: string;
   readonly dopplerConfig: string;
 }
@@ -89,10 +92,19 @@ export function referencedBindings(
   references: readonly string[],
 ): ApprovedDopplerBinding[] {
   const byKey = new Map<string, ApprovedDopplerBinding>();
-  for (const reference of references) {
-    const { binding } = resolveSecretReference(bindings, reference);
-    byKey.set(`${binding.connectionId}\0${binding.dopplerProject}\0${binding.dopplerConfig}`, {
+  const resolved = references.map((reference) => ({
+    reference,
+    ...resolveSecretReference(bindings, reference),
+  }));
+  const multiple = new Set(resolved.map(({ binding }) => binding.id)).size > 1;
+  for (const { reference, binding } of resolved) {
+    const key = `${binding.connectionId}\0${binding.dopplerProject}\0${binding.dopplerConfig}`;
+    const usesDefault =
+      multiple && (!reference.includes('/') || byKey.get(key)?.includesBareReference);
+    byKey.set(key, {
       connectionId: binding.connectionId,
+      ...(binding.tokenRevision === undefined ? {} : { tokenRevision: binding.tokenRevision }),
+      ...(usesDefault ? { includesBareReference: true } : {}),
       dopplerProject: binding.dopplerProject,
       dopplerConfig: binding.dopplerConfig,
     });

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { SealedError, type EventStore } from '@verity/store';
+import { AmbiguousDopplerConnectionError, SealedError, type EventStore } from '@verity/store';
 import { z } from 'zod';
 import type { ServerDeps } from './server-deps.js';
 import type {
@@ -52,6 +52,11 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
   ): Promise<{ value: T } | { error: string }> => {
     if (deps.secretCipher?.isSealed() === true) return { error: 'locked' };
     if (deps.dopplerCredentialReader === undefined) return { error: 'not configured' };
+    if (connectionId === undefined && deps.eventStore !== undefined) {
+      const [only, other] = await deps.eventStore.dopplerConnections.list();
+      if (other !== undefined) return { error: new AmbiguousDopplerConnectionError().message };
+      connectionId = only?.id;
+    }
     let credential: Uint8Array | undefined;
     try {
       credential = await deps.dopplerCredentialReader(connectionId);
@@ -78,8 +83,7 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
   // for the binding picker (#320). The list is derived from the TRUSTED instance
   // token (decrypted here, unsealed-only), NOT from repo content — this is what
   // closes the confused-deputy. Never returns/logs the token; only NON-secret
-  // `{ slug, name }` summaries. Without `connectionId`, the first connection
-  // holding a token answers.
+  // `{ slug, name }` summaries. Without `connectionId`, only a single connection can answer.
   app.get(
     '/doppler/projects',
     async (request): Promise<{ projects: DopplerProjectSummary[] } | { error: string }> => {

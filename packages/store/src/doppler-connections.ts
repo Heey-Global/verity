@@ -91,7 +91,9 @@ export class DopplerConnectionStore {
       .updateTable('doppler_connections')
       .set({
         ...(patch.label === undefined ? {} : { label: patch.label }),
-        ...(patch.token === undefined ? {} : { token: this.cipher.encrypt(patch.token) }),
+        ...(patch.token === undefined
+          ? {}
+          : { token: this.cipher.encrypt(patch.token), token_revision: randomUUID() }),
         ...(patch.workplace === undefined
           ? {}
           : { workplace_slug: patch.workplace.slug, workplace_name: patch.workplace.name }),
@@ -107,16 +109,26 @@ export class DopplerConnectionStore {
     if (token === null) {
       await this.db
         .updateTable('doppler_connections')
-        .set({ token: null, updated_at: sql`now()` })
+        .set({ token: null, token_revision: randomUUID(), updated_at: sql`now()` })
         .where('id', '=', LEGACY_DOPPLER_CONNECTION_ID)
         .execute();
       return;
     }
     const encrypted = this.cipher.encrypt(token);
+    const revision = randomUUID();
     await this.db
       .insertInto('doppler_connections')
-      .values({ id: LEGACY_DOPPLER_CONNECTION_ID, label: 'Doppler', token: encrypted })
-      .onConflict((oc) => oc.column('id').doUpdateSet({ token: encrypted, updated_at: sql`now()` }))
+      .values({
+        id: LEGACY_DOPPLER_CONNECTION_ID,
+        label: 'Doppler',
+        token: encrypted,
+        token_revision: revision,
+      })
+      .onConflict((oc) =>
+        oc
+          .column('id')
+          .doUpdateSet({ token: encrypted, token_revision: revision, updated_at: sql`now()` }),
+      )
       .execute();
   }
 
@@ -166,7 +178,7 @@ export class DopplerConnectionStore {
     return this.db.transaction().execute(async (tx) => {
       const exists = await tx
         .selectFrom('doppler_connections')
-        .select('id')
+        .select('token_revision')
         .where('id', '=', id)
         .forUpdate()
         .executeTakeFirst();
@@ -185,6 +197,7 @@ export class DopplerConnectionStore {
             '=',
             dopplerBindingGrantId({
               connectionId: id,
+              tokenRevision: exists.token_revision,
               dopplerProject: binding.doppler_project,
               dopplerConfig: binding.doppler_config,
             }),

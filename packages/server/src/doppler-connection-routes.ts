@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { EventStore } from '@verity/store';
+import { AmbiguousDopplerConnectionError, type EventStore } from '@verity/store';
 import { z } from 'zod';
 import './fastify-augmentation.js';
 import { viewerId } from './view-state-routes.js';
@@ -23,8 +23,7 @@ const query = z.object({ connectionId: z.string().min(1).max(200).optional() }).
  * bindings use (ADR 0023 §3, ADR 0031). Every route acts for the signed-in person
  * only: no user id is taken from the request, and the token never leaves the
  * store. Project membership with execute permission is enforced by the route
- * policy. Without a `connectionId` a request means the default binding's
- * connection, which keeps clients written for a single binding working.
+ * policy. Older clients may omit the connection id when the project uses one connection.
  */
 export function registerDopplerConnectionRoutes(
   app: FastifyInstance,
@@ -86,6 +85,11 @@ export function registerDopplerConnectionRoutes(
   };
   const connectionFor = async (projectId: string, connectionId: string | undefined) => {
     const bindings = await deps.store.projectDopplerBindings.list(projectId);
+    if (
+      connectionId === undefined &&
+      new Set(bindings.map((binding) => binding.connectionId)).size > 1
+    )
+      return { error: new AmbiguousDopplerConnectionError().message };
     const id = connectionId ?? bindings.find((binding) => binding.isDefault)?.connectionId;
     return {
       connectionId: id,
@@ -106,7 +110,9 @@ export function registerDopplerConnectionRoutes(
     if (!parsed.success || !input.success)
       return reply.code(400).send({ error: 'invalid Doppler token' });
     const projectId = parsed.data.id;
-    const { connectionId, bindings } = await connectionFor(projectId, input.data.connectionId);
+    const target = await connectionFor(projectId, input.data.connectionId);
+    if ('error' in target) return reply.code(409).send({ error: target.error });
+    const { connectionId, bindings } = target;
     if (connectionId === undefined || bindings.length === 0)
       return reply
         .code(409)
@@ -135,7 +141,9 @@ export function registerDopplerConnectionRoutes(
     const filter = query.safeParse(request.query ?? {});
     if (!parsed.success || !filter.success)
       return reply.code(400).send({ error: 'invalid project id' });
-    const { connectionId } = await connectionFor(parsed.data.id, filter.data.connectionId);
+    const target = await connectionFor(parsed.data.id, filter.data.connectionId);
+    if ('error' in target) return reply.code(409).send({ error: target.error });
+    const { connectionId } = target;
     if (connectionId !== undefined)
       await deps.store.userDopplerConnections.delete(
         viewerId(request),

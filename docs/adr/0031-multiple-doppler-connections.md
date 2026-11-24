@@ -28,7 +28,8 @@ project has any; removing the default promotes the oldest remaining binding.
 The same project and config cannot be bound twice, not even through two
 connections, so every reference names exactly one binding. The former
 `project_settings.doppler_project/config` columns mirror the default and the
-old settings field means "replace the default binding". Bindings live in
+old settings fields can replace the binding when there is at most one connection
+and one binding. Ambiguous writes direct the user to the current connection picker. Bindings live in
 `project_doppler_bindings`; the versioned secret-job catalog in
 `secret_provider_bindings` keeps its own semantics and is not reused.
 
@@ -78,5 +79,5 @@ without reusing one token for all of them. Existing installations keep working
 without changes: their token becomes one connection and their config the
 default binding, with grants and personal tokens carried over. Approval cards
 for a call that reads several bindings list them instead of one project and
-config. Older clients that set `dopplerProject` and `dopplerConfig` replace the
-default binding and cannot manage the others.
+config. Older clients receive a conflict and an instruction to open the
+current connection picker when a change is ambiguous.

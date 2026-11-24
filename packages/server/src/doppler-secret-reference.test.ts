@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   brokeredDopplerBindingId,
   brokeredDopplerSnapshot,
+  defaultDopplerGrantMember,
   brokeredGrantBindingApplies,
   brokeredSecretSource,
 } from './brokered-doppler-binding.js';
@@ -101,12 +102,36 @@ describe('approvals and grants per binding', () => {
 
   it('applies a grant only while every binding it names is still bound', () => {
     const both = brokeredDopplerBindingId(snapshot('API_KEY', 'billing/dev/API_KEY'));
-    const current = new Set(bindings.map(dopplerBindingGrantId));
+    const current = new Set([
+      ...bindings.map(dopplerBindingGrantId),
+      defaultDopplerGrantMember(dopplerBindingGrantId(portalPrd)),
+    ]);
     expect(brokeredGrantBindingApplies(both, current)).toBe(true);
     expect(brokeredGrantBindingApplies(dopplerBindingGrantId(portalStg), current)).toBe(true);
     current.delete(dopplerBindingGrantId(billingDev));
     expect(brokeredGrantBindingApplies(both, current)).toBe(false);
     expect(brokeredGrantBindingApplies(dopplerBindingGrantId(billingDev), current)).toBe(false);
+  });
+
+  it('changes authorization when a mixed request resolves its bare reference elsewhere', () => {
+    const references = ['API_KEY', 'portal/prd/API_KEY', 'billing/dev/API_KEY'];
+    const switched = bindings.map((binding) => ({
+      ...binding,
+      isDefault: binding.id === billingDev.id,
+    }));
+    expect(
+      brokeredDopplerBindingId(brokeredDopplerSnapshot(referencedBindings(switched, references))),
+    ).not.toBe(brokeredDopplerBindingId(snapshot(...references)));
+  });
+
+  it('changes authorization when a connection token is replaced', () => {
+    const rotated = bindings.map((binding) => ({
+      ...binding,
+      tokenRevision: 'a31833e4-8584-4ec4-888b-95ce87e4d44a',
+    }));
+    expect(
+      brokeredDopplerBindingId(brokeredDopplerSnapshot(referencedBindings(rotated, ['API_KEY']))),
+    ).not.toBe(brokeredDopplerBindingId(snapshot('API_KEY')));
   });
 
   it('shows one binding as project and config, several as a list', () => {

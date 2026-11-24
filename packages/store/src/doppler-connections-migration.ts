@@ -18,6 +18,7 @@ export const dopplerConnectionsMigration: Migration = {
       id text primary key,
       label text not null,
       token text,
+      token_revision text,
       workplace_slug text,
       workplace_name text,
       created_at timestamptz not null default now(),

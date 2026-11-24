@@ -9,6 +9,7 @@ export interface ProjectDopplerBindingRecord {
   projectId: string;
   connectionId: string;
   connectionLabel: string;
+  tokenRevision?: string;
   dopplerProject: string;
   dopplerConfig: string;
   isDefault: boolean;
@@ -48,6 +49,7 @@ export class ProjectDopplerBindingStore {
         'b.project_id',
         'b.connection_id',
         'c.label',
+        'c.token_revision',
         'b.doppler_project',
         'b.doppler_config',
         'b.is_default',
@@ -63,6 +65,7 @@ export class ProjectDopplerBindingStore {
       projectId: row.project_id,
       connectionId: row.connection_id,
       connectionLabel: row.label,
+      ...(row.token_revision === null ? {} : { tokenRevision: row.token_revision }),
       dopplerProject: row.doppler_project,
       dopplerConfig: row.doppler_config,
       isDefault: row.is_default,
@@ -168,80 +171,58 @@ async function insertBinding(
     .execute();
 }
 
-/**
- * The former `dopplerProject/dopplerConfig` settings write as "replace the default
- * binding" (ADR 0031): an existing binding of the pair becomes the default,
- * otherwise the pair replaces the default on its connection. Clearing either
- * removes the default. Runs inside the settings transaction.
- */
+export class AmbiguousDopplerConnectionError extends Error {
+  constructor() {
+    super('Open the Doppler connection picker in the current app to make this change.');
+    this.name = 'AmbiguousDopplerConnectionError';
+  }
+}
+
+/** Applies a legacy settings write only when it identifies a single binding and connection. */
 export async function syncDefaultDopplerBinding(
   tx: Kysely<Database>,
   projectId: string,
   dopplerProject: string | null,
   dopplerConfig: string | null,
 ): Promise<void> {
-  const current = await tx
+  const [current, other] = await tx
     .selectFrom('project_doppler_bindings')
     .select(['id', 'connection_id', 'doppler_project', 'doppler_config'])
     .where('project_id', '=', projectId)
-    .where('is_default', '=', true)
-    .executeTakeFirst();
-  if (dopplerProject === null || dopplerConfig === null) {
-    if (current !== undefined)
-      await tx.deleteFrom('project_doppler_bindings').where('id', '=', current.id).execute();
-    await promoteDefaultBinding(tx, projectId);
-    return;
-  }
+    .orderBy('is_default', 'desc')
+    .limit(2)
+    .execute();
   if (current?.doppler_project === dopplerProject && current.doppler_config === dopplerConfig)
     return;
-  const existing = await tx
-    .selectFrom('project_doppler_bindings')
+
+  const [connection, anotherConnection] = await tx
+    .selectFrom('doppler_connections')
     .select('id')
-    .where('project_id', '=', projectId)
-    .where('doppler_project', '=', dopplerProject)
-    .where('doppler_config', '=', dopplerConfig)
-    .executeTakeFirst();
-  if (existing !== undefined) {
-    // Already bound: only the default moves, the former default stays bound.
-    await tx
-      .updateTable('project_doppler_bindings')
-      .set({ is_default: false })
-      .where('project_id', '=', projectId)
-      .execute();
-    await tx
-      .updateTable('project_doppler_bindings')
-      .set({ is_default: true })
-      .where('id', '=', existing.id)
-      .execute();
-  } else {
-    if (current !== undefined)
-      await tx.deleteFrom('project_doppler_bindings').where('id', '=', current.id).execute();
-    const connectionId = current?.connection_id ?? (await fallbackConnection(tx));
+    .limit(2)
+    .execute();
+  if (other !== undefined || anotherConnection !== undefined)
+    throw new AmbiguousDopplerConnectionError();
+
+  if (current !== undefined)
+    await tx.deleteFrom('project_doppler_bindings').where('id', '=', current.id).execute();
+  if (dopplerProject !== null && dopplerConfig !== null) {
+    if (connection === undefined)
+      await tx
+        .insertInto('doppler_connections')
+        .values({ id: LEGACY_DOPPLER_CONNECTION_ID, label: 'Doppler', token: null })
+        .onConflict((oc) => oc.column('id').doNothing())
+        .execute();
     await insertBinding(
       tx,
       projectId,
       randomUUID(),
-      { connectionId, dopplerProject, dopplerConfig },
+      {
+        connectionId: connection?.id ?? LEGACY_DOPPLER_CONNECTION_ID,
+        dopplerProject,
+        dopplerConfig,
+      },
       true,
     );
   }
   await promoteDefaultBinding(tx, projectId);
-}
-
-/** Without a default to inherit from: the only or oldest connection, else the
- *  legacy connection personal tokens can use without an instance token. */
-async function fallbackConnection(tx: Kysely<Database>): Promise<string> {
-  const oldest = await tx
-    .selectFrom('doppler_connections')
-    .select('id')
-    .orderBy('created_at')
-    .orderBy('id')
-    .executeTakeFirst();
-  if (oldest !== undefined) return oldest.id;
-  await tx
-    .insertInto('doppler_connections')
-    .values({ id: LEGACY_DOPPLER_CONNECTION_ID, label: 'Doppler', token: null })
-    .onConflict((oc) => oc.column('id').doNothing())
-    .execute();
-  return LEGACY_DOPPLER_CONNECTION_ID;
 }

@@ -251,6 +251,13 @@ export class ProjectSettingsStore {
       allowed_agents: allowedAgentsColumn(patch.allowedAgents),
     };
     return this.db.transaction().execute(async (tx) => {
+      if (patch.dopplerProject !== undefined || patch.dopplerConfig !== undefined)
+        await tx
+          .selectFrom('projects')
+          .select('id')
+          .where('id', '=', projectId)
+          .forUpdate()
+          .execute();
       // Ensure and lock the per-project settings row before applying the patch.
       await tx
         .insertInto('project_settings')

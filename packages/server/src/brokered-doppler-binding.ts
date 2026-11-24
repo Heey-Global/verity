@@ -6,6 +6,8 @@ import type { ApprovedDopplerBinding } from './doppler-secret-reference.js';
 const bindingSchema = z
   .object({
     connectionId: z.string().trim().min(1),
+    tokenRevision: z.string().uuid().optional(),
+    includesBareReference: z.literal(true).optional(),
     dopplerProject: z.string().trim().min(1),
     dopplerConfig: z.string().trim().min(1),
   })
@@ -34,12 +36,23 @@ export function parseBrokeredDopplerBinding(snapshot: string): BrokeredDopplerBi
  * another; a call reading several uses an id for exactly that set.
  */
 export function brokeredDopplerBindingId(snapshot: BrokeredDopplerBinding): string {
-  const ids = [...new Set(snapshot.bindings.map(dopplerBindingGrantId))].sort();
+  const ids = [
+    ...new Set(
+      snapshot.bindings.map((binding) => {
+        const id = dopplerBindingGrantId(binding);
+        return binding.includesBareReference ? defaultDopplerGrantMember(id) : id;
+      }),
+    ),
+  ].sort();
   if (ids.length === 1) return ids[0]!;
   return `${BINDING_SET_PREFIX}${ids.join(',')}`;
 }
 
 const BINDING_SET_PREFIX = 'project-doppler-set:';
+
+export function defaultDopplerGrantMember(bindingId: string): string {
+  return `default:${bindingId}`;
+}
 
 /**
  * Whether a grant's binding id still names bindings of the project, given the ids

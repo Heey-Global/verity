@@ -6,6 +6,7 @@ import {
   PROJECT_AGENTS,
   PROJECT_MEMORY_MAX_CHARS,
   PROJECT_NAME_MAX_CHARS,
+  AmbiguousDopplerConnectionError,
   SealedError,
   type ProjectRecord,
   type ProjectSettingsPatch,
@@ -238,6 +239,8 @@ export function registerProjectDetailRoutes(
     try {
       settings = await deps.updateSettings(id, patch, viewerId(request));
     } catch (error) {
+      if (error instanceof AmbiguousDopplerConnectionError)
+        return reply.code(409).send({ error: error.message });
       if (!(error instanceof ProjectAgentNotAllowedError)) throw error;
       reply.code(400);
       return { error: error.message };

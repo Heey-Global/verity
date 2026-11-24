@@ -4,7 +4,7 @@ import type { createStoreDopplerCredentials, DopplerPerson } from './doppler-cre
 import { resolveDopplerProjectSecret } from './doppler-secret-resolver.js';
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
 import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
-import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
+import { brokeredDopplerBindingId, defaultDopplerGrantMember } from './brokered-doppler-binding.js';
 import {
   createBrokeredHttpTool,
   referencedSnapshot,
@@ -28,6 +28,7 @@ export function createEmbeddedBrokeredHttp(
     (await eventStore.projectDopplerBindings.list(projectId)).map((binding) => ({
       id: binding.id,
       connectionId: binding.connectionId,
+      ...(binding.tokenRevision === undefined ? {} : { tokenRevision: binding.tokenRevision }),
       dopplerProject: binding.dopplerProject,
       dopplerConfig: binding.dopplerConfig,
       isDefault: binding.isDefault,
@@ -35,7 +36,12 @@ export function createEmbeddedBrokeredHttp(
   // Grants are kept per Doppler binding (ADR 0031): the ids of the project's
   // current bindings, against which a grant's binding id is checked.
   const brokeredGrantBindingIds = async (projectId: string): Promise<ReadonlySet<string>> =>
-    new Set((await getBrokeredProjectBindings(projectId)).map(dopplerBindingGrantId));
+    new Set(
+      (await getBrokeredProjectBindings(projectId)).flatMap((binding) => {
+        const id = dopplerBindingGrantId(binding);
+        return binding.isDefault ? [id, defaultDopplerGrantMember(id)] : [id];
+      }),
+    );
   /** The grant binding id of a call reading these references; undefined when one
    *  of them names no current binding, so nothing is auto-approved for it. */
   const brokeredGrantBindingIdFor = async (

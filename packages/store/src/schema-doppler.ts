@@ -8,6 +8,7 @@ interface DopplerConnectionsTable {
   label: string;
   /** Encrypted at rest; null for a connection only personal tokens use. */
   token: string | null;
+  token_revision: string | null;
   workplace_slug: string | null;
   workplace_name: string | null;
   created_at: ColumnType<Date, string | undefined, never>;

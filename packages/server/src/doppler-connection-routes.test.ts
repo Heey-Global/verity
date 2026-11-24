@@ -95,16 +95,37 @@ const put = (app: FastifyInstance, user: string, payload: unknown) =>
   });
 
 describe('personal Doppler connection routes', () => {
+  it('rejects implicit token changes when a project uses multiple connections', async () => {
+    const { app, tokens, listNames } = harness();
+    try {
+      const update = await put(app, 'lena', { token: 'dp.st.good' });
+      const remove = await app.inject({
+        method: 'DELETE',
+        url: '/projects/p1/doppler/connection',
+        headers: { 'x-test-user': 'lena' },
+      });
+      for (const response of [update, remove]) {
+        expect(response.statusCode).toBe(409);
+        expect(response.json().error).toContain('Doppler connection picker');
+      }
+      expect(tokens.size).toBe(0);
+      expect(listNames).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   // The token is the person's own credential: it is stored for them alone, checked
   // against the project's configs first, and never returned.
   it('stores a working token for the signed-in person only and never returns it', async () => {
     const { app, tokens } = harness();
-    expect((await put(app, 'lena', { token: 'dp.st.wrong' })).statusCode).toBe(400);
+    expect(
+      (await put(app, 'lena', { token: 'dp.st.wrong', connectionId: 'platform' })).statusCode,
+    ).toBe(400);
     expect(tokens.size).toBe(0);
     expect((await put(app, 'lena', { token: 'dp.st.good', userId: 'admin' })).statusCode).toBe(400);
 
-    // Without a connection, the default binding's connection is meant.
-    const saved = await put(app, 'lena', { token: 'dp.st.good' });
+    const saved = await put(app, 'lena', { token: 'dp.st.good', connectionId: 'platform' });
     expect(saved.statusCode).toBe(200);
     expect(saved.body).not.toContain('dp.st.good');
     expect(saved.json()).toMatchObject({
@@ -126,7 +147,7 @@ describe('personal Doppler connection routes', () => {
 
     const removed = await app.inject({
       method: 'DELETE',
-      url: '/projects/p1/doppler/connection',
+      url: '/projects/p1/doppler/connection?connectionId=platform',
       headers: { 'x-test-user': 'lena' },
     });
     expect(removed.statusCode).toBe(204);
@@ -137,7 +158,9 @@ describe('personal Doppler connection routes', () => {
   // it must read all of them, and it never answers for another connection.
   it('keeps one token per connection and checks it against every config there', async () => {
     const { app, tokens } = harness();
-    expect((await put(app, 'lena', { token: 'dp.st.dev-only' })).statusCode).toBe(400);
+    expect(
+      (await put(app, 'lena', { token: 'dp.st.dev-only', connectionId: 'platform' })).statusCode,
+    ).toBe(400);
     expect(
       (await put(app, 'lena', { token: 'dp.st.good', connectionId: 'payments' })).statusCode,
     ).toBe(400);
