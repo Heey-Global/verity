@@ -5,7 +5,10 @@ import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 import { createSecretCipher } from './crypto.js';
 import { migrationProvider } from './migrations.js';
 import { EventStore } from './store.js';
-import { UserDopplerConnectionStore } from './user-doppler-connection.js';
+import {
+  DopplerTokenRevalidationRequiredError,
+  UserDopplerConnectionStore,
+} from './user-doppler-connection.js';
 import { createRawDb, createTestDb, truncateAll, type TestDb } from './testing.js';
 
 const ADMIN = '00000000-0000-4000-8000-000000000001';
@@ -70,6 +73,34 @@ it('keeps each Doppler token to its person, project and connection, encrypted at
   expect((await connections.tokenBytes('mia', 'p1', 'c1'))?.toString()).toBe('dp.st.mia-p1');
   await connections.deleteAll('lena', 'p1');
   expect(await connections.tokenBytes('lena', 'p1', 'c2')).toBeUndefined();
+});
+
+it('only returns a scoped token for a binding it was validated against', async () => {
+  await ctx.db.insertInto('doppler_connections').values({ id: 'c1', label: 'Platform' }).execute();
+  const bindings = ctx.store.projectDopplerBindings;
+  const dev = await bindings.add('p1', {
+    connectionId: 'c1',
+    dopplerProject: 'portal',
+    dopplerConfig: 'dev',
+  });
+  const connections = new UserDopplerConnectionStore(ctx.db, createSecretCipher('cd'.repeat(32)));
+  await connections.set('lena', 'p1', 'c1', 'scoped-token-fixture', [dev.id]);
+  const stage = await bindings.add('p1', {
+    connectionId: 'c1',
+    dopplerProject: 'portal',
+    dopplerConfig: 'stg',
+  });
+
+  expect((await connections.tokenBytes('lena', 'p1', 'c1', dev))?.toString()).toBe(
+    'scoped-token-fixture',
+  );
+  await expect(connections.tokenBytes('lena', 'p1', 'c1', stage)).rejects.toBeInstanceOf(
+    DopplerTokenRevalidationRequiredError,
+  );
+  await connections.set('lena', 'p1', 'c1', 'revalidated-token-fixture', [dev.id, stage.id]);
+  expect((await connections.tokenBytes('lena', 'p1', 'c1', stage))?.toString()).toBe(
+    'revalidated-token-fixture',
+  );
 });
 
 // Standing grants become one person's consent. The ones that exist were approved

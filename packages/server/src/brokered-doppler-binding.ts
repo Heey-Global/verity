@@ -1,4 +1,4 @@
-import { dopplerBindingGrantId } from '@verity/store';
+import { dopplerBindingGrantId, LEGACY_DOPPLER_CONNECTION_ID } from '@verity/store';
 import { z } from 'zod';
 
 import type { ApprovedDopplerBinding, ProjectDopplerBinding } from './doppler-secret-reference.js';
@@ -38,6 +38,22 @@ export function tryParseBrokeredDopplerBinding(
   } catch {
     return undefined;
   }
+}
+
+/** The pre-0242 authority for the same migrated source, for denial and replay checks only. */
+export function legacyDopplerApprovalSnapshot(snapshot: string): string | undefined {
+  const current = tryParseBrokeredDopplerBinding(snapshot);
+  const binding = current?.bindings[0];
+  if (
+    current?.bindings.length !== 1 ||
+    binding?.connectionId !== LEGACY_DOPPLER_CONNECTION_ID ||
+    binding.tokenRevision !== undefined
+  )
+    return undefined;
+  return JSON.stringify({
+    dopplerProject: binding.dopplerProject,
+    dopplerConfig: binding.dopplerConfig,
+  });
 }
 
 /**

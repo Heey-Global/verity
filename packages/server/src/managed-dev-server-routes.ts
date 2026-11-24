@@ -1,3 +1,4 @@
+import { managedServerProviderSnapshotSchema } from '@verity/events';
 import type { EventStore } from '@verity/store';
 import { viewerId } from './view-state-routes.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -98,11 +99,8 @@ export function registerManagedDevServerRoutes(
             .array(z.object({ secretAlias: z.string(), env: z.string() }).strict())
             .max(16)
             .optional(),
-          providerSnapshot: z
-            .object({
-              provider: z.literal('doppler'),
-              project: z.string().min(1),
-              config: z.string().min(1),
+          providerSnapshot: managedServerProviderSnapshotSchema
+            .extend({
               authority: z
                 .string()
                 .regex(/^managed-doppler-v1:[a-f0-9]{64}$/)

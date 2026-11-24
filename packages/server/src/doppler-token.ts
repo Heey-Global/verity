@@ -393,9 +393,9 @@ export async function listDopplerConfigs(
 }
 
 /**
- * The Doppler workplace a token belongs to (`GET /v3/workplace`), for telling
+ * The Doppler workplace a token belongs to (`GET /v3/me`), for telling
  * connections apart (ADR 0031). Best-effort: a token that may not read it, or any
- * failure, yields nulls rather than an error. Only the workplace's id and name are
+ * failure, yields nulls rather than an error. Only the workplace's slug and name are
  * lifted out; the token and response body are never returned or logged.
  */
 export async function readDopplerWorkplace(
@@ -406,8 +406,9 @@ export async function readDopplerWorkplace(
   const doFetch = opts.fetch ?? fetch;
   const apiBaseUrl = (opts.apiBaseUrl ?? 'https://api.doppler.com').replace(/\/+$/, '');
   try {
-    const res = await doFetch(`${apiBaseUrl}/v3/workplace`, {
+    const res = await doFetch(`${apiBaseUrl}/v3/me`, {
       method: 'GET',
+      redirect: 'error',
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${token}`,
@@ -416,10 +417,10 @@ export async function readDopplerWorkplace(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
     });
     if (!res.ok) return none;
-    const body = (await res.json()) as { workplace?: { id?: unknown; name?: unknown } };
+    const body = (await res.json()) as { workplace?: { slug?: unknown; name?: unknown } };
     const text = (value: unknown) =>
-      typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : null;
-    return { slug: text(body.workplace?.id), name: text(body.workplace?.name) };
+      typeof value === 'string' && value.trim().length > 0 && value.length <= 200 ? value : null;
+    return { slug: text(body.workplace?.slug), name: text(body.workplace?.name) };
   } catch {
     return none;
   }

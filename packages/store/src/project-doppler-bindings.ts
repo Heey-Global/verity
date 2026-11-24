@@ -15,6 +15,7 @@ export interface ProjectDopplerBindingRecord {
   projectId: string;
   connectionId: string;
   connectionLabel: string;
+  workplaceSlug?: string;
   tokenRevision?: string;
   dopplerProject: string;
   dopplerConfig: string;
@@ -62,6 +63,7 @@ export class ProjectDopplerBindingStore {
         'b.project_id',
         'b.connection_id',
         'c.label',
+        'c.workplace_slug',
         'c.token_revision',
         'b.doppler_project',
         'b.doppler_config',
@@ -78,6 +80,7 @@ export class ProjectDopplerBindingStore {
       projectId: row.project_id,
       connectionId: row.connection_id,
       connectionLabel: row.label,
+      ...(row.workplace_slug === null ? {} : { workplaceSlug: row.workplace_slug }),
       ...(row.token_revision === null ? {} : { tokenRevision: row.token_revision }),
       dopplerProject: row.doppler_project,
       dopplerConfig: row.doppler_config,

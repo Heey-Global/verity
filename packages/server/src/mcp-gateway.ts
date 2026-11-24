@@ -1,4 +1,5 @@
-import { brokeredExecutionClaimId } from './brokered-http-consumption.js';
+import { brokeredExecutionClaimIds } from './brokered-http-consumption.js';
+import { legacyDopplerApprovalSnapshot } from './brokered-doppler-binding.js';
 import { APPROVAL_REDEMPTION_TTL_MS } from './brokered-tool-approval-store.js';
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
 import type {
@@ -1083,18 +1084,18 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     if (approvalStore && secretTool) {
       if (authorizationSnapshot === undefined)
         return toolError(id, 'Secret provider identity is unavailable; nothing ran.');
-      if (
-        await deps.hasSecretExecutionClaim?.({
-          projectId,
-          sessionId,
-          turnId,
-          callId: brokeredExecutionClaimId(invocationId),
-        })
-      )
-        return toolError(
-          id,
-          "This invocation's execution claim was already consumed. Check the prior result.",
-        );
+      const legacySnapshot = legacyDopplerApprovalSnapshot(authorizationSnapshot);
+      for (const callId of brokeredExecutionClaimIds(
+        invocationId,
+        baseInvocationId,
+        legacySnapshot,
+      )) {
+        if (await deps.hasSecretExecutionClaim?.({ projectId, sessionId, turnId, callId }))
+          return toolError(
+            id,
+            "This invocation's execution claim was already consumed. Check the prior result.",
+          );
+      }
       const binding = {
         projectId,
         sessionId,
@@ -1104,12 +1105,18 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       } as const;
       const legacyPrefix = mcpGatewayInvocationId(id, toolName, turnId, '');
       findStandingBlock = () =>
-        approvalStore.findStandingAuthorizationBlock(binding, invocationId, legacyPrefix);
+        approvalStore.findStandingAuthorizationBlock(
+          binding,
+          invocationId,
+          legacyPrefix,
+          legacySnapshot,
+        );
       detachedApproval = standingAuthorization
         ? await findStandingBlock()
         : await approvalStore.createOrFindPending(
             { ...binding, invocationId, ...keyed },
             legacyPrefix,
+            ...(legacySnapshot === undefined ? [] : ([legacySnapshot] as [string])),
           );
     }
     if (detachedApproval) {

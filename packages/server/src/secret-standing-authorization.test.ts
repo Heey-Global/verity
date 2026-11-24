@@ -3,7 +3,8 @@ import {
   brokeredExecutionClaimId,
   createBrokeredHttpConsumptionStore,
 } from './brokered-http-consumption.js';
-import type { McpGatewayDeps } from './mcp-gateway.js';
+import { mcpGatewayInvocationId, type McpGatewayDeps } from './mcp-gateway.js';
+import { LEGACY_DOPPLER_CONNECTION_ID } from '@verity/store';
 import { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -48,19 +49,19 @@ type Tool = keyof typeof requests;
 
 // Built by the production helper: a hand-written snapshot in an outdated shape
 // fails to parse and turns every call into "Tool access changed".
-const dopplerSnapshot = (dopplerConfig: string) =>
+const dopplerSnapshot = (dopplerConfig: string, connectionId = 'synthetic-connection') =>
   JSON.stringify(
     brokeredDopplerSnapshot([
       {
         bindingId: 'synthetic-binding',
-        connectionId: 'synthetic-connection',
+        connectionId,
         dopplerProject: 'synthetic-project',
         dopplerConfig,
       },
     ]),
   );
 
-async function harness(toolName: Tool, recordExecution = false) {
+async function harness(toolName: Tool, recordExecution = false, connectionId?: string) {
   const store = ctx.store;
   await ctx.db
     .insertInto('users')
@@ -166,7 +167,7 @@ async function harness(toolName: Tool, recordExecution = false) {
     mcpGateway: {
       servedTools: [toolName],
       resolveCaller: async (input) => tokens.resolve(input),
-      authorizationSnapshot: async () => dopplerSnapshot(config),
+      authorizationSnapshot: async () => dopplerSnapshot(config, connectionId),
       detachedApprovals: approvals,
       hasSecretExecutionClaim: claims.has,
       authorizeExecution,
@@ -251,6 +252,7 @@ async function harness(toolName: Tool, recordExecution = false) {
     approve,
     invokeTool,
     approvals,
+    claims,
     setCaller,
     conductor,
     rotateAuditKey: () => {
@@ -528,3 +530,80 @@ it('honors a denial saved while a standing-grant invocation is preparing to disp
     await h.app.close();
   }
 });
+
+it.each(['denied', 'consumed', 'claim', 'obsolete-allow', 'unrelated-source'] as const)(
+  'retains only applicable pre-upgrade settlement across snapshot migration: %s',
+  async (prior) => {
+    const tool = 'verity_http_request' as const;
+    const h = await harness(
+      tool,
+      false,
+      prior === 'unrelated-source' ? undefined : LEGACY_DOPPLER_CONNECTION_ID,
+    );
+    try {
+      if (prior !== 'obsolete-allow') await h.approve('project');
+      const requestId = 42;
+      const canonicalInput = canonicalJson(requests[tool]);
+      const authorizationSnapshot = JSON.stringify({
+        dopplerProject: 'synthetic-project',
+        dopplerConfig: 'test',
+      });
+      const requestHash = createHash('sha256').update(canonicalInput).digest('hex');
+      const snapshotHash = createHash('sha256').update(authorizationSnapshot).digest('hex');
+      const invocationId = `${mcpGatewayInvocationId(requestId, tool, 't1', requestHash)}:${snapshotHash}`;
+      const binding = {
+        projectId: 'p1',
+        sessionId: 's1',
+        toolName: tool,
+        canonicalInput,
+        authorizationSnapshot,
+      };
+      if (prior === 'claim') {
+        await h.claims.consume({
+          projectId: 'p1',
+          sessionId: 's1',
+          turnId: 't1',
+          callId: brokeredExecutionClaimId(invocationId),
+          requestHash,
+        });
+      } else {
+        const old = await h.approvals.createOrFindPending({
+          ...binding,
+          invocationId,
+          requestMac: 'old-mac',
+          macKeyId: 'old-key',
+        });
+        await h.approvals.decide(
+          old.id,
+          's1',
+          prior === 'consumed' || prior === 'obsolete-allow',
+          'alice',
+        );
+        if (prior === 'consumed') await h.approvals.consume(old.id, binding, invocationId);
+      }
+      const result = await h.call(undefined, 's1', true, requestId);
+      if (prior === 'obsolete-allow') {
+        expect(result.status).toBe('awaiting_approval');
+      } else if (prior === 'unrelated-source') {
+        expect(result.error).toBeUndefined();
+        expect(h.invokeTool).toHaveBeenCalledOnce();
+        return;
+      } else if (prior === 'denied') {
+        expect(result.error).toContain('denied');
+        const [denial] = await h.approvals.listReopenable('s1');
+        expect(denial?.authorizationSnapshot).toBe(
+          dopplerSnapshot('test', LEGACY_DOPPLER_CONNECTION_ID),
+        );
+        expect(await h.approvals.reopen(denial!.id, 's1')).toMatchObject({ status: 'pending' });
+      } else {
+        expect(result.error).toContain('already consumed');
+        expect((await h.call(undefined, 's1', true, requestId + 1)).error).toBeUndefined();
+        expect(h.invokeTool).toHaveBeenCalledOnce();
+        return;
+      }
+      expect(h.invokeTool).not.toHaveBeenCalled();
+    } finally {
+      await h.app.close();
+    }
+  },
+);

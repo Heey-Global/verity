@@ -10,6 +10,13 @@ export class DopplerBindingsChangedError extends Error {
   }
 }
 
+export class DopplerTokenRevalidationRequiredError extends Error {}
+
+export interface DopplerTokenBindingScope {
+  dopplerProject: string;
+  dopplerConfig: string;
+}
+
 /** A person's own Doppler token for one project and one Doppler connection
  *  (ADR 0023 §3, ADR 0031). */
 export class UserDopplerConnectionStore {
@@ -23,15 +30,39 @@ export class UserDopplerConnectionStore {
     userId: string,
     projectId: string,
     connectionId: string,
+    scope?: DopplerTokenBindingScope,
   ): Promise<Buffer | undefined> {
-    const row = await this.db
+    const query = this.db
       .selectFrom('user_doppler_connections')
       .select('token')
       .where('user_id', '=', userId)
       .where('project_id', '=', projectId)
-      .where('connection_id', '=', connectionId)
+      .where('connection_id', '=', connectionId);
+    if (scope === undefined) {
+      const row = await query.executeTakeFirst();
+      return row === undefined ? undefined : this.cipher.decryptBytes(row.token);
+    }
+    const row = await query
+      .select((eb) =>
+        eb
+          .exists(
+            eb
+              .selectFrom('project_doppler_bindings as binding')
+              .select('binding.id')
+              .where('binding.project_id', '=', projectId)
+              .where('binding.connection_id', '=', connectionId)
+              .where('binding.doppler_project', '=', scope.dopplerProject)
+              .where('binding.doppler_config', '=', scope.dopplerConfig)
+              .where(
+                sql<boolean>`binding.id = any(user_doppler_connections.validated_binding_ids)`,
+              ),
+          )
+          .as('validated'),
+      )
       .executeTakeFirst();
-    return row === undefined ? undefined : this.cipher.decryptBytes(row.token);
+    if (row === undefined) return undefined;
+    if (!row.validated) throw new DopplerTokenRevalidationRequiredError();
+    return this.cipher.decryptBytes(row.token);
   }
 
   /** The connections the person holds a token for in the project, without
@@ -102,13 +133,11 @@ export class UserDopplerConnectionStore {
           validated_binding_ids: validatedBindingIds,
         })
         .onConflict((conflict) =>
-          conflict
-            .columns(['user_id', 'project_id', 'connection_id'])
-            .doUpdateSet({
-              token: encrypted,
-              validated_binding_ids: validatedBindingIds,
-              updated_at: sql`now()`,
-            }),
+          conflict.columns(['user_id', 'project_id', 'connection_id']).doUpdateSet({
+            token: encrypted,
+            validated_binding_ids: validatedBindingIds,
+            updated_at: sql`now()`,
+          }),
         )
         .execute();
     });

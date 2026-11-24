@@ -36,6 +36,7 @@ export function registerDopplerConnectionRoutes(
   app: FastifyInstance,
   deps: {
     store: DopplerConnectionStore;
+    workplace: (token: string) => Promise<{ slug: string | null }>;
     /** Lists a bound config's secret names with the given token, proving it reads them. */
     listNames: (input: {
       dopplerProject: string;
@@ -136,6 +137,34 @@ export function registerDopplerConnectionRoutes(
       return reply
         .code(409)
         .send({ error: 'this project has no Doppler config on that connection to connect to' });
+    const connection = await deps.store.dopplerConnections.get(connectionId);
+    if (connection === undefined)
+      return reply.code(409).send({ error: 'Doppler connection changed. Try connecting again.' });
+    let expectedWorkplace = connection.workplaceSlug;
+    if (expectedWorkplace === null && connection.hasToken) {
+      const instance = await deps.store.dopplerConnections.tokenBytes(connectionId);
+      try {
+        expectedWorkplace =
+          instance === undefined
+            ? null
+            : ((await deps.workplace(instance.toString('utf8')).catch(() => undefined))?.slug ??
+              null);
+      } finally {
+        instance?.fill(0);
+      }
+    }
+    if (expectedWorkplace !== null || connection.hasToken) {
+      const personal =
+        expectedWorkplace === null
+          ? undefined
+          : await deps.workplace(input.data.token).catch(() => undefined);
+      if (expectedWorkplace === null || personal?.slug !== expectedWorkplace) {
+        return reply.code(400).send({
+          error:
+            'This token could not be verified for this Doppler workplace. Use a token from the connected workplace.',
+        });
+      }
+    }
     // The token must read every config the project binds on this connection.
     for (const bound of bindings) {
       const token = Buffer.from(input.data.token, 'utf8');

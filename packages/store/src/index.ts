@@ -325,6 +325,8 @@ export {
 export { UserGitIdentityStore, type UserGitIdentity } from './user-git-identity.js';
 export {
   DopplerBindingsChangedError,
+  DopplerTokenRevalidationRequiredError,
+  type DopplerTokenBindingScope,
   UserDopplerConnectionStore,
 } from './user-doppler-connection.js';
 export {

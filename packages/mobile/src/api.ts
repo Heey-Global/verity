@@ -1,3 +1,4 @@
+import { managedServerProviderSnapshotSchema } from '@verity/events';
 import {
   branchListSchema,
   mergeStateSchema,
@@ -925,12 +926,6 @@ const sessionDevServerSchema = z.object({
   managedInstanceId: z.string().optional(),
 });
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
-const managedServerProviderSnapshotSchema = z.object({
-  authority: z.string().optional(),
-  provider: z.literal('doppler'),
-  project: z.string().min(1),
-  config: z.string().min(1),
-});
 const managedDevServerSchema = z.object({
   providerSnapshot: managedServerProviderSnapshotSchema.nullable().optional(),
   secretBindings: z.array(z.object({ secretAlias: z.string(), env: z.string() })).default([]),

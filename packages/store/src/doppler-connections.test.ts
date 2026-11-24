@@ -231,6 +231,17 @@ describe('Doppler connections', () => {
     await expect(connections.remove(connectionId, [second.id, first.id])).resolves.toBe(true);
   });
 
+  it('accepts a first legacy token after the project settings create a tokenless binding', async () => {
+    const store = ctx.store;
+    await store.updateProjectSettings('p1', { dopplerProject: 'app', dopplerConfig: 'prd' });
+    const before = await store.projectDopplerBindings.list('p1');
+    expect(before).toHaveLength(1);
+    expect((await store.dopplerConnections.get('legacy-doppler'))?.hasToken).toBe(false);
+    await store.updateVeritySettings({ dopplerServiceToken: 'dp.sa.initial' });
+    expect((await store.dopplerConnections.get('legacy-doppler'))?.hasToken).toBe(true);
+    expect((await store.projectDopplerBindings.list('p1'))[0]?.id).toBe(before[0]?.id);
+  });
+
   it('keeps an unchanged legacy token and rejects unvalidated changes when bindings use it', async () => {
     const store = ctx.store;
     const connectionId = 'legacy-doppler';
@@ -521,8 +532,15 @@ it('moves the instance token, project configs, personal tokens and grants on upg
       dopplerProject: 'tools',
       dopplerConfig: 'dev',
     });
+    await sql`insert into users (id, role, status) values ('mia', 'member', 'active')`.execute(
+      raw.db,
+    );
+    await upgraded.userDopplerConnections.set('mia', 'p1', 'legacy-doppler', 'dp.st.unvalidated');
     const downgraded = await migrator.migrateTo('0241_github_repository_ids');
     if (downgraded.error) throw new Error('Downgrade failed', { cause: downgraded.error });
+    const personalTokens = await sql<{ user_id: string }>`
+      select user_id from user_doppler_connections order by user_id`.execute(raw.db);
+    expect(personalTokens.rows).toEqual([{ user_id: 'lena' }]);
     const settings = await sql<{
       project_id: string;
       doppler_project: string | null;

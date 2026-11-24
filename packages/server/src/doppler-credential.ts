@@ -1,4 +1,8 @@
-import type { EventStore } from '@verity/store';
+import {
+  DopplerTokenRevalidationRequiredError,
+  type DopplerTokenBindingScope,
+  type EventStore,
+} from '@verity/store';
 
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 import { personForCredential } from './personless-credential.js';
@@ -20,7 +24,12 @@ export function dopplerConnectionRequired(): DopplerSecretResolutionError {
 
 export interface DopplerCredentialSources {
   /** The person's own token for the project and connection, as erasable bytes. */
-  personal(userId: string, projectId: string, connectionId: string): Promise<Buffer | undefined>;
+  personal(
+    userId: string,
+    projectId: string,
+    connectionId: string,
+    scope?: DopplerTokenBindingScope,
+  ): Promise<Buffer | undefined>;
   /** The connection's instance token, which is the administrator's. */
   instance(connectionId: string): Promise<Buffer | undefined>;
   isAdministrator(userId: string): Promise<boolean>;
@@ -41,9 +50,19 @@ export function createDopplerCredentials(sources: DopplerCredentialSources) {
     person: string | null,
     projectId: string,
     connectionId: string,
+    scope?: DopplerTokenBindingScope,
   ): Promise<Buffer> => {
     const userId = person ?? (await sources.personless(projectId));
-    const own = await sources.personal(userId, projectId, connectionId);
+    let own: Buffer | undefined;
+    try {
+      own = await sources.personal(userId, projectId, connectionId, scope);
+    } catch (error) {
+      if (!(error instanceof DopplerTokenRevalidationRequiredError)) throw error;
+      throw new DopplerSecretResolutionError(
+        'Secret resolution failed during Doppler connection: reconnect your own Doppler token in project settings to validate access to this config. No secret value was exposed.',
+        'Doppler connection',
+      );
+    }
     if (own !== undefined) return own;
     if (!(await sources.isAdministrator(userId))) throw dopplerConnectionRequired();
     const instance = await sources.instance(connectionId);
@@ -60,8 +79,8 @@ export function createDopplerCredentials(sources: DopplerCredentialSources) {
 /** `createDopplerCredentials` over the store, with the instance token as stored. */
 export function createStoreDopplerCredentials(store: EventStore) {
   return createDopplerCredentials({
-    personal: (userId, projectId, connectionId) =>
-      store.userDopplerConnections.tokenBytes(userId, projectId, connectionId),
+    personal: (userId, projectId, connectionId, scope) =>
+      store.userDopplerConnections.tokenBytes(userId, projectId, connectionId, scope),
     instance: (connectionId) => store.dopplerConnections.tokenBytes(connectionId),
     isAdministrator: (userId) => store.isActiveAdministrator(userId),
     personless: async (projectId) => {

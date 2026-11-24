@@ -68,6 +68,7 @@ export function createEmbeddedBrokeredHttp(
       await dopplerPersonId(person),
       input.projectId,
       connectionId,
+      input,
     );
     try {
       return await resolveDopplerProjectSecret({ ...input, token });

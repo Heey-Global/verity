@@ -536,10 +536,13 @@ describe('managed servers with secret bindings', () => {
           lastRunProviderAuthority: null,
         });
       else await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
-      if (change === 'reapproved') {
-        expect(await approve()).not.toBe(authority);
-        expect((await manager.view('s1'))[0]!.instance?.localOn).toBe(false);
-      }
+      if (change === 'reapproved') expect(await approve()).not.toBe(authority);
+      expect((await manager.view('s1'))[0]!.instance).toMatchObject({
+        localOn: false,
+        awaitingApproval: true,
+        url: null,
+        localShareId: null,
+      });
       expect(sandbox.started).toHaveLength(1);
       await manager.tick();
       expect(shares.shares).toHaveLength(0);

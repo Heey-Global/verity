@@ -6,6 +6,19 @@ export function brokeredExecutionClaimId(invocationId: string): string {
   return createHash('sha256').update(invocationId).digest('hex');
 }
 
+export function brokeredExecutionClaimIds(
+  invocationId: string,
+  baseInvocationId: string,
+  legacySnapshot?: string,
+): string[] {
+  const ids = [brokeredExecutionClaimId(invocationId)];
+  if (legacySnapshot !== undefined) {
+    const legacyHash = createHash('sha256').update(legacySnapshot).digest('hex');
+    ids.push(brokeredExecutionClaimId(`${baseInvocationId}:${legacyHash}`));
+  }
+  return ids;
+}
+
 /** Durable at-most-once fence committed before an approved HTTP request reaches the network. */
 export function createBrokeredHttpConsumptionStore(db: Kysely<Database>) {
   return {

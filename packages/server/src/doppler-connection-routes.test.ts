@@ -21,7 +21,14 @@ const binding = (
   createdAt: new Date(0),
 });
 
-function harness({ changeBindings = false } = {}) {
+function harness({
+  changeBindings = false,
+  workplaceSlug = null as string | null,
+  personalWorkplace = null as string | null,
+  instanceWorkplace = undefined as string | null | undefined,
+} = {}) {
+  const instanceToken =
+    instanceWorkplace === undefined ? undefined : Buffer.from('instance-token-fixture');
   const tokens = new Map<string, string>();
   const validated = new Map<string, readonly string[]>();
   const bindings = [
@@ -32,6 +39,8 @@ function harness({ changeBindings = false } = {}) {
   const store = {
     isActiveAdministrator: async (userId: string) => userId === 'admin',
     dopplerConnections: {
+      get: async () => ({ workplaceSlug, hasToken: instanceToken !== undefined }),
+      tokenBytes: async () => instanceToken,
       list: async () => [
         { id: 'platform', hasToken: true },
         { id: 'payments', hasToken: false },
@@ -105,8 +114,11 @@ function harness({ changeBindings = false } = {}) {
     );
     if (outcome !== 'allow') return reply.code(403).send();
   });
-  registerDopplerConnectionRoutes(app, { store: store as never, listNames });
-  return { app, tokens, listNames, bindings };
+  const workplace = vi.fn(async (token: string) => ({
+    slug: token === 'instance-token-fixture' ? (instanceWorkplace ?? null) : personalWorkplace,
+  }));
+  registerDopplerConnectionRoutes(app, { store: store as never, listNames, workplace });
+  return { app, tokens, listNames, bindings, workplace, instanceToken };
 }
 
 const put = (app: FastifyInstance, user: string, payload: unknown) =>
@@ -118,6 +130,54 @@ const put = (app: FastifyInstance, user: string, payload: unknown) =>
   });
 
 describe('personal Doppler connection routes', () => {
+  it.each(['other-workplace', null])(
+    'refuses workplace %s for an identified connection',
+    async (personalWorkplace) => {
+      const { app, tokens, listNames, workplace } = harness({
+        workplaceSlug: 'northstar',
+        personalWorkplace,
+      });
+      try {
+        const update = await put(app, 'lena', { token: 'dp.st.good', connectionId: 'platform' });
+        expect(update.statusCode).toBe(400);
+        expect(update.json().error).toContain('could not be verified');
+        expect(workplace).toHaveBeenCalledTimes(1);
+        expect(listNames).not.toHaveBeenCalled();
+        expect(tokens.size).toBe(0);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
+  it('accepts a verified same-workplace token that can read the bound configs', async () => {
+    const { app, tokens } = harness({ workplaceSlug: 'northstar', personalWorkplace: 'northstar' });
+    try {
+      expect(
+        (await put(app, 'lena', { token: 'dp.st.good', connectionId: 'platform' })).statusCode,
+      ).toBe(200);
+      expect(tokens.has('lena/p1/platform')).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('derives workplace identity for a connection with a migrated instance token', async () => {
+    const { app, tokens, workplace, instanceToken } = harness({
+      instanceWorkplace: 'northstar',
+      personalWorkplace: 'other-workplace',
+    });
+    try {
+      const update = await put(app, 'lena', { token: 'dp.st.good', connectionId: 'platform' });
+      expect(update.statusCode).toBe(400);
+      expect(workplace).toHaveBeenCalledTimes(2);
+      expect(instanceToken).toEqual(Buffer.alloc(instanceToken!.length));
+      expect(tokens.size).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('rejects implicit token changes when a project uses multiple connections', async () => {
     const { app, tokens, listNames } = harness();
     try {

@@ -108,9 +108,11 @@ export const dopplerConnectionsMigration: Migration = {
     );
     await sql`delete from user_doppler_connections u
       where connection_id <> ${LEGACY_DOPPLER_CONNECTION_ID}
-        or exists (select 1 from project_doppler_bindings b
+        or not exists (select 1 from project_doppler_bindings b
           where b.project_id = u.project_id and b.is_default
-            and b.connection_id <> ${LEGACY_DOPPLER_CONNECTION_ID})`.execute(db);
+            and b.connection_id = u.connection_id and b.id = any(u.validated_binding_ids))`.execute(
+      db,
+    );
 
     // Only single-binding grants for the current legacy default can be carried
     // back. Older revisions, qualified references and multi-binding grants

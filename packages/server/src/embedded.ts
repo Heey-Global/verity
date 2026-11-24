@@ -890,7 +890,7 @@ export async function buildEmbeddedServer(
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
       providerSnapshot: async (projectId, bindings) =>
         devServerSecrets.managedDevServerProviderSnapshot(
-          await getBrokeredProjectBindings(projectId),
+          await eventStore.projectDopplerBindings.list(projectId),
           bindings,
         ),
       resolveSecrets: devServerSecrets.createManagedDevServerSecretResolver({

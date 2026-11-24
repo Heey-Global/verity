@@ -20,6 +20,7 @@ export function registerSecretApprovalRoutes(
     permitted: (userId: string | undefined, projectId: string) => Promise<boolean>;
     refresh: (sessionId: string) => Promise<void>;
     isCurrent: (record: BrokeredToolApprovalRecord) => Promise<boolean>;
+    historyMatcher?: () => (record: BrokeredToolApprovalRecord) => Promise<boolean>;
   },
 ): void {
   app.get('/sessions/:id/secret-approvals', async (request, reply) => {
@@ -27,9 +28,10 @@ export function registerSecretApprovalRoutes(
     const session = await deps.store.getSession(id);
     if (!session) return reply.code(404).send({ error: 'Session not found.' });
     const requests = [];
+    const isCurrent = deps.historyMatcher?.() ?? deps.isCurrent;
     for (const record of await deps.approvals.listReopenable(id)) {
       if (session.projectId !== null && session.projectId !== record.projectId) continue;
-      if (!(await deps.isCurrent(record))) continue;
+      if (!(await isCurrent(record))) continue;
       requests.push({
         id: record.id,
         toolName: record.toolName,

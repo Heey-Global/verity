@@ -1,8 +1,6 @@
 import { createHash } from 'node:crypto';
-import type {
-  ManagedDevServerManagerOptions,
-  ManagedServerProviderSnapshot,
-} from './managed-dev-server-manager.js';
+import type { ManagedServerProviderSnapshot } from '@verity/events';
+import type { ManagedDevServerManagerOptions } from './managed-dev-server-manager.js';
 import {
   normalizeManagedDevServerSecretBindings,
   type ManagedDevServerSecretBinding,
@@ -17,9 +15,21 @@ import {
   type BrokeredSecretResolver,
 } from './brokered-http-tool.js';
 
+type DisplayableDopplerBinding = BrokeredHttpProjectBinding & {
+  connectionLabel?: string;
+  workplaceSlug?: string;
+};
+
+function displayText(text: string, limit: number): string {
+  return text
+    .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
+    .trim()
+    .slice(0, limit);
+}
+
 /** The snapshot shown during approval and checked again against the actual secret sources. */
 export function managedDevServerProviderSnapshot(
-  projectBindings: readonly BrokeredHttpProjectBinding[],
+  projectBindings: readonly DisplayableDopplerBinding[],
   secretBindings: readonly ManagedDevServerSecretBinding[],
 ) {
   const references = secretBindings.map((entry) => entry.secretAlias);
@@ -28,7 +38,21 @@ export function managedDevServerProviderSnapshot(
     snapshot.bindings.find((binding) => binding.includesBareReference) ?? snapshot.bindings[0]!;
   const authority =
     'managed-doppler-v1:' + createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+  const details = new Map(projectBindings.map((binding) => [binding.id, binding]));
+  const sources = snapshot.bindings.map((binding) => {
+    const connected = details.get(binding.bindingId);
+    const label = displayText(connected?.connectionLabel ?? '', 80);
+    const workplace = displayText(connected?.workplaceSlug ?? '', 200);
+    return {
+      project: displayText(binding.dopplerProject, 200) || '(unnamed)',
+      config: displayText(binding.dopplerConfig, 200) || '(unnamed)',
+      connectionId: binding.connectionId,
+      ...(label ? { connectionLabel: label } : {}),
+      ...(workplace ? { workplaceSlug: workplace } : {}),
+    };
+  });
   return {
+    sources,
     provider: 'doppler' as const,
     project: primary.dopplerProject,
     config: primary.dopplerConfig,

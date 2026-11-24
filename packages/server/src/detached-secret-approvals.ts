@@ -10,6 +10,7 @@ import type {
   BrokeredToolApprovalStore,
 } from './brokered-tool-approval-store.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
+import { brokeredSecretReferences, referencedSnapshot } from './brokered-http-tool.js';
 import {
   brokeredSecretSource,
   tryParseBrokeredDopplerBinding,
@@ -27,6 +28,28 @@ function currentSnapshotMatcher(gateway: Pick<McpGatewayDeps, 'authorizationSnap
         request: JSON.parse(record.canonicalInput) as Record<string, unknown>,
       });
       return current === record.authorizationSnapshot;
+    } catch {
+      return false;
+    }
+  };
+}
+
+function historySnapshotMatcher(store: Pick<EventStore, 'projectDopplerBindings'>) {
+  const byProject = new Map<string, ReturnType<typeof store.projectDopplerBindings.list>>();
+  return async (record: BrokeredToolApprovalRecord): Promise<boolean> => {
+    if (!tryParseBrokeredDopplerBinding(record.authorizationSnapshot)) return false;
+    try {
+      const bindings =
+        byProject.get(record.projectId) ?? store.projectDopplerBindings.list(record.projectId);
+      byProject.set(record.projectId, bindings);
+      const references = brokeredSecretReferences(
+        record.toolName,
+        JSON.parse(record.canonicalInput),
+      );
+      return (
+        JSON.stringify(referencedSnapshot(await bindings, references)) ===
+        record.authorizationSnapshot
+      );
     } catch {
       return false;
     }
@@ -176,6 +199,7 @@ export function installDetachedSecretApprovals(
       permitted: canExecuteAs,
       refresh: (id) => conductor.refreshDetachedPermissions(id),
       isCurrent: currentSnapshotMatcher(gateway),
+      historyMatcher: () => historySnapshotMatcher(deps.eventStore),
     });
   }
   return {

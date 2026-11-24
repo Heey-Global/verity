@@ -16,6 +16,7 @@ export function createBrokeredSecretAliases(options: {
     userId: string | null,
     projectId: string,
     connectionId: string,
+    scope: Pick<BrokeredHttpProjectBinding, 'dopplerProject' | 'dopplerConfig'>,
   ): Promise<Uint8Array>;
   listNames(input: {
     dopplerProject: string;
@@ -60,7 +61,7 @@ export function createBrokeredSecretAliases(options: {
       bindings.map(async (binding) => {
         let token: Uint8Array | undefined;
         try {
-          token = await options.credentialFor(userId, projectId, binding.connectionId);
+          token = await options.credentialFor(userId, projectId, binding.connectionId, binding);
           const names = await options.listNames({
             dopplerProject: binding.dopplerProject,
             dopplerConfig: binding.dopplerConfig,

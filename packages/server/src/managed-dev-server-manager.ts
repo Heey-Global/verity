@@ -1,3 +1,4 @@
+import type { ManagedServerProviderSnapshot } from '@verity/events';
 import {
   stopOrphanManagedProcesses,
   verifyRecoveryInstances,
@@ -136,13 +137,6 @@ export interface ManagedDevServerManagerOptions {
   wakeSandbox?: (projectId: string, sessionId: string) => Promise<unknown>;
   now?: () => number;
   log?: (message: string, detail?: Record<string, unknown>) => void;
-}
-
-export interface ManagedServerProviderSnapshot {
-  provider: 'doppler';
-  project: string;
-  config: string;
-  authority?: string | undefined;
 }
 
 export class ManagedDevServerError extends Error {
@@ -406,7 +400,8 @@ export class ManagedDevServerManager {
     entry: ManagedDevServerRecord,
     instance: ManagedDevServerInstanceRecord,
   ): ManagedInstanceView {
-    const url = instance.state === 'running' ? this.urlFor(instance) : null;
+    const approved = this.ranApproved(entry, instance);
+    const url = instance.state === 'running' && approved ? this.urlFor(instance) : null;
     return {
       id: instance.id,
       sessionId: instance.sessionId,
@@ -416,11 +411,10 @@ export class ManagedDevServerManager {
       url,
       localShareId: url ? (this.shareFor(instance)?.id ?? null) : null,
       sandboxPort: instance.sandboxPort,
-      awaitingApproval:
-        instance.state === 'running' && url === null && !this.ranApproved(entry, instance),
+      awaitingApproval: instance.state === 'running' && !approved,
       localOn:
         instance.localAccess &&
-        this.ranApproved(entry, instance) &&
+        approved &&
         (instance.desired === 'running' || instance.state === 'crashed'),
       restartToApply:
         (instance.state === 'running' || instance.state === 'starting') &&

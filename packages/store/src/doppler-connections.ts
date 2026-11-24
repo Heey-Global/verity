@@ -237,12 +237,16 @@ export class DopplerConnectionStore {
       if (other !== undefined) throw new AmbiguousDopplerConnectionError();
       if (existing === undefined && token === null) return;
 
-      const activeBinding = await transaction
-        .selectFrom('project_doppler_bindings')
-        .select('id')
-        .where('connection_id', '=', LEGACY_DOPPLER_CONNECTION_ID)
-        .executeTakeFirst();
-      if (activeBinding !== undefined) throw new AmbiguousDopplerConnectionError();
+      // Older clients may write the pair first, creating a tokenless placeholder.
+      // Once a token exists, changing it on an active connection requires validation.
+      if (existing !== undefined && existing.token !== null) {
+        const activeBinding = await transaction
+          .selectFrom('project_doppler_bindings')
+          .select('id')
+          .where('connection_id', '=', LEGACY_DOPPLER_CONNECTION_ID)
+          .executeTakeFirst();
+        if (activeBinding !== undefined) throw new AmbiguousDopplerConnectionError();
+      }
 
       const replacement = {
         token: token === null ? null : this.cipher.encrypt(token),
