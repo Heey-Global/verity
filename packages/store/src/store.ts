@@ -1,3 +1,5 @@
+import { AttachmentStore, type AttachmentBlob } from './attachments.js';
+export type { AttachmentBlob } from './attachments.js';
 import {
   EventWriteStore,
   ABANDONED_TURN_FENCE_HASH,
@@ -49,7 +51,6 @@ import {
   type SessionMockups,
   storedMockupState,
   mockupReview,
-  attachmentStorageRecord,
 } from './session-mockups.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
@@ -125,14 +126,12 @@ import {
   type BoundedHistoryPage,
   type BoundedHistoryResult,
 } from '@verity/events';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   type AgentEvent,
   SESSION_PROJECTION_EVENT_TYPES,
   type Usage,
   type UsageTotals,
-  externalizeToolResultImages,
-  externalizeToolResultText,
   parseAgentEvent,
   parsePlanningProposal,
 } from '@verity/events';
@@ -175,12 +174,6 @@ export {
   type ProjectAgent,
 } from './project-settings.js';
 import { TaskStore } from './tasks.js';
-
-/** A stored image blob: its media type and raw bytes (for serving). */
-export interface AttachmentBlob {
-  mediaType: string;
-  bytes: Buffer;
-}
 
 export {
   backfillInlineAttachments,
@@ -950,6 +943,10 @@ export class EventStore implements EventSink {
     () => this.listSessions(),
     () => this.scheduleMessageProjection(),
   );
+  private get attachments(): AttachmentStore {
+    return new AttachmentStore(this.db);
+  }
+
   private eventWriteStore: EventWriteStore | undefined;
   private get eventWrites(): EventWriteStore {
     return (this.eventWriteStore ??= new EventWriteStore({
@@ -3026,18 +3023,11 @@ export class EventStore implements EventSink {
   private async externalizeToolResult(
     event: Extract<AgentEvent, { t: 'tool_result' }>,
   ): Promise<AgentEvent> {
-    const imaged = await externalizeToolResultImages(event.output, (mediaType, data) =>
-      this.putAttachment(mediaType, data),
+    return this.attachments.externalizeToolResult(
+      event,
+      (mediaType, data) => this.putAttachment(mediaType, data),
+      (jsonText) => this.putTextBlob(jsonText),
     );
-    const texted = await externalizeToolResultText(imaged.output, (jsonText) =>
-      this.putTextBlob(jsonText),
-    );
-    if (!imaged.changed && texted.ref === undefined) return event;
-    return {
-      ...event,
-      output: texted.output,
-      ...(texted.ref !== undefined ? { outputRef: texted.ref } : {}),
-    };
   }
 
   /**
@@ -3048,17 +3038,7 @@ export class EventStore implements EventSink {
    * because the externalized body is the JSON serialization of the tool output.
    */
   async putTextBlob(jsonText: string): Promise<string> {
-    // Redact credentials from the externalized tool-output blob too (audit M9), so
-    // a token echoed in a large tool result isn't persisted in clear. Content-
-    // addressed by the REDACTED bytes, so the event's outputRef stays consistent.
-    const bytes = Buffer.from(redactSecrets(jsonText), 'utf8');
-    const hash = createHash('sha256').update(bytes).digest('hex');
-    await this.db
-      .insertInto('attachments')
-      .values({ hash, media_type: 'application/json', bytes })
-      .onConflict((oc) => oc.column('hash').doNothing())
-      .execute();
-    return hash;
+    return this.attachments.putTextBlob(jsonText);
   }
 
   async putAttachment(
@@ -3066,39 +3046,17 @@ export class EventStore implements EventSink {
     base64Data: string,
     mockupSessionId?: string,
   ): Promise<string> {
-    const attachment = attachmentStorageRecord(base64Data, mediaType, mockupSessionId);
-    await this.db
-      .insertInto('attachments')
-      .values(attachment)
-      .onConflict((oc) => oc.column('hash').doNothing())
-      .execute();
-    return attachment.hash;
+    return this.attachments.putAttachment(mediaType, base64Data, mockupSessionId);
   }
 
   /** Read a stored blob; an optional byte ceiling filters it before transfer. */
   async getAttachment(hash: string, maxBytes?: number): Promise<AttachmentBlob | undefined> {
-    let query = this.db
-      .selectFrom('attachments')
-      .select(['media_type', 'bytes'])
-      .where('hash', '=', hash);
-    if (maxBytes !== undefined) {
-      query = query.where(sql<number>`octet_length(bytes)`, '<=', maxBytes);
-    }
-    const row = await query.executeTakeFirst();
-    if (!row) return undefined;
-    return { mediaType: row.media_type, bytes: Buffer.from(row.bytes) };
+    return this.attachments.getAttachment(hash, maxBytes);
   }
 
   /** Whether a prompt in this session references the content-addressed attachment. */
   async sessionHasAttachment(sessionId: string, hash: string): Promise<boolean> {
-    const row = await this.db
-      .selectFrom('events')
-      .select('id')
-      .where('session_id', '=', sessionId)
-      .where('type', '=', 'prompt')
-      .where(sql<boolean>`payload @> ${JSON.stringify({ attachments: [{ id: hash }] })}::jsonb`)
-      .executeTakeFirst();
-    return row !== undefined;
+    return this.attachments.sessionHasAttachment(sessionId, hash);
   }
 
   /** Restore listener discovery's baseline without reading the session's transcript. */
