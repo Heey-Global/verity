@@ -60,7 +60,6 @@ describe('project Doppler settings', () => {
               connectionLabel: 'Payments',
               dopplerProject: 'billing',
               dopplerConfig: 'dev',
-              connectionRevision: 'browse-revision',
               isDefault: false,
             }),
           ]),
@@ -152,6 +151,7 @@ describe('project Doppler settings', () => {
         connectionId,
         dopplerProject: 'billing',
         dopplerConfig: 'dev',
+        connectionRevision: 'browse-revision',
       }),
     );
   });

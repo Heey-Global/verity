@@ -46,7 +46,7 @@ describe('managed public links', () => {
       dopplerProject: 'portal',
       dopplerConfig: 'prd',
       isDefault: true,
-      tokenRevision: 'original',
+      tokenRevision: '11111111-1111-4111-8111-111111111111',
     };
     const approved = managedDevServerProviderSnapshot([dopplerBinding], secretBindings).authority;
     const store = {
@@ -125,7 +125,7 @@ describe('managed public links', () => {
         running = true;
       },
       rotateDopplerToken: () => {
-        dopplerBinding.tokenRevision = 'rotated';
+        dopplerBinding.tokenRevision = '22222222-2222-4222-8222-222222222222';
       },
       remove: () => {
         instance = undefined;

@@ -117,7 +117,7 @@ it('rejects a selection from a catalog browsed before the token rotated', async 
     const { connectionRevision } = catalog.json<{ connectionRevision: string | null }>();
     expect(connectionRevision).toBeNull();
     await store.dopplerConnections.update(connectionId, { token: 'dp.sa.platform-next' });
-    const response = await call(app, 'manager', 'POST', '/projects/p1/doppler/bindings', {
+    const response = await call(app, 'admin', 'POST', '/projects/p1/doppler/bindings', {
       connectionId,
       connectionRevision,
       dopplerProject: 'portal',
