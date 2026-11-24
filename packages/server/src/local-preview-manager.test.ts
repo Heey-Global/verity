@@ -354,6 +354,7 @@ it('follows a managed instance new target port while keeping local URL and crede
     sandboxPort: 3000,
     networkPort: 18100,
     desired: 'running',
+    state: 'running' as 'running' | 'starting',
   };
   Object.assign(options.store, {
     managedDevServers: {
@@ -374,6 +375,10 @@ it('follows a managed instance new target port while keeping local URL and crede
   instance.sandboxPort = 4000;
   const restored = new LocalPreviewManager(options);
   managers.push(restored);
+  instance.state = 'starting';
+  await restored.reconcile();
+  expect(restored.list('s1')).toEqual([share]);
+  instance.state = 'running';
   await restored.reconcile();
   expect(restored.list('s1')).toEqual([{ ...share, targetPort: 4000 }]);
   expect(docker.createContainer).toHaveBeenLastCalledWith(
@@ -917,6 +922,7 @@ it.each([false, true])(
           projectId: 'p1',
           localAccess: true,
           desired: 'running',
+          state: 'running',
           sandboxPort: 3000,
           networkPort: 18100,
           lastRunCommand: 'npm start',

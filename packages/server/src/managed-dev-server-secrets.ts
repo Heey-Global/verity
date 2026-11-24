@@ -155,6 +155,7 @@ export async function managedRunApproved(
   instance: ManagedDevServerInstanceRecord,
 ): Promise<boolean> {
   return !!(
+    instance.state === 'running' &&
     instance.lastRunCommand &&
     instance.lastRunWorkdir &&
     (await store.managedDevServers
