@@ -325,6 +325,24 @@ export {
 export { UserGitIdentityStore, type UserGitIdentity } from './user-git-identity.js';
 export { UserDopplerConnectionStore } from './user-doppler-connection.js';
 export {
+  DopplerConnectionStore,
+  type DopplerConnectionRecord,
+  type DopplerConnectionUsage,
+  type DopplerWorkplace,
+} from './doppler-connections.js';
+export {
+  DuplicateDopplerBindingError,
+  ProjectDopplerBindingStore,
+  UnknownDopplerConnectionError,
+  type ProjectDopplerBindingRecord,
+} from './project-doppler-bindings.js';
+export {
+  dopplerBindingGrantId,
+  legacyDopplerBindingGrantId,
+  type DopplerBindingIdentity,
+} from './doppler-binding-identity.js';
+export { LEGACY_DOPPLER_CONNECTION_ID } from './doppler-connections-migration.js';
+export {
   UserProviderConnectionStore,
   type ProviderConnectionKind,
   type UserProviderConnection,

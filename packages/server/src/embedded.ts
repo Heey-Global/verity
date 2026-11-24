@@ -129,14 +129,14 @@ import {
 } from './embedded-docker-gc.js';
 import { createEmbeddedSessionStorage } from './embedded-session-storage.js';
 import type { DockerGcReport } from './docker-gc.js';
-import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
+
 import type { BuildStorage } from './build-storage.js';
 import {
   createEmbeddedBuildStorage,
   installEmbeddedBuildStorage,
 } from './embedded-build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
-import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
+import * as devServerSecrets from './managed-dev-server-secrets.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
@@ -297,12 +297,14 @@ export async function buildEmbeddedServer(
   const {
     brokeredHttpConsumptions,
     brokeredHttpGrants,
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
+    brokeredGrantBindingIds,
+    brokeredGrantBindingIdFor,
     resolveBrokerDopplerSecret,
     brokeredHttpTool,
   } = createEmbeddedBrokeredHttp(db, eventStore, dopplerCredentialFor, dopplerPersonId);
   const { trustedCliOutput, trustedCliTool } = createEmbeddedTrustedCli(db, secretCipher, {
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
     resolveBrokerDopplerSecret,
     brokeredHttpConsumptions,
   });
@@ -325,7 +327,7 @@ export async function buildEmbeddedServer(
   const { mcpGatewayTokens, mcpProxyTokens, mcpGateway } = createEmbeddedMcpGateway(config, db, {
     secretAuditLog,
     gatewayRequestMacKeys,
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
     brokeredHttpTool,
     trustedCliTool,
     trustedCliOutput,
@@ -339,14 +341,9 @@ export async function buildEmbeddedServer(
     invokeGoogleDrive,
   });
 
-  const brokeredGrantBindingId = async (projectId: string): Promise<string | undefined> => {
-    const binding = await getBrokeredProjectBinding(projectId);
-    if (binding === undefined) return undefined;
-    return brokeredDopplerBindingId(binding);
-  };
   // ADR 0011 D3: secret NAMES (never values) for the turn context, per person.
   const brokeredSecretAliases = createBrokeredSecretAliases({
-    getProjectBinding: getBrokeredProjectBinding,
+    getProjectBindings: getBrokeredProjectBindings,
     credentialFor: dopplerCredentialFor,
     listNames: listDopplerProjectSecretNames,
   });
@@ -891,14 +888,12 @@ export async function buildEmbeddedServer(
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
-      providerAuthority: async (projectId) => {
-        const binding = await getBrokeredProjectBinding(projectId);
-        return binding
-          ? JSON.stringify([binding.dopplerProject, binding.dopplerConfig])
-          : undefined;
-      },
-      resolveSecrets: createManagedDevServerSecretResolver({
-        getProjectBinding: getBrokeredProjectBinding,
+      providerAuthority: async (projectId) =>
+        devServerSecrets.managedDevServerProviderAuthority(
+          await getBrokeredProjectBindings(projectId),
+        ),
+      resolveSecrets: devServerSecrets.createManagedDevServerSecretResolver({
+        getProjectBindings: getBrokeredProjectBindings,
         resolveSecret: resolveBrokerDopplerSecret,
       }),
       sandboxContainer: async (project, userId, start) => {
@@ -1196,7 +1191,7 @@ export async function buildEmbeddedServer(
     // listed, because binding ids are derived deterministically and a restored binding
     // would put such a grant back in force. Unlistable is unrevokable.
     listBrokeredGrants: async (projectId) =>
-      brokeredHttpGrants.list(projectId, (await brokeredGrantBindingId(projectId)) ?? null),
+      brokeredHttpGrants.list(projectId, await brokeredGrantBindingIds(projectId)),
     revokeBrokeredGrant: (projectId, grantId) => brokeredHttpGrants.revoke(projectId, grantId),
     runtimeDiagnostics: createEmbeddedRuntimeDiagnostics({
       config,
@@ -1304,7 +1299,8 @@ export async function buildEmbeddedServer(
       sessionStorage,
       transcriptStore,
       brokeredSecretAliases,
-      brokeredGrantBindingId,
+      brokeredGrantBindingIds,
+      brokeredGrantBindingIdFor,
       brokeredHttpGrants,
       branches,
       purgeRunnerArtifacts,
@@ -1377,6 +1373,7 @@ export async function buildEmbeddedServer(
 
   installEmbeddedSecretJobs(app, {
     config,
+    db,
     embeddedSecretJobs,
     secretProviderCatalog,
     authRegistry,

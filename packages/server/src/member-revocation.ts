@@ -84,7 +84,7 @@ export function createMemberRevocation(deps: {
       deps.claudeEgressIdentity?.revokeSandbox({ projectId, userId }),
     );
     await step('Doppler connection', () =>
-      deps.store.userDopplerConnections.delete(userId, projectId),
+      deps.store.userDopplerConnections.deleteAll(userId, projectId),
     );
     await step('standing grants', () => deps.store.deleteUserProjectGrants(projectId, userId));
     // Before the sandbox sleeps: a running server would otherwise wake it again.

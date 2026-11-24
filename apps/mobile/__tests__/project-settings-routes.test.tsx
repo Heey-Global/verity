@@ -26,6 +26,8 @@ import ProjectServicesScreen from '../app/project/[id]/settings/services';
 import ProjectRepositoryScreen from '../app/project/[id]/settings/repository';
 import ProjectModelScreen from '../app/project/[id]/settings/model';
 import {
+  dopplerBinding,
+  dopplerConnection,
   forgejoConnections,
   healthWithRebuild,
   makeClient,
@@ -127,6 +129,7 @@ describe('project settings index — destinations', () => {
         getVeritySettings: jest.fn().mockResolvedValue(null),
         getGoogleDriveConnection: jest.fn().mockResolvedValue({ connected: false }),
         listHttpMcpConnections: jest.fn().mockResolvedValue([]),
+        doppler: { listConnections: jest.fn().mockResolvedValue([]) },
       }),
     );
     render(<ProjectSettingsIndexScreen />);
@@ -758,9 +761,9 @@ describe('project settings — sandbox', () => {
 
 describe('project settings — connected services', () => {
   it.each([
-    ['doppler', 'Credentials', 'Files', 'Tools'],
-    ['drive', 'Files', 'Credentials', 'Tools'],
-    ['mcp', 'Tools', 'Credentials', 'Files'],
+    ['doppler', 'Secrets', 'Files', 'Tools'],
+    ['drive', 'Files', 'Secrets', 'Tools'],
+    ['mcp', 'Tools', 'Secrets', 'Files'],
   ])('shows only the %s project binding', async (section, visible, hiddenA, hiddenB) => {
     setSearchParams({ id: 'p/1', section });
     mockCreateVerityClient.mockReturnValue(makeClient());
@@ -771,62 +774,164 @@ describe('project settings — connected services', () => {
     expect(screen.queryByText(hiddenB)).toBeNull();
   });
 
-  it('lists projects, then configs, then PATCHes { dopplerProject, dopplerConfig }', async () => {
-    const listDopplerProjects = jest
-      .fn()
-      .mockResolvedValue({ projects: [{ slug: 'acme-app', name: 'Acme App' }] });
-    const listDopplerConfigs = jest
-      .fn()
-      .mockResolvedValue({ configs: [{ name: 'dev', environment: 'dev', root: true }] });
-    const updateProjectSettings = jest.fn().mockResolvedValue({
-      ...makeDetail().settings,
-      dopplerProject: 'acme-app',
-      dopplerConfig: 'dev',
+  // ADR 0031: every binding names its connection and, for the viewer, whether
+  // their own token reaches it; a missing token is asked for at the top.
+  it('lists the bindings with the default and asks for a missing personal token', async () => {
+    const connectPersonalToken = jest.fn().mockResolvedValue({
+      connections: [
+        {
+          connectionId: 'payments',
+          label: 'Payments',
+          bindings: ['billing/dev'],
+          connected: true,
+          updatedAt: null,
+          usesInstanceToken: false,
+        },
+      ],
     });
     mockCreateVerityClient.mockReturnValue(
-      makeClient({ listDopplerProjects, listDopplerConfigs, updateProjectSettings }),
-    );
-    render(<ProjectServicesScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
-
-    // Open the picker → project list loads.
-    fireEvent.press(await screen.findByLabelText(/^Choose Doppler binding(,|$)/));
-    fireEvent.press(await screen.findByLabelText(/^Doppler project Acme App(,|$)/));
-    await waitFor(() => expect(listDopplerConfigs).toHaveBeenCalledWith('acme-app'));
-
-    // Pick a config → PATCH lands with the binding.
-    fireEvent.press(await screen.findByLabelText(/^Doppler config dev(,|$)/));
-    await waitFor(() => expect(updateProjectSettings).toHaveBeenCalledTimes(1));
-    const [, patch] = updateProjectSettings.mock.calls[0];
-    expect(patch).toEqual({ dopplerProject: 'acme-app', dopplerConfig: 'dev' });
-  });
-
-  it('shows the account-token hint when the list is not configured', async () => {
-    const listDopplerProjects = jest.fn().mockResolvedValue({ error: 'not configured' });
-    mockCreateVerityClient.mockReturnValue(makeClient({ listDopplerProjects }));
-    render(<ProjectServicesScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
-
-    fireEvent.press(await screen.findByLabelText(/^Choose Doppler binding(,|$)/));
-    expect(
-      await screen.findByText(/Set the Doppler account token in Verity settings/),
-    ).toBeOnTheScreen();
-  });
-
-  it('renders the current binding and a "Change" control when already bound', async () => {
-    mockCreateVerityClient.mockReturnValue(
       makeClient({
-        detail: makeDetail({
-          dopplerProject: 'acme-app',
-          dopplerConfig: 'dev',
-        }),
+        doppler: {
+          listBindings: jest.fn().mockResolvedValue([
+            dopplerBinding(),
+            dopplerBinding({
+              id: 'b2',
+              connectionId: 'payments',
+              connectionLabel: 'Payments',
+              dopplerProject: 'billing',
+              dopplerConfig: 'dev',
+              isDefault: false,
+            }),
+          ]),
+          personalTokens: jest.fn().mockResolvedValue({
+            connections: [
+              {
+                connectionId: 'platform',
+                label: 'Platform',
+                bindings: ['portal/prd'],
+                connected: true,
+                updatedAt: null,
+                usesInstanceToken: false,
+              },
+              {
+                connectionId: 'payments',
+                label: 'Payments',
+                bindings: ['billing/dev'],
+                connected: false,
+                updatedAt: null,
+                usesInstanceToken: false,
+              },
+            ],
+          }),
+          connectPersonalToken,
+        },
       }),
     );
+    setSearchParams({ id: 'p/1', section: 'doppler' });
     render(<ProjectServicesScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
 
-    expect(await screen.findByText('acme-app / dev')).toBeOnTheScreen();
-    expect(screen.getByLabelText(/^Change Doppler binding(,|$)/)).toBeOnTheScreen();
+    expect(await screen.findByText('Platform · Your token connected')).toBeOnTheScreen();
+    expect(screen.getByText('Payments · Your token missing')).toBeOnTheScreen();
+    expect(screen.getByText('Your Doppler token is missing')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText(/^Connect token for Payments(,|$)/));
+    fireEvent.changeText(await screen.findByLabelText(/^Your Doppler token/), 'dp.st.billing');
+    fireEvent.press(screen.getByLabelText(/^Validate and connect(,|$)/));
+    await waitFor(() =>
+      expect(connectPersonalToken).toHaveBeenCalledWith('p/1', 'payments', 'dp.st.billing'),
+    );
+  });
+
+  it.each(['single', 'multiple', 'same labels'])('adds a binding with %s', async (scenario) => {
+    const multiple = scenario !== 'single';
+    const connectionId = multiple ? 'payments' : 'platform';
+    const listConnections = jest.fn().mockResolvedValue(
+      multiple
+        ? [
+            dopplerConnection(),
+            dopplerConnection({
+              id: 'payments',
+              label: scenario === 'same labels' ? 'Platform' : 'Payments',
+            }),
+          ]
+        : [dopplerConnection()],
+    );
+    const addBinding = jest.fn().mockResolvedValue(dopplerBinding({ id: 'b2', isDefault: false }));
+    const listDopplerProjects = jest
+      .fn()
+      .mockResolvedValue({ projects: [{ slug: 'billing', name: 'Billing' }] });
+    const listDopplerConfigs = jest.fn().mockResolvedValue({ configs: [{ name: 'dev' }] });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        listDopplerProjects,
+        listDopplerConfigs,
+        doppler: { addBinding, listConnections },
+      }),
+    );
+    setSearchParams({ id: 'p/1', section: 'doppler' });
+    render(<ProjectServicesScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Add binding(,|$)/));
+    if (multiple) {
+      const payments = await screen.findByLabelText(
+        scenario === 'same labels' ? '2. Platform' : 'Payments',
+      );
+      expect(listDopplerProjects).not.toHaveBeenCalled();
+      fireEvent.press(payments);
+    }
+    await waitFor(() => expect(listDopplerProjects).toHaveBeenCalledWith(connectionId));
+    fireEvent.press(await screen.findByLabelText(/^billing(,|$)/));
+    await waitFor(() => expect(listDopplerConfigs).toHaveBeenCalledWith('billing', connectionId));
+    fireEvent.press(await screen.findByLabelText(/^dev(,|$)/));
+    expect(
+      await screen.findByText('Agents write secrets as billing/dev/API_KEY'),
+    ).toBeOnTheScreen();
+    fireEvent.press(screen.getAllByLabelText(/^Add binding(,|$)/).at(-1)!);
+    await waitFor(() =>
+      expect(addBinding).toHaveBeenCalledWith('p/1', {
+        connectionId,
+        dopplerProject: 'billing',
+        dopplerConfig: 'dev',
+      }),
+    );
+  });
+
+  it('sets another binding as the default and removes one after confirming', async () => {
+    const setDefaultBinding = jest.fn().mockResolvedValue([]);
+    const removeBinding = jest.fn().mockResolvedValue(undefined);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        doppler: {
+          listBindings: jest
+            .fn()
+            .mockResolvedValue([
+              dopplerBinding(),
+              dopplerBinding({ id: 'b2', dopplerConfig: 'stg', isDefault: false }),
+            ]),
+          setDefaultBinding,
+          removeBinding,
+        },
+      }),
+    );
+    setSearchParams({ id: 'p/1', section: 'doppler' });
+    render(<ProjectServicesScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Manage portal\/stg(,|$)/));
+    expect(
+      screen.getByText('Agents then write API_KEY instead of portal/stg/API_KEY'),
+    ).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText(/^Set as default/));
+    await waitFor(() => expect(setDefaultBinding).toHaveBeenCalledWith('p/1', 'b2'));
+
+    fireEvent.press(await screen.findByLabelText(/^Manage portal\/prd(,|$)/));
+    // The default has nothing to become.
+    expect(screen.queryByLabelText(/^Set as default/)).toBeNull();
+    fireEvent.press(screen.getByLabelText(/^Remove binding(,|$)/));
+    expect(
+      await screen.findByText(/The oldest remaining binding becomes the default/),
+    ).toBeOnTheScreen();
+    expect(removeBinding).not.toHaveBeenCalled();
+    fireEvent.press(screen.getAllByLabelText(/^Remove binding(,|$)/).at(-1)!);
+    await waitFor(() => expect(removeBinding).toHaveBeenCalledWith('p/1', 'b1'));
   });
 
   it('enables an MCP connection for the project with a switch', async () => {
@@ -861,7 +966,7 @@ describe('project settings — connected services', () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectServicesScreen />);
 
-    expect(await screen.findByText('Credentials')).toBeOnTheScreen();
+    expect(await screen.findByText('Secrets')).toBeOnTheScreen();
     expect(await screen.findByText('Matrix rooms')).toBeOnTheScreen();
     expect(screen.getByLabelText(/^Connect Matrix(,|$)/)).toBeOnTheScreen();
   });

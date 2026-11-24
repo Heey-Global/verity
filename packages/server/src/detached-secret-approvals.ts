@@ -9,6 +9,7 @@ import type { BrokeredToolApprovalStore } from './brokered-tool-approval-store.j
 import type { McpGatewayDeps } from './mcp-gateway.js';
 import {
   brokeredDopplerBindingId,
+  brokeredSecretSource,
   parseBrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
 
@@ -33,7 +34,7 @@ export function configureDetachedSecretApprovals(input: {
       toolName: record.toolName,
       createdAt: Date.parse(record.createdAt),
       input: JSON.parse(record.canonicalInput) as Record<string, unknown>,
-      secretSource: { project: binding.dopplerProject, config: binding.dopplerConfig },
+      secretSource: brokeredSecretSource(binding),
       brokeredGrantBindingId: brokeredDopplerBindingId(binding),
     };
   };

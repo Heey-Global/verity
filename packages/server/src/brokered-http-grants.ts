@@ -4,6 +4,8 @@ import type { BrokeredGrantChannel } from '@verity/events';
 import type { Database } from '@verity/store';
 import type { Kysely } from 'kysely';
 
+import { brokeredGrantBindingApplies } from './brokered-doppler-binding.js';
+
 const PROJECT_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 /**
@@ -259,18 +261,19 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
      * and binding ids are derived deterministically, so re-creating an earlier binding would
      * silently wake a hidden `forever` grant back up.
      *
-     * `appliesNow` is false when the grant names a provider binding other than the one the
-     * caller passes as current, mirroring {@link check}, which matches on that binding.
-     * `currentBindingId` is required and takes `null` for "this project has no binding right
-     * now", which makes every grant dormant — the two cases must not collapse into one
-     * argument, or a project whose binding is gone would report its grants as live.
+     * `appliesNow` is false when the grant names provider bindings the project no longer
+     * has, given the ids of its current bindings (ADR 0031), mirroring {@link check},
+     * which matches on the binding. An empty set makes every grant dormant.
      * Expired rows are the one exception and stay unlisted: nothing can bring them back,
      * since renewal revokes them outright.
      *
      * A `session` grant IS listed for a session that is not currently running: like `check`,
      * it stays valid for that session id, which a resumed session presents again.
      */
-    async list(projectId: string, currentBindingId: string | null): Promise<BrokeredGrantRecord[]> {
+    async list(
+      projectId: string,
+      currentBindingIds: ReadonlySet<string>,
+    ): Promise<BrokeredGrantRecord[]> {
       const rows = await db
         .selectFrom('secret_provider_permissions')
         .select([
@@ -309,7 +312,9 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
             scope,
             sessionId: row.session_id,
             grantedBy: row.user_id,
-            appliesNow: row.issuer === GRANT_ISSUER && row.binding_id === currentBindingId,
+            appliesNow:
+              row.issuer === GRANT_ISSUER &&
+              brokeredGrantBindingApplies(row.binding_id, currentBindingIds),
             expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
             createdAt: new Date(row.created_at).toISOString(),
           },

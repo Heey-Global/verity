@@ -1,15 +1,75 @@
-import { assertBrokeredDopplerBinding } from './brokered-doppler-binding.js';
+import {
+  brokeredHttpRequestAliases,
+  brokeredHttpRequestSchema,
+  trustedCliRequestSchema,
+} from '@verity/secret-contracts';
+
+import {
+  assertBrokeredDopplerBinding,
+  brokeredDopplerSnapshot,
+  type BrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
 import type { DopplerPerson } from './doppler-credential.js';
+import {
+  referencedBindings,
+  resolveSecretReference,
+  type ProjectDopplerBinding,
+} from './doppler-secret-reference.js';
 import {
   createRestrictedHttpJsonConnector,
   restrictedHttpJsonRequestSchema,
   type RestrictedHttpJsonTransport,
 } from './restricted-http-json-connector.js';
 
-export type BrokeredHttpProjectBinding = {
+/** One of the project's Doppler bindings (ADR 0031). */
+export type BrokeredHttpProjectBinding = ProjectDopplerBinding;
+
+/** Resolves one secret name inside one binding with the calling person's token. */
+export type BrokeredSecretResolver = (input: {
+  projectId: string;
+  connectionId: string;
   dopplerProject: string;
   dopplerConfig: string;
-};
+  secretName: string;
+  /** The calling turn; its person's Doppler connection resolves the secret. */
+  person: DopplerPerson;
+}) => Promise<Uint8Array>;
+
+/** The bindings a call's references read from, as its approval is bound to them. */
+export function referencedSnapshot(
+  bindings: readonly ProjectDopplerBinding[],
+  references: readonly string[],
+): BrokeredDopplerBinding {
+  return brokeredDopplerSnapshot(referencedBindings(bindings, references));
+}
+
+/** Every secret reference a secret tool request reads; a malformed request reads none
+ *  and is refused, so it cannot be approved against an unknown binding. */
+export function brokeredSecretReferences(
+  toolName: 'verity_http_request' | 'verity_secret_run',
+  request: unknown,
+): readonly string[] {
+  if (toolName === 'verity_http_request')
+    return brokeredHttpRequestAliases(brokeredHttpRequestSchema.parse(request));
+  return trustedCliRequestSchema.parse(request).secrets.map((entry) => entry.secretAlias);
+}
+
+/** Resolves a reference (`NAME` or `project/config/NAME`) against the bindings. */
+export function resolveReferencedSecret(
+  resolveSecret: BrokeredSecretResolver,
+  bindings: readonly ProjectDopplerBinding[],
+  input: { projectId: string; reference: string; person: DopplerPerson },
+): Promise<Uint8Array> {
+  const { binding, name } = resolveSecretReference(bindings, input.reference);
+  return resolveSecret({
+    projectId: input.projectId,
+    connectionId: binding.connectionId,
+    dopplerProject: binding.dopplerProject,
+    dopplerConfig: binding.dopplerConfig,
+    secretName: name,
+    person: input.person,
+  });
+}
 
 export type BrokeredToolCall = {
   id: string;
@@ -17,7 +77,7 @@ export type BrokeredToolCall = {
   name: 'verity_http_request' | 'verity_secret_run';
   input: unknown;
   /** Trusted gateway authority; never read from tool arguments. */
-  approvedBinding?: BrokeredHttpProjectBinding;
+  approvedBinding?: BrokeredDopplerBinding;
 };
 
 export type BrokeredHttpToolResult = {
@@ -49,15 +109,8 @@ function boundRelayResult(result: BrokeredHttpToolResult): BrokeredHttpToolResul
 
 export function createBrokeredHttpTool(options: {
   requireApprovalBinding?: boolean;
-  getProjectBinding: (projectId: string) => Promise<BrokeredHttpProjectBinding | undefined>;
-  resolveSecret: (input: {
-    projectId: string;
-    dopplerProject: string;
-    dopplerConfig: string;
-    secretName: string;
-    /** The calling turn; its person's Doppler connection resolves the secret. */
-    person: DopplerPerson;
-  }) => Promise<Uint8Array>;
+  getProjectBindings: (projectId: string) => Promise<readonly ProjectDopplerBinding[]>;
+  resolveSecret: BrokeredSecretResolver;
   consumeApproval: (input: {
     projectId: string;
     sessionId: string;
@@ -79,7 +132,11 @@ export function createBrokeredHttpTool(options: {
     const request = restrictedHttpJsonRequestSchema.parse(call.input);
     if (options.requireApprovalBinding && call.approvedBinding === undefined)
       throw new Error('approved Doppler binding is required');
-    const binding = await options.getProjectBinding(projectId);
+    const references = brokeredHttpRequestAliases(request);
+    const current = async () =>
+      referencedSnapshot(await options.getProjectBindings(projectId), references);
+    const bindings = await options.getProjectBindings(projectId);
+    const binding = referencedSnapshot(bindings, references);
     assertBrokeredDopplerBinding(binding, call.approvedBinding);
     const connector = createRestrictedHttpJsonConnector({
       profile: {
@@ -90,16 +147,14 @@ export function createBrokeredHttpTool(options: {
         maxRequestBytes: 65_536,
         maxResponseBytes: 65_536,
       },
-      resolveSecret: (secretName) =>
-        options.resolveSecret({
+      resolveSecret: (reference) =>
+        resolveReferencedSecret(options.resolveSecret, bindings, {
           projectId,
-          dopplerProject: binding.dopplerProject,
-          dopplerConfig: binding.dopplerConfig,
-          secretName,
+          reference,
           person: { sessionId, turnId },
         }),
       consumeApproval: async (requestHash) => {
-        assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);
+        assertBrokeredDopplerBinding(await current(), binding);
         const consumed = await options.consumeApproval({
           projectId,
           sessionId,
@@ -107,7 +162,7 @@ export function createBrokeredHttpTool(options: {
           callId: call.consumptionId ?? call.id,
           requestHash,
         });
-        assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);
+        assertBrokeredDopplerBinding(await current(), binding);
         return consumed;
       },
       transport: options.transport,

@@ -1,5 +1,9 @@
 import { InMemoryEventBus, type Conductor } from '@verity/session';
-import { EventStore, createSealableSecretCipher } from '@verity/store';
+import {
+  EventStore,
+  LEGACY_DOPPLER_CONNECTION_ID,
+  createSealableSecretCipher,
+} from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -8,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 
-import { createBrokeredHttpTool } from './brokered-http-tool.js';
+import { createBrokeredHttpTool, referencedSnapshot } from './brokered-http-tool.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { startProjectInternalUnixListener } from './internal-listener.js';
 import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
@@ -54,11 +58,9 @@ async function exercise(toolName: Tool, drift: Drift, snapshotAvailable = true) 
   });
   await store.updateProjectSettings('p1', { dopplerProject: 'project', dopplerConfig: 'staging' });
   const changeBinding = () => store.updateProjectSettings('p1', { dopplerConfig: 'production' });
-  const getProjectBinding = async (projectId: string) => {
-    const settings = await store.getProjectSettings(projectId);
-    if (!settings?.dopplerProject || !settings.dopplerConfig) return undefined;
-    return { dopplerProject: settings.dopplerProject, dopplerConfig: settings.dopplerConfig };
-  };
+  // The settings write keeps the default binding (ADR 0031), which is what changes.
+  const getProjectBindings = async (projectId: string) =>
+    store.projectDopplerBindings.list(projectId);
   const resolveSecret = vi.fn(async () => {
     if (drift === 'resolution') await changeBinding();
     return Buffer.from('synthetic-secret');
@@ -70,7 +72,7 @@ async function exercise(toolName: Tool, drift: Drift, snapshotAvailable = true) 
   };
   const brokeredHttpTool = createBrokeredHttpTool({
     requireApprovalBinding: true,
-    getProjectBinding,
+    getProjectBindings,
     resolveSecret,
     consumeApproval,
     transport: async (input) => {
@@ -81,7 +83,7 @@ async function exercise(toolName: Tool, drift: Drift, snapshotAvailable = true) 
   });
   const trustedCliTool = createTrustedCliTool({
     requireApprovalBinding: true,
-    getProjectBinding,
+    getProjectBindings,
     resolveSecret,
     consumeApproval,
   });
@@ -109,7 +111,9 @@ async function exercise(toolName: Tool, drift: Drift, snapshotAvailable = true) 
       servedTools: [toolName],
       resolveCaller: async (input) => tokens.resolve(input),
       authorizationSnapshot: async () =>
-        snapshotAvailable ? JSON.stringify(await getProjectBinding('p1')) : undefined,
+        snapshotAvailable
+          ? JSON.stringify(referencedSnapshot(await getProjectBindings('p1'), ['API_KEY']))
+          : undefined,
       invokeTool: async (input) => {
         if (drift === 'invocation') await changeBinding();
         return invokeTool(input);
@@ -188,8 +192,13 @@ async function exercise(toolName: Tool, drift: Drift, snapshotAvailable = true) 
       expect(approvals).toHaveBeenCalledWith(
         expect.objectContaining({
           brokeredGrantBindingId: brokeredDopplerBindingId({
-            dopplerProject: 'project',
-            dopplerConfig: 'staging',
+            bindings: [
+              {
+                connectionId: LEGACY_DOPPLER_CONNECTION_ID,
+                dopplerProject: 'project',
+                dopplerConfig: 'staging',
+              },
+            ],
           }),
         }),
       );

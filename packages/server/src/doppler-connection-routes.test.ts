@@ -3,27 +3,64 @@ import { describe, expect, it, vi } from 'vitest';
 import { registerDopplerConnectionRoutes } from './doppler-connection-routes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 
+const binding = (
+  id: string,
+  connectionId: string,
+  dopplerProject: string,
+  dopplerConfig: string,
+  isDefault = false,
+) => ({
+  id,
+  projectId: 'p1',
+  connectionId,
+  connectionLabel: connectionId === 'platform' ? 'Platform' : 'Payments',
+  dopplerProject,
+  dopplerConfig,
+  isDefault,
+  createdAt: new Date(0),
+});
+
 function harness() {
   const tokens = new Map<string, string>();
+  const bindings = [
+    binding('b1', 'platform', 'demo', 'dev', true),
+    binding('b2', 'platform', 'demo', 'stg'),
+    binding('b3', 'payments', 'billing', 'dev'),
+  ];
   const store = {
-    getProjectSettings: async (projectId: string) =>
-      projectId === 'p1' ? { dopplerProject: 'demo', dopplerConfig: 'dev' } : undefined,
     isActiveAdministrator: async (userId: string) => userId === 'admin',
+    projectDopplerBindings: {
+      list: async (projectId: string) => (projectId === 'p1' ? bindings : []),
+    },
     userDopplerConnections: {
-      status: async (userId: string, projectId: string) =>
-        tokens.has(`${userId}/${projectId}`) ? { updatedAt: new Date(0) } : undefined,
-      set: async (userId: string, projectId: string, token: string) => {
-        tokens.set(`${userId}/${projectId}`, token);
+      statuses: async (userId: string, projectId: string) =>
+        new Map(
+          [...tokens.keys()]
+            .filter((key) => key.startsWith(`${userId}/${projectId}/`))
+            .map((key) => [key.split('/')[2]!, { updatedAt: new Date(0) }]),
+        ),
+      set: async (userId: string, projectId: string, connectionId: string, token: string) => {
+        tokens.set(`${userId}/${projectId}/${connectionId}`, token);
       },
-      delete: async (userId: string, projectId: string) => {
-        tokens.delete(`${userId}/${projectId}`);
+      delete: async (userId: string, projectId: string, connectionId: string) => {
+        tokens.delete(`${userId}/${projectId}/${connectionId}`);
       },
     },
   };
-  const listNames = vi.fn(async ({ token }: { token: Uint8Array }) => {
-    if (Buffer.from(token).toString() !== 'dp.st.good') throw new Error('403');
-    return ['API_KEY'];
-  });
+  // A token reads the configs of its own connection only.
+  const readable: Record<string, string[]> = {
+    'dp.st.good': ['demo/dev', 'demo/stg'],
+    'dp.st.dev-only': ['demo/dev'],
+    'dp.st.billing': ['billing/dev'],
+  };
+  const listNames = vi.fn(
+    async (input: { dopplerProject: string; dopplerConfig: string; token: Uint8Array }) => {
+      const configs = readable[Buffer.from(input.token).toString()] ?? [];
+      if (!configs.includes(`${input.dopplerProject}/${input.dopplerConfig}`))
+        throw new Error('403');
+      return ['API_KEY'];
+    },
+  );
   const app = Fastify();
   app.decorateRequest('localUserId', null);
   app.addHook('onRequest', async (request) => {
@@ -59,13 +96,14 @@ const put = (app: FastifyInstance, user: string, payload: unknown) =>
 
 describe('personal Doppler connection routes', () => {
   // The token is the person's own credential: it is stored for them alone, checked
-  // against the project's config first, and never returned.
+  // against the project's configs first, and never returned.
   it('stores a working token for the signed-in person only and never returns it', async () => {
     const { app, tokens } = harness();
     expect((await put(app, 'lena', { token: 'dp.st.wrong' })).statusCode).toBe(400);
     expect(tokens.size).toBe(0);
     expect((await put(app, 'lena', { token: 'dp.st.good', userId: 'admin' })).statusCode).toBe(400);
 
+    // Without a connection, the default binding's connection is meant.
     const saved = await put(app, 'lena', { token: 'dp.st.good' });
     expect(saved.statusCode).toBe(200);
     expect(saved.body).not.toContain('dp.st.good');
@@ -73,8 +111,12 @@ describe('personal Doppler connection routes', () => {
       connected: true,
       binding: { dopplerProject: 'demo', dopplerConfig: 'dev' },
       usesInstanceToken: false,
+      connections: [
+        { connectionId: 'platform', bindings: ['demo/dev', 'demo/stg'], connected: true },
+        { connectionId: 'payments', bindings: ['billing/dev'], connected: false },
+      ],
     });
-    expect([...tokens.keys()]).toEqual(['lena/p1']);
+    expect([...tokens.keys()]).toEqual(['lena/p1/platform']);
 
     const admin = await app.inject({
       url: '/projects/p1/doppler/connection',
@@ -88,6 +130,36 @@ describe('personal Doppler connection routes', () => {
       headers: { 'x-test-user': 'lena' },
     });
     expect(removed.statusCode).toBe(204);
+    expect(tokens.size).toBe(0);
+  });
+
+  // One token stands in for every config the project binds on that connection, so
+  // it must read all of them, and it never answers for another connection.
+  it('keeps one token per connection and checks it against every config there', async () => {
+    const { app, tokens } = harness();
+    expect((await put(app, 'lena', { token: 'dp.st.dev-only' })).statusCode).toBe(400);
+    expect(
+      (await put(app, 'lena', { token: 'dp.st.good', connectionId: 'payments' })).statusCode,
+    ).toBe(400);
+    const payments = await put(app, 'lena', { token: 'dp.st.billing', connectionId: 'payments' });
+    expect(payments.statusCode).toBe(200);
+    expect(payments.json()).toMatchObject({
+      connected: false,
+      connections: [
+        { connectionId: 'platform', connected: false },
+        { connectionId: 'payments', connected: true },
+      ],
+    });
+    expect(
+      (await put(app, 'lena', { token: 'dp.st.billing', connectionId: 'unbound' })).statusCode,
+    ).toBe(409);
+    expect([...tokens.keys()]).toEqual(['lena/p1/payments']);
+
+    await app.inject({
+      method: 'DELETE',
+      url: '/projects/p1/doppler/connection?connectionId=payments',
+      headers: { 'x-test-user': 'lena' },
+    });
     expect(tokens.size).toBe(0);
   });
 

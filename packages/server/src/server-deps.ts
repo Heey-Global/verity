@@ -514,8 +514,13 @@ export interface ServerDeps {
    * throw on failure. Absent → `{ ok: false, error: 'not configured' }`.
    */
   dopplerListConfigs?: (token: string, project: string) => Promise<DopplerConfigSummary[]>;
-  /** Central broker-owned Doppler identity reader shared with native secret tools. */
-  dopplerCredentialReader?: (() => Promise<Uint8Array | undefined>) | undefined;
+  /** A Doppler connection's instance token (ADR 0031); without an id, the first
+   *  connection holding one. */
+  dopplerCredentialReader?:
+    ((connectionId?: string) => Promise<Uint8Array | undefined>) | undefined;
+  /** The Doppler workplace a token belongs to, best-effort, for labelling connections. */
+  dopplerWorkplace?:
+    ((token: string) => Promise<{ slug: string | null; name: string | null }>) | undefined;
   /**
    * Exchanges a GitHub App manifest `code` for the created App (id + slug + PEM)
    * for the manifest one-click onboarding routes (#320, `/github/app/manifest/*`).

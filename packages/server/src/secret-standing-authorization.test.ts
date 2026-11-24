@@ -11,6 +11,7 @@ import { Conductor, InMemoryEventBus } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 
+import { brokeredDopplerSnapshot } from './brokered-doppler-binding.js';
 import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
 import { createBrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
 import { markInternalConnections } from './internal-listener.js';
@@ -40,6 +41,15 @@ const requests = {
   },
 };
 type Tool = keyof typeof requests;
+
+// Built by the production helper: a hand-written snapshot in an outdated shape
+// fails to parse and turns every call into "Tool access changed".
+const dopplerSnapshot = (dopplerConfig: string) =>
+  JSON.stringify(
+    brokeredDopplerSnapshot([
+      { connectionId: 'synthetic-connection', dopplerProject: 'synthetic-project', dopplerConfig },
+    ]),
+  );
 
 async function harness(toolName: Tool, recordExecution = false) {
   const store = ctx.store;
@@ -142,8 +152,7 @@ async function harness(toolName: Tool, recordExecution = false) {
     mcpGateway: {
       servedTools: [toolName],
       resolveCaller: async (input) => tokens.resolve(input),
-      authorizationSnapshot: async () =>
-        JSON.stringify({ dopplerProject: 'synthetic-project', dopplerConfig: config }),
+      authorizationSnapshot: async () => dopplerSnapshot(config),
       detachedApprovals: approvals,
       hasSecretExecutionClaim: claims.has,
       authorizeExecution,
@@ -492,10 +501,7 @@ it('honors a denial saved while a standing-grant invocation is preparing to disp
         sessionId: 's1',
         toolName: 'verity_http_request',
         canonicalInput: canonicalJson(requests.verity_http_request),
-        authorizationSnapshot: JSON.stringify({
-          dopplerProject: 'synthetic-project',
-          dopplerConfig: 'test',
-        }),
+        authorizationSnapshot: dopplerSnapshot('test'),
         invocationId: 'concurrent-call',
         requestMac: 'synthetic-mac',
         macKeyId: 'synthetic-key',

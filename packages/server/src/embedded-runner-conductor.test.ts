@@ -34,7 +34,7 @@ function fixture(config: Context['config'] = {}) {
     allocateEventFile: vi.fn(),
     allocateControlSocket: vi.fn(),
     getLog,
-    brokeredGrantBindingId: vi.fn(async () => 'binding'),
+    brokeredGrantBindingIdFor: vi.fn(async () => 'binding'),
     brokeredHttpGrants: { check },
   } as unknown as Context;
   createEmbeddedRunnerConductorWiring(context);
@@ -80,7 +80,7 @@ describe('embedded Runner conductor binding', () => {
   });
 
   it('checks grants for the running prompt person and supplied channel', async () => {
-    const { wiring, store, check } = fixture();
+    const { wiring, store, check, context } = fixture();
     const approved = await wiring.autoApprovePermission!(
       'session',
       {
@@ -93,6 +93,9 @@ describe('embedded Runner conductor binding', () => {
     );
     expect(approved).toBe(true);
     expect(store.promptInitiatorAt).toHaveBeenCalledWith('session', 42);
+    // The binding comes from the reference the call reads, not the project's
+    // default: a grant for one binding must never answer for another (ADR 0031).
+    expect(context.brokeredGrantBindingIdFor).toHaveBeenCalledWith('project', ['ATTENDEE_API_KEY']);
     expect(check).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: 'project',

@@ -269,14 +269,7 @@ describe('managed servers with secret bindings', () => {
         });
         await withResolver(
           createManagedDevServerSecretResolver({
-            getProjectBinding: async (projectId) => {
-              const settings = await ctx.store.getProjectSettings(projectId);
-              if (!settings?.dopplerProject || !settings.dopplerConfig) return undefined;
-              return {
-                dopplerProject: settings.dopplerProject,
-                dopplerConfig: settings.dopplerConfig,
-              };
-            },
+            getProjectBindings: (projectId) => ctx.store.projectDopplerBindings.list(projectId),
             resolveSecret,
           }),
         );
@@ -294,6 +287,7 @@ describe('managed servers with secret bindings', () => {
         await manager.start('s1', 'api', 'agent');
         expect(resolveSecret).toHaveBeenCalledWith({
           projectId: 'p1',
+          connectionId: 'legacy-doppler',
           dopplerProject: 'demo',
           dopplerConfig: 'staging',
           secretName: 'ATTENDEE_API_KEY',

@@ -606,6 +606,16 @@ export {
   type DopplerProjectsResult,
   type DopplerConfigsResult,
 } from './api.js';
+export {
+  dopplerConnectionSchema,
+  dopplerConnectionUsageSchema,
+  personalDopplerTokensSchema,
+  projectDopplerBindingSchema,
+  type DopplerConnection,
+  type DopplerConnectionUsage,
+  type PersonalDopplerTokens,
+  type ProjectDopplerBinding,
+} from './doppler-api.js';
 export { signingKeyGenerateSchema, type SigningKeyGenerateResult } from './api.js';
 export {
   driveFileSchema,

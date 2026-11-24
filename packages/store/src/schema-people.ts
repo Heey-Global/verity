@@ -147,6 +147,8 @@ interface ProjectSandboxesTable {
 interface UserDopplerConnectionsTable {
   user_id: string;
   project_id: string;
+  /** The instance Doppler connection this personal token stands in for. */
+  connection_id: string;
   /** Encrypted at rest. */
   token: string;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;

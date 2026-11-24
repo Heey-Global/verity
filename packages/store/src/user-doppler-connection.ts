@@ -2,7 +2,8 @@ import { sql, type Kysely } from 'kysely';
 import type { SecretCipher } from './crypto.js';
 import type { Database } from './schema.js';
 
-/** A person's own Doppler token for one project (ADR 0023 §3). */
+/** A person's own Doppler token for one project and one Doppler connection
+ *  (ADR 0023 §3, ADR 0031). */
 export class UserDopplerConnectionStore {
   constructor(
     private readonly db: Kysely<Database>,
@@ -10,41 +11,62 @@ export class UserDopplerConnectionStore {
   ) {}
 
   /** The token as owned, erasable bytes; only for resolving that person's secrets. */
-  async tokenBytes(userId: string, projectId: string): Promise<Buffer | undefined> {
+  async tokenBytes(
+    userId: string,
+    projectId: string,
+    connectionId: string,
+  ): Promise<Buffer | undefined> {
     const row = await this.db
       .selectFrom('user_doppler_connections')
       .select('token')
       .where('user_id', '=', userId)
       .where('project_id', '=', projectId)
+      .where('connection_id', '=', connectionId)
       .executeTakeFirst();
     return row === undefined ? undefined : this.cipher.decryptBytes(row.token);
   }
 
-  /** Whether the person connected the project, without decrypting anything. */
-  async status(userId: string, projectId: string): Promise<{ updatedAt: Date } | undefined> {
-    const row = await this.db
+  /** The connections the person holds a token for in the project, without
+   *  decrypting anything. */
+  async statuses(userId: string, projectId: string): Promise<Map<string, { updatedAt: Date }>> {
+    const rows = await this.db
       .selectFrom('user_doppler_connections')
-      .select('updated_at')
+      .select(['connection_id', 'updated_at'])
       .where('user_id', '=', userId)
       .where('project_id', '=', projectId)
-      .executeTakeFirst();
-    return row === undefined ? undefined : { updatedAt: row.updated_at };
+      .execute();
+    return new Map(rows.map((row) => [row.connection_id, { updatedAt: row.updated_at }]));
   }
 
-  async set(userId: string, projectId: string, token: string): Promise<void> {
+  async set(userId: string, projectId: string, connectionId: string, token: string): Promise<void> {
     const encrypted = this.cipher.encrypt(token);
     await this.db
       .insertInto('user_doppler_connections')
-      .values({ user_id: userId, project_id: projectId, token: encrypted })
+      .values({
+        user_id: userId,
+        project_id: projectId,
+        connection_id: connectionId,
+        token: encrypted,
+      })
       .onConflict((conflict) =>
         conflict
-          .columns(['user_id', 'project_id'])
+          .columns(['user_id', 'project_id', 'connection_id'])
           .doUpdateSet({ token: encrypted, updated_at: sql`now()` }),
       )
       .execute();
   }
 
-  async delete(userId: string, projectId: string): Promise<void> {
+  async delete(userId: string, projectId: string, connectionId: string): Promise<void> {
+    await this.db
+      .deleteFrom('user_doppler_connections')
+      .where('user_id', '=', userId)
+      .where('project_id', '=', projectId)
+      .where('connection_id', '=', connectionId)
+      .execute();
+  }
+
+  /** Every token of the person in the project, when they leave it. */
+  async deleteAll(userId: string, projectId: string): Promise<void> {
     await this.db
       .deleteFrom('user_doppler_connections')
       .where('user_id', '=', userId)

@@ -6,23 +6,31 @@ import { viewerId } from './view-state-routes.js';
 
 type DopplerConnectionStore = Pick<
   EventStore,
-  'userDopplerConnections' | 'getProjectSettings' | 'isActiveAdministrator'
+  'userDopplerConnections' | 'projectDopplerBindings' | 'isActiveAdministrator'
 >;
 
 const params = z.object({ id: z.string().min(1).max(200) }).strict();
-const body = z.object({ token: z.string().trim().min(1).max(4096) }).strict();
+const body = z
+  .object({
+    token: z.string().trim().min(1).max(4096),
+    connectionId: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+const query = z.object({ connectionId: z.string().min(1).max(200).optional() }).strict();
 
 /**
- * A person's own Doppler token for one project (ADR 0023 §3). Every route acts for
- * the signed-in person only: no user id is taken from the request, and the token
- * never leaves the store. Project membership with execute permission is enforced
- * by the route policy.
+ * A person's own Doppler tokens for one project, one per Doppler connection its
+ * bindings use (ADR 0023 §3, ADR 0031). Every route acts for the signed-in person
+ * only: no user id is taken from the request, and the token never leaves the
+ * store. Project membership with execute permission is enforced by the route
+ * policy. Without a `connectionId` a request means the default binding's
+ * connection, which keeps clients written for a single binding working.
  */
 export function registerDopplerConnectionRoutes(
   app: FastifyInstance,
   deps: {
     store: DopplerConnectionStore;
-    /** Lists the bound config's secret names with the given token, proving it reads them. */
+    /** Lists a bound config's secret names with the given token, proving it reads them. */
     listNames: (input: {
       dopplerProject: string;
       dopplerConfig: string;
@@ -30,25 +38,58 @@ export function registerDopplerConnectionRoutes(
     }) => Promise<string[]>;
   },
 ): void {
-  const binding = async (projectId: string) => {
-    const settings = await deps.store.getProjectSettings(projectId);
-    const dopplerProject = settings?.dopplerProject?.trim();
-    const dopplerConfig = settings?.dopplerConfig?.trim();
-    return dopplerProject && dopplerConfig ? { dopplerProject, dopplerConfig } : undefined;
-  };
   const view = async (userId: string, projectId: string) => {
-    const [status, bound, administrator] = await Promise.all([
-      deps.store.userDopplerConnections.status(userId, projectId),
-      binding(projectId),
+    const [bindings, statuses, administrator] = await Promise.all([
+      deps.store.projectDopplerBindings.list(projectId),
+      deps.store.userDopplerConnections.statuses(userId, projectId),
       deps.store.isActiveAdministrator(userId),
     ]);
+    const connections = new Map<
+      string,
+      {
+        connectionId: string;
+        label: string;
+        bindings: string[];
+        connected: boolean;
+        updatedAt: string | null;
+        usesInstanceToken: boolean;
+      }
+    >();
+    for (const binding of bindings) {
+      const status = statuses.get(binding.connectionId);
+      const entry = connections.get(binding.connectionId) ?? {
+        connectionId: binding.connectionId,
+        label: binding.connectionLabel,
+        bindings: [],
+        connected: status !== undefined,
+        updatedAt: status?.updatedAt.toISOString() ?? null,
+        // Without a token of their own, the administrator's turns keep using the
+        // connection's instance token, which is theirs; nobody else's ever do.
+        usesInstanceToken: status === undefined && administrator,
+      };
+      entry.bindings.push(`${binding.dopplerProject}/${binding.dopplerConfig}`);
+      connections.set(binding.connectionId, entry);
+    }
+    const fallback = bindings.find((binding) => binding.isDefault);
+    const primary = fallback === undefined ? undefined : connections.get(fallback.connectionId);
     return {
-      connected: status !== undefined,
-      updatedAt: status?.updatedAt.toISOString() ?? null,
-      binding: bound ?? null,
-      // Without a connection of their own, the administrator's turns keep using
-      // the instance token, which was theirs; nobody else's ever do.
-      usesInstanceToken: status === undefined && administrator,
+      connections: [...connections.values()],
+      // The default binding's connection, as clients for a single binding read it.
+      connected: primary?.connected ?? false,
+      updatedAt: primary?.updatedAt ?? null,
+      binding:
+        fallback === undefined
+          ? null
+          : { dopplerProject: fallback.dopplerProject, dopplerConfig: fallback.dopplerConfig },
+      usesInstanceToken: primary?.usesInstanceToken ?? administrator,
+    };
+  };
+  const connectionFor = async (projectId: string, connectionId: string | undefined) => {
+    const bindings = await deps.store.projectDopplerBindings.list(projectId);
+    const id = connectionId ?? bindings.find((binding) => binding.isDefault)?.connectionId;
+    return {
+      connectionId: id,
+      bindings: bindings.filter((binding) => binding.connectionId === id),
     };
   };
 
@@ -65,29 +106,42 @@ export function registerDopplerConnectionRoutes(
     if (!parsed.success || !input.success)
       return reply.code(400).send({ error: 'invalid Doppler token' });
     const projectId = parsed.data.id;
-    const bound = await binding(projectId);
-    if (bound === undefined)
-      return reply.code(409).send({ error: 'this project has no Doppler config to connect to' });
-    const token = Buffer.from(input.data.token, 'utf8');
-    try {
-      await deps.listNames({ ...bound, token });
-    } catch {
-      return reply.code(400).send({
-        error: `this token cannot read the Doppler config ${bound.dopplerProject}/${bound.dopplerConfig}; use a service token for that config`,
-      });
-    } finally {
-      token.fill(0);
+    const { connectionId, bindings } = await connectionFor(projectId, input.data.connectionId);
+    if (connectionId === undefined || bindings.length === 0)
+      return reply
+        .code(409)
+        .send({ error: 'this project has no Doppler config on that connection to connect to' });
+    // The token must read every config the project binds on this connection.
+    for (const bound of bindings) {
+      const token = Buffer.from(input.data.token, 'utf8');
+      try {
+        await deps.listNames({ ...bound, token });
+      } catch {
+        return reply.code(400).send({
+          error: `this token cannot read the Doppler config ${bound.dopplerProject}/${bound.dopplerConfig}; use a token for that config`,
+        });
+      } finally {
+        token.fill(0);
+      }
     }
     const userId = viewerId(request);
-    await deps.store.userDopplerConnections.set(userId, projectId, input.data.token);
+    await deps.store.userDopplerConnections.set(userId, projectId, connectionId, input.data.token);
     reply.header('cache-control', 'no-store');
     return view(userId, projectId);
   });
 
   app.delete('/projects/:id/doppler/connection', async (request, reply) => {
     const parsed = params.safeParse(request.params);
-    if (!parsed.success) return reply.code(400).send({ error: 'invalid project id' });
-    await deps.store.userDopplerConnections.delete(viewerId(request), parsed.data.id);
+    const filter = query.safeParse(request.query ?? {});
+    if (!parsed.success || !filter.success)
+      return reply.code(400).send({ error: 'invalid project id' });
+    const { connectionId } = await connectionFor(parsed.data.id, filter.data.connectionId);
+    if (connectionId !== undefined)
+      await deps.store.userDopplerConnections.delete(
+        viewerId(request),
+        parsed.data.id,
+        connectionId,
+      );
     return reply.code(204).send();
   });
 }

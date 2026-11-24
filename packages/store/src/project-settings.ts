@@ -1,3 +1,4 @@
+import { syncDefaultDopplerBinding } from './project-doppler-bindings.js';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from './schema.js';
 import type { SecretCipher } from './crypto.js';
@@ -346,7 +347,21 @@ export class ProjectSettingsStore {
       if (!row) {
         throw new Error('verity: updateProjectSettings RETURNING yielded no row — dialect bug');
       }
-      return this.projectSettingsRowToRecord(row);
+      if (patch.dopplerProject === undefined && patch.dopplerConfig === undefined)
+        return this.projectSettingsRowToRecord(row);
+      // The former single binding is now the default of several (ADR 0031).
+      await syncDefaultDopplerBinding(
+        tx,
+        projectId,
+        normalizeSetting(row.doppler_project),
+        normalizeSetting(row.doppler_config),
+      );
+      const synced = await tx
+        .selectFrom('project_settings')
+        .select(this.projectSettingsColumns)
+        .where('project_id', '=', projectId)
+        .executeTakeFirstOrThrow();
+      return this.projectSettingsRowToRecord(synced);
     });
   }
 

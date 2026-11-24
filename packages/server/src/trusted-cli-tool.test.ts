@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import {
+  brokeredDopplerSnapshot,
+  type BrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 
 describe('trusted CLI tool', () => {
@@ -7,10 +11,15 @@ describe('trusted CLI tool', () => {
     const secret = Buffer.from('private-key-marker');
     const order: string[] = [];
     const tool = createTrustedCliTool({
-      getProjectBinding: async () => ({
-        dopplerProject: 'acme',
-        dopplerConfig: 'prod',
-      }),
+      getProjectBindings: async () => [
+        {
+          id: 'default',
+          connectionId: 'conn',
+          isDefault: true,
+          dopplerProject: 'acme',
+          dopplerConfig: 'prod',
+        },
+      ],
       consumeApproval: async () => {
         order.push('consume');
         return true;
@@ -60,10 +69,15 @@ describe('trusted CLI tool', () => {
       ['ASC_API_ISSUER_ID', Buffer.from('69a6de70-issuer')],
     ]);
     const tool = createTrustedCliTool({
-      getProjectBinding: async () => ({
-        dopplerProject: 'acme',
-        dopplerConfig: 'prod',
-      }),
+      getProjectBindings: async () => [
+        {
+          id: 'default',
+          connectionId: 'conn',
+          isDefault: true,
+          dopplerProject: 'acme',
+          dopplerConfig: 'prod',
+        },
+      ],
       consumeApproval: async () => true,
       resolveSecret: async ({ secretName }) => {
         const secret = resolved.get(secretName);
@@ -112,10 +126,15 @@ describe('trusted CLI tool', () => {
     const first = Buffer.from('first-secret');
     const execute = vi.fn();
     const tool = createTrustedCliTool({
-      getProjectBinding: async () => ({
-        dopplerProject: 'acme',
-        dopplerConfig: 'prod',
-      }),
+      getProjectBindings: async () => [
+        {
+          id: 'default',
+          connectionId: 'conn',
+          isDefault: true,
+          dopplerProject: 'acme',
+          dopplerConfig: 'prod',
+        },
+      ],
       consumeApproval: async () => true,
       resolveSecret: async ({ secretName }) => {
         if (secretName === 'FIRST') return first;
@@ -151,7 +170,15 @@ describe('trusted CLI tool', () => {
     const resolveSecret = vi.fn();
     const execute = vi.fn();
     const tool = createTrustedCliTool({
-      getProjectBinding: async () => ({ dopplerProject: 'acme', dopplerConfig: 'prod' }),
+      getProjectBindings: async () => [
+        {
+          id: 'default',
+          connectionId: 'conn',
+          isDefault: true,
+          dopplerProject: 'acme',
+          dopplerConfig: 'prod',
+        },
+      ],
       consumeApproval: async () => false,
       resolveSecret,
     });
@@ -173,5 +200,99 @@ describe('trusted CLI tool', () => {
     ).rejects.toThrow(/already consumed/u);
     expect(resolveSecret).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  // ADR 0031: each reference reads its own binding with that binding's connection,
+  // and an approval is bound to the bindings the call reads, not to the project.
+  describe('several Doppler bindings', () => {
+    const portal = {
+      id: 'b1',
+      connectionId: 'platform',
+      isDefault: true,
+      dopplerProject: 'portal',
+      dopplerConfig: 'prd',
+    };
+    const billing = {
+      id: 'b2',
+      connectionId: 'payments',
+      isDefault: false,
+      dopplerProject: 'billing',
+      dopplerConfig: 'dev',
+    };
+    const input = {
+      secrets: [
+        { secretAlias: 'API_KEY', env: 'PORTAL_KEY' },
+        { secretAlias: 'billing/dev/API_KEY', env: 'BILLING_KEY' },
+      ],
+      command: ['/usr/bin/printenv'],
+    };
+    const call = (approvedBinding: BrokeredDopplerBinding) => ({
+      id: 'call-1',
+      name: 'verity_secret_run' as const,
+      input,
+      approvedBinding,
+    });
+    const approved = brokeredDopplerSnapshot([
+      { connectionId: 'payments', dopplerProject: 'billing', dopplerConfig: 'dev' },
+      { connectionId: 'platform', dopplerProject: 'portal', dopplerConfig: 'prd' },
+    ]);
+
+    it('resolves every reference in its own binding with its own connection', async () => {
+      let bindings = [portal, billing];
+      const resolveSecret = vi.fn(async (request: { connectionId: string }) =>
+        Buffer.from(`value-from-${request.connectionId}`),
+      );
+      const tool = createTrustedCliTool({
+        requireApprovalBinding: true,
+        getProjectBindings: async () => bindings,
+        consumeApproval: async () => {
+          // A binding the call does not read changes nothing for it.
+          bindings = [...bindings, { ...billing, id: 'b3', dopplerConfig: 'stg' }];
+          return true;
+        },
+        resolveSecret,
+      });
+      const execute = vi.fn(
+        async (run: { secrets: readonly { env: string; secret: string }[] }) => {
+          expect(run.secrets.map((entry) => [entry.env, entry.secret])).toEqual([
+            ['PORTAL_KEY', 'value-from-platform'],
+            ['BILLING_KEY', 'value-from-payments'],
+          ]);
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      );
+      await tool('project-1', 'session-1', 'turn-1', call(approved), execute);
+      expect(resolveSecret.mock.calls.map(([request]) => request)).toEqual([
+        expect.objectContaining({
+          connectionId: 'platform',
+          dopplerProject: 'portal',
+          dopplerConfig: 'prd',
+          secretName: 'API_KEY',
+        }),
+        expect.objectContaining({
+          connectionId: 'payments',
+          dopplerProject: 'billing',
+          dopplerConfig: 'dev',
+          secretName: 'API_KEY',
+        }),
+      ]);
+      expect(execute).toHaveBeenCalledOnce();
+    });
+
+    it('refuses the call when a binding it reads moved to another connection', async () => {
+      const resolveSecret = vi.fn(async () => Buffer.from('value'));
+      const tool = createTrustedCliTool({
+        requireApprovalBinding: true,
+        getProjectBindings: async () => [portal, { ...billing, connectionId: 'platform' }],
+        consumeApproval: async () => true,
+        resolveSecret,
+      });
+      const execute = vi.fn();
+      await expect(
+        tool('project-1', 'session-1', 'turn-1', call(approved), execute),
+      ).rejects.toThrow(/changed after approval/u);
+      expect(resolveSecret).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    });
   });
 });

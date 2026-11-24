@@ -431,6 +431,12 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     routeScopeKey('DELETE', '/projects/:id/doppler/connection'),
     { kind: 'project', parameter: 'id', permission: 'execute' },
   ],
+  // Which Doppler configs a project reads from (ADR 0031); members see them next
+  // to their own tokens. Changing them stays with administrators, see below.
+  [
+    routeScopeKey('GET', '/projects/:id/doppler/bindings'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
   [
     routeScopeKey('GET', '/projects/:id/repositories'),
     { kind: 'project', parameter: 'id', permission: 'read' },
@@ -804,6 +810,10 @@ export const ADMINISTRATOR_ONLY_RESOURCE_ROUTES: ReadonlySet<string> = new Set([
   // A project's settings include instance-wide choices; managers rename projects
   // and set their own default model through their own routes.
   routeScopeKey('PATCH', '/projects/:id/settings'),
+  // Adding a Doppler binding reads Doppler with a connection's instance token.
+  routeScopeKey('POST', '/projects/:id/doppler/bindings'),
+  routeScopeKey('PATCH', '/projects/:id/doppler/bindings/:bindingId'),
+  routeScopeKey('DELETE', '/projects/:id/doppler/bindings/:bindingId'),
   routeScopeKey('POST', '/projects'),
   routeScopeKey('POST', '/projects/:id/link'),
   routeScopeKey('POST', '/projects/:id/link-github'),

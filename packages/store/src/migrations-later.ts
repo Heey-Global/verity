@@ -6,6 +6,7 @@ import { projectCodePermissionMigration } from './project-code-permission-migrat
 import { sessionCreatorMigration } from './session-creator-migration.js';
 import { changeSubmissionsMigration } from './change-submissions-migration.js';
 import { githubRepositoryIdentityMigration } from './github-repository-identity-migration.js';
+import { dopplerConnectionsMigration } from './doppler-connections-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -704,3 +705,4 @@ migrations['0240_session_repository_pull_requests'] = {
   },
 };
 migrations['0241_github_repository_ids'] = githubRepositoryIdentityMigration;
+migrations['0242_doppler_connections'] = dopplerConnectionsMigration;

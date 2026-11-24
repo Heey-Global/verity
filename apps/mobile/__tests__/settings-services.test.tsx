@@ -149,17 +149,17 @@ describe('settings/services — secret store onboarding', () => {
   });
 
   it('keeps the credential boxes read-only while the store is sealed', async () => {
-    ServicesSettingsScreen = DopplerScreen;
-    mockCreateVerityClient.mockReturnValue(makeClient('sealed'));
-    render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
-
-    const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
-    // A write while sealed 503s, so the box says why rather than failing later.
-    expect(doppler.props.editable).toBe(false);
-    expect(screen.getAllByText('Unlock the secret store to change this.').length).toBeGreaterThan(
-      0,
+    ServicesSettingsScreen = TranscriptionScreen;
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('sealed', { settings: makeSettings({ transcribeBackendMode: 'external' }) }),
     );
+    render(<ServicesSettingsScreen />);
+    fireEvent.press(await screen.findByLabelText(/^Transcription(,|$)/));
+
+    const token = await screen.findByPlaceholderText('Paste the transcription token…');
+    // A write while sealed 503s, so the box says why rather than failing later.
+    expect(token.props.editable).toBe(false);
+    expect(screen.getByText('Unlock the secret store to change the token.')).toBeOnTheScreen();
   });
 
   // A deployment with no cipher of its own (env-injected credentials) has no
@@ -177,12 +177,14 @@ describe('settings/services — secret store onboarding', () => {
 
 describe('settings/services — write-only credentials', () => {
   beforeEach(() => {
-    ServicesSettingsScreen = DopplerScreen;
+    ServicesSettingsScreen = TranscriptionScreen;
   });
+  const external = (overrides = {}) =>
+    makeSettings({ transcribeBackendMode: 'external', ...overrides });
   // The sharpest form of the split's landmine: a paste box saving the whole
   // draft would clear the GitHub App identifiers in the same request.
   it('sends only the credential that was pasted', async () => {
-    const initial = makeSettings();
+    const initial = external();
     const updateVeritySettings = jest
       .fn()
       .mockImplementation((patch) => Promise.resolve({ ...initial, ...patch }));
@@ -190,28 +192,30 @@ describe('settings/services — write-only credentials', () => {
       makeClient('unlocked', { settings: initial, updateVeritySettings }),
     );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
+    fireEvent.press(await screen.findByLabelText(/^Transcription(,|$)/));
 
-    const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
-    fireEvent.changeText(doppler, 'dp.sa.fixture-token');
-    fireEvent(doppler, 'blur');
+    const token = await screen.findByPlaceholderText('Paste the transcription token…');
+    fireEvent.changeText(token, 'transcription-token-fixture');
+    fireEvent(token, 'blur');
 
     await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(1));
     const patch = updateVeritySettings.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(Object.keys(patch)).toEqual(['dopplerServiceToken']);
+    expect(Object.keys(patch)).toEqual(['transcribeApiKey']);
     expectPatchClearsNothing(patch, initial);
     // The plaintext leaves component state as soon as the request owns a copy.
-    await waitFor(() => expect(doppler).toHaveProp('value', ''));
+    await waitFor(() => expect(token).toHaveProp('value', ''));
   });
 
   it('does not send a credential the operator left blank', async () => {
     const updateVeritySettings = jest.fn();
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { updateVeritySettings }));
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { settings: external(), updateVeritySettings }),
+    );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
+    fireEvent.press(await screen.findByLabelText(/^Transcription(,|$)/));
 
-    const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
-    fireEvent(doppler, 'blur');
+    const token = await screen.findByPlaceholderText('Paste the transcription token…');
+    fireEvent(token, 'blur');
 
     // A blank box means "leave it alone". Sent as `null`, it would clear a
     // credential the operator never touched.
@@ -223,21 +227,90 @@ describe('settings/services — write-only credentials', () => {
     const updateVeritySettings = jest
       .fn()
       .mockRejectedValueOnce(new VerityApiError(503, 'sealed'))
-      .mockResolvedValue(makeSettings({ dopplerServiceTokenConfigured: true }));
-    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { updateVeritySettings }));
+      .mockResolvedValue(external({ transcribeApiKeyConfigured: true }));
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', { settings: external(), updateVeritySettings }),
+    );
     render(<ServicesSettingsScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
+    fireEvent.press(await screen.findByLabelText(/^Transcription(,|$)/));
 
-    const doppler = await screen.findByPlaceholderText('Paste the Doppler token…');
-    fireEvent.changeText(doppler, 'dp.sa.fixture-token');
-    fireEvent(doppler, 'blur');
+    const token = await screen.findByPlaceholderText('Paste the transcription token…');
+    fireEvent.changeText(token, 'transcription-token-fixture');
+    fireEvent(token, 'blur');
 
-    await waitFor(() => expect(doppler).toHaveProp('value', 'dp.sa.fixture-token'));
+    await waitFor(() => expect(token).toHaveProp('value', 'transcription-token-fixture'));
     expect(await screen.findByText('Unlock the secret store first.')).toBeOnTheScreen();
     fireEvent.press(screen.getByText('Retry'));
 
     await waitFor(() => expect(updateVeritySettings).toHaveBeenCalledTimes(2));
-    expect(doppler).toHaveProp('value', '');
+    expect(token).toHaveProp('value', '');
+  });
+});
+
+// ADR 0031: one Doppler token per workplace, added after Doppler accepted it,
+// and deleted even while projects use it once the warning was confirmed.
+describe('settings/services — Doppler connections', () => {
+  beforeEach(() => {
+    ServicesSettingsScreen = DopplerScreen;
+  });
+  const platform = {
+    id: 'platform',
+    label: 'Platform',
+    hasToken: true,
+    workplaceSlug: null,
+    workplaceName: 'Northstar',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    projectCount: 2,
+  };
+
+  it('adds a connection with a label and a token', async () => {
+    const addConnection = jest.fn().mockResolvedValue({ ...platform, projectCount: 0 });
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { doppler: { addConnection } }));
+    render(<ServicesSettingsScreen />);
+
+    expect(await screen.findByText('No Doppler connections')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText(/^Add connection(,|$)/));
+    fireEvent.changeText(await screen.findByLabelText(/^Connection label/), 'Payments');
+    fireEvent.changeText(screen.getByLabelText(/^Doppler token/), 'dp.sa.payments');
+    fireEvent.press(screen.getByLabelText(/^Validate and add(,|$)/));
+    await waitFor(() =>
+      expect(addConnection).toHaveBeenCalledWith({ label: 'Payments', token: 'dp.sa.payments' }),
+    );
+  });
+
+  it('warns with the affected projects and deletes after confirming', async () => {
+    const removeConnection = jest.fn().mockResolvedValue(undefined);
+    const connectionUsage = jest.fn().mockResolvedValue({
+      projects: [
+        {
+          projectId: 'p1',
+          projectName: 'Customer Portal',
+          bindings: [
+            { id: 'b1', dopplerProject: 'portal', dopplerConfig: 'prd', isDefault: true },
+            { id: 'b2', dopplerProject: 'portal', dopplerConfig: 'stg', isDefault: false },
+          ],
+        },
+      ],
+    });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        doppler: {
+          listConnections: jest.fn().mockResolvedValue([platform]),
+          connectionUsage,
+          removeConnection,
+        },
+      }),
+    );
+    render(<ServicesSettingsScreen />);
+
+    expect(await screen.findByText('Northstar · 2 projects')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText(/^Manage Platform(,|$)/));
+    fireEvent.press(await screen.findByLabelText(/^Delete connection(,|$)/));
+    expect(await screen.findByText('Connection in use')).toBeOnTheScreen();
+    expect(screen.getByText('portal/prd, portal/stg')).toBeOnTheScreen();
+    expect(removeConnection).not.toHaveBeenCalled();
+    fireEvent.press(screen.getAllByLabelText(/^Delete connection(,|$)/).at(-1)!);
+    await waitFor(() => expect(removeConnection).toHaveBeenCalledWith('platform'));
   });
 });
 
@@ -838,8 +911,13 @@ it.each([false, true])('groups services consistently when connected=%s', async (
       settings: makeSettings({
         claudeCodeOauthCredentialsConfigured: connected,
         codexAuthJsonConfigured: connected,
-        dopplerServiceTokenConfigured: connected,
       }),
+      // Doppler counts its connections (ADR 0031) rather than one token setting.
+      doppler: {
+        listConnections: jest
+          .fn()
+          .mockResolvedValue(connected ? [{ id: 'platform', label: 'Platform' }] : []),
+      },
     }),
   );
   render(<ConnectionsScreen />);
@@ -870,7 +948,9 @@ it.each([false, true])('groups services consistently when connected=%s', async (
   expect(screen.queryByRole('header', { name: 'Connected' })).toBeNull();
   expect(screen.queryByRole('header', { name: 'Available' })).toBeNull();
   const doppler = within(screen.getByLabelText(/^Doppler(,|$)/));
-  expect(doppler.getByLabelText(rowLabel(connected ? 'Connected' : 'Connect'))).toBeOnTheScreen();
+  expect(
+    doppler.getByLabelText(rowLabel(connected ? '1 connection' : 'Connect')),
+  ).toBeOnTheScreen();
 });
 
 it.each([false, true])(

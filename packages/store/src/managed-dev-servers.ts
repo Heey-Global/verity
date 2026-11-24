@@ -19,7 +19,10 @@ export function normalizeManagedDevServerSecretBindings(
       if (
         !binding ||
         Object.keys(binding).some((key) => key !== 'secretAlias' && key !== 'env') ||
-        !/^[A-Z][A-Z0-9_]{0,127}$/u.test(binding.secretAlias) ||
+        // `NAME` or `project/config/NAME` (ADR 0031); resolved against the bindings at start.
+        !/^(?:[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/)?[A-Z][A-Z0-9_]{0,127}$/u.test(
+          binding.secretAlias,
+        ) ||
         !/^[A-Z_][A-Z0-9_]{0,127}$/u.test(binding.env) ||
         /^(?:VERITY_|DOPPLER_|LD_|DYLD_|MALLOC_|LC_|NODE_|PYTHON|BASH|ENV$|PATH$|HOME$|SHELL$|LANG$|USER$|LOGNAME$|HOSTALIASES$|LOCALDOMAIN$|RES_OPTIONS$|TMPDIR$|TZDIR$|PORT$|IFS$|CDPATH$|SHELLOPTS$|BASHOPTS$|GCONV_PATH$|GETCONF_DIR$|GLIBC_TUNABLES$|LOCPATH$|NLSPATH$|PERL|RUBY|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|JDK_JAVA_OPTIONS$)/u.test(
           binding.env,

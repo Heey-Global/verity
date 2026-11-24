@@ -6,6 +6,7 @@ import type { BrokeredApprovalDatabase, SecretKeyMetaTable } from './schema-brok
 export type { SecretKeyMetaTable } from './schema-brokered-approvals.js';
 import type { AssistantDatabase } from './schema-assistant.js';
 import type { PeopleDatabase } from './schema-people.js';
+import type { DopplerDatabase } from './schema-doppler.js';
 import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
 import type { ProjectInquiryDatabase } from './schema-project-inquiries.js';
 import type { SandboxDatabase, SandboxRepairIntentsTable } from './schema-sandbox.js';
@@ -522,9 +523,7 @@ export interface ProjectSettingsTable {
   project_id: string;
   doppler_token_ref: ColumnType<string | null, string | null | undefined, string | null>;
   doppler_token: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Operator-authorized Doppler binding (#320): the Doppler project + config a
-   *  scoped read-only token is minted against at provision time. Plaintext
-   *  (non-secret config, not credentials). */
+  /** Mirror of the default `project_doppler_bindings` row (ADR 0031), plaintext. */
   doppler_project: ColumnType<string | null, string | null | undefined, string | null>;
   doppler_config: ColumnType<string | null, string | null | undefined, string | null>;
   /** Cached scoped read-only per-project Doppler token minted from the global
@@ -1723,6 +1722,7 @@ export interface Database
   extends
     AssistantDatabase,
     PeopleDatabase,
+    DopplerDatabase,
     SandboxDatabase,
     CapacityLeaseDatabase,
     SessionCoordinationDatabase,

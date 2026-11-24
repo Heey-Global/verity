@@ -20,6 +20,7 @@ import { readOrMigrateProjectOverview } from './project-overview-file.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
 import { branchRenameAppliesToSession } from './embedded-support.js';
 import { personForCredential } from './personless-credential.js';
+import { brokeredGrantBindingApplies } from './brokered-doppler-binding.js';
 import { resolveTurnSandbox } from './turn-sandbox.js';
 import { sandboxPersonTag } from './sandbox-identity.js';
 
@@ -31,7 +32,8 @@ export function createEmbeddedConductorBindings(ctx: {
   sessionStorage: Pick<SessionStorage, 'ensureWorkspace'> | undefined;
   transcriptStore: ConductorDeps['transcript'];
   brokeredSecretAliases: ConductorDeps['brokeredSecretAliases'];
-  brokeredGrantBindingId: RunnerContext['brokeredGrantBindingId'];
+  brokeredGrantBindingIds: (projectId: string) => Promise<ReadonlySet<string>>;
+  brokeredGrantBindingIdFor: RunnerContext['brokeredGrantBindingIdFor'];
   brokeredHttpGrants: Pick<ReturnType<typeof createBrokeredHttpGrantStore>, 'check' | 'grant'>;
   branches: ReturnType<typeof createEmbeddedBranches>;
   purgeRunnerArtifacts: ReturnType<typeof createRunnerArtifactPurge> | undefined;
@@ -57,7 +59,8 @@ export function createEmbeddedConductorBindings(ctx: {
     sessionStorage,
     transcriptStore,
     brokeredSecretAliases,
-    brokeredGrantBindingId,
+    brokeredGrantBindingIds,
+    brokeredGrantBindingIdFor,
     brokeredHttpGrants,
     branches,
     purgeRunnerArtifacts,
@@ -116,27 +119,31 @@ export function createEmbeddedConductorBindings(ctx: {
     brokeredSecretAliases,
     // ADR 0011 D2: scoped operator grants auto-approve matching brokered-secret prompts.
     checkBrokeredHttpGrant: async (input) => {
-      const bindingId = await brokeredGrantBindingId(input.projectId);
+      // A grant is per Doppler binding (ADR 0031): the call's own binding id when the
+      // gateway supplied it, else the one its references read from now.
+      const bindingId =
+        input.bindingId ?? (await brokeredGrantBindingIdFor(input.projectId, [input.secretAlias]));
       return bindingId === undefined ||
-        (input.bindingId !== undefined && input.bindingId !== bindingId)
+        !brokeredGrantBindingApplies(bindingId, await brokeredGrantBindingIds(input.projectId))
         ? false
         : brokeredHttpGrants.check({
             ...input,
             // Work without a person holds the original sandbox's person's grants,
             // only where personless-credential.ts allows it at all.
             userId: await personForCredential(eventStore, input.projectId, input.userId),
-            bindingId: input.bindingId ?? bindingId,
+            bindingId,
           });
     },
     persistBrokeredHttpGrant: async (input) => {
-      const bindingId = await brokeredGrantBindingId(input.projectId);
+      const bindingId =
+        input.bindingId ?? (await brokeredGrantBindingIdFor(input.projectId, [input.secretAlias]));
       if (
         bindingId === undefined ||
-        (input.bindingId !== undefined && input.bindingId !== bindingId)
+        !brokeredGrantBindingApplies(bindingId, await brokeredGrantBindingIds(input.projectId))
       ) {
         throw new Error('Doppler access changed before saving approval');
       }
-      await brokeredHttpGrants.grant({ ...input, bindingId: input.bindingId ?? bindingId });
+      await brokeredHttpGrants.grant({ ...input, bindingId });
     },
     // Auto-name an unnamed session from its opening turn: the conductor derives a
     // 2–3 word title from the first chat using the session's OWN model (routed via

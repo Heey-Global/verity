@@ -34,7 +34,11 @@ type EmbeddedRunnerConductorDeps = Pick<
   eventStore: EventStore;
   transcriptStore: RunnerWiring['transcript'];
   getLog: () => Pick<FastifyBaseLogger, 'warn'>;
-  brokeredGrantBindingId: (projectId: string) => Promise<string | undefined>;
+  /** The grant binding id of a call reading these secret references (ADR 0031). */
+  brokeredGrantBindingIdFor: (
+    projectId: string,
+    references: readonly string[],
+  ) => Promise<string | undefined>;
   brokeredHttpGrants: Pick<ReturnType<typeof createBrokeredHttpGrantStore>, 'check'>;
 };
 
@@ -53,7 +57,7 @@ export function createEmbeddedRunnerConductorWiring(
     turnCredentials,
     mcpProxyTokens,
     getLog,
-    brokeredGrantBindingId,
+    brokeredGrantBindingIdFor,
     brokeredHttpGrants,
   } = deps;
   return buildRunnerConductorWiring({
@@ -137,7 +141,7 @@ export function createEmbeddedRunnerConductorWiring(
           ? CONTROL_PLANE_RUNNER_PROJECT_ID
           : undefined);
       if (projectId == null) return false;
-      const bindingId = await brokeredGrantBindingId(projectId);
+      const bindingId = await brokeredGrantBindingIdFor(projectId, target.secretAliases);
       if (bindingId === undefined) return false;
       // Only the running turn's person can have consented in advance (ADR 0023 §3).
       const running = (await eventStore.listRunningTurns()).find(

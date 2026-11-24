@@ -1,3 +1,4 @@
+import { installDopplerBindings } from './project-doppler-binding-routes.js';
 import type { administratorProviderConnections } from './administrator-provider-connections.js';
 import { fetchOpenCodeModels } from './opencode-model-catalog.js';
 import { registerProviderConnectionRoutes } from './provider-connection-routes.js';
@@ -310,6 +311,11 @@ export function installPeople(
   registerDopplerConnectionRoutes(app, {
     store: deps.eventStore,
     listNames: (input) => listDopplerProjectSecretNames(input),
+  });
+  installDopplerBindings(app, {
+    store: deps.eventStore,
+    listNames: (input) => listDopplerProjectSecretNames(input),
+    isSealed: () => deps.secretCipher?.isSealed() === true,
   });
   registerGitHubUserRoutes(app, {
     authorization:

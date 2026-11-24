@@ -35,26 +35,41 @@ beforeEach(async () => {
     });
 });
 
-// One person's token must never answer for another person or another project.
-it('keeps each Doppler token to its person and project, encrypted at rest', async () => {
+// One person's token must never answer for another person, project or connection.
+it('keeps each Doppler token to its person, project and connection, encrypted at rest', async () => {
+  await ctx.db
+    .insertInto('doppler_connections')
+    .values([
+      { id: 'c1', label: 'Platform' },
+      { id: 'c2', label: 'Payments' },
+    ])
+    .execute();
   const connections = new UserDopplerConnectionStore(ctx.db, createSecretCipher('cd'.repeat(32)));
-  await connections.set('lena', 'p1', 'dp.st.lena-p1');
-  await connections.set('mia', 'p1', 'dp.st.mia-p1');
+  await connections.set('lena', 'p1', 'c1', 'dp.st.lena-p1');
+  await connections.set('mia', 'p1', 'c1', 'dp.st.mia-p1');
+  await connections.set('lena', 'p1', 'c2', 'dp.st.lena-p1-payments');
 
-  expect((await connections.tokenBytes('lena', 'p1'))?.toString()).toBe('dp.st.lena-p1');
-  expect((await connections.tokenBytes('mia', 'p1'))?.toString()).toBe('dp.st.mia-p1');
-  expect(await connections.tokenBytes('lena', 'p2')).toBeUndefined();
-  expect(await connections.status('lena', 'p2')).toBeUndefined();
-  expect(await connections.status('lena', 'p1')).toMatchObject({ updatedAt: expect.any(Date) });
+  expect((await connections.tokenBytes('lena', 'p1', 'c1'))?.toString()).toBe('dp.st.lena-p1');
+  expect((await connections.tokenBytes('lena', 'p1', 'c2'))?.toString()).toBe(
+    'dp.st.lena-p1-payments',
+  );
+  expect((await connections.tokenBytes('mia', 'p1', 'c1'))?.toString()).toBe('dp.st.mia-p1');
+  expect(await connections.tokenBytes('mia', 'p1', 'c2')).toBeUndefined();
+  expect(await connections.tokenBytes('lena', 'p2', 'c1')).toBeUndefined();
+  expect((await connections.statuses('lena', 'p2')).size).toBe(0);
+  expect([...(await connections.statuses('lena', 'p1')).keys()].sort()).toEqual(['c1', 'c2']);
 
   const stored = await ctx.db.selectFrom('user_doppler_connections').select('token').execute();
   expect(stored.map((row) => row.token).join()).not.toContain('dp.st.');
 
-  await connections.set('lena', 'p1', 'dp.st.lena-rotated');
-  expect((await connections.tokenBytes('lena', 'p1'))?.toString()).toBe('dp.st.lena-rotated');
-  await connections.delete('lena', 'p1');
-  expect(await connections.tokenBytes('lena', 'p1')).toBeUndefined();
-  expect((await connections.tokenBytes('mia', 'p1'))?.toString()).toBe('dp.st.mia-p1');
+  await connections.set('lena', 'p1', 'c1', 'dp.st.lena-rotated');
+  expect((await connections.tokenBytes('lena', 'p1', 'c1'))?.toString()).toBe('dp.st.lena-rotated');
+  await connections.delete('lena', 'p1', 'c1');
+  expect(await connections.tokenBytes('lena', 'p1', 'c1')).toBeUndefined();
+  expect(await connections.tokenBytes('lena', 'p1', 'c2')).toBeDefined();
+  expect((await connections.tokenBytes('mia', 'p1', 'c1'))?.toString()).toBe('dp.st.mia-p1');
+  await connections.deleteAll('lena', 'p1');
+  expect(await connections.tokenBytes('lena', 'p1', 'c2')).toBeUndefined();
 });
 
 // Standing grants become one person's consent. The ones that exist were approved

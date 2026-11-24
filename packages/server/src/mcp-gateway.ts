@@ -77,18 +77,24 @@ const DOPPLER_RESOLUTION_PHASES = new Set([
   'project configuration',
   'secret alias',
   'Doppler connection',
+  'Doppler binding',
   'Doppler authentication',
   'Doppler request start',
   'Doppler request timeout',
   'Doppler response status',
   'Doppler response format',
 ]);
+const SAFE_BINDING_MESSAGE = /^[A-Za-z0-9 _./`:,()-]{1,2000}$/u;
 const SAFE_PROJECT_CONFIGURATION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}@v[1-9]\d{0,15}$/u;
 
 function dopplerResolutionMessage(error: DopplerSecretResolutionError): string | undefined {
   if (error.phase === undefined || !DOPPLER_RESOLUTION_PHASES.has(error.phase)) return undefined;
   // A fixed text naming no project or person: the agent relays it as the connect prompt.
   if (error.phase === 'Doppler connection') return DOPPLER_CONNECTION_REQUIRED_MESSAGE;
+  // Built from validated references and Doppler slugs only (doppler-secret-reference.ts),
+  // so the agent learns which binding is gone and which are connected.
+  if (error.phase === 'Doppler binding' && SAFE_BINDING_MESSAGE.test(error.message))
+    return error.message;
   if (
     error.httpStatus !== undefined &&
     (!Number.isInteger(error.httpStatus) || error.httpStatus < 100 || error.httpStatus > 599)

@@ -112,6 +112,8 @@ export function installSettings(
   const { refreshOpenCodeModels } = registerSettingsRoutes(app, {
     store: () => veritySettingsStore(deps.eventStore),
     agentLogin,
+    onDopplerServiceTokenChanged: (token) =>
+      deps.eventStore.dopplerConnections.setLegacyToken(token),
     parseSettingsPatch: (body) => veritySettingsBody.parse(body),
     projectEgressAvailable: deps.projectEgressAvailable,
     projectEgressStatus: deps.projectEgressStatus,
@@ -234,7 +236,9 @@ export function installSettings(
   });
 
   registerDopplerRoutes(app, {
+    eventStore: deps.eventStore,
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.dopplerWorkplace !== undefined ? { dopplerWorkplace: deps.dopplerWorkplace } : {}),
     ...(deps.dopplerCredentialReader !== undefined
       ? { dopplerCredentialReader: deps.dopplerCredentialReader }
       : {}),

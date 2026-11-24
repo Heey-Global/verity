@@ -71,3 +71,16 @@ A repository without an `AGENTS.md` is omitted. A repository whose code host
 cannot be reached is named as not loaded, so a missing file and an unanswered
 request are never shown the same way. Reading the list requires read access to
 the project; editing project Instructions requires manage access.
+
+## Doppler bindings
+
+Like repositories, a project can read secrets from several Doppler projects and
+configs. Administrators add Doppler connections, one token per workplace, under
+Settings, Connectors, Doppler, and bind any project and config of them in the
+project's Doppler settings. One binding is the default: agents address its
+secrets as `NAME` and every other binding's as `project/config/NAME`. The same
+project and config can be bound only once per project. Members connect their own
+token for each connection the project uses; the administrator's turns fall back
+to the connection's instance token. Deleting a connection in use warns with the
+affected projects and then removes its bindings, personal tokens and grants
+everywhere. See [ADR 0031](adr/0031-multiple-doppler-connections.md).

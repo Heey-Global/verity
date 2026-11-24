@@ -18,6 +18,16 @@ import {
   type AgentLoginProvider,
 } from './people-api.js';
 import { projectQAClient, projectQASummarySchema } from './project-qa-api.js';
+import {
+  dopplerClient,
+  dopplerConfigsResultSchema,
+  dopplerProjectsResultSchema,
+  dopplerValidateSchema,
+  type DopplerConfigsResult,
+  type DopplerProjectsResult,
+  type DopplerValidateResult,
+} from './doppler-api.js';
+export * from './doppler-api.js';
 export * from './people-api.js';
 export * from './project-qa-api.js';
 export * from './session-workspace-api.js';
@@ -1697,57 +1707,6 @@ export type GithubManifestPreparation = z.infer<typeof manifestPrepareSchema>;
 
 const manifestCompleteSchema = z.object({ installUrl: z.string().url() });
 
-/** Result of `POST /doppler/validate` (#320, onboarding — OPTIONAL step): a live
- *  check that the stored Doppler Service Account token actually lists projects.
- *  `ok` confirms the token works. `projectCount` is a SAFE confirmation integer on
- *  success; `error` is a redacted failure message (`'locked'` when the store is
- *  sealed, `'not configured'` when the token is missing). The server NEVER returns
- *  the token here. */
-export const dopplerValidateSchema = z.object({
-  ok: z.boolean(),
-  projectCount: z.number().optional(),
-  error: z.string().optional(),
-});
-export type DopplerValidateResult = z.infer<typeof dopplerValidateSchema>;
-
-/** A single Doppler project in the binding picker (#320, `GET /doppler/projects`).
- *  `slug` is the stable identifier the mapping PATCH uses as `dopplerProject`; `name`
- *  is the display label. NON-secret. */
-export const dopplerProjectSummarySchema = z.object({
-  slug: z.string(),
-  name: z.string(),
-});
-export type DopplerProjectSummary = z.infer<typeof dopplerProjectSummarySchema>;
-
-/** A single Doppler config in the binding picker (#320, `GET /doppler/configs`).
- *  `name` is what the mapping PATCH uses as `dopplerConfig`; `environment` / `root`
- *  let the UI group root vs branch configs (deferred). NON-secret. */
-export const dopplerConfigSummarySchema = z.object({
-  name: z.string(),
-  environment: z.string().optional(),
-  root: z.boolean().optional(),
-});
-export type DopplerConfigSummary = z.infer<typeof dopplerConfigSummarySchema>;
-
-/** Result of `GET /doppler/projects` (#320, binding picker): the account's Doppler
- *  projects from the TRUSTED account token (server-side; NOT repo content), or a
- *  redacted `{ error }` envelope. `error: 'locked'` = the store is sealed;
- *  `'not configured'` = no account token. The token is NEVER on the wire. */
-export const dopplerProjectsResultSchema = z.union([
-  z.object({ projects: z.array(dopplerProjectSummarySchema) }),
-  z.object({ error: z.string() }),
-]);
-export type DopplerProjectsResult = z.infer<typeof dopplerProjectsResultSchema>;
-
-/** Result of `GET /doppler/configs?project=<project>` (#320, binding picker): the
- *  project's configs from the TRUSTED account token, or a redacted `{ error }`
- *  envelope (`'locked'` / `'not configured'` / `'project is required'`). */
-export const dopplerConfigsResultSchema = z.union([
-  z.object({ configs: z.array(dopplerConfigSummarySchema) }),
-  z.object({ error: z.string() }),
-]);
-export type DopplerConfigsResult = z.infer<typeof dopplerConfigsResultSchema>;
-
 /** Result of `POST /settings/signing-key/generate` (#320, onboarding): the server
  *  generated an ed25519 signing keypair, stored the PRIVATE key encrypted, and
  *  returns ONLY the public material. `publicKey` is the OpenSSH pubkey line the
@@ -2646,6 +2605,15 @@ export class VerityClient {
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
   readonly projectQA = projectQAClient((path, init) => this.request(path, init));
+  readonly doppler = dopplerClient((path, init) => this.request(path, init));
+  readonly listDopplerConnections = this.doppler.listConnections;
+  readonly getDopplerConnectionUsage = this.doppler.connectionUsage;
+  readonly addDopplerConnection = this.doppler.addConnection;
+  readonly removeDopplerConnection = this.doppler.removeConnection;
+  readonly listProjectDopplerBindings = this.doppler.listBindings;
+  readonly addProjectDopplerBinding = this.doppler.addBinding;
+  readonly setDefaultProjectDopplerBinding = this.doppler.setDefaultBinding;
+  readonly removeProjectDopplerBinding = this.doppler.removeBinding;
   readonly changeSubmissions = changeSubmissionsClient((path, init) => this.request(path, init));
   readonly saveSessionToProject = this.changeSubmissions.saveToProject;
   readonly getProjectTeam = this.people.getProjectTeam;
@@ -4902,34 +4870,26 @@ export class VerityClient {
     await this.request('/settings/github/disconnect', { method: 'POST' });
   }
 
-  /** First-run (#320, OPTIONAL): live-validate the stored Doppler Service Account
-   *  token by listing the account's projects server-side. Requires the secret
-   *  store unlocked (the token must decrypt). Never carries the token —
-   *  `{ ok, projectCount?, error? }` only. `error: 'locked'` = store sealed;
-   *  `'not configured'` = token missing. */
+  /** Validate the stored Doppler token server-side and return its project count or an error. */
   async validateDoppler(): Promise<DopplerValidateResult> {
     const res = await this.request('/doppler/validate', { method: 'POST' });
     return dopplerValidateSchema.parse(await res.json());
   }
 
-  /** Binding picker (#320): list the account's Doppler projects, server-side, from
-   *  the TRUSTED account token (NOT repo content). Requires the secret store
-   *  unlocked (the account token must decrypt). Returns `{ projects }` on success
-   *  or `{ error }` (`'locked'` = sealed; `'not configured'` = no account token).
-   *  The token is NEVER returned. */
-  async listDopplerProjects(): Promise<DopplerProjectsResult> {
-    const res = await this.request('/doppler/projects', { method: 'GET' });
+  /** List projects using the selected Doppler connection's server-side token. */
+  async listDopplerProjects(connectionId?: string): Promise<DopplerProjectsResult> {
+    const query = connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : '';
+    const res = await this.request(`/doppler/projects${query}`, { method: 'GET' });
     return dopplerProjectsResultSchema.parse(await res.json());
   }
 
-  /** Binding picker (#320): list a Doppler project's configs, server-side, from the
-   *  TRUSTED account token. `project` is the slug from {@link listDopplerProjects}.
-   *  Returns `{ configs }` or `{ error }` (`'locked'` / `'not configured'` /
-   *  `'project is required'`). The token is NEVER returned. */
-  async listDopplerConfigs(project: string): Promise<DopplerConfigsResult> {
-    const res = await this.request(`/doppler/configs?project=${encodeURIComponent(project)}`, {
-      method: 'GET',
-    });
+  /** List configs for a project slug returned by {@link listDopplerProjects}. */
+  async listDopplerConfigs(project: string, connectionId?: string): Promise<DopplerConfigsResult> {
+    const via = connectionId ? `&connectionId=${encodeURIComponent(connectionId)}` : '';
+    const res = await this.request(
+      `/doppler/configs?project=${encodeURIComponent(project)}${via}`,
+      { method: 'GET' },
+    );
     return dopplerConfigsResultSchema.parse(await res.json());
   }
 

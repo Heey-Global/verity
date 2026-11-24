@@ -30,6 +30,8 @@ export interface SettingsRouteDeps {
   };
   transcriptionConfigured: (settings: VeritySettingsRecord | null) => boolean;
   onUplinkCredentialsChanged?: (() => void) | undefined;
+  /** The former single Doppler token setting writes through to its connection (ADR 0031). */
+  onDopplerServiceTokenChanged?: ((token: string | null) => Promise<void>) | undefined;
   /** Apply the premium feature switches after either of them changed. */
   onPremiumFeatureSwitchesChanged?:
     ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
@@ -232,6 +234,8 @@ export function registerSettingsRoutes(
         settings = await deps.store().updateVeritySettings(patch);
       }
       if (settings === undefined) throw new Error('Verity settings disappeared after update');
+      if (patch.dopplerServiceToken !== undefined)
+        await deps.onDopplerServiceTokenChanged?.(patch.dopplerServiceToken?.trim() || null);
       if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
       if (
         patch.premiumSharingEnabled !== undefined ||

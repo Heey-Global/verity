@@ -218,7 +218,12 @@ export function formatBrokeredSecretAliases(secretAliases?: readonly string[]): 
   // MAX_TRUSTED_CLI_SECRETS of them and a JWT request resolves a claim source
   // per alias, so a one-alias reading would send the agent back to packing
   // several credentials into a single Doppler value.
-  return `\n\nSecret names available in this project: ${included.join(', ')}${omitted > 0 ? ` (${omitted} more omitted)` : ''}. Every \`secretAlias\` must be one of the listed names; a call may reference more than one of them, but never guess a name that is not listed.`;
+  // Several Doppler bindings (ADR 0031): bare names are the default config's, the
+  // others carry their binding in front and must be written exactly so.
+  const bindings = included.some((alias) => alias.includes('/'))
+    ? ' Bare names come from the default Doppler config; `project/config/NAME` names come from that other Doppler project and config and must be written in full.'
+    : '';
+  return `\n\nSecret names available in this project: ${included.join(', ')}${omitted > 0 ? ` (${omitted} more omitted)` : ''}. Every \`secretAlias\` must be one of the listed names; a call may reference more than one of them, but never guess a name that is not listed.${bindings}`;
 }
 
 /**

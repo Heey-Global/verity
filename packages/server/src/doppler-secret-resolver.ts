@@ -24,6 +24,7 @@ export type DopplerSecretResolutionPhase =
   | 'project configuration'
   | 'secret alias'
   | 'Doppler connection'
+  | 'Doppler binding'
   | 'Doppler authentication'
   | 'Doppler request start'
   | 'Doppler request timeout'

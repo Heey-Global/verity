@@ -16,7 +16,8 @@ const record: BrokeredToolApprovalRecord = {
   canonicalInput: '{"url":"https://api.example.com"}',
   requestMac: 'mac',
   macKeyId: 'key',
-  authorizationSnapshot: '{"dopplerProject":"p","dopplerConfig":"staging"}',
+  authorizationSnapshot:
+    '{"bindings":[{"connectionId":"c","dopplerProject":"p","dopplerConfig":"staging"}]}',
   status: 'pending',
   scope: null,
   decidedBy: null,

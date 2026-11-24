@@ -48,11 +48,15 @@ describe('MCP gateway trusted CLI integration', () => {
 
     const order: string[] = [];
     const trustedCli = createTrustedCliTool({
-      getProjectBinding: async () => ({
-        dopplerToken: 'binding-marker',
-        dopplerProject: 'project',
-        dopplerConfig: 'prod',
-      }),
+      getProjectBindings: async () => [
+        {
+          id: 'default',
+          connectionId: 'conn',
+          isDefault: true,
+          dopplerProject: 'project',
+          dopplerConfig: 'prod',
+        },
+      ],
       consumeApproval: async (input) => {
         order.push('consume');
         expect(input).toEqual({

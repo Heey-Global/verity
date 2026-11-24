@@ -5,7 +5,12 @@
 // looks like — a fixture that drifts per file is how a screen ends up green
 // against a project no server would send. The module mocks (expo-router,
 // `lib/client`) come from `settingsHarness`; this file only adds the project.
-import type { ProjectDetail, VerityClient } from '@verity/mobile';
+import type {
+  DopplerConnection,
+  ProjectDetail,
+  ProjectDopplerBinding,
+  VerityClient,
+} from '@verity/mobile';
 
 /** A neutral project-detail payload. The project is `absent` (paused) so the
  *  Sandbox screen makes no lifecycle calls on mount. */
@@ -66,6 +71,8 @@ export type ProjectClientOverrides = {
   setOwnProjectDefaultModel?: jest.Mock;
   listDopplerProjects?: jest.Mock;
   listDopplerConfigs?: jest.Mock;
+  /** Overrides for `client.doppler` (ADR 0031); the rest keep the defaults below. */
+  doppler?: Partial<Record<keyof VerityClient['doppler'], jest.Mock>>;
   deleteProject?: jest.Mock;
   deprovisionProject?: jest.Mock;
   repairProject?: jest.Mock;
@@ -133,6 +140,16 @@ export function makeClient(opts: ProjectClientOverrides = {}): VerityClient {
         ),
     listDopplerProjects: opts.listDopplerProjects ?? jest.fn(notImplemented('listDopplerProjects')),
     listDopplerConfigs: opts.listDopplerConfigs ?? jest.fn(notImplemented('listDopplerConfigs')),
+    doppler: {
+      listConnections: jest.fn().mockResolvedValue([dopplerConnection()]),
+      listBindings: jest.fn().mockResolvedValue([]),
+      personalTokens: jest.fn().mockResolvedValue({ connections: [] }),
+      addBinding: jest.fn(notImplemented('doppler.addBinding')),
+      setDefaultBinding: jest.fn(notImplemented('doppler.setDefaultBinding')),
+      removeBinding: jest.fn(notImplemented('doppler.removeBinding')),
+      connectPersonalToken: jest.fn(notImplemented('doppler.connectPersonalToken')),
+      ...opts.doppler,
+    },
     deleteProject: opts.deleteProject ?? jest.fn(notImplemented('deleteProject')),
     deprovisionProject: opts.deprovisionProject ?? jest.fn(notImplemented('deprovisionProject')),
     repairProject: opts.repairProject ?? jest.fn(notImplemented('repairProject')),
@@ -172,3 +189,34 @@ export const forgejoConnections = (available = true) => ({
   ],
   forgejoProjectsAvailable: available,
 });
+
+/** An instance Doppler connection as `GET /doppler/connections` lists it. */
+export function dopplerConnection(overrides: Partial<DopplerConnection> = {}): DopplerConnection {
+  return {
+    id: 'platform',
+    label: 'Platform',
+    hasToken: true,
+    workplaceSlug: null,
+    workplaceName: 'Northstar',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    projectCount: 1,
+    ...overrides,
+  };
+}
+
+/** A project Doppler binding as `GET /projects/:id/doppler/bindings` lists it. */
+export function dopplerBinding(
+  overrides: Partial<ProjectDopplerBinding> = {},
+): ProjectDopplerBinding {
+  const binding = {
+    id: 'b1',
+    connectionId: 'platform',
+    connectionLabel: 'Platform',
+    dopplerProject: 'portal',
+    dopplerConfig: 'prd',
+    isDefault: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+  return { ...binding, reference: `${binding.dopplerProject}/${binding.dopplerConfig}` };
+}
