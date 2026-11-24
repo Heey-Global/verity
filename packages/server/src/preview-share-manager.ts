@@ -1241,7 +1241,7 @@ export class PreviewShareManager {
       !project ||
       instance.projectId !== project.id ||
       session?.projectId !== project.id ||
-      authority === false
+      (authority === false && instance.desired === 'running')
     ) {
       await this.stop(share.id);
       return;

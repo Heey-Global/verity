@@ -53,7 +53,6 @@ import {
   type AssistantToolDeps,
 } from './assistant-tool.js';
 import { type GitBranchService } from './branches.js';
-import {} from './brokered-doppler-binding.js';
 import { createControlDiagnosticsTool, diagnosticSources } from './control-diagnostics-tool.js';
 import { documentViewForSession } from './document-workspace.js';
 import './fastify-augmentation.js';

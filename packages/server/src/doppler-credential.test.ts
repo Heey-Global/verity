@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createDopplerCredentials, createStoreDopplerCredentials } from './doppler-credential.js';
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 
+const SCOPE = { dopplerProject: 'portal', dopplerConfig: 'prd' };
+
 function credentials(options: {
   personal?: Record<string, string>;
   instance?: Record<string, string>;
@@ -27,13 +29,13 @@ describe('Doppler credential per person and connection', () => {
       personal: { 'lena/p1/platform': 'lena-p1' },
       instance: { platform: 'instance', payments: 'instance-payments' },
     });
-    expect((await forPerson('lena', 'p1', 'platform')).toString()).toBe('lena-p1');
+    expect((await forPerson('lena', 'p1', 'platform', SCOPE)).toString()).toBe('lena-p1');
     // Lena has no token for p2 and is not the administrator: refused, not the instance token.
-    await expect(forPerson('lena', 'p2', 'platform')).rejects.toMatchObject({
+    await expect(forPerson('lena', 'p2', 'platform', SCOPE)).rejects.toMatchObject({
       phase: 'Doppler connection',
     });
     // Nor does her Platform token answer for another connection of the same project.
-    await expect(forPerson('lena', 'p1', 'payments')).rejects.toMatchObject({
+    await expect(forPerson('lena', 'p1', 'payments', SCOPE)).rejects.toMatchObject({
       phase: 'Doppler connection',
     });
   });
@@ -45,14 +47,16 @@ describe('Doppler credential per person and connection', () => {
       personal: { 'admin/p1/platform': 'admin-p1' },
       instance: { platform: 'instance', payments: 'instance-payments' },
     });
-    expect((await forPerson('admin', 'p1', 'platform')).toString()).toBe('admin-p1');
-    expect((await forPerson('admin', 'p2', 'platform')).toString()).toBe('instance');
-    expect((await forPerson('admin', 'p1', 'payments')).toString()).toBe('instance-payments');
+    expect((await forPerson('admin', 'p1', 'platform', SCOPE)).toString()).toBe('admin-p1');
+    expect((await forPerson('admin', 'p2', 'platform', SCOPE)).toString()).toBe('instance');
+    expect((await forPerson('admin', 'p1', 'payments', SCOPE)).toString()).toBe(
+      'instance-payments',
+    );
     // Work without a person is the original sandbox's person's, here the administrator.
-    expect((await forPerson(null, 'p1', 'platform')).toString()).toBe('admin-p1');
-    expect((await forPerson(null, 'p2', 'platform')).toString()).toBe('instance');
-    await expect(forPerson(null, 'shared', 'platform')).rejects.toThrow('refused');
-    await expect(forPerson('mia', 'p2', 'platform')).rejects.toBeInstanceOf(
+    expect((await forPerson(null, 'p1', 'platform', SCOPE)).toString()).toBe('admin-p1');
+    expect((await forPerson(null, 'p2', 'platform', SCOPE)).toString()).toBe('instance');
+    await expect(forPerson(null, 'shared', 'platform', SCOPE)).rejects.toThrow('refused');
+    await expect(forPerson('mia', 'p2', 'platform', SCOPE)).rejects.toBeInstanceOf(
       DopplerSecretResolutionError,
     );
   });
@@ -75,15 +79,17 @@ describe('Doppler credential per person and connection', () => {
         projectTeam: { listMembers: async () => members.map((userId) => ({ userId })) },
       }) as never;
     expect(
-      (await createStoreDopplerCredentials(store(['admin']))(null, 'p1', 'platform')).toString(),
+      (
+        await createStoreDopplerCredentials(store(['admin']))(null, 'p1', 'platform', SCOPE)
+      ).toString(),
     ).toBe('instance');
     await expect(
-      createStoreDopplerCredentials(store(['admin', 'lena']))(null, 'p1', 'platform'),
+      createStoreDopplerCredentials(store(['admin', 'lena']))(null, 'p1', 'platform', SCOPE),
     ).rejects.toMatchObject({ phase: 'Doppler connection' });
   });
 
   it('reports a connection without an instance token as an authentication failure', async () => {
-    await expect(credentials({})('admin', 'p1', 'platform')).rejects.toMatchObject({
+    await expect(credentials({})('admin', 'p1', 'platform', SCOPE)).rejects.toMatchObject({
       phase: 'Doppler authentication',
     });
   });

@@ -257,6 +257,9 @@ export async function syncDefaultDopplerBinding(
     .execute();
   if (current?.doppler_project === dopplerProject && current.doppler_config === dopplerConfig)
     return;
+  const complete = dopplerProject !== null && dopplerConfig !== null;
+  // An older client's empty or partial pair on a project without bindings changes nothing.
+  if (current === undefined && !complete) return;
 
   const [connection, anotherConnection] = await tx
     .selectFrom('doppler_connections')
@@ -266,7 +269,6 @@ export async function syncDefaultDopplerBinding(
   if (other !== undefined || anotherConnection !== undefined)
     throw new AmbiguousDopplerConnectionError();
 
-  const complete = dopplerProject !== null && dopplerConfig !== null;
   if (current !== undefined)
     await removeBinding(tx, projectId, current.id, complete ? connection?.id : undefined);
   if (complete) {

@@ -28,7 +28,8 @@ export interface DopplerCredentialSources {
     userId: string,
     projectId: string,
     connectionId: string,
-    scope?: DopplerTokenBindingScope,
+    // Required: an unscoped read would skip the per-config validation of the token.
+    scope: DopplerTokenBindingScope,
   ): Promise<Buffer | undefined>;
   /** The connection's instance token, which is the administrator's. */
   instance(connectionId: string): Promise<Buffer | undefined>;
@@ -50,7 +51,7 @@ export function createDopplerCredentials(sources: DopplerCredentialSources) {
     person: string | null,
     projectId: string,
     connectionId: string,
-    scope?: DopplerTokenBindingScope,
+    scope: DopplerTokenBindingScope,
   ): Promise<Buffer> => {
     const userId = person ?? (await sources.personless(projectId));
     let own: Buffer | undefined;

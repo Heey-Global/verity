@@ -201,8 +201,8 @@ export function registerDopplerConnectionRoutes(
   app.delete('/projects/:id/doppler/connection', async (request, reply) => {
     const parsed = params.safeParse(request.params);
     const filter = query.safeParse(request.query ?? {});
-    if (!parsed.success || !filter.success)
-      return reply.code(400).send({ error: 'invalid project id' });
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid project id' });
+    if (!filter.success) return reply.code(400).send({ error: 'invalid connection id' });
     const target = await connectionFor(parsed.data.id, filter.data.connectionId);
     if ('error' in target) return reply.code(409).send({ error: target.error });
     const { connectionId } = target;

@@ -174,6 +174,18 @@ describe('project Doppler bindings', () => {
     ]);
     expect(await mirrored('p1')).toEqual(['app', 'stg']);
   });
+
+  it("accepts an older client's empty or partial pair without bindings on several connections", async () => {
+    for (const label of ['Platform', 'Billing'])
+      await connections.add({ label, token: 'dp.sa.a', workplace: { slug: null, name: null } });
+    // A no-op write must not fail as ambiguous and abort the whole settings update.
+    await ctx.store.updateProjectSettings('p1', { dopplerProject: null, dopplerConfig: null });
+    await ctx.store.updateProjectSettings('p1', { dopplerProject: 'app' });
+    expect(await bindings.list('p1')).toEqual([]);
+    await expect(
+      ctx.store.updateProjectSettings('p1', { dopplerProject: 'app', dopplerConfig: 'prd' }),
+    ).rejects.toThrow(AmbiguousDopplerConnectionError);
+  });
 });
 
 describe('Doppler connections', () => {

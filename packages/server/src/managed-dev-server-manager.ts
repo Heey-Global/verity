@@ -1107,7 +1107,7 @@ export class ManagedDevServerManager {
             : result.reason,
         lastRunCommand: command,
         lastRunSecretBindings: secretBindings,
-        lastRunProviderAuthority: null,
+        lastRunProviderAuthority: runAuthority,
         lastRunUserId: runAs,
         lastRunWorkdir: workdir,
       });

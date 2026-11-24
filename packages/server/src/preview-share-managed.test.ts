@@ -149,6 +149,10 @@ describe('managed public links', () => {
         };
         running = true;
       },
+      stopRun: () => {
+        instance = { ...instance!, state: 'stopped', desired: 'stopped' };
+        running = false;
+      },
       rotateDopplerToken: () => {
         dopplerBinding.tokenRevision = '22222222-2222-4222-8222-222222222222';
       },
@@ -176,6 +180,21 @@ describe('managed public links', () => {
     await f.manager.reconcile();
     expect(f.share().state).toBe('revoked');
     expect(f.edge.remove).toHaveBeenCalledWith('share-id');
+  });
+
+  it('keeps the link of a stopped server when its old run authority becomes stale', async () => {
+    const f = managedFixture();
+    f.runWithDoppler();
+    await f.manager.reconcile();
+    f.stopRun();
+    f.rotateDopplerToken();
+    await f.manager.reconcile();
+    // Revoking here changed the URL and PIN although the next run uses current access.
+    expect(f.share().state).toBe('active');
+    expect(f.edge.remove).not.toHaveBeenCalled();
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
   });
 
   it('checks a managed listener reached through a legacy port share', async () => {

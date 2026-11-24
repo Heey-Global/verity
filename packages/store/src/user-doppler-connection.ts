@@ -10,9 +10,19 @@ export class DopplerBindingsChangedError extends Error {
   }
 }
 
-export class DopplerTokenRevalidationRequiredError extends Error {}
+export class DopplerTokenRevalidationRequiredError extends Error {
+  constructor() {
+    super('Reconnect your Doppler token to validate access to this config.');
+    this.name = 'DopplerTokenRevalidationRequiredError';
+  }
+}
 
-export class DopplerProjectAccessChangedError extends Error {}
+export class DopplerProjectAccessChangedError extends Error {
+  constructor() {
+    super('Your access to this project changed. Reload and try again.');
+    this.name = 'DopplerProjectAccessChangedError';
+  }
+}
 
 export interface DopplerTokenBindingScope {
   dopplerProject: string;

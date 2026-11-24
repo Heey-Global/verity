@@ -285,9 +285,10 @@ export interface ControlPlaneDeps {
   /** Live listing of a Doppler project's configs for the binding picker (#320,
    * `GET /doppler/configs?project=<project>`). Same trust + redaction contract as
    * {@link dopplerListProjects}. Omit → `{ error: 'not configured' }`. */
-  secretJobDopplerConnectionId?: string | undefined;
   dopplerListConfigs?:
     ((token: string, project: string) => Promise<DopplerConfigSummary[]>) | undefined;
+  /** The Doppler connection Secret Jobs resolve through (ADR 0031). */
+  secretJobDopplerConnectionId?: string | undefined;
   dopplerCredentialReader?:
     ((connectionId?: string) => Promise<Uint8Array | undefined>) | undefined;
   dopplerWorkplace?:

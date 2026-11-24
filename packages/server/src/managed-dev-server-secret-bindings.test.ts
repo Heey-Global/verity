@@ -6,6 +6,7 @@ import type { LocalPreviewShare } from './local-preview-manager.js';
 import {
   createManagedDevServerSecretResolver,
   managedDevServerProviderSnapshot,
+  managedRunProviderCurrent,
 } from './managed-dev-server-secrets.js';
 import {
   ManagedDevServerManager,
@@ -590,6 +591,33 @@ describe('managed servers with secret bindings', () => {
       }
     },
   );
+
+  it('keeps the approved authority after a failed launch so the next start still applies', async () => {
+    await withResolver(async () => [{ env: 'API_KEY', value: 'synthetic' }]);
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    await manager.approve('s1', 'api', {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    });
+    vi.spyOn(sandbox.runtime, 'startManagedServer').mockResolvedValueOnce({
+      ok: false,
+      reason: 'port busy',
+    });
+    await manager.start('s1', 'api', 'agent');
+    const failed = (await ctx.store.managedDevServers.listInstances({ serverId: entry.id }))[0]!;
+    expect(failed.state).toBe('crashed');
+    // A null authority read as "Doppler access changed": the public link was revoked
+    // and the person was asked to approve a server whose access never changed.
+    expect(await managedRunProviderCurrent(ctx.store, failed)).toBe(true);
+    await manager.start('s1', 'api', 'agent');
+    expect(sandbox.started).toHaveLength(1);
+  });
 
   it('never launches a partial secret set or stores resolver diagnostics', async () => {
     await withResolver(async () => {

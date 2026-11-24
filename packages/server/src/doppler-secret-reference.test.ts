@@ -147,6 +147,14 @@ describe('approvals and grants per binding', () => {
     ).not.toBe(brokeredDopplerBindingId(snapshot(...references)));
   });
 
+  it('keeps an approval valid when the same bindings are listed in another order', () => {
+    const approved = snapshot('portal/prd/API_KEY', 'billing/dev/API_KEY');
+    expect(approved.bindings).toHaveLength(2);
+    // setDefault or a re-insert reorders the list; that is not a change of access.
+    const reordered = { bindings: [...approved.bindings].reverse() };
+    expect(() => assertBrokeredDopplerBinding(reordered, approved)).not.toThrow();
+  });
+
   it('invalidates exact approvals when a binding row changes without changing grant identity', () => {
     const approved = snapshot('API_KEY');
     const recreated = bindings.map((binding) =>

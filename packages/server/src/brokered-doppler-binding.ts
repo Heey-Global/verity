@@ -134,12 +134,22 @@ export function brokeredDopplerSnapshotApplies(
   );
 }
 
+/** Key and binding order carry no meaning; only the bound sources do. */
+function canonicalSnapshot(snapshot: BrokeredDopplerBinding): string {
+  const { bindings } = snapshotSchema.parse(snapshot);
+  return JSON.stringify(
+    [...bindings].sort((a, b) =>
+      a.bindingId < b.bindingId ? -1 : a.bindingId > b.bindingId ? 1 : 0,
+    ),
+  );
+}
+
 export function assertBrokeredDopplerBinding(
   current: BrokeredDopplerBinding | undefined,
   approved: BrokeredDopplerBinding | undefined,
 ): asserts current is BrokeredDopplerBinding {
   if (current === undefined) throw new Error('project Doppler binding is unavailable');
-  if (approved !== undefined && JSON.stringify(current) !== JSON.stringify(approved)) {
+  if (approved !== undefined && canonicalSnapshot(current) !== canonicalSnapshot(approved)) {
     throw new Error('Doppler access changed after approval; submit the operation again');
   }
 }

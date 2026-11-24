@@ -129,7 +129,8 @@ async function findLegacyBlock(
       ]),
     )
     .executeTakeFirst();
-  if (existing) return denial;
+  // A decision made against the current snapshot supersedes the legacy denial.
+  if (existing) return undefined;
   // Keep the denial's identity and decision history, while making explicit
   // reconsideration available against the current snapshot.
   return await db
