@@ -122,8 +122,13 @@ export const dopplerConnectionsMigration: Migration = {
       where exists (select 1 from project_doppler_bindings b
         where b.project_id = s.project_id and b.is_default
           and b.connection_id <> ${LEGACY_DOPPLER_CONNECTION_ID})`.execute(db);
-    await sql`insert into verity_settings (id, doppler_service_token)
-      values ('global', (select token from doppler_connections where id = ${LEGACY_DOPPLER_CONNECTION_ID}))
+    // Preserve the absence of global settings on installations with no token to restore.
+    await sql`with legacy as (
+      select (select token from doppler_connections where id = ${LEGACY_DOPPLER_CONNECTION_ID}) as token
+    )
+      insert into verity_settings (id, doppler_service_token)
+      select 'global', token from legacy
+      where token is not null or exists (select 1 from verity_settings where id = 'global')
       on conflict (id) do update set doppler_service_token = excluded.doppler_service_token`.execute(
       db,
     );

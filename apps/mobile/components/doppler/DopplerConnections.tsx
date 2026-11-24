@@ -35,7 +35,7 @@ type Mode =
 
 const projects = (count: number) => (count === 1 ? '1 project' : `${count} projects`);
 
-export function connectionSummary(connection: DopplerConnection): string {
+function connectionSummary(connection: DopplerConnection): string {
   const parts = [
     connection.workplaceName ?? connection.workplaceSlug,
     projects(connection.projectCount),

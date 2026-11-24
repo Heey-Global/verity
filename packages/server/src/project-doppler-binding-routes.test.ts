@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { EventStore, createSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,11 +36,12 @@ const readable: Record<string, string[]> = {
   'dp.sa.payments': ['billing/dev'],
 };
 
-function server(
+async function server(
   beforeList?: () => Promise<unknown>,
   secretJobDopplerConnectionId?: string,
-): FastifyInstance {
+): Promise<FastifyInstance> {
   const app = Fastify();
+  await app.register(rateLimit, { max: 100, timeWindow: 60_000 });
   app.decorateRequest('localUserId', null);
   app.addHook('onRequest', async (request) => {
     request.localUserId = String(request.headers['x-test-user']);
@@ -105,7 +107,7 @@ const addConnection = async (app: FastifyInstance, label: string, token: string)
   }>().id;
 
 it('rejects a selection from a catalog browsed before the token rotated', async () => {
-  const app = server();
+  const app = await server();
   try {
     const connectionId = await addConnection(app, 'Platform', 'dp.sa.platform');
     const catalog = await call(
@@ -136,7 +138,7 @@ it('protects a Secret Job catalog connection even without project bindings', asy
     token: 'dp.sa.platform',
     workplace: { slug: 'platform', name: null },
   });
-  const app = server(undefined, connectionId);
+  const app = await server(undefined, connectionId);
   try {
     expect(
       (
@@ -158,7 +160,7 @@ it('protects a Secret Job catalog connection even without project bindings', asy
 });
 
 it('initializes a missing default legacy catalog connection from instance settings', async () => {
-  const app = server(undefined, 'legacy-doppler');
+  const app = await server(undefined, 'legacy-doppler');
   try {
     expect(await addConnection(app, 'Catalog', 'dp.sa.platform')).toBe('legacy-doppler');
     expect(await addConnection(app, 'Separate', 'dp.sa.payments')).not.toBe('legacy-doppler');
@@ -181,7 +183,7 @@ it('blocks initializing an unknown workplace behind existing catalog bindings', 
       doppler_config: 'prd',
     })
     .execute();
-  const app = server(undefined, 'legacy-doppler');
+  const app = await server(undefined, 'legacy-doppler');
   try {
     expect(
       (
@@ -228,7 +230,7 @@ it('checks a same-workplace replacement against catalog-only configs', async () 
       doppler_config: 'dev',
     })
     .execute();
-  const app = server(undefined, connectionId);
+  const app = await server(undefined, connectionId);
   try {
     const replacement = await call(app, 'admin', 'PATCH', `/doppler/connections/${connectionId}`, {
       token: 'dp.sa.platform-next',
@@ -266,7 +268,7 @@ it('rejects a binding if its instance token rotates during validation', async ()
     token: 'dp.sa.platform',
     workplace: { slug: 'platform', name: null },
   });
-  const app = server(() =>
+  const app = await server(() =>
     store.dopplerConnections.update(connectionId, { token: 'dp.sa.payments' }),
   );
   try {
@@ -284,7 +286,7 @@ it('rejects a binding if its instance token rotates during validation', async ()
 
 describe('Doppler connections (ADR 0031)', () => {
   it('adds only tokens Doppler accepts and never returns them', async () => {
-    const app = server();
+    const app = await server();
     const refused = await call(app, 'admin', 'POST', '/doppler/connections', {
       label: 'Broken',
       token: 'dp.sa.wrong',
@@ -322,7 +324,7 @@ describe('Doppler connections (ADR 0031)', () => {
   });
 
   it('only replaces an instance token after explicit confirmation', async () => {
-    const app = server();
+    const app = await server();
     try {
       const id = await addConnection(app, 'Platform', 'dp.sa.platform');
       const url = `/doppler/connections/${id}`;
@@ -341,7 +343,7 @@ describe('Doppler connections (ADR 0031)', () => {
   });
 
   it('rejects a replacement token that cannot read an existing binding', async () => {
-    const app = server();
+    const app = await server();
     try {
       const id = await addConnection(app, 'Platform', 'dp.sa.platform');
       await store.projectDopplerBindings.add('p1', {
@@ -364,7 +366,7 @@ describe('Doppler connections (ADR 0031)', () => {
   });
 
   it('validates a fresh token buffer for each existing config before replacing it', async () => {
-    const app = server();
+    const app = await server();
     try {
       const id = await addConnection(app, 'Platform', 'dp.sa.platform');
       for (const dopplerConfig of ['prd', 'stg']) {
@@ -387,7 +389,7 @@ describe('Doppler connections (ADR 0031)', () => {
 
   // Connections hold the administrator's tokens; nobody else may see or change them.
   it('is for administrators only', async () => {
-    const app = server();
+    const app = await server();
     for (const user of ['manager', 'reader']) {
       expect((await call(app, user, 'GET', '/doppler/connections')).statusCode).toBe(403);
       expect(
@@ -403,7 +405,7 @@ describe('Doppler connections (ADR 0031)', () => {
   });
 
   it('warns with the projects in use and still deletes, taking their bindings along', async () => {
-    const app = server();
+    const app = await server();
     const platform = await addConnection(app, 'Platform', 'dp.sa.platform');
     const payments = await addConnection(app, 'Payments', 'dp.sa.payments');
     for (const [projectId, connectionId, dopplerProject, dopplerConfig] of [
@@ -445,7 +447,7 @@ describe('Doppler connections (ADR 0031)', () => {
 
 describe('project Doppler bindings (ADR 0031)', () => {
   it('adds any project and config the connection reads, once per project', async () => {
-    const app = server();
+    const app = await server();
     const platform = await addConnection(app, 'Platform', 'dp.sa.platform');
     const payments = await addConnection(app, 'Payments', 'dp.sa.payments');
     const add = (connectionId: string, dopplerProject: string, dopplerConfig: string) =>
@@ -498,7 +500,7 @@ describe('project Doppler bindings (ADR 0031)', () => {
   // Members see what their project reads from; changing it reads Doppler with the
   // administrator's token, so it stays theirs.
   it('lets members read the bindings and only administrators change them', async () => {
-    const app = server();
+    const app = await server();
     const platform = await addConnection(app, 'Platform', 'dp.sa.platform');
     const added = await call(app, 'admin', 'POST', '/projects/p1/doppler/bindings', {
       connectionId: platform,

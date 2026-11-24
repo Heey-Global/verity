@@ -98,23 +98,26 @@ describe('secret references (ADR 0031)', () => {
 });
 
 describe('approvals and grants per binding', () => {
+  // These aliases are names for configuration values. The snapshot contains binding metadata.
   const snapshot = (...references: string[]) =>
     brokeredDopplerSnapshot(referencedBindings(bindings, references));
 
-  // A grant for `API_KEY` in one config must never cover the same name in another.
+  // A grant for `SERVICE_REGION` in one config must never cover the same name in another.
   it('keys a call by the bindings it reads, not by the project', () => {
-    const bare = brokeredDopplerBindingId(snapshot('API_KEY'));
-    const billing = brokeredDopplerBindingId(snapshot('billing/dev/API_KEY'));
+    const bare = brokeredDopplerBindingId(snapshot('SERVICE_REGION'));
+    const billing = brokeredDopplerBindingId(snapshot('billing/dev/SERVICE_REGION'));
     expect(bare).toBe(dopplerBindingGrantId(portalPrd));
     expect(billing).toBe(dopplerBindingGrantId(billingDev));
     expect(bare).not.toBe(billing);
-    expect(brokeredDopplerBindingId(snapshot('portal/prd/API_KEY', 'API_KEY'))).toBe(bare);
+    expect(brokeredDopplerBindingId(snapshot('portal/prd/SERVICE_REGION', 'SERVICE_REGION'))).toBe(
+      bare,
+    );
     // The same project and config through another connection is another binding.
     expect(dopplerBindingGrantId({ ...billingDev, connectionId: 'platform' })).not.toBe(billing);
   });
 
   it('rechecks the default before approving a standing grant for a bare reference', () => {
-    const approved = snapshot('API_KEY');
+    const approved = snapshot('SERVICE_REGION');
     const switched = bindings.map((binding) => ({
       ...binding,
       isDefault: binding.id === billingDev.id,
@@ -124,7 +127,7 @@ describe('approvals and grants per binding', () => {
   });
 
   it('applies a grant only while every binding it names is still bound', () => {
-    const both = brokeredDopplerBindingId(snapshot('API_KEY', 'billing/dev/API_KEY'));
+    const both = brokeredDopplerBindingId(snapshot('SERVICE_REGION', 'billing/dev/SERVICE_REGION'));
     const current = new Set([
       ...bindings.map(dopplerBindingGrantId),
       defaultDopplerGrantMember(dopplerBindingGrantId(portalPrd)),
@@ -137,7 +140,11 @@ describe('approvals and grants per binding', () => {
   });
 
   it('changes authorization when a mixed request resolves its bare reference elsewhere', () => {
-    const references = ['API_KEY', 'portal/prd/API_KEY', 'billing/dev/API_KEY'];
+    const references = [
+      'SERVICE_REGION',
+      'portal/prd/SERVICE_REGION',
+      'billing/dev/SERVICE_REGION',
+    ];
     const switched = bindings.map((binding) => ({
       ...binding,
       isDefault: binding.id === billingDev.id,
@@ -148,7 +155,7 @@ describe('approvals and grants per binding', () => {
   });
 
   it('keeps an approval valid when the same bindings are listed in another order', () => {
-    const approved = snapshot('portal/prd/API_KEY', 'billing/dev/API_KEY');
+    const approved = snapshot('portal/prd/SERVICE_REGION', 'billing/dev/SERVICE_REGION');
     expect(approved.bindings).toHaveLength(2);
     // setDefault or a re-insert reorders the list; that is not a change of access.
     const reordered = { bindings: [...approved.bindings].reverse() };
@@ -156,11 +163,11 @@ describe('approvals and grants per binding', () => {
   });
 
   it('invalidates exact approvals when a binding row changes without changing grant identity', () => {
-    const approved = snapshot('API_KEY');
+    const approved = snapshot('SERVICE_REGION');
     const recreated = bindings.map((binding) =>
       binding.id === portalPrd.id ? { ...binding, id: 'recreated' } : binding,
     );
-    const current = brokeredDopplerSnapshot(referencedBindings(recreated, ['API_KEY']));
+    const current = brokeredDopplerSnapshot(referencedBindings(recreated, ['SERVICE_REGION']));
     expect(brokeredDopplerBindingId(current)).toBe(brokeredDopplerBindingId(approved));
     expect(() => assertBrokeredDopplerBinding(current, approved)).toThrow('Doppler access changed');
   });
@@ -171,13 +178,18 @@ describe('approvals and grants per binding', () => {
       tokenRevision: 'a31833e4-8584-4ec4-888b-95ce87e4d44a',
     }));
     expect(
-      brokeredDopplerBindingId(brokeredDopplerSnapshot(referencedBindings(rotated, ['API_KEY']))),
-    ).not.toBe(brokeredDopplerBindingId(snapshot('API_KEY')));
+      brokeredDopplerBindingId(
+        brokeredDopplerSnapshot(referencedBindings(rotated, ['SERVICE_REGION'])),
+      ),
+    ).not.toBe(brokeredDopplerBindingId(snapshot('SERVICE_REGION')));
   });
 
   it('shows one binding as project and config, several as a list', () => {
-    expect(brokeredSecretSource(snapshot('API_KEY'))).toEqual({ project: 'portal', config: 'prd' });
-    expect(brokeredSecretSource(snapshot('API_KEY', 'billing/dev/API_KEY'))).toEqual({
+    expect(brokeredSecretSource(snapshot('SERVICE_REGION'))).toEqual({
+      project: 'portal',
+      config: 'prd',
+    });
+    expect(brokeredSecretSource(snapshot('SERVICE_REGION', 'billing/dev/SERVICE_REGION'))).toEqual({
       project: 'billing/dev, portal/prd',
       config: '',
     });

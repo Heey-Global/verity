@@ -19,9 +19,7 @@ export interface ResolvedSecretReference {
   readonly name: string;
 }
 
-export function bindingLabel(
-  binding: Pick<ProjectDopplerBinding, 'dopplerProject' | 'dopplerConfig'>,
-) {
+function bindingLabel(binding: Pick<ProjectDopplerBinding, 'dopplerProject' | 'dopplerConfig'>) {
   return `${binding.dopplerProject}/${binding.dopplerConfig}`;
 }
 
