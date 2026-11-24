@@ -50,8 +50,8 @@
   "packages/store/src/migrations.ts": 5586,
   "packages/store/src/projects.test.ts": 1766,
   "packages/store/src/schema.ts": 2130,
-  "packages/store/src/store.test.ts": 2666,
-  "packages/store/src/store.ts": 8754,
+  "packages/store/src/store.test.ts": 2611,
+  "packages/store/src/store.ts": 6749,
   "scripts/ci-workflow.test.ts": 6046,
   "scripts/probes/project-egress/host-smoke.ts": 1523,
   "scripts/release-workflow.test.ts": 1842

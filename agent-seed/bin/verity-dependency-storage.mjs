@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import {
@@ -17,6 +17,7 @@ import {
   statfsSync,
 } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { capacityPreloadPath } from './verity-dependency-storage-preload.mjs';
 
@@ -135,43 +136,155 @@ export const fileIdentity = (name, stat) => `${name}\0${stat.ino}`;
 export const filesKey = (files) =>
   createHash('sha256').update(files.sort().join('\n')).digest('hex');
 
+let inventoryTimeout;
+function inventoryTimeoutCommand() {
+  if (inventoryTimeout) return inventoryTimeout;
+  // Ubuntu 26.04 uses uutils for timeout; its SIGKILL does not kill descendants.
+  for (const command of ['/usr/bin/gnutimeout', '/usr/bin/timeout']) {
+    const version = spawnSync(command, ['--version'], {
+      encoding: 'utf8',
+      timeout: 1000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 4096,
+    });
+    if (
+      !version.error &&
+      version.status === 0 &&
+      /^timeout \(GNU coreutils\)/u.test(version.stdout)
+    ) {
+      inventoryTimeout = command;
+      return command;
+    }
+  }
+  throw new Error(
+    'Dependency capacity inventory requires GNU timeout; no additional copy admitted.',
+  );
+}
+
 /** Bound both the work and its allocation estimate; links never authorize a target walk. */
 export function measureTrees(trees, limits = {}) {
+  const started = Date.now();
+  // GNU timeout owns the worker's process group, including find. Its watchdog
+  // still runs if the worker cannot process its own cleanup timer.
+  const result = spawnSync(
+    inventoryTimeoutCommand(),
+    [
+      '--signal=KILL',
+      '--kill-after=1s',
+      `${((limits.milliseconds ?? 20_000) + 1000) / 1000}s`,
+      process.execPath,
+      fileURLToPath(import.meta.url),
+      '--measure-trees',
+    ],
+    {
+      input: JSON.stringify({ trees, limits, started }),
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024,
+    },
+  );
+  if (result.error || result.status !== 0)
+    throw new Error(
+      result.stderr?.trim() ||
+        `Dependency capacity inventory is incomplete during ${limits.phase ?? 'dependency trees'}: measurement process failed (${result.error?.code ?? result.signal ?? result.status}); no additional copy admitted.`,
+    );
+  const measured = JSON.parse(result.stdout);
+  if (![measured.bytes, measured.inodes, measured.allocatedBytes].every(Number.isSafeInteger))
+    throw new Error('Dependency capacity inventory returned invalid accounting.');
+  return measured;
+}
+
+async function scanTrees(trees, limits, started) {
   const maximum = limits.entries ?? 250_000;
-  const deadline = Date.now() + (limits.milliseconds ?? 20_000);
+  const milliseconds = limits.milliseconds ?? 20_000;
+  const phase = limits.phase ?? 'dependency trees';
   let entries = 0;
   let bytes = 0;
   let allocatedBytes = 0;
   const seen = new Set();
+  const incomplete = (reason) =>
+    new Error(
+      `Dependency capacity inventory is incomplete during ${phase}: ${reason} after ${entries} entries and ${Date.now() - started} ms; no additional copy admitted.`,
+    );
   for (const tree of trees) {
     if (realpathSync(dirname(tree)) !== dirname(tree))
       throw new Error('Dependency capacity inventory has a symlinked parent.');
     const device = lstatSync(tree).dev;
-    const pending = [tree];
-    while (pending.length) {
-      if (++entries > maximum || Date.now() > deadline)
-        throw new Error(
-          'Dependency capacity inventory is incomplete; no additional copy admitted.',
-        );
-      const path = pending.pop();
-      const stat = lstatSync(path);
-      if (![stat.dev, stat.ino, stat.size, stat.blocks].every(Number.isSafeInteger))
-        throw new Error('Dependency capacity inventory has an unknown file identity or size.');
-      if (stat.dev !== device)
-        throw new Error('Dependency capacity inventory crosses a filesystem.');
-      if (!stat.isFile() && !stat.isDirectory() && !stat.isSymbolicLink())
-        throw new Error('Dependency capacity inventory contains an unsupported entry.');
-      // Copying sparse files need not preserve their holes; account for their full size.
-      bytes += Math.max(4096, stat.blocks * 512, Math.ceil(stat.size / 4096) * 4096);
-      const key = `${stat.dev}:${stat.ino}`;
-      if (!seen.has(key)) allocatedBytes += stat.blocks * 512;
-      seen.add(key);
-      if (!Number.isSafeInteger(bytes) || !Number.isSafeInteger(allocatedBytes))
-        throw new Error('Dependency capacity inventory exceeds safe accounting limits.');
-      if (stat.isDirectory())
-        for (const entry of readdirSync(path)) pending.push(join(path, entry));
-    }
+    const remaining = milliseconds - (Date.now() - started);
+    if (remaining <= 0) throw incomplete(`time limit ${milliseconds} ms reached`);
+    // GNU find collects metadata in its native traversal. Per-file Node calls
+    // exceed the same deadline on sandbox filesystems even for a complete cache.
+    // No names enter the protocol, so newlines in package paths are harmless.
+    await new Promise((resolve, reject) => {
+      const scanner = spawn('/usr/bin/find', ['-P', tree, '-xdev', '-printf', '%D %i %s %b %y\n'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let diagnostic = '';
+      scanner.stderr.setEncoding('utf8');
+      scanner.stderr.on('data', (chunk) => {
+        diagnostic = (diagnostic + chunk).slice(0, 4096);
+      });
+      let pending = '';
+      let failure;
+      const stop = (error) => {
+        failure ??= error;
+        scanner.kill('SIGKILL');
+      };
+      const timer = setTimeout(
+        () => stop(incomplete(`time limit ${milliseconds} ms reached`)),
+        remaining,
+      );
+      scanner.stdout.setEncoding('utf8');
+      scanner.stdout.on('data', (chunk) => {
+        if (failure) return;
+        try {
+          const lines = (pending + chunk).split('\n');
+          pending = lines.pop();
+          for (const line of lines) {
+            if (++entries > maximum) throw incomplete(`entry limit ${maximum} exceeded`);
+            if (Date.now() - started > milliseconds)
+              throw incomplete(`time limit ${milliseconds} ms reached`);
+            const match = /^(\d+) (\d+) (\d+) (\d+) ([fdl])$/u.exec(line);
+            if (!match)
+              throw new Error('Dependency capacity inventory contains an unsupported entry.');
+            const [entryDevice, inode, size, blocks] = match.slice(1, 5).map(Number);
+            if (![entryDevice, inode, size, blocks].every(Number.isSafeInteger))
+              throw new Error(
+                'Dependency capacity inventory has an unknown file identity or size.',
+              );
+            if (entryDevice !== device)
+              throw new Error('Dependency capacity inventory crosses a filesystem.');
+            // Copying sparse files need not preserve their holes; account for their full size.
+            bytes += Math.max(4096, blocks * 512, Math.ceil(size / 4096) * 4096);
+            const key = `${entryDevice}:${inode}`;
+            if (!seen.has(key)) allocatedBytes += blocks * 512;
+            seen.add(key);
+            if (!Number.isSafeInteger(bytes) || !Number.isSafeInteger(allocatedBytes))
+              throw new Error('Dependency capacity inventory exceeds safe accounting limits.');
+          }
+          if (pending.length > 128) throw incomplete('metadata record exceeds 128 bytes');
+        } catch (error) {
+          stop(error);
+        }
+      });
+      scanner.stdout.on('error', () => stop(incomplete('metadata output failed')));
+      scanner.on('error', (error) => {
+        failure ??= incomplete(`metadata traversal failed (${error.code})`);
+      });
+      scanner.on('close', (code, signal) => {
+        clearTimeout(timer);
+        if (failure) reject(failure);
+        else if (code !== 0 || pending)
+          reject(
+            incomplete(
+              `metadata traversal failed (${signal ?? code})${diagnostic ? `: ${diagnostic.trim()}` : ''}`,
+            ),
+          );
+        else resolve();
+      });
+    });
   }
+  if (Date.now() - started > milliseconds)
+    throw incomplete(`time limit ${milliseconds} ms reached`);
   return { bytes, inodes: entries, allocatedBytes };
 }
 
@@ -244,10 +357,13 @@ export function recoveryBudget(gitDir, replacementTrees, newlyPreservedTrees) {
     throw new Error('Dependency recovery directory is unsafe; no replacement admitted.');
   // The container directory is bookkeeping, not retained installation content.
   const held = exists
-    ? measureTrees(readdirSync(preserved).map((name) => join(preserved, name))).allocatedBytes
+    ? measureTrees(
+        readdirSync(preserved).map((name) => join(preserved, name)),
+        { phase: 'retained recovery trees' },
+      ).allocatedBytes
     : 0;
-  const added = measureTrees(newlyPreservedTrees).allocatedBytes;
-  const replacement = measureTrees(replacementTrees).bytes;
+  const added = measureTrees(newlyPreservedTrees, { phase: 'new recovery trees' }).allocatedBytes;
+  const replacement = measureTrees(replacementTrees, { phase: 'replacement trees' }).bytes;
   const budget = Math.max(replacement, added);
   if (held + added > budget)
     throw new Error(
@@ -551,4 +667,16 @@ export function capacityChildOptions(lockFd, lease, environment) {
               `${environment.NODE_OPTIONS ?? ''} --import=${JSON.stringify(capacityPreloadPath)}`.trim(),
           },
   };
+}
+
+// The blocking caller keeps activation state synchronous; the measurement child
+// can consume and stop find's stream while its parent waits for the full result.
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === '--measure-trees') {
+  try {
+    const { trees, limits, started } = JSON.parse(readFileSync(0, 'utf8'));
+    console.log(JSON.stringify(await scanTrees(trees, limits, started)));
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 }

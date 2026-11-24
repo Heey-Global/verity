@@ -1,4 +1,49 @@
 import {
+  EventWriteStore,
+  ABANDONED_TURN_FENCE_HASH,
+  type RunnerFrameIngest,
+  type RunnerFrameIngestResult,
+} from './event-writes.js';
+export {
+  RUNNER_FRAME_PROTOCOL_VERSION,
+  type RunnerFrameIngest,
+  type RunnerFrameIngestResult,
+} from './event-writes.js';
+import { SessionLifecycleStore } from './session-lifecycle.js';
+import { sessionEventAppendLock, sessionEventAppendLockKey } from './session-event-lock.js';
+export { DeletedProjectError } from './deleted-project-error.js';
+import { ProjectAccessStore } from './project-access.js';
+import { ProjectLifecycleStore } from './project-lifecycle.js';
+import { claimNextRepositoryInstance } from './project-identity-allocation.js';
+import {
+  projectRowToRecord,
+  projectColumns,
+  type ProjectState,
+  type ProjectSetupState,
+  type ProjectKind,
+  ProjectIdentityClaimConflict,
+  type ProjectRecord,
+  type ProjectReleaseStatus,
+  type ProjectUpsertInput,
+  PROJECT_NAME_MAX_CHARS,
+  defaultProjectName,
+  InvalidProjectNameError,
+} from './project-record.js';
+export {
+  type ProjectState,
+  type ProjectSetupState,
+  type ProjectKind,
+  LOCAL_PROJECT_OWNER,
+  ProjectIdentityClaimConflict,
+  isLocalProject,
+  type ProjectRecord,
+  type ProjectReleaseStatus,
+  type ProjectUpsertInput,
+  PROJECT_NAME_MAX_CHARS,
+  defaultProjectName,
+  InvalidProjectNameError,
+} from './project-record.js';
+import {
   storedMockupScreens,
   type SessionMockupReview,
   type SessionMockups,
@@ -6,7 +51,6 @@ import {
   mockupReview,
   attachmentStorageRecord,
 } from './session-mockups.js';
-import { findRecordedApprovalDecision } from './secret-approval-events.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 import {
@@ -16,17 +60,16 @@ import {
   type PendingSessionLinkMessage,
 } from './session-links.js';
 import { ProjectTeamStore, type ProjectPermission } from './project-team.js';
-import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
 import {
-  MESSAGE_PROJECTION_VERSION,
-  pendingMessageProjectionByDb,
-  pendingMessageBackfillsByDb,
+  MessageProjectionStore,
+  type MessageSearchInput,
+  type MessageSearchResult,
   waitForPendingMessageProjections,
   waitForMessageProjectionWork,
-  projectMessageEvent,
   idChunks,
 } from './message-projection.js';
 export { waitForMessageProjectionWork, waitForPendingMessageProjections };
+export type { MessageSearchInput, MessageSearchResult } from './message-projection.js';
 import { SessionCoordinationStore } from './session-coordination.js';
 import { ProjectInquiryStore } from './project-inquiries.js';
 import { SandboxUpdateStateStore } from './sandbox-update-state.js';
@@ -60,14 +103,10 @@ import { QAAssignmentStore } from './qa-assignments.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
-import { recordSessionCreator, SessionPeopleStore } from './session-people.js';
+import { SessionPeopleStore } from './session-people.js';
 import { ChangeSubmissionStore } from './change-submissions.js';
 import { GitHubRepositoryIdentityStore } from './github-repository-identity.js';
-import {
-  installationPlaceholderHasDependents,
-  isInstallationPlaceholder,
-  retireInstallationPlaceholder,
-} from './installation-placeholders.js';
+import { isInstallationPlaceholder } from './installation-placeholders.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
@@ -89,7 +128,6 @@ import {
   type BoundedHistoryResult,
 } from '@verity/events';
 import { createHash, randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
 import {
   type AgentEvent,
   SESSION_PROJECTION_EVENT_TYPES,
@@ -234,198 +272,7 @@ export type SessionInput = Omit<
   createdByUserId?: string | null;
 };
 
-/**
- * Multi-repo fleet-registry project state (concept §19.3, #174). Mirrors the
- * `projects.state` column as a closed string-enum at the app layer. Transitions
- * guarded by a `SELECT … FOR UPDATE` lock (§19.3):
- *   `absent → cloning → container_starting → active`
- *   `cloning|container_starting → failed`
- *   `failed → cloning` (retry via deprovision + re-provision, §19.8).
- */
-export type ProjectState =
-  | 'absent'
-  | 'cloning'
-  | 'container_starting'
-  | 'active'
-  | 'sleeping_starting'
-  | 'sleeping'
-  | 'waking'
-  | 'failed';
-export type ProjectSetupState = 'pending' | 'secrets_skipped' | 'complete';
-export type ProjectKind = 'github' | 'forgejo' | 'control_plane' | 'local';
-
-/** Reserved `owner` for projects created without a GitHub repository. Keeps them
- *  inside the existing `UNIQUE(owner, repo)` identity without a nullable owner,
- *  and makes "is this project on GitHub yet" a single-column question. The
- *  leading underscores are forbidden by GitHub's account-name grammar, so this
- *  namespace cannot collide with an installation repository. */
-export const LOCAL_PROJECT_OWNER = '__local__';
-
-/** Thrown when `(owner, repo)` is spoken for by a DIFFERENT project than the one
- *  writing. Carries the driver's unique-violation code so existing callers that
- *  branch on `23505` keep working; exported so the installation sync can tell
- *  "a link is mid-flight" apart from a genuine write failure. */
-export class ProjectIdentityClaimConflict extends Error {
-  readonly code = '23505';
-}
-
-/** Whether a project has no GitHub repository behind it (yet). */
-export function isLocalProject(project: Pick<ProjectRecord, 'kind'>): boolean {
-  return project.kind === 'local';
-}
-
 export { isInstallationPlaceholder } from './installation-placeholders.js';
-
-/** Multi-repo fleet-registry project record (`projects` row, concept §19.2). */
-export interface ProjectRecord {
-  id: string;
-  /** The project's own name, independent of its repositories. Set when the
-   *  project is created, changed only by {@link EventStore.renameProject}. */
-  name: string;
-  owner: string;
-  repo: string;
-  /** GitHub's rename-stable repository ID, once learned; `null` = not yet; absent = not loaded. */
-  githubRepositoryId?: string | null | undefined;
-  containerName: string;
-  kind?: ProjectKind;
-  forgeConnectionId?: string | null;
-  /** 1 for the first project of a repository; a further project of the same
-   *  repository takes the next number. Absent on records from older readers. */
-  repositoryInstance?: number;
-  /** Host clone-directory name override; `null` = derive `<owner>-<repo>`. Set
-   *  for `local` projects and preserved when they are linked to GitHub, so the
-   *  clone (and every session worktree persisted under it) never moves. */
-  cloneDir?: string | null;
-  imageRef: string | null;
-  /** The image the operator pinned for this project, or `null` when Verity
-   *  chooses the default. Configuration, not observation: it says what the next
-   *  provisioning must start from.
-   *
-   *  {@link imageRef} is normally what the last provisioning selected, but a pin
-   *  is written into BOTH, so between the pin and the next provisioning the two
-   *  agree while the Sandbox still runs the older image. Equal values therefore
-   *  mean the effective image is the pinned one — which is what settles that
-   *  Verity did not build it, whatever the image is named. */
-  imageOverrideRef?: string | null;
-  /** Content identity of the runner-boundary trust root the last provisioning
-   *  judged this project against. `null`/absent = unknown, which is NOT the same
-   *  as current — see `projects.toolkit_identity`. */
-  toolkitIdentity?: string | null;
-  state: ProjectState;
-  /** Fingerprint of the runtime contract retained by a sleeping Sandbox. */
-  sleepCompatibilityFingerprint?: string | null;
-  /** When the Sandbox most recently completed the transition to sleeping. */
-  sleepingSince?: Date | null;
-  /** When the current wake attempt claimed the project. */
-  wakeStartedAt?: Date | null;
-  archived?: boolean;
-  provisionError: string | null;
-  provisionWarning: string | null;
-  /** Soft-delete marker: `null` = visible, a `Date` = operator-hidden. Hidden
-   *  projects are excluded from {@link EventStore.listProjects} by default. */
-  hiddenAt: Date | null;
-  /** Operator-defined overview order; `null` for projects never manually sorted. */
-  sortOrder?: number | null;
-  /** Overview fold state; `true` when the project group is collapsed. The store
-   *  fills in the legacy shared column; the server replaces it with the requesting
-   *  person's state from {@link ViewStateStore}. */
-  collapsed?: boolean;
-  /** True once the repo was explicitly added as a Verity project. Paused
-   *  (`state='absent'`) projects with this flag stay visible in the overview. */
-  overviewVisible?: boolean;
-  setupStatus?: ProjectSetupState;
-  /** Persisted display-cache of the repo's latest GitHub release (overview version
-   *  badge). All `null` until a lookup resolves / for a repo with no releases.
-   *  `latestReleasePublishedAt` is GitHub's ISO string (display-only). Written by
-   *  {@link EventStore.updateProjectReleaseStatus}; the live freshness is owned by
-   *  the server's in-memory release service. */
-  latestReleaseTag: string | null;
-  latestReleaseName: string | null;
-  latestReleaseUrl: string | null;
-  latestReleasePublishedAt: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  /** When {@link EventStore.updateProjectState} last wrote `state`. Use this —
-   *  never `updatedAt` — to reason about how long a project has been in its
-   *  current provisioning state: `updatedAt` is bumped by unrelated writers
-   *  (installation sync, release badge, sort order) that leave `state` alone. */
-  stateChangedAt: Date;
-}
-
-export interface MessageSearchInput {
-  query: string;
-  sessionId?: string;
-  projectId?: string;
-  limit?: number;
-  cursor?: { rank: number; createdAt: number; id: number };
-}
-
-export interface MessageSearchResult {
-  id: number;
-  sessionId: string;
-  sessionName: string | null;
-  projectId: string | null;
-  projectName: string | null;
-  role: 'user' | 'agent';
-  kind: 'prompt' | 'text' | 'notice';
-  text: string;
-  firstEventSeq: number;
-  createdAt: number;
-  rank: number;
-}
-
-/** Input to {@link EventStore.updateProjectReleaseStatus} — the latest-release
- *  fields refreshed independently of the installation-sync upsert. A plain shape
- *  (not the server's `ReleaseSummary`) so the store stays free of server types. */
-export interface ProjectReleaseStatus {
-  tag: string | null;
-  name: string | null;
-  url: string | null;
-  publishedAt: string | null;
-}
-
-/** Input to {@link EventStore.upsertProject} — everything but the DB-managed
- * `created_at`/`updated_at`/`provision_error` columns. `id` is caller-supplied
- * (UUID) so an upsert can target an existing row. */
-export interface ProjectUpsertInput {
-  id: string;
-  owner: string;
-  repo: string;
-  containerName: string;
-  kind?: ProjectKind;
-  forgeConnectionId?: string | null;
-  /** Explicit host clone-directory name; omit to derive `<owner>-<repo>`. Only
-   *  written on INSERT — an existing row keeps whatever directory its clone
-   *  already lives in. */
-  cloneDir?: string | null;
-  imageRef?: string | null;
-  state: ProjectState;
-  archived?: boolean;
-  /** When `true`, an upsert that hits an existing (owner, repo) row clears its
-   *  `hidden_at` — the "re-add a previously deleted project" path (POST
-   *  /projects). The GitHub-installation sync omits it, so a re-sync never
-   *  un-hides an operator-removed project. */
-  restore?: boolean;
-  /** Mark this repo as intentionally added to the project overview. Installation
-   *  sync omits it so unadded `absent` repos stay picker-only. */
-  overviewVisible?: boolean;
-  /** The project's name. Only written on INSERT; omitted, it is derived with
-   *  {@link defaultProjectName}. An existing project keeps its name. */
-  name?: string;
-}
-
-/** Maximum UTF-16 length, matching API validation and native text input limits. */
-export const PROJECT_NAME_MAX_CHARS = 100;
-
-/** The name a project carries when none was given: its repository name, or a
- *  local project's directory name — what the app showed before projects had
- *  names of their own, and what migration 0204 copied into existing rows. */
-export function defaultProjectName(project: { repo: string }): string {
-  return project.repo;
-}
-
-/** A rename the store refuses: empty after trimming, or over the limit. */
-export class InvalidProjectNameError extends Error {}
 
 export interface SessionBackendStateRecord {
   contextFingerprint?: string;
@@ -631,19 +478,6 @@ export interface ClaudeEgressClientCertRecord {
   keyPem: string;
   fingerprint256: string;
   expiresAt: Date;
-}
-
-/** Thrown by {@link EventStore.createSession} when the session's project has
- *  been soft-deleted (`hidden_at` set). Project deletion reaps the project's
- *  sessions, so a session inserted afterwards would outlive its project and
- *  reappear in the overview as an orphan. Callers map this to the same 404 an
- *  unknown project id gets — a hidden project is gone as far as spawning is
- *  concerned. */
-export class DeletedProjectError extends Error {
-  constructor(readonly projectId: string) {
-    super(`project ${projectId} has been deleted`);
-    this.name = 'DeletedProjectError';
-  }
 }
 
 export interface VeritySettingsRecord {
@@ -986,70 +820,6 @@ export interface EventSink {
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
 }
 
-/**
- * The only Runner frame protocol version the Server ingests (ADR 0006 D3). The
- * envelope the Runner stamps carries this so a Server that predates a future
- * protocol bump rejects an unknown frame rather than misreading it. Kept here in
- * `@verity/store` as the single source of truth — `@verity/session` (which depends
- * on this package) imports it to stamp outgoing frames, so writer and reader can
- * never drift.
- */
-export const RUNNER_FRAME_PROTOCOL_VERSION = 1;
-
-/**
- * The Server-side ingest descriptor for one Runner frame (ADR 0006 D4). It is the
- * transport-neutral projection of `@verity/session`'s `RunnerFrame` — carrying only
- * what the idempotent DB claim needs, so `@verity/store` never has to import the
- * session frame union (avoiding a package cycle). `event` normally contains the
- * transported event frame; a permission-request frame may instead carry the
- * server-authored `permission` event that makes the parked prompt durable and
- * replayable. Session/result frames omit it and persist no event row, but still
- * claim their `(turnId, frameSeq)` so the sequence stays contiguous. `payloadHash`
- * is treated as an opaque token: the Server stores it and compares it on replay
- * but never recomputes it, so the hashing algorithm lives solely Runner-side.
- */
-export interface RunnerFrameIngest {
-  protocolVersion: number;
-  runnerInstanceId: string;
-  turnId: string;
-  frameSeq: number;
-  payloadHash: string;
-  /** The event to persist — present for event frames and surfaced permission requests. */
-  event?: AgentEvent;
-  /** Marks the final `result` frame. Its claim atomically closes the matching
-   * running-turn marker and fences all later frames for this turn. */
-  terminal?: true;
-}
-
-/** The outcome of {@link EventStore.ingestRunnerFrame}. `accepted` means the frame
- * was newly claimed (and any `event` newly persisted) — the caller should publish it
- * to live subscribers. `duplicate` means the frame was already ingested (a replay
- * after a crash) — it must NOT be re-published; a reconnecting client receives it via
- * backlog replay instead. `seq`/`ts` are the persisted event's identity, present for
- * event frames in both outcomes. They are consumed today only on the `accepted` path;
- * the `duplicate` seq/ts is carried for the reattach slice (which will re-derive a
- * frame's seq after a post-commit-pre-publish crash) and is not yet read by any
- * caller. */
-export interface RunnerFrameIngestResult {
-  outcome: 'accepted' | 'duplicate';
-  seq?: number;
-  ts?: number;
-}
-
-/**
- * The `payload_hash` that marks a `runner_frames` row as a FENCE rather than a frame
- * the Runner produced — see {@link EventStore.fenceAbandonedTurn}. A real hash is a
- * Runner-minted token, so this cannot collide with one; using the existing column
- * keeps the fence inside the table whose primary key already orders a turn's frames.
- */
-const ABANDONED_TURN_FENCE_HASH = 'verity:abandoned-turn-fence';
-
-/** The `runner_instance_id` a fence carries when the turn never streamed a frame, so
- * there is no real instance to name. Excluded from the turn→instance binding check. */
-const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
-
-const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
-
 /** The person a backend-state key is scoped to, or '' for the unscoped key. */
 function backendStateScope(backend: string): string {
   const separator = backend.indexOf('#');
@@ -1177,15 +947,22 @@ export class EventStore implements EventSink {
    * The SQL table lock below remains the cross-process Postgres guard. */
   private pushTokenMutationTail: Promise<void> = Promise.resolve();
   private devServerPortMutationTail: Promise<void> = Promise.resolve();
-  /** PGlite does not model PostgreSQL advisory-lock contention across concurrent
-   * transactions, so mirror the per-turn DB lock in-process for tests/local mode. */
-  private readonly runnerFrameIngestTails = new Map<string, Promise<void>>();
-  private messageBackfillTail: Promise<void> = Promise.resolve();
-  private messageBackfillRunning = false;
-  private messageBackfillRequested = false;
-  private readonly messageLiveProjectionTails = new Map<string, Promise<void>>();
-  /** One session's event appends run one at a time — see {@link withSessionEventAppend}. */
-  private readonly sessionEventAppendTails = new Map<string, Promise<void>>();
+  private readonly messageProjection = new MessageProjectionStore(
+    () => this.db,
+    () => this.listSessions(),
+    () => this.scheduleMessageProjection(),
+  );
+  private eventWriteStore: EventWriteStore | undefined;
+  private get eventWrites(): EventWriteStore {
+    return (this.eventWriteStore ??= new EventWriteStore({
+      currentDb: () => this.db,
+      isSessionDeleting: (id) => this.isSessionDeleting(id),
+      externalizeToolResult: (event) => this.externalizeToolResult(event),
+      enqueuePersistedMessageEvent: (id, seq, at, event) =>
+        this.enqueuePersistedMessageEvent(id, seq, at, event),
+      scheduleMessageProjection: () => this.scheduleMessageProjection(),
+    }));
+  }
 
   /**
    * Serialize every append to one session's event log.
@@ -1207,59 +984,7 @@ export class EventStore implements EventSink {
    * projection already use.
    */
   private async withSessionEventAppend<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
-    const predecessor = this.sessionEventAppendTails.get(sessionId);
-    let release!: () => void;
-    const queued = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.sessionEventAppendTails.set(sessionId, queued);
-    // Only an append that actually has a predecessor waits. An uncontended one issues
-    // its statement in the caller's tick, as it did before there was a queue — the tail
-    // is claimed synchronously above, so skipping the hop cannot reorder anything.
-    if (predecessor !== undefined) await predecessor;
-    try {
-      return await run();
-    } finally {
-      release();
-      if (this.sessionEventAppendTails.get(sessionId) === queued) {
-        this.sessionEventAppendTails.delete(sessionId);
-      }
-    }
-  }
-
-  /** Serialize one turn's frame claims in-process (PGlite has no advisory locks). */
-  private async withRunnerFrameTurn<T>(turnId: string, run: () => Promise<T>): Promise<T> {
-    const predecessor = this.runnerFrameIngestTails.get(turnId) ?? Promise.resolve();
-    let release!: () => void;
-    const queued = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.runnerFrameIngestTails.set(turnId, queued);
-    await predecessor;
-    try {
-      return await run();
-    } finally {
-      release();
-      if (this.runnerFrameIngestTails.get(turnId) === queued) {
-        this.runnerFrameIngestTails.delete(turnId);
-      }
-    }
-  }
-
-  /**
-   * Transaction-scoped lock every append to one session's log takes first, so appends
-   * from overlapping Server generations cannot interleave either. Taken BEFORE a
-   * per-turn frame lock wherever both are held, so the two never deadlock.
-   */
-  private async sessionEventAppendLock(tx: Kysely<Database>, sessionId: string): Promise<void> {
-    await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
-      tx,
-    );
-  }
-
-  /** The one string every event-append lock hashes, transaction-scoped or inline. */
-  private sessionEventAppendLockKey(sessionId: string): string {
-    return `events:${sessionId}`;
+    return this.eventWrites.withSessionEventAppend(sessionId, run);
   }
 
   private enqueuePersistedMessageEvent(
@@ -1268,62 +993,7 @@ export class EventStore implements EventSink {
     createdAt: Date,
     event: AgentEvent,
   ): void {
-    const predecessor = this.messageLiveProjectionTails.get(sessionId) ?? Promise.resolve();
-    const current = predecessor
-      .catch(() => undefined)
-      .then(async () => {
-        const projected = await this.db.transaction().execute(async (tx) => {
-          await sql`select pg_advisory_xact_lock(hashtext(${'messages:' + sessionId}))`.execute(tx);
-          const state = await tx
-            .selectFrom('message_projection_state')
-            .select(['last_event_seq', 'projection_version'])
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst();
-          if (state !== undefined && state.projection_version !== MESSAGE_PROJECTION_VERSION) {
-            return false;
-          }
-          const previous = await tx
-            .selectFrom('events')
-            .select((eb) => eb.fn.max('id').as('seq'))
-            .where('session_id', '=', sessionId)
-            .where('id', '<', seq)
-            .executeTakeFirst();
-          if (Number(state?.last_event_seq ?? 0) !== Number(previous?.seq ?? 0)) return false;
-          await projectMessageEvent(tx, sessionId, seq, createdAt, event);
-          await tx
-            .insertInto('message_projection_state')
-            .values({
-              session_id: sessionId,
-              last_event_seq: seq,
-              projection_version: MESSAGE_PROJECTION_VERSION,
-            })
-            .onConflict((oc) =>
-              oc.column('session_id').doUpdateSet({
-                last_event_seq: seq,
-                projection_version: MESSAGE_PROJECTION_VERSION,
-              }),
-            )
-            .execute();
-          return true;
-        });
-        return projected;
-      });
-    const safeCurrent = current.catch(() => false);
-    const tail = safeCurrent.then(() => undefined);
-    this.messageLiveProjectionTails.set(sessionId, tail);
-    const pending = Promise.all([
-      pendingMessageProjectionByDb.get(this.db) ?? Promise.resolve(),
-      tail,
-    ]).then(() => undefined);
-    pendingMessageProjectionByDb.set(this.db, pending);
-    void safeCurrent.then((projected) => {
-      if (!projected) this.scheduleMessageProjection();
-    });
-    void tail.finally(() => {
-      if (this.messageLiveProjectionTails.get(sessionId) === tail) {
-        this.messageLiveProjectionTails.delete(sessionId);
-      }
-    });
+    return this.messageProjection.enqueuePersistedMessageEvent(sessionId, seq, createdAt, event);
   }
 
   /** @param cipher Encrypts secret columns at the DB boundary (ADR 0002 D3).
@@ -1540,57 +1210,7 @@ export class EventStore implements EventSink {
    * reap and outlive its project, which is the whole bug.
    */
   async createSession(session: SessionInput): Promise<void> {
-    const values = {
-      session_id: session.sessionId,
-      worktree: session.worktree,
-      model: session.model,
-      initial_model: session.model,
-      name: session.name ?? null,
-      project_id: session.projectId ?? null,
-    };
-    const projectId = session.projectId;
-    const insert = async (tx: Kysely<Database>): Promise<void> => {
-      // Never occupy the serving pool waiting behind long physical cleanup.
-      const admission = await sql<{
-        locked: boolean;
-      }>`select pg_try_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(session.sessionId)})) as locked`.execute(
-        tx,
-      );
-      if (admission.rows[0]?.locked !== true) throw new Error('Session is being deleted');
-      await this.sessionWorktreeLock(tx, session.worktree);
-      if (
-        await tx
-          .selectFrom('session_deletions')
-          .select('session_id')
-          .where('session_id', '=', session.sessionId)
-          .executeTakeFirst()
-      )
-        throw new Error('Session is being deleted');
-      if (
-        await tx
-          .selectFrom('session_deletions')
-          .select('session_id')
-          .where('worktree', '=', resolve(session.worktree))
-          .where('cleanup_pending', '=', true)
-          .executeTakeFirst()
-      )
-        throw new Error('Session worktree is being deleted');
-      if (projectId !== undefined && projectId !== null) {
-        const project = await tx
-          .selectFrom('projects')
-          .select('hidden_at')
-          // SHARE, not UPDATE: unrelated spawns only serialize against a project delete.
-          .forShare()
-          .where('id', '=', projectId)
-          .executeTakeFirst();
-        if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
-      }
-      await tx.insertInto('sessions').values(values).execute();
-      if (session.createdByUserId)
-        await recordSessionCreator(tx, session.sessionId, session.createdByUserId);
-    };
-    if (this.db.isTransaction) await insert(this.db);
-    else await this.db.transaction().execute(insert);
+    return this.sessionLifecycle.createSession(session);
   }
 
   /** The immutable model choice of the newest ordinary session in a scope.
@@ -1784,6 +1404,10 @@ export class EventStore implements EventSink {
     return new UserProviderConnectionStore(this.db, this.cipher);
   }
 
+  private get projectAccess(): ProjectAccessStore {
+    return new ProjectAccessStore(this.db);
+  }
+
   get projectTeam(): ProjectTeamStore {
     return new ProjectTeamStore(this.db, this.cipher);
   }
@@ -1823,6 +1447,10 @@ export class EventStore implements EventSink {
       (sessionId) => this.getSession(sessionId),
       (projectId, service) => this.getProjectGoogleConnection(projectId, service),
     );
+  }
+
+  private get projectLifecycle(): ProjectLifecycleStore {
+    return new ProjectLifecycleStore(() => this.db);
   }
 
   get calendarWatch(): CalendarWatchStore {
@@ -2301,19 +1929,11 @@ export class EventStore implements EventSink {
   }
 
   async listPreparedSessionMoves() {
-    return await this.db
-      .selectFrom('session_moves')
-      .selectAll()
-      .where('result_json', 'is', null)
-      .execute();
+    return this.sessionMoves.listPreparedSessionMoves();
   }
 
   async listMovePreviewRestarts() {
-    return await this.db
-      .selectFrom('session_moves')
-      .selectAll()
-      .where('preview_restart_json', 'is not', null)
-      .execute();
+    return this.sessionMoves.listMovePreviewRestarts();
   }
 
   async setMovePreviewRestart(
@@ -2321,32 +1941,15 @@ export class EventStore implements EventSink {
     operationId: string,
     serverIds: string[] | null,
   ): Promise<void> {
-    await this.db
-      .updateTable('session_moves')
-      .set({ preview_restart_json: serverIds === null ? null : JSON.stringify(serverIds) })
-      .where('session_id', '=', sessionId)
-      .where('operation_id', '=', operationId)
-      .execute();
+    return this.sessionMoves.setMovePreviewRestart(sessionId, operationId, serverIds);
   }
 
   async getSessionMove(sessionId: string, operationId: string) {
-    return await this.db
-      .selectFrom('session_moves')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .where('operation_id', '=', operationId)
-      .executeTakeFirst();
+    return this.sessionMoves.getSessionMove(sessionId, operationId);
   }
 
   async getSessionMoveNotice(sessionId: string): Promise<string | undefined> {
-    const row = await this.db
-      .selectFrom('session_moves')
-      .select('notice')
-      .where('session_id', '=', sessionId)
-      .where('result_json', 'is not', null)
-      .orderBy('created_at', 'desc')
-      .executeTakeFirst();
-    return row?.notice;
+    return this.sessionMoves.getSessionMoveNotice(sessionId);
   }
 
   /** Reserve a destination before touching disk, so an interrupted preparation remains identifiable. */
@@ -2360,27 +1963,9 @@ export class EventStore implements EventSink {
     branch: string;
     onCommits: string;
   }): Promise<void> {
-    await this.db
-      .insertInto('session_moves')
-      .values({
-        session_id: input.sessionId,
-        operation_id: input.operationId,
-        source_project_id: input.sourceProjectId,
-        source_worktree: input.sourceWorktree,
-        target_project_id: input.targetProjectId,
-        target_worktree: input.targetWorktree,
-        branch: input.branch,
-        on_commits: input.onCommits,
-        backend_ids_json: JSON.stringify([
-          input.sessionId,
-          ...(await this.getSessionBackendStates(input.sessionId)).map(
-            (binding) => binding.backendSessionId,
-          ),
-        ]),
-        notice: '',
-        result_json: null,
-      })
-      .execute();
+    return this.sessionMoves.prepareSessionMove(input, (sessionId) =>
+      this.getSessionBackendStates(sessionId),
+    );
   }
 
   async commitSessionMove(
@@ -2390,6 +1975,10 @@ export class EventStore implements EventSink {
     resultJson: string,
   ): Promise<void> {
     await this.sessionMoves.commit(sessionId, operationId, notice, resultJson);
+  }
+
+  private get sessionLifecycle(): SessionLifecycleStore {
+    return new SessionLifecycleStore(() => this.db);
   }
 
   get sessionMoves(): SessionMoveStore {
@@ -2450,51 +2039,7 @@ export class EventStore implements EventSink {
    * the project re-resolved via GitHub sync).
    */
   async setSessionProject(sessionId: string, projectId: string | null): Promise<boolean> {
-    if (projectId !== null) {
-      return await this.db.transaction().execute(async (tx) => {
-        const project = await tx
-          .selectFrom('projects')
-          .select('hidden_at')
-          .forShare()
-          .where('id', '=', projectId)
-          .executeTakeFirst();
-        if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
-        await tx
-          .selectFrom('sessions')
-          .select('session_id')
-          .where('session_id', '=', sessionId)
-          .forUpdate()
-          .executeTakeFirst();
-        await tx
-          .deleteFrom('session_links')
-          .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
-          .execute();
-        const result = await tx
-          .updateTable('sessions')
-          .set({ project_id: projectId })
-          .where('session_id', '=', sessionId)
-          .executeTakeFirst();
-        return result.numUpdatedRows > 0n;
-      });
-    }
-    return this.db.transaction().execute(async (tx) => {
-      await tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      await tx
-        .deleteFrom('session_links')
-        .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
-        .execute();
-      const result = await tx
-        .updateTable('sessions')
-        .set({ project_id: null })
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst();
-      return result.numUpdatedRows > 0n;
-    });
+    return this.sessionMoves.setSessionProject(sessionId, projectId);
   }
 
   /**
@@ -2992,7 +2537,7 @@ export class EventStore implements EventSink {
       await ensureProjectKnowledgeSpace(tx, created.id, created.repo);
       return created;
     });
-    return this.projectRowToRecord(row);
+    return projectRowToRecord(row);
   }
 
   async getStarterWelcomeSessionId(): Promise<string | undefined> {
@@ -3170,99 +2715,8 @@ export class EventStore implements EventSink {
     return Number(row?.seq ?? 0);
   }
 
-  /** Bring the rebuildable message view up to date in resumable event batches. */
-  private async backfillMessageProjectionUnlocked(): Promise<void> {
-    const sessions = await this.listSessions();
-    for (const session of sessions) {
-      for (;;) {
-        const processed = await this.db.transaction().execute(async (tx) => {
-          await sql`select pg_advisory_xact_lock(hashtext(${'messages:' + session.sessionId}))`.execute(
-            tx,
-          );
-          let state = await tx
-            .selectFrom('message_projection_state')
-            .select(['last_event_seq', 'projection_version'])
-            .where('session_id', '=', session.sessionId)
-            .executeTakeFirst();
-          if (state !== undefined && state.projection_version !== MESSAGE_PROJECTION_VERSION) {
-            await tx.deleteFrom('messages').where('session_id', '=', session.sessionId).execute();
-            await tx
-              .deleteFrom('message_projection_state')
-              .where('session_id', '=', session.sessionId)
-              .execute();
-            state = undefined;
-          }
-          const rows = await tx
-            .selectFrom('events')
-            .select(['id', 'payload', 'created_at'])
-            .where('session_id', '=', session.sessionId)
-            .where('id', '>', Number(state?.last_event_seq ?? 0))
-            .orderBy('id', 'asc')
-            .limit(500)
-            .execute();
-          for (const row of rows) {
-            await projectMessageEvent(
-              tx,
-              session.sessionId,
-              Number(row.id),
-              row.created_at,
-              row.payload,
-            );
-          }
-          const last = rows.at(-1);
-          if (last !== undefined) {
-            await tx
-              .insertInto('message_projection_state')
-              .values({
-                session_id: session.sessionId,
-                last_event_seq: Number(last.id),
-                projection_version: MESSAGE_PROJECTION_VERSION,
-              })
-              .onConflict((oc) =>
-                oc.column('session_id').doUpdateSet({
-                  last_event_seq: Number(last.id),
-                  projection_version: MESSAGE_PROJECTION_VERSION,
-                }),
-              )
-              .execute();
-          }
-          return rows.length;
-        });
-        if (processed === 0) break;
-      }
-    }
-  }
-
   scheduleMessageProjection(): void {
-    if (this.messageBackfillRunning) {
-      this.messageBackfillRequested = true;
-      return;
-    }
-    this.messageBackfillRunning = true;
-    const current = this.messageBackfillTail
-      .catch(() => undefined)
-      .then(async () => {
-        await waitForPendingMessageProjections(this.db);
-        do {
-          this.messageBackfillRequested = false;
-          await this.backfillMessageProjectionUnlocked();
-        } while (this.messageBackfillRequested);
-      })
-      .finally(() => {
-        this.messageBackfillRunning = false;
-      });
-    this.messageBackfillTail = current;
-    let pendingBackfills = pendingMessageBackfillsByDb.get(this.db);
-    if (pendingBackfills === undefined) {
-      pendingBackfills = new Set();
-      pendingMessageBackfillsByDb.set(this.db, pendingBackfills);
-    }
-    pendingBackfills.add(current);
-    void current.then(
-      () => pendingBackfills.delete(current),
-      () => pendingBackfills.delete(current),
-    );
-    void current.catch(() => undefined);
+    return this.messageProjection.scheduleMessageProjection();
   }
 
   /** Wait until both ordered live projection and any recovery/search backfill are
@@ -3271,92 +2725,11 @@ export class EventStore implements EventSink {
    * The barrier waits for all resulting recovery attempts, but does not assert that
    * a deliberately unavailable projection became healthy. */
   async waitForMessageProjectionIdle(): Promise<void> {
-    for (;;) {
-      await waitForMessageProjectionWork(this.db);
-      if (this.messageLiveProjectionTails.size === 0) return;
-      // A settled tail unregisters from the map in a `finally` that is one
-      // microtask behind the queue barrier above; give it that turn instead of
-      // spinning on the map.
-      await Promise.resolve();
-    }
+    return this.messageProjection.waitForMessageProjectionIdle();
   }
 
   async searchMessages(input: MessageSearchInput): Promise<MessageSearchResult[]> {
-    // Never let replay race the ordered live projector for the same events. A
-    // short live tail lands first; if it is still busy after the latency budget,
-    // return the currently indexed view and let that tail finish asynchronously.
-    const liveCaughtUp = await Promise.race([
-      waitForPendingMessageProjections(this.db).then(() => true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 50)),
-    ]);
-    if (liveCaughtUp) {
-      this.scheduleMessageProjection();
-      await Promise.race([
-        this.messageBackfillTail.catch(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, 50)),
-      ]);
-    }
-    const query = input.query.trim();
-    if (query.length === 0) return [];
-    const tsQuery = sql`websearch_to_tsquery('simple', ${query})`;
-    const rank = sql<number>`ts_rank_cd(to_tsvector('simple', m.text), ${tsQuery})`;
-    let select = this.db
-      .selectFrom('messages as m')
-      .innerJoin('sessions as s', 's.session_id', 'm.session_id')
-      .leftJoin('projects as p', 'p.id', 's.project_id')
-      .select([
-        'm.id',
-        'm.session_id',
-        's.name as session_name',
-        's.project_id',
-        'm.role',
-        'm.kind',
-        'm.first_event_seq',
-        'm.created_at',
-        rank.as('search_rank'),
-        sql<string>`ts_headline(
-          'simple', m.text, ${tsQuery},
-          'MaxWords=35, MinWords=12, ShortWord=2, MaxFragments=2, StartSel=⟦, StopSel=⟧'
-        )`.as('snippet'),
-        sql<string | null>`case when p.id is null then null else p.owner || '/' || p.repo end`.as(
-          'project_name',
-        ),
-      ])
-      .where('m.finalized', '=', true)
-      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`)
-      // The Wiki maintenance run quotes untrusted transcripts and appears nowhere.
-      .where(
-        sql<boolean>`not exists (select 1 from wiki_maintenance w where w.session_id = m.session_id)`,
-      );
-    if (input.sessionId !== undefined) select = select.where('m.session_id', '=', input.sessionId);
-    if (input.projectId !== undefined) select = select.where('s.project_id', '=', input.projectId);
-    if (input.cursor !== undefined) {
-      const cursorDate = new Date(input.cursor.createdAt);
-      select = select.where(
-        sql<boolean>`(${rank} < ${input.cursor.rank}) or
-          (${rank} = ${input.cursor.rank} and m.created_at < ${cursorDate}) or
-          (${rank} = ${input.cursor.rank} and m.created_at = ${cursorDate} and m.id < ${input.cursor.id})`,
-      );
-    }
-    const rows = await select
-      .orderBy(rank, 'desc')
-      .orderBy('m.created_at', 'desc')
-      .orderBy('m.id', 'desc')
-      .limit(Math.min(input.limit ?? 30, 100))
-      .execute();
-    return rows.map((row) => ({
-      id: Number(row.id),
-      sessionId: row.session_id,
-      sessionName: row.session_name,
-      projectId: row.project_id,
-      projectName: row.project_name,
-      role: row.role,
-      kind: row.kind,
-      text: row.snippet.replace(/[⟦⟧]/g, ''),
-      firstEventSeq: Number(row.first_event_seq),
-      createdAt: row.created_at.getTime(),
-      rank: row.search_rank,
-    }));
+    return this.messageProjection.searchMessages(input);
   }
 
   /**
@@ -3372,115 +2745,29 @@ export class EventStore implements EventSink {
    */
   /** Permanent admission tombstone; cleanup payload survives the session FK cascade. */
   async queueSessionDeletion(sessionId: string, payload: string): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      await this.sessionEventAppendLock(tx, sessionId);
-      if (
-        await tx
-          .selectFrom('session_deletions')
-          .select('session_id')
-          .where('session_id', '=', sessionId)
-          .executeTakeFirst()
-      )
-        return;
-      const parsed = JSON.parse(payload) as SessionDeletionState;
-      const session = await tx
-        .selectFrom('sessions')
-        .select('worktree')
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst();
-      const path = parsed.session?.worktree ?? session?.worktree;
-      const worktree = path === undefined ? null : resolve(path);
-      if (worktree !== null) {
-        await this.sessionWorktreeLock(tx, worktree);
-        if (
-          await tx
-            .selectFrom('session_deletions')
-            .select('session_id')
-            .where('worktree', '=', worktree)
-            .where('cleanup_pending', '=', true)
-            .executeTakeFirst()
-        )
-          throw new Error('Session worktree is being deleted');
-      }
-      await tx
-        .insertInto('session_deletions')
-        .values({ session_id: sessionId, payload, worktree })
-        .execute();
-    });
-  }
-
-  private async sessionWorktreeLock(tx: Kysely<Database>, path: string): Promise<void> {
-    const result = await sql<{
-      locked: boolean;
-    }>`select pg_try_advisory_xact_lock(hashtext(${'session-worktree:' + resolve(path)})) as locked`.execute(
-      tx,
-    );
-    if (result.rows[0]?.locked !== true) throw new Error('Session worktree is being deleted');
+    return this.sessionLifecycle.queueSessionDeletion(sessionId, payload);
   }
 
   async isWorktreeBeingDeleted(path: string): Promise<boolean> {
-    return (
-      (await this.db
-        .selectFrom('session_deletions')
-        .select('session_id')
-        .where('worktree', '=', resolve(path))
-        .where('cleanup_pending', '=', true)
-        .executeTakeFirst()) !== undefined
-    );
+    return this.sessionLifecycle.isWorktreeBeingDeleted(path);
   }
 
   async getSessionDeletion(
     sessionId: string,
   ): Promise<{ payload: string; cleanupPending: boolean } | undefined> {
-    const row = await this.db
-      .selectFrom('session_deletions')
-      .select(['payload', 'cleanup_pending'])
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return row === undefined
-      ? undefined
-      : { payload: row.payload, cleanupPending: row.cleanup_pending };
+    return this.sessionLifecycle.getSessionDeletion(sessionId);
   }
 
   async isSessionDeleting(sessionId: string): Promise<boolean> {
-    return (
-      (await this.db
-        .selectFrom('session_deletions')
-        .select('session_id')
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst()) !== undefined
-    );
+    return this.sessionLifecycle.isSessionDeleting(sessionId);
   }
 
   async listPendingSessionDeletions(): Promise<{ sessionId: string; payload: string }[]> {
-    const rows = await this.db
-      .selectFrom('session_deletions')
-      .select(['session_id', 'payload'])
-      .where('cleanup_pending', '=', true)
-      .execute();
-    return rows.map((row) => ({ sessionId: row.session_id, payload: row.payload }));
+    return this.sessionLifecycle.listPendingSessionDeletions();
   }
 
   async updateSessionDeletionPayload(sessionId: string, payload: string): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      await this.sessionEventAppendLock(tx, sessionId);
-      const current = await tx
-        .selectFrom('session_deletions')
-        .select(['payload', 'cleanup_pending'])
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!current?.cleanup_pending) return;
-      const merged = mergeSessionDeletionState(
-        JSON.parse(current.payload) as SessionDeletionState,
-        JSON.parse(payload) as SessionDeletionState,
-      );
-      await tx
-        .updateTable('session_deletions')
-        .set({ payload: JSON.stringify(merged) })
-        .where('session_id', '=', sessionId)
-        .execute();
-    });
+    return this.sessionLifecycle.updateSessionDeletionPayload(sessionId, payload);
   }
 
   async finishSessionDeletionCleanup(sessionId: string): Promise<void> {
@@ -3494,169 +2781,11 @@ export class EventStore implements EventSink {
     sessionId: string,
     work: (payload: string) => Promise<boolean>,
   ): Promise<boolean> {
-    let tails = sessionDeletionCleanupTails.get(this.db);
-    if (!tails) {
-      tails = new Map();
-      sessionDeletionCleanupTails.set(this.db, tails);
-    }
-    const previous = tails.get(sessionId) ?? Promise.resolve();
-    let release!: () => void;
-    const completion = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const queued = previous.catch(() => undefined).then(() => completion);
-    tails.set(sessionId, queued);
-    await previous.catch(() => undefined);
-    try {
-      return await this.db.connection().execute(async (connection) => {
-        const sessionKey = `session-cleanup:${sessionId}`;
-        await sql`select pg_advisory_lock(hashtext(${sessionKey}))`.execute(connection);
-        let worktree: string | null = null;
-        try {
-          const owned = await connection
-            .selectFrom('session_deletions')
-            .select(['worktree', 'payload', 'cleanup_pending'])
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst();
-          if (!owned?.cleanup_pending) return true;
-          worktree = owned.worktree;
-          if (worktree !== null)
-            await sql`select pg_advisory_lock(hashtext(${'session-worktree:' + worktree}))`.execute(
-              connection,
-            );
-          // A completed tombstone is permanent: stale requests cannot restart cleanup
-          // after a different session legitimately reused the released worktree path.
-          const current = await connection
-            .selectFrom('session_deletions')
-            .select(['payload', 'cleanup_pending'])
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst();
-          if (!current?.cleanup_pending) return true;
-          if (!(await work(current.payload))) return false;
-          await connection
-            .updateTable('session_deletions')
-            .set({ cleanup_pending: false, payload: '{}', worktree: null })
-            .where('session_id', '=', sessionId)
-            .execute();
-          return true;
-        } finally {
-          try {
-            if (worktree !== null)
-              await sql`select pg_advisory_unlock(hashtext(${'session-worktree:' + worktree}))`.execute(
-                connection,
-              );
-          } finally {
-            await sql`select pg_advisory_unlock(hashtext(${sessionKey}))`.execute(connection);
-          }
-        }
-      });
-    } finally {
-      release();
-      if (tails.get(sessionId) === queued) tails.delete(sessionId);
-    }
+    return this.sessionLifecycle.withSessionDeletionCleanup(sessionId, work);
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    await waitForPendingMessageProjections(this.db);
-    return this.db.transaction().execute(async (tx) => {
-      await this.sessionEventAppendLock(tx, sessionId);
-      // Freeze FK-backed creations before capturing the IDs the cascade will erase.
-      // A start committed after the initial HTTP snapshot must still be cleaned up.
-      await tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .execute();
-      const deletion = await tx
-        .selectFrom('session_deletions')
-        .select('payload')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (deletion) {
-        const payload = JSON.parse(deletion.payload) as SessionDeletionState;
-        if (payload.session?.sessionId === sessionId) {
-          const bindings = await tx
-            .selectFrom('session_backend_state')
-            .select(['backend', 'backend_session_id'])
-            .where('session_id', '=', sessionId)
-            .execute();
-          payload.artifactBindings =
-            mergeSessionDeletionState(payload, {
-              artifactBindings: bindings.map((row) => ({
-                backend: row.backend,
-                backendSessionId: row.backend_session_id,
-              })),
-            }).artifactBindings ?? [];
-          const previews = await tx
-            .selectFrom('local_preview_shares')
-            .select('id')
-            .where('session_id', '=', sessionId)
-            .execute();
-          const instances = await tx
-            .selectFrom('managed_dev_server_instances')
-            .select(['id', 'project_id'])
-            .where('session_id', '=', sessionId)
-            .execute();
-          payload.previewIds = [
-            ...new Set([...(payload.previewIds ?? []), ...previews.map((row) => row.id)]),
-          ];
-          if (payload.managed || instances.length > 0)
-            payload.managed = {
-              sessionId,
-              projectId:
-                payload.managed?.projectId ??
-                instances[0]?.project_id ??
-                payload.session.projectId ??
-                null,
-              instanceIds: [
-                ...new Set([
-                  ...(payload.managed?.instanceIds ?? []),
-                  ...instances.map((row) => row.id),
-                ]),
-              ],
-            };
-          await tx
-            .updateTable('session_deletions')
-            .set({ payload: JSON.stringify(payload) })
-            .where('session_id', '=', sessionId)
-            .execute();
-        }
-      }
-      await tx.deleteFrom('transcript_lines').where('session_id', '=', sessionId).execute();
-      await tx.deleteFrom('events').where('session_id', '=', sessionId).execute();
-      // A session-scoped secret permission (ADR 0011 D2) is supposed to die with its
-      // session, but nothing else expires it: it carries no expiry and no foreign key.
-      // Left behind it would stay listed as live forever, and would auto-approve again
-      // if this id were ever restored or reused. Ending it belongs in this transaction.
-      await tx
-        .updateTable('secret_provider_permissions')
-        .set({ state: 'revoked', updated_at: new Date().toISOString() })
-        .where('session_id', '=', sessionId)
-        .where('state', '=', 'active')
-        .execute();
-      // The agent's unfinished steps were its plan for this session and end with
-      // it; the operator's own tasks only lose the assignment (FK set null).
-      await tx
-        .updateTable('tasks')
-        .set((eb) => ({
-          status: 'dropped',
-          completed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          revision: eb('revision', '+', 1),
-        }))
-        .where('session_id', '=', sessionId)
-        .where('origin', '=', 'agent')
-        .where('status', 'in', ['open', 'in_progress'])
-        .execute();
-      await sql`delete from project_inquiries where target_session_id=${sessionId}`.execute(tx);
-      const result = await tx
-        .deleteFrom('sessions')
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst();
-      return result.numDeletedRows > 0n;
-    });
+    return this.sessionLifecycle.deleteSession(sessionId);
   }
 
   /** Accept a background dispatch, its prompt and recovery marker in one commit.
@@ -3695,7 +2824,7 @@ export class EventStore implements EventSink {
           ts: receipt.created_at.getTime(),
           existing: true,
         };
-      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
+      await sql`select pg_advisory_xact_lock(hashtext(${sessionEventAppendLockKey(sessionId)}))`.execute(
         trx,
       );
       const predecessor = await trx
@@ -3764,34 +2893,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     event: AgentEvent,
   ): Promise<{ seq: number; ts: number; existing?: true }> {
-    if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
-    const { type, payload } = await this.prepareEventRow(event);
-    const row = await this.withSessionEventAppend(sessionId, () =>
-      this.db.transaction().execute(async (tx) => {
-        await this.sessionEventAppendLock(tx, sessionId);
-        const existing = await findRecordedApprovalDecision(tx, sessionId, event);
-        if (existing) return { ...existing, existing: true as const };
-        const result = await sql<{ id: number; created_at: Date }>`
-          insert into events (session_id, type, payload)
-          select ${sessionId}, ${type}, ${payload}::jsonb
-          where not exists (select 1 from session_deletions where session_id = ${sessionId})
-          returning id, created_at
-        `.execute(tx);
-        const inserted = result.rows[0];
-        if (inserted === undefined)
-          throw new Error(`failed to append event to session ${sessionId}`);
-        return inserted;
-      }),
-    );
-    if ('existing' in row)
-      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: true };
-    this.enqueuePersistedMessageEvent(
-      sessionId,
-      Number(row.id),
-      row.created_at,
-      JSON.parse(payload) as AgentEvent,
-    );
-    return { seq: Number(row.id), ts: row.created_at.getTime() };
+    return this.eventWrites.appendEvent(sessionId, event);
   }
 
   /**
@@ -3821,35 +2923,7 @@ export class EventStore implements EventSink {
     anchor: { promptSeq: number; turnId: string | null; silentSinceSeq: number },
     event: AgentEvent,
   ): Promise<{ seq: number; ts: number } | null> {
-    const { type, payload } = await this.prepareEventRow(event);
-    const result = await this.withSessionEventAppend(sessionId, () =>
-      this.db.transaction().execute(async (tx) => {
-        await this.sessionEventAppendLock(tx, sessionId);
-        return await sql<{ id: number; created_at: Date }>`
-          insert into events (session_id, type, payload)
-          select ${sessionId}, ${type}, ${payload}::jsonb
-          from running_turns
-          where session_id = ${sessionId}
-            and not exists (select 1 from session_deletions where session_id = ${sessionId})
-            and prompt_seq = ${anchor.promptSeq}
-            and turn_id is not distinct from ${anchor.turnId}
-            and not exists (
-              select 1 from events
-              where session_id = ${sessionId} and id > ${anchor.silentSinceSeq}
-            )
-          returning id, created_at
-        `.execute(tx);
-      }),
-    );
-    const row = result.rows[0];
-    if (row === undefined) return null;
-    this.enqueuePersistedMessageEvent(
-      sessionId,
-      Number(row.id),
-      row.created_at,
-      JSON.parse(payload) as AgentEvent,
-    );
-    return { seq: Number(row.id), ts: row.created_at.getTime() };
+    return this.eventWrites.appendEventForRunningTurn(sessionId, anchor, event);
   }
 
   /** Validate, externalize, and redact an event into the exact `(type, payload)`
@@ -3859,28 +2933,7 @@ export class EventStore implements EventSink {
    * to perform BEFORE the ingest transaction, so the transaction stays a tight
    * `events` + `runner_frames` claim. */
   private async prepareEventRow(event: AgentEvent): Promise<{ type: string; payload: string }> {
-    const parsed = parseAgentEvent(event);
-    if (!parsed.success) {
-      throw new Error(`refusing to persist invalid event: ${parsed.error.message}`);
-    }
-    // Externalize a tool result's heavy inline payloads into the content-addressed
-    // blob table, so the PERSISTED event carries lazy refs (images #115, and large
-    // text bodies) instead of the full bytes — a reload transfers only previews +
-    // the visible images, not the whole backlog. The caller's `event` is left
-    // untouched (only a copy is stored), so the live broadcast still ships the
-    // inline bytes the client already has and can render without a round-trip.
-    const canonical = parsed.data;
-    const toStore =
-      canonical.t === 'tool_result' ? await this.externalizeToolResult(canonical) : canonical;
-    // Redact recognized credentials from the PERSISTED copy (audit M9). Token
-    // characters never include JSON structural chars, so redacting the serialized
-    // payload keeps it valid JSON. The caller's live `event` is left untouched, so
-    // the broadcast to the operator's own device is unaffected.
-    // Scrub U+0000 from the PERSISTED copy last: PostgreSQL rejects a `jsonb`
-    // document that carries one, which used to abort the whole turn on any agent
-    // output echoing a NUL. Runs after redaction so both rewrites see the same
-    // serialized string; the caller's live `event` again stays untouched.
-    return { type: canonical.t, payload: scrubNulEscapes(redactSecrets(JSON.stringify(toStore))) };
+    return this.eventWrites.prepareEventRow(event);
   }
 
   /**
@@ -3908,261 +2961,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     frame: RunnerFrameIngest,
   ): Promise<RunnerFrameIngestResult> {
-    // Two kinds of frame decide what a conditional append sees: one that carries an
-    // event appends to the session's log, and a TERMINAL one closes the marker that
-    // append tests. Both do it from inside a multi-statement transaction, so either can
-    // be invisible to a concurrent {@link appendEventForRunningTurn} — which would then
-    // write "the Runner is gone" onto a turn that had just ended normally. Both join the
-    // session's append order; a frame that only claims a mid-turn seq stays out of it.
-    if (frame.event === undefined && frame.terminal !== true) {
-      return await this.ingestRunnerFrameInner(sessionId, frame);
-    }
-    return await this.withSessionEventAppend(sessionId, () =>
-      this.ingestRunnerFrameInner(sessionId, frame),
-    );
-  }
-
-  private async ingestRunnerFrameInner(
-    sessionId: string,
-    frame: RunnerFrameIngest,
-  ): Promise<RunnerFrameIngestResult> {
-    if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
-    if (frame.protocolVersion !== RUNNER_FRAME_PROTOCOL_VERSION) {
-      throw new Error(
-        `unsupported runner frame protocol version ${frame.protocolVersion} ` +
-          `(this server ingests version ${RUNNER_FRAME_PROTOCOL_VERSION})`,
-      );
-    }
-    if (!Number.isInteger(frame.frameSeq) || frame.frameSeq < 1) {
-      throw new Error(`runner frame seq must be a positive integer, got ${frame.frameSeq}`);
-    }
-    if (frame.terminal === true && frame.event !== undefined) {
-      throw new Error('runner terminal frame cannot also carry an event');
-    }
-    // The fence below is recognized by its reserved `payload_hash`, and nothing
-    // constrains what a Runner puts in that column — so refuse the sentinel here
-    // rather than trust that no frame carries it. This is what makes "a row with
-    // this hash is a fence" true instead of merely likely: a frame claiming it is
-    // rejected before it can be stored, so no turn can be fenced by its own stream.
-    if (frame.payloadHash === ABANDONED_TURN_FENCE_HASH) {
-      throw new Error(
-        `runner frame refused: payload hash ${ABANDONED_TURN_FENCE_HASH} is reserved ` +
-          'for recovery fences',
-      );
-    }
-    // Prepare the event row (validate + externalize + redact) BEFORE the transaction:
-    // externalization writes content-addressed `attachments` rows that are idempotent
-    // and harmless if the transaction later rolls back, keeping the claim atomic and small.
-    const eventRow =
-      frame.event !== undefined ? await this.prepareEventRow(frame.event) : undefined;
-
-    const predecessor = this.runnerFrameIngestTails.get(frame.turnId) ?? Promise.resolve();
-    let release!: () => void;
-    const queued = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.runnerFrameIngestTails.set(frame.turnId, queued);
-    await predecessor;
-    try {
-      return await this.db.transaction().execute(async (tx) => {
-        // Multiple Server generations may overlap during reattach/cutover. Serialize
-        // claims for one turn across processes, not merely within one file tail, so
-        // terminal fencing cannot race a later frame. The lock is transaction-scoped.
-        // An ingest that appends an event or closes the marker takes the session's
-        // append lock first, in that order everywhere, so it cannot be invisible to a
-        // conditional append yet ordered ahead of it — and the two locks cannot be
-        // taken in opposite orders.
-        if (eventRow !== undefined || frame.terminal === true) {
-          await this.sessionEventAppendLock(tx, sessionId);
-        }
-        await sql`select pg_advisory_xact_lock(hashtext(${frame.turnId}))`.execute(tx);
-        if (
-          await tx
-            .selectFrom('session_deletions')
-            .select('session_id')
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst()
-        )
-          throw new Error('Session is being deleted');
-
-        // (0) the turn was abandoned by recovery — refuse everything from the fence on.
-        // Contiguity puts every already-claimed frame below it, so a replay of what the
-        // turn said while it still held the session stays a valid duplicate below.
-        const fence = await tx
-          .selectFrom('runner_frames')
-          .select('frame_seq')
-          .where('turn_id', '=', frame.turnId)
-          .where('payload_hash', '=', ABANDONED_TURN_FENCE_HASH)
-          .executeTakeFirst();
-        if (fence !== undefined && frame.frameSeq >= Number(fence.frame_seq)) {
-          throw new Error(
-            `runner frame refused: turn ${frame.turnId} was abandoned by recovery at seq ` +
-              `${fence.frame_seq}, refusing seq ${frame.frameSeq}`,
-          );
-        }
-
-        // (1) immutable turn → runner-instance binding. Fence rows are excluded: the
-        // fence may have been planted before the turn ever streamed a frame, and its
-        // placeholder instance id is not the turn's binding.
-        const bound = await tx
-          .selectFrom('runner_frames')
-          .select(['runner_instance_id', 'session_id'])
-          .where('turn_id', '=', frame.turnId)
-          .where('payload_hash', '!=', ABANDONED_TURN_FENCE_HASH)
-          .limit(1)
-          .executeTakeFirst();
-        if (bound !== undefined && bound.runner_instance_id !== frame.runnerInstanceId) {
-          throw new Error(
-            `runner frame corruption: turn ${frame.turnId} is bound to runner instance ` +
-              `${bound.runner_instance_id}, refusing a frame from ${frame.runnerInstanceId}`,
-          );
-        }
-        if (bound !== undefined && bound.session_id !== sessionId) {
-          throw new Error(
-            `runner frame corruption: turn ${frame.turnId} is bound to session ` +
-              `${bound.session_id}, refusing a frame for ${sessionId}`,
-          );
-        }
-
-        // (2) already claimed → duplicate (a replay). Guard the payload hash.
-        const existing = await tx
-          .selectFrom('runner_frames')
-          .select(['payload_hash', 'event_id', 'terminal'])
-          .where('turn_id', '=', frame.turnId)
-          .where('frame_seq', '=', frame.frameSeq)
-          .executeTakeFirst();
-        if (existing !== undefined) {
-          if (existing.payload_hash !== frame.payloadHash) {
-            throw new Error(
-              `runner frame corruption: (turn ${frame.turnId}, seq ${frame.frameSeq}) was ` +
-                `replayed with a changed payload`,
-            );
-          }
-          // Rolling-deploy compatibility: pre-0053/older Servers wrote result claims
-          // without the terminal bit. A hash-identical replay from a new Server carries
-          // the missing kind information, so promote that claim and close its marker in
-          // this transaction. This is idempotent and scoped away from newer turns.
-          if (frame.terminal === true && !existing.terminal) {
-            const later = await tx
-              .selectFrom('runner_frames')
-              .select('frame_seq')
-              .where('turn_id', '=', frame.turnId)
-              .where('frame_seq', '>', frame.frameSeq)
-              .executeTakeFirst();
-            if (later !== undefined) {
-              throw new Error(
-                `runner frame corruption: cannot promote terminal seq ${frame.frameSeq} for turn ` +
-                  `${frame.turnId}; later seq ${later.frame_seq} already exists`,
-              );
-            }
-            await tx
-              .updateTable('runner_frames')
-              .set({ terminal: true })
-              .where('turn_id', '=', frame.turnId)
-              .where('frame_seq', '=', frame.frameSeq)
-              .execute();
-            await tx
-              .deleteFrom('running_turns')
-              .where('session_id', '=', sessionId)
-              .where('turn_id', '=', frame.turnId)
-              .execute();
-          }
-          if (existing.event_id !== null) {
-            const ev = await tx
-              .selectFrom('events')
-              .select('created_at')
-              .where('id', '=', existing.event_id)
-              .executeTakeFirst();
-            if (ev !== undefined) {
-              return {
-                outcome: 'duplicate',
-                seq: Number(existing.event_id),
-                ts: ev.created_at.getTime(),
-              };
-            }
-          }
-          return { outcome: 'duplicate' };
-        }
-
-        // A result is the final frame (D3). Once its claim commits, a second result
-        // or any other later frame is corruption rather than another harmless replay.
-        // Same-sequence replays returned above remain valid duplicates.
-        const terminal = await tx
-          .selectFrom('runner_frames')
-          .select('frame_seq')
-          .where('turn_id', '=', frame.turnId)
-          .where('terminal', '=', true)
-          .executeTakeFirst();
-        if (terminal !== undefined) {
-          throw new Error(
-            `runner frame corruption: turn ${frame.turnId} already terminated at seq ` +
-              `${terminal.frame_seq}, refusing seq ${frame.frameSeq}`,
-          );
-        }
-
-        // (3) contiguity: seq 1 is the anchor; otherwise the predecessor must exist.
-        if (frame.frameSeq > 1) {
-          const prev = await tx
-            .selectFrom('runner_frames')
-            .select('frame_seq')
-            .where('turn_id', '=', frame.turnId)
-            .where('frame_seq', '=', frame.frameSeq - 1)
-            .executeTakeFirst();
-          if (prev === undefined) {
-            throw new Error(
-              `runner frame gap: turn ${frame.turnId} received seq ${frame.frameSeq} ` +
-                `before seq ${frame.frameSeq - 1}`,
-            );
-          }
-        }
-
-        // (4) persist the event, if any — atomically with the claim below.
-        let eventId: number | null = null;
-        let result: RunnerFrameIngestResult = { outcome: 'accepted' };
-        if (eventRow !== undefined) {
-          const row = await tx
-            .insertInto('events')
-            .values({ session_id: sessionId, type: eventRow.type, payload: eventRow.payload })
-            .returning(['id', 'created_at'])
-            .executeTakeFirstOrThrow();
-          eventId = Number(row.id);
-          result = { outcome: 'accepted', seq: eventId, ts: row.created_at.getTime() };
-        }
-
-        // (5) claim (turn_id, frame_seq) under the primary key.
-        await tx
-          .insertInto('runner_frames')
-          .values({
-            turn_id: frame.turnId,
-            frame_seq: frame.frameSeq,
-            runner_instance_id: frame.runnerInstanceId,
-            session_id: sessionId,
-            payload_hash: frame.payloadHash,
-            event_id: eventId,
-            terminal: frame.terminal === true,
-          })
-          .execute();
-
-        // Scope by BOTH session and turn identity: a late terminal from an older turn
-        // must never delete a newer marker for the same session. This delete commits
-        // atomically with the terminal claim, eliminating the append/commit crash gap.
-        if (frame.terminal === true) {
-          await tx
-            .deleteFrom('running_turns')
-            .where('session_id', '=', sessionId)
-            .where('turn_id', '=', frame.turnId)
-            .execute();
-        }
-
-        return result;
-      });
-    } finally {
-      if (eventRow !== undefined) this.scheduleMessageProjection();
-      release();
-      if (this.runnerFrameIngestTails.get(frame.turnId) === queued) {
-        this.runnerFrameIngestTails.delete(frame.turnId);
-      }
-    }
+    return this.eventWrites.ingestRunnerFrame(sessionId, frame);
   }
 
   /**
@@ -4187,42 +2986,11 @@ export class EventStore implements EventSink {
    */
   /** An abandoned stream fence closes the log, but never proves worker exit. */
   async hasAbandonedRunnerTurns(sessionId: string): Promise<boolean> {
-    return (
-      (await this.db
-        .selectFrom('runner_frames')
-        .select('turn_id')
-        .where('session_id', '=', sessionId)
-        .where('payload_hash', '=', ABANDONED_TURN_FENCE_HASH)
-        .executeTakeFirst()) !== undefined
-    );
+    return this.eventWrites.hasAbandonedRunnerTurns(sessionId);
   }
 
   async fenceAbandonedTurn(sessionId: string, turnId: string): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);
-      const rows = await tx
-        .selectFrom('runner_frames')
-        .select(['frame_seq', 'runner_instance_id', 'payload_hash'])
-        .where('turn_id', '=', turnId)
-        .orderBy('frame_seq', 'desc')
-        .execute();
-      if (rows.some((row) => row.payload_hash === ABANDONED_TURN_FENCE_HASH)) return;
-      const last = rows[0];
-      await tx
-        .insertInto('runner_frames')
-        .values({
-          turn_id: turnId,
-          frame_seq: last === undefined ? 1 : Number(last.frame_seq) + 1,
-          // Carry the turn's real binding when it has one, so the instance check keeps
-          // reading the same value whether or not the fence row is present.
-          runner_instance_id: last?.runner_instance_id ?? ABANDONED_TURN_FENCE_INSTANCE,
-          session_id: sessionId,
-          payload_hash: ABANDONED_TURN_FENCE_HASH,
-          event_id: null,
-          terminal: true,
-        })
-        .execute();
-    });
+    return this.eventWrites.fenceAbandonedTurn(sessionId, turnId);
   }
 
   /**
@@ -4237,81 +3005,7 @@ export class EventStore implements EventSink {
     latestSeq: number,
     event?: AgentEvent,
   ): Promise<{ seq: number; ts: number; fenceSeq: number; noticeSeq: number | null } | null> {
-    if (anchor.turnId === null) return null;
-    const turnId = anchor.turnId;
-    const eventRow = event === undefined ? undefined : await this.prepareEventRow(event);
-    const result = await this.withSessionEventAppend(anchor.sessionId, () =>
-      this.withRunnerFrameTurn(turnId, () =>
-        this.db.transaction().execute(async (tx) => {
-          // Keep the global order used by event-bearing frame ingestion: session
-          // append lock first, then turn lock. The former makes the MAX(events.id)
-          // predicate atomic with every canonical event writer; the latter makes
-          // the fence atomic with every frame claim.
-          await this.sessionEventAppendLock(tx, anchor.sessionId);
-          await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);
-          const marker = await tx
-            .selectFrom('running_turns')
-            .select(['prompt_seq', 'turn_id'])
-            .where('session_id', '=', anchor.sessionId)
-            .executeTakeFirst();
-          if (
-            marker === undefined ||
-            Number(marker.prompt_seq) !== anchor.promptSeq ||
-            marker.turn_id !== turnId
-          ) {
-            return null;
-          }
-          const newest = await tx
-            .selectFrom('events')
-            .select((eb) => eb.fn.max('id').as('seq'))
-            .where('session_id', '=', anchor.sessionId)
-            .executeTakeFirst();
-          if (Number(newest?.seq ?? 0) !== latestSeq) return null;
-
-          const rows = await tx
-            .selectFrom('runner_frames')
-            .select(['frame_seq', 'runner_instance_id', 'payload_hash'])
-            .where('turn_id', '=', turnId)
-            .orderBy('frame_seq', 'desc')
-            .execute();
-          if (rows.some((row) => row.payload_hash === ABANDONED_TURN_FENCE_HASH)) return null;
-
-          let persisted: { seq: number; ts: number } = { seq: latestSeq, ts: Date.now() };
-          if (eventRow !== undefined) {
-            const inserted = await tx
-              .insertInto('events')
-              .values({
-                session_id: anchor.sessionId,
-                type: eventRow.type,
-                payload: eventRow.payload,
-              })
-              .returning(['id', 'created_at'])
-              .executeTakeFirstOrThrow();
-            persisted = { seq: Number(inserted.id), ts: inserted.created_at.getTime() };
-          }
-
-          const last = rows[0];
-          await tx
-            .insertInto('runner_frames')
-            .values({
-              turn_id: turnId,
-              frame_seq: last === undefined ? 1 : Number(last.frame_seq) + 1,
-              runner_instance_id: last?.runner_instance_id ?? ABANDONED_TURN_FENCE_INSTANCE,
-              session_id: anchor.sessionId,
-              payload_hash: ABANDONED_TURN_FENCE_HASH,
-              event_id: null,
-              terminal: true,
-            })
-            .execute();
-          return {
-            ...persisted,
-            fenceSeq: last === undefined ? 1 : Number(last.frame_seq) + 1,
-            noticeSeq: eventRow === undefined ? null : persisted.seq,
-          };
-        }),
-      ),
-    );
-    return result;
+    return this.eventWrites.fenceRunningTurnIfSilent(anchor, latestSeq, event);
   }
 
   /** Undo a stalled-turn fence when shutdown won immediately after it committed. */
@@ -4320,50 +3014,7 @@ export class EventStore implements EventSink {
     noticeSeq: number | null,
     fenceSeq: number,
   ): Promise<void> {
-    if (anchor.turnId === null) return;
-    const turnId = anchor.turnId;
-    let projectionInvalidated = false;
-    await this.withSessionEventAppend(anchor.sessionId, () =>
-      this.withRunnerFrameTurn(turnId, () =>
-        this.db.transaction().execute(async (tx) => {
-          await this.sessionEventAppendLock(tx, anchor.sessionId);
-          await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);
-          const removed = await tx
-            .deleteFrom('runner_frames')
-            .where('turn_id', '=', turnId)
-            .where('frame_seq', '=', fenceSeq)
-            .where('payload_hash', '=', ABANDONED_TURN_FENCE_HASH)
-            .executeTakeFirst();
-          if (removed.numDeletedRows === 0n) return;
-          if (noticeSeq !== null) {
-            const deleted = await tx
-              .deleteFrom('events')
-              .where('session_id', '=', anchor.sessionId)
-              .where('id', '=', noticeSeq)
-              .executeTakeFirst();
-            if (deleted.numDeletedRows > 0n) {
-              // The search view may already contain this provisional notice and its
-              // cursor may point beyond the now-removed event. Reset it in the same
-              // transaction, then rebuild from the surviving canonical log after
-              // commit. Serialize with both live projection and backfill before
-              // resetting: either may already have read the notice and would
-              // otherwise reinsert it after this transaction commits. A rollback
-              // therefore restores both canonical and projected state together.
-              await sql`select pg_advisory_xact_lock(hashtext(${
-                'messages:' + anchor.sessionId
-              }))`.execute(tx);
-              await tx.deleteFrom('messages').where('session_id', '=', anchor.sessionId).execute();
-              await tx
-                .deleteFrom('message_projection_state')
-                .where('session_id', '=', anchor.sessionId)
-                .execute();
-              projectionInvalidated = true;
-            }
-          }
-        }),
-      ),
-    );
-    if (projectionInvalidated) this.scheduleMessageProjection();
+    return this.eventWrites.releaseRunningTurnFence(anchor, noticeSeq, fenceSeq);
   }
 
   /** Rewrite a `tool_result`'s heavy inline payloads to content-addressed refs:
@@ -5188,7 +3839,7 @@ export class EventStore implements EventSink {
     const persisted: { seq: number; createdAt: Date; event: AgentEvent }[] = [];
     const accepted = await this.db.transaction().execute(async (tx) => {
       // A newer user prompt revokes chat consent before any tasks or work commit.
-      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
+      await sql`select pg_advisory_xact_lock(hashtext(${sessionEventAppendLockKey(input.sessionId)}))`.execute(
         tx,
       );
       if (consent !== undefined) {
@@ -5269,7 +3920,7 @@ export class EventStore implements EventSink {
             taskIds: taskIds.slice(offset, offset + 100),
           };
           const eventRow = await this.prepareEventRow(event);
-          await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
+          await sql`select pg_advisory_xact_lock(hashtext(${sessionEventAppendLockKey(input.sessionId)}))`.execute(
             tx,
           );
           const row = await tx
@@ -5563,7 +4214,7 @@ export class EventStore implements EventSink {
     const payload = scrubNulEscapes(redactSecrets(JSON.stringify(event)));
     const persisted = await this.withSessionEventAppend(sessionId, () =>
       this.db.transaction().execute(async (tx) => {
-        await this.sessionEventAppendLock(tx, sessionId);
+        await sessionEventAppendLock(tx, sessionId);
         const del = await tx.deleteFrom('queued_turns').where('id', '=', id).executeTakeFirst();
         if (del.numDeletedRows === 0n) return undefined;
         const row = await tx
@@ -5592,120 +4243,6 @@ export class EventStore implements EventSink {
     }
     return persisted;
   }
-
-  // ─── Multi-repo fleet registry (concept §19, #174) ─────────────────────────
-
-  private projectRowToRecord(row: {
-    id: string;
-    name?: string | null;
-    owner: string;
-    repo: string;
-    github_repository_id?: string | null;
-    container_name: string;
-    kind?: string | null;
-    forge_connection_id?: string | null;
-    repository_instance?: number | null;
-    clone_dir?: string | null;
-    image_ref: string | null;
-    image_override_ref?: string | null;
-    toolkit_identity?: string | null;
-    state: string;
-    sleep_compatibility_fingerprint?: string | null;
-    sleeping_since?: Date | null;
-    wake_started_at?: Date | null;
-    archived?: boolean | null;
-    provision_error: string | null;
-    provision_warning: string | null;
-    hidden_at: Date | null;
-    sort_order: number | null;
-    collapsed?: boolean | null;
-    overview_visible?: boolean | null;
-    setup_status: string;
-    latest_release_tag: string | null;
-    latest_release_name: string | null;
-    latest_release_url: string | null;
-    latest_release_published_at: string | null;
-    created_at: Date;
-    updated_at: Date;
-    state_changed_at?: Date | null;
-  }): ProjectRecord {
-    return {
-      id: row.id,
-      name: row.name ?? defaultProjectName(row),
-      owner: row.owner,
-      repo: row.repo,
-      githubRepositoryId: row.github_repository_id,
-      containerName: row.container_name,
-      kind: (row.kind ?? 'github') as ProjectKind,
-      forgeConnectionId: row.forge_connection_id ?? null,
-      repositoryInstance: row.repository_instance ?? 1,
-      cloneDir: row.clone_dir ?? null,
-      imageRef: row.image_ref,
-      imageOverrideRef: row.image_override_ref ?? null,
-      toolkitIdentity: row.toolkit_identity ?? null,
-      // Trusting the column to only ever hold one of the five state values; the
-      // app layer writes through {@link upsertProject}/{@link updateProjectState}
-      // which take a {@link ProjectState}. A drift here means a stray writer ATK-
-      // bypassed those — assertable by a future CHECK constraint, not in v1.
-      state: row.state as ProjectState,
-      sleepCompatibilityFingerprint: row.sleep_compatibility_fingerprint ?? null,
-      sleepingSince: row.sleeping_since ?? null,
-      wakeStartedAt: row.wake_started_at ?? null,
-      archived: row.archived ?? false,
-      provisionError: row.provision_error,
-      provisionWarning: row.provision_warning,
-      hiddenAt: row.hidden_at,
-      sortOrder: row.sort_order,
-      collapsed: row.collapsed ?? false,
-      overviewVisible: row.overview_visible ?? false,
-      setupStatus: row.setup_status as ProjectSetupState,
-      latestReleaseTag: row.latest_release_tag,
-      latestReleaseName: row.latest_release_name,
-      latestReleaseUrl: row.latest_release_url,
-      latestReleasePublishedAt: row.latest_release_published_at,
-      createdAt: row.created_at,
-      // Falls back to `updated_at` only for a row read through a projection that
-      // predates the column (test doubles); the migration backfills the same
-      // value, so the two agree for every real row.
-      stateChangedAt: row.state_changed_at ?? row.updated_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  private readonly projectColumns = [
-    'forge_connection_id',
-    'id',
-    'name',
-    'kind',
-    'owner',
-    'repo',
-    'github_repository_id',
-    'container_name',
-    'repository_instance',
-    'clone_dir',
-    'image_ref',
-    'image_override_ref',
-    'toolkit_identity',
-    'state',
-    'sleep_compatibility_fingerprint',
-    'sleeping_since',
-    'wake_started_at',
-    'archived',
-    'provision_error',
-    'provision_warning',
-    'hidden_at',
-    'sort_order',
-    'collapsed',
-    'overview_visible',
-    'setup_status',
-    'latest_release_tag',
-    'latest_release_name',
-    'latest_release_url',
-    'latest_release_published_at',
-    'created_at',
-    'updated_at',
-    'state_changed_at',
-  ] as const;
 
   /**
    * Idempotent upsert on `(owner, repo)`. Re-running the GitHub-installation sync
@@ -5741,7 +4278,7 @@ export class EventStore implements EventSink {
       // drops the returning clause — a contract bug, not a runtime path.
       throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
     }
-    return this.projectRowToRecord(row);
+    return projectRowToRecord(row);
   }
 
   /** The body of {@link upsertProject}: always targets the repository's first
@@ -5985,7 +4522,7 @@ export class EventStore implements EventSink {
           ...input,
           archived: input.archived ?? repositoryArchive?.archived ?? false,
         });
-      const instance = await this.claimNextRepositoryInstance(
+      const instance = await claimNextRepositoryInstance(
         tx,
         { owner, repo, forgeConnectionId: input.forgeConnectionId },
         input.id,
@@ -6020,38 +4557,7 @@ export class EventStore implements EventSink {
       return project;
     });
     if (!row) throw new Error('verity: createRepositoryProject RETURNING yielded no row');
-    return this.projectRowToRecord(row);
-  }
-
-  /** Reserve the next free instance of a repository for `projectId`. The
-   *  caller holds the project lifecycle lock, which serializes allocation. */
-  private async claimNextRepositoryInstance(
-    tx: Transaction<Database>,
-    target: { owner: string; repo: string; forgeConnectionId?: string | null | undefined },
-    projectId: string,
-  ): Promise<number> {
-    const scope = target.forgeConnectionId ?? 'legacy-github';
-    const next = await sql<{ instance: number }>`
-      select coalesce(max(repository_instance), 0) + 1 as instance from (
-        select repository_instance from projects
-          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
-        union all
-        select repository_instance from project_identity_claims
-          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
-      ) taken
-    `.execute(tx);
-    const instance = Number(next.rows[0]?.instance ?? 2);
-    await tx
-      .insertInto('project_identity_claims')
-      .values({
-        owner: target.owner,
-        repo: target.repo,
-        repository_instance: instance,
-        project_id: projectId,
-        forge_connection_id: target.forgeConnectionId ?? null,
-      })
-      .execute();
-    return instance;
+    return projectRowToRecord(row);
   }
 
   /** Insert a project without adopting an existing `(owner, repo)` row. Used for
@@ -6059,51 +4565,7 @@ export class EventStore implements EventSink {
    * clone would cross an ownership boundary. A conflict is surfaced atomically
    * as the database's unique violation. */
   async createProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
-    const owner = input.owner.toLowerCase();
-    const repo = input.repo.toLowerCase();
-    const row = await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const claimed = await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner,
-          repo,
-          project_id: input.id,
-          forge_connection_id: input.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) =>
-          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
-        )
-        .returning('project_id')
-        .executeTakeFirst();
-      if (claimed === undefined) {
-        throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
-      }
-      const project = await tx
-        .insertInto('projects')
-        .values({
-          id: input.id,
-          name: input.name ?? defaultProjectName({ repo }),
-          owner,
-          repo,
-          container_name: input.containerName.toLowerCase(),
-          kind: input.kind ?? 'github',
-          forge_connection_id: input.forgeConnectionId ?? null,
-          clone_dir: input.cloneDir ?? null,
-          image_ref: input.imageRef ?? null,
-          image_override_ref: input.imageRef ?? null,
-          state: input.state,
-          archived: input.archived ?? false,
-          overview_visible: input.overviewVisible ?? false,
-          provision_error: null,
-          provision_warning: null,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
-      return project;
-    });
-    return this.projectRowToRecord(row);
+    return this.projectLifecycle.createProject(input);
   }
 
   /**
@@ -6128,29 +4590,21 @@ export class EventStore implements EventSink {
       .where('id', '=', id)
       .returningAll()
       .executeTakeFirst();
-    return row ? this.projectRowToRecord(row) : undefined;
+    return row ? projectRowToRecord(row) : undefined;
   }
 
   async getProject(id: string): Promise<ProjectRecord | undefined> {
     const row = await this.db
       .selectFrom('projects')
-      .select(this.projectColumns)
+      .select(projectColumns)
       .where('id', '=', id)
       .executeTakeFirst();
-    return row ? this.projectRowToRecord(row) : undefined;
+    return row ? projectRowToRecord(row) : undefined;
   }
 
-  /** Local project authority comes from an active user's membership, never
-   * from their instance role alone. Route handlers will use this once team
-   * access is enabled. */
   /** Whether `userId` created the project (ADR 0023). */
   async isProjectCreator(userId: string, projectId: string): Promise<boolean> {
-    const row = await this.db
-      .selectFrom('projects')
-      .select('created_by_user_id')
-      .where('id', '=', projectId)
-      .executeTakeFirst();
-    return row?.created_by_user_id === userId;
+    return this.projectAccess.isProjectCreator(userId, projectId);
   }
 
   async hasProjectPermission(
@@ -6158,78 +4612,25 @@ export class EventStore implements EventSink {
     projectId: string,
     permission: ProjectPermission,
   ): Promise<boolean> {
-    const membership = await this.db
-      .selectFrom('project_memberships as m')
-      .innerJoin('users as u', 'u.id', 'm.user_id')
-      .innerJoin('projects as p', 'p.id', 'm.project_id')
-      .selectAll('m')
-      .select(['u.status', 'u.role', 'p.kind', 'p.created_by_user_id'])
-      .where('m.user_id', '=', userId)
-      .where('m.project_id', '=', projectId)
-      .executeTakeFirst();
-    if (membership === undefined || membership.status !== 'active') return false;
-    if (
-      membership.kind === 'control_plane' &&
-      (membership.role !== 'administrator' || membership.created_by_user_id !== userId)
-    ) {
-      return false;
-    }
-    return membership[`can_${permission}`];
+    return this.projectAccess.hasProjectPermission(userId, projectId, permission);
   }
 
   async isActiveAdministrator(userId: string): Promise<boolean> {
-    const user = await this.db
-      .selectFrom('users')
-      .select(['role', 'status'])
-      .where('id', '=', userId)
-      .executeTakeFirst();
-    return user?.role === 'administrator' && user.status === 'active';
+    return this.projectAccess.isActiveAdministrator(userId);
   }
 
   async isActiveLocalUser(userId: string): Promise<boolean> {
-    const user = await this.db
-      .selectFrom('users')
-      .select('status')
-      .where('id', '=', userId)
-      .executeTakeFirst();
-    return user?.status === 'active';
+    return this.projectAccess.isActiveLocalUser(userId);
   }
 
   /** Keep collection reads consistent with hasProjectPermission's control-plane rule. */
   async listReadableProjectIds(userId: string): Promise<string[]> {
-    const memberships = await this.db
-      .selectFrom('project_memberships as m')
-      .innerJoin('users as u', 'u.id', 'm.user_id')
-      .innerJoin('projects as p', 'p.id', 'm.project_id')
-      .select([
-        'm.project_id',
-        'm.can_read',
-        'u.status',
-        'u.role',
-        'p.kind',
-        'p.created_by_user_id',
-      ])
-      .where('m.user_id', '=', userId)
-      .execute();
-    return memberships
-      .filter(
-        (membership) =>
-          membership.status === 'active' &&
-          membership.can_read &&
-          (membership.kind !== 'control_plane' ||
-            (membership.role === 'administrator' && membership.created_by_user_id === userId)),
-      )
-      .map((membership) => membership.project_id);
+    return this.projectAccess.listReadableProjectIds(userId);
   }
 
   /** Delete every standing grant a person gave in a project (ADR 0023 §6). */
   async deleteUserProjectGrants(projectId: string, userId: string): Promise<number> {
-    const result = await this.db
-      .deleteFrom('secret_provider_permissions')
-      .where('project_id', '=', projectId)
-      .where('user_id', '=', userId)
-      .executeTakeFirst();
-    return Number(result.numDeletedRows);
+    return this.projectAccess.deleteUserProjectGrants(projectId, userId);
   }
 
   /** The names people chose to be shown under in shared projects (ADR 0023). */
@@ -6254,41 +4655,11 @@ export class EventStore implements EventSink {
     projectId: string,
     permission: 'read' | 'execute' | 'manage',
   ): Promise<string[]> {
-    const rows = await this.db
-      .selectFrom('project_memberships as m')
-      .innerJoin('users as u', 'u.id', 'm.user_id')
-      .innerJoin('projects as p', 'p.id', 'm.project_id')
-      .select([
-        'm.user_id',
-        'm.can_read',
-        'm.can_execute',
-        'm.can_manage',
-        'u.status',
-        'u.role',
-        'p.kind',
-        'p.created_by_user_id',
-      ])
-      .where('m.project_id', '=', projectId)
-      .execute();
-    return rows
-      .filter(
-        (row) =>
-          row.status === 'active' &&
-          row[`can_${permission}`] &&
-          (row.kind !== 'control_plane' ||
-            (row.role === 'administrator' && row.created_by_user_id === row.user_id)),
-      )
-      .map((row) => row.user_id);
+    return this.projectAccess.listProjectUserIds(projectId, permission);
   }
 
   async listActiveAdministratorIds(): Promise<string[]> {
-    const rows = await this.db
-      .selectFrom('users')
-      .select('id')
-      .where('role', '=', 'administrator')
-      .where('status', '=', 'active')
-      .execute();
-    return rows.map((row) => row.id);
+    return this.projectAccess.listActiveAdministratorIds();
   }
 
   async getProjectByOwnerRepo(
@@ -6313,13 +4684,13 @@ export class EventStore implements EventSink {
   ): Promise<ProjectRecord[]> {
     const rows = await this.db
       .selectFrom('projects')
-      .select(this.projectColumns)
+      .select(projectColumns)
       .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
       .where('owner', '=', owner.toLowerCase())
       .where('repo', '=', repo.toLowerCase())
       .orderBy('repository_instance')
       .execute();
-    return rows.map((row) => this.projectRowToRecord(row));
+    return rows.map((row) => projectRowToRecord(row));
   }
 
   /**
@@ -6340,351 +4711,26 @@ export class EventStore implements EventSink {
     id: string,
     target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<ProjectRecord | undefined> {
-    const row = await this.db.transaction().execute(async (tx) => {
-      // Serialize archive inheritance with installation sync and identity allocation.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const existing = await tx
-        .selectFrom('projects')
-        .select(this.projectColumns)
-        .forUpdate()
-        .where('id', '=', id)
-        .where('kind', '=', 'local')
-        .executeTakeFirst();
-      if (existing === undefined) return undefined;
-      const targetOwner = target.owner.toLowerCase();
-      const targetRepo = target.repo.toLowerCase();
-      const targetProject = await tx
-        .selectFrom('projects')
-        .select('archived')
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-        .where('owner', '=', targetOwner)
-        .where('repo', '=', targetRepo)
-        .orderBy('repository_instance', 'asc')
-        .executeTakeFirst();
-      const findClaim = () =>
-        tx
-          .selectFrom('project_identity_claims')
-          .select('repository_instance')
-          .where('project_id', '=', id)
-          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-          .where('owner', '=', targetOwner)
-          .where('repo', '=', targetRepo)
-          .executeTakeFirst();
-      let claim = await findClaim();
-      if (claim === undefined || claim.repository_instance === 1) {
-        // The placeholder stays intact while publication runs. Retire it only in
-        // this final transaction, alongside the local project's identity rewrite,
-        // so a pre-publication failure can restore its claim without losing any of
-        // its dependent configuration.
-        await retireInstallationPlaceholder(
-          tx,
-          targetOwner,
-          targetRepo,
-          id,
-          target.forgeConnectionId,
-        );
-      }
-      if (claim === undefined) {
-        await tx
-          .insertInto('project_identity_claims')
-          .values({
-            owner: targetOwner,
-            repo: targetRepo,
-            project_id: id,
-            forge_connection_id: target.forgeConnectionId ?? null,
-          })
-          .onConflict((conflict) =>
-            conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
-          )
-          .execute();
-        claim = await findClaim();
-      }
-      if (claim === undefined) {
-        throw new ProjectIdentityClaimConflict(
-          `project identity ${targetOwner}/${targetRepo} is not reserved`,
-        );
-      }
-      const updated = await tx
-        .updateTable('projects')
-        .set({
-          owner: targetOwner,
-          repo: targetRepo,
-          repository_instance: claim.repository_instance,
-          archived: targetProject?.archived ?? false,
-          kind: target.kind ?? 'github',
-          forge_connection_id: target.forgeConnectionId ?? null,
-          clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
-          github_repository_id: null,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .where('kind', '=', 'local')
-        .returningAll()
-        .executeTakeFirst();
-      if (updated !== undefined) {
-        await tx
-          .deleteFrom('project_identity_claims')
-          .where('forge_scope', '=', existing.forge_connection_id ?? 'legacy-github')
-          .where('owner', '=', existing.owner)
-          .where('repo', '=', existing.repo)
-          .where('project_id', '=', id)
-          .execute();
-      }
-      return updated;
-    });
-    return row ? this.projectRowToRecord(row) : undefined;
+    return this.projectLifecycle.linkProjectToGitHub(id, target);
   }
 
   /** Disconnect by stable ID; pin the existing clone and preserve all dependent records. */
   async disconnectProjectFromGitHub(id: string): Promise<ProjectRecord | undefined> {
-    const row = await this.db.transaction().execute(async (tx) => {
-      // Match project creation and lifecycle lock order before allocating a local identity.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const existing = await tx
-        .selectFrom('projects')
-        .select(this.projectColumns)
-        .where('id', '=', id)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!existing || existing.hidden_at !== null || !['github', 'local'].includes(existing.kind))
-        return undefined;
-      if (existing.kind === 'local') return existing;
-      let localRepo = existing.repo;
-      for (let attempt = 1; ; attempt++) {
-        const collision = await tx
-          .selectFrom('projects')
-          .select('id')
-          .where('owner', '=', LOCAL_PROJECT_OWNER)
-          .where('repo', '=', localRepo)
-          .executeTakeFirst();
-        const claim = await tx
-          .selectFrom('project_identity_claims')
-          .select('project_id')
-          .where('owner', '=', LOCAL_PROJECT_OWNER)
-          .where('repo', '=', localRepo)
-          .executeTakeFirst();
-        if (!collision && (!claim || claim.project_id === id)) break;
-        localRepo = `${existing.repo}-${id}${attempt === 1 ? '' : `-${attempt}`}`;
-      }
-      const updated = await tx
-        .updateTable('projects')
-        .set({
-          kind: 'local',
-          owner: LOCAL_PROJECT_OWNER,
-          repo: localRepo,
-          repository_instance: 1,
-          forge_connection_id: null,
-          clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
-          github_repository_id: null,
-          latest_release_tag: null,
-          latest_release_name: null,
-          latest_release_url: null,
-          latest_release_published_at: null,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .returningAll()
-        .executeTakeFirst();
-      await tx.deleteFrom('project_identity_claims').where('project_id', '=', id).execute();
-      return updated;
-    });
-    return row ? this.projectRowToRecord(row) : undefined;
+    return this.projectLifecycle.disconnectProjectFromGitHub(id);
   }
 
   async reserveProjectIdentity(
     id: string,
     target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<boolean> {
-    const owner = target.owner.toLowerCase();
-    const repo = target.repo.toLowerCase();
-    const scope = target.forgeConnectionId ?? 'legacy-github';
-    return this.db.transaction().execute(async (tx) => {
-      // Serializes instance allocation with project creation and other links.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const project = await tx
-        .selectFrom('projects')
-        .select(['id', 'owner', 'repo', 'forge_scope'])
-        .where('id', '=', id)
-        .executeTakeFirst();
-      if (project === undefined) return false;
-      const claims = await tx
-        .selectFrom('project_identity_claims')
-        .select(['owner', 'repo', 'forge_scope'])
-        .where('project_id', '=', id)
-        .execute();
-      // A local project normally owns its current local identity plus at most
-      // one pending GitHub target. If a prior push was ambiguous, only that
-      // exact target may be retried; reserving a second target would strand the
-      // first claim and could publish the same project to multiple repositories.
-      const hasDifferentPendingTarget = claims.some(
-        (claim) =>
-          (claim.forge_scope !== project.forge_scope ||
-            claim.owner !== project.owner ||
-            claim.repo !== project.repo) &&
-          (claim.forge_scope !== (target.forgeConnectionId ?? 'legacy-github') ||
-            claim.owner !== owner ||
-            claim.repo !== repo),
-      );
-      if (hasDifferentPendingTarget) return false;
-      // A retry of this project's own pending link keeps the instance it holds.
-      if (
-        claims.some(
-          (claim) => claim.forge_scope === scope && claim.owner === owner && claim.repo === repo,
-        )
-      ) {
-        return true;
-      }
-      // Keep a sync placeholder (and all of its dependent configuration) intact
-      // while publication runs; only transfer its claim temporarily. The final
-      // link transaction retires it atomically with the identity rewrite, while
-      // releaseProjectIdentity restores the claim after a known failed push.
-      const holder = await tx
-        .selectFrom('projects')
-        .select(['id', 'kind', 'state', 'overview_visible'])
-        .forUpdate()
-        .where('forge_scope', '=', scope)
-        .where('owner', '=', owner)
-        .where('repo', '=', repo)
-        .where('repository_instance', '=', 1)
-        .where('id', '!=', id)
-        .executeTakeFirst();
-      if (holder !== undefined) {
-        // The repository already backs a project: this one becomes another,
-        // independent project of the same repository.
-        if (
-          !isInstallationPlaceholder({
-            kind: holder.kind as ProjectKind,
-            state: holder.state as ProjectState,
-            overviewVisible: holder.overview_visible,
-          }) ||
-          (await installationPlaceholderHasDependents(tx, holder.id))
-        ) {
-          await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
-          return true;
-        }
-        // Hide the placeholder before releasing its row lock. createSession
-        // takes a SHARE lock and rejects hidden projects, so this closes the
-        // check-vs-spawn race for the entire external push window. `infinity`
-        // marks a row that was visible before reservation; an already-hidden
-        // placeholder keeps its original timestamp.
-        await tx
-          .updateTable('projects')
-          .set({
-            hidden_at: sql`case when hidden_at is null then 'infinity'::timestamptz else hidden_at end`,
-            updated_at: sql`now()`,
-          })
-          .where('id', '=', holder.id)
-          .execute();
-        await tx
-          .updateTable('project_identity_claims')
-          .set({ project_id: id })
-          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-          .where('owner', '=', owner)
-          .where('repo', '=', repo)
-          .where('project_id', '=', holder.id)
-          .execute();
-      }
-      await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner,
-          repo,
-          project_id: id,
-          forge_connection_id: target.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) =>
-          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
-        )
-        .execute();
-      const claim = await tx
-        .selectFrom('project_identity_claims')
-        .select('project_id')
-        .where('forge_scope', '=', scope)
-        .where('owner', '=', owner)
-        .where('repo', '=', repo)
-        .where('repository_instance', '=', 1)
-        .executeTakeFirst();
-      if (claim?.project_id === id) return true;
-      // Another link is reserving the first instance; take the next one.
-      await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
-      return true;
-    });
+    return this.projectLifecycle.reserveProjectIdentity(id, target);
   }
 
   async releaseProjectIdentity(
     id: string,
     target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<void> {
-    const owner = target.owner.toLowerCase();
-    const repo = target.repo.toLowerCase();
-    await this.db.transaction().execute(async (tx) => {
-      // Serialize with finalization on the source project. If another request
-      // already completed the link, a failed older attempt must not release the
-      // now-canonical GitHub identity claim.
-      const local = await tx
-        .selectFrom('projects')
-        .select('id')
-        .forUpdate()
-        .where('id', '=', id)
-        .where('kind', '=', 'local')
-        .executeTakeFirst();
-      if (local === undefined) return;
-      const claim = await tx
-        .selectFrom('project_identity_claims')
-        .select('repository_instance')
-        .where('project_id', '=', id)
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-        .where('owner', '=', owner)
-        .where('repo', '=', repo)
-        .executeTakeFirst();
-      // Only the first instance can have been taken over from a placeholder.
-      const placeholder =
-        claim?.repository_instance === 1
-          ? await tx
-              .selectFrom('projects')
-              .select(['id', 'kind', 'state', 'overview_visible'])
-              .forUpdate()
-              .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-              .where('owner', '=', owner)
-              .where('repo', '=', repo)
-              .where('repository_instance', '=', 1)
-              .where('id', '!=', id)
-              .executeTakeFirst()
-          : undefined;
-      if (
-        placeholder !== undefined &&
-        isInstallationPlaceholder({
-          kind: placeholder.kind as ProjectKind,
-          state: placeholder.state as ProjectState,
-          overviewVisible: placeholder.overview_visible,
-        })
-      ) {
-        // Only reservations of formerly-visible placeholders use the infinity
-        // marker. Preserve a placeholder that was already soft-deleted.
-        await tx
-          .updateTable('projects')
-          .set({ hidden_at: null, updated_at: sql`now()` })
-          .where('id', '=', placeholder.id)
-          .where('hidden_at', '=', sql<Date>`'infinity'::timestamptz`)
-          .execute();
-        await tx
-          .updateTable('project_identity_claims')
-          .set({ project_id: placeholder.id })
-          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-          .where('owner', '=', owner)
-          .where('repo', '=', repo)
-          .where('project_id', '=', id)
-          .execute();
-        return;
-      }
-      await tx
-        .deleteFrom('project_identity_claims')
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-        .where('owner', '=', owner)
-        .where('repo', '=', repo)
-        .where('project_id', '=', id)
-        .execute();
-    });
+    return this.projectLifecycle.releaseProjectIdentity(id, target);
   }
 
   /**
@@ -6701,7 +4747,7 @@ export class EventStore implements EventSink {
   async listProjects(opts?: { includeHidden?: boolean }): Promise<ProjectRecord[]> {
     let query = this.db
       .selectFrom('projects')
-      .select(this.projectColumns)
+      .select(projectColumns)
       .orderBy(sql`sort_order is null`)
       .orderBy('sort_order', 'asc')
       .orderBy('created_at', 'asc')
@@ -6710,7 +4756,7 @@ export class EventStore implements EventSink {
       query = query.where('hidden_at', 'is', null);
     }
     const rows = await query.execute();
-    return rows.map((r) => this.projectRowToRecord(r));
+    return rows.map((r) => projectRowToRecord(r));
   }
 
   async reorderProjects(ids: string[]): Promise<ProjectRecord[]> {
@@ -6752,62 +4798,11 @@ export class EventStore implements EventSink {
    * second hide just refreshes the timestamp. Returns whether a row matched.
    */
   async hideProject(id: string): Promise<boolean> {
-    return this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const result = await tx
-        .updateTable('projects')
-        .set({ hidden_at: sql`now()`, updated_at: sql`now()` })
-        .where('id', '=', id)
-        .executeTakeFirst();
-      const projectSessions = tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('project_id', '=', id);
-      await tx
-        .deleteFrom('session_links')
-        .where((eb) =>
-          eb.or([eb('session_a', 'in', projectSessions), eb('session_b', 'in', projectSessions)]),
-        )
-        .execute();
-      await tx
-        .updateTable('knowledge_folders')
-        .set({ archived: true, project_id: null })
-        .where('project_id', '=', id)
-        .execute();
-      await tx.deleteFrom('project_knowledge_spaces').where('project_id', '=', id).execute();
-      return result.numUpdatedRows > 0n;
-    });
+    return this.projectLifecycle.hideProject(id);
   }
 
   async deleteProject(id: string): Promise<boolean> {
-    const result = await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      await tx
-        .selectFrom('projects')
-        .select('id')
-        .where('id', '=', id)
-        .forUpdate()
-        .executeTakeFirst();
-      const projectSessions = tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('project_id', '=', id);
-      await tx
-        .deleteFrom('session_links')
-        .where((eb) =>
-          eb.or([eb('session_a', 'in', projectSessions), eb('session_b', 'in', projectSessions)]),
-        )
-        .execute();
-      await tx
-        .updateTable('knowledge_folders')
-        .set({ archived: true, project_id: null })
-        .where('project_id', '=', id)
-        .execute();
-      await tx.deleteFrom('project_identity_claims').where('project_id', '=', id).execute();
-      await tx.deleteFrom('integration_sources').where('project_id', '=', id).execute();
-      return tx.deleteFrom('projects').where('id', '=', id).executeTakeFirst();
-    });
-    return result.numDeletedRows > 0n;
+    return this.projectLifecycle.deleteProject(id);
   }
 
   /**
