@@ -1,4 +1,7 @@
-import { brokeredExecutionClaimIds } from './brokered-http-consumption.js';
+import {
+  brokeredExecutionClaimId,
+  brokeredExecutionClaimIds,
+} from './brokered-http-consumption.js';
 import { legacyDopplerApprovalSnapshot } from './brokered-doppler-binding.js';
 import { APPROVAL_REDEMPTION_TTL_MS } from './brokered-tool-approval-store.js';
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
@@ -304,6 +307,7 @@ export interface McpGatewayDeps {
       invocationId: string;
       /** Whether this invocation passed a fresh permission card. */
       approvedByCard?: boolean;
+      executionClaimId?: string;
       /** Content the operator edited on that card, as returned by {@link approvedEdits}. */
       approvedEdits?: unknown;
       authorizationSnapshot?: string;
@@ -1086,9 +1090,8 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         return toolError(id, 'Secret provider identity is unavailable; nothing ran.');
       const legacySnapshot = legacyDopplerApprovalSnapshot(authorizationSnapshot);
       for (const callId of brokeredExecutionClaimIds(
-        invocationId,
         baseInvocationId,
-        legacySnapshot,
+        legacyDopplerApprovalSnapshot(authorizationSnapshot, { includeRotated: true }),
       )) {
         if (await deps.hasSecretExecutionClaim?.({ projectId, sessionId, turnId, callId }))
           return toolError(
@@ -1315,6 +1318,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           callId,
           invocationId,
           approvedByCard: !standingAuthorization,
+          ...(secretTool ? { executionClaimId: brokeredExecutionClaimId(baseInvocationId) } : {}),
           ...(approvedEdits === undefined ? {} : { approvedEdits }),
           ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
           toolName: toolName,

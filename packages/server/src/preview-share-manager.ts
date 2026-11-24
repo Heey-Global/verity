@@ -191,7 +191,6 @@ export class PreviewShareManager {
     this.now = options.now ?? (() => new Date());
   }
 
-  /** Resolve the owning sandbox before joining its container/network. */
   async previewSandbox(
     project: ProjectRecord,
     managedInstanceId: string | null | undefined,
@@ -233,14 +232,18 @@ export class PreviewShareManager {
       staticMount = this.staticMount(root, path);
     } else if (
       target.targetPort !== undefined &&
-      !(await this.sessionPortAuthorized(project, session, target.targetPort))
+      !(await this.sessionPortAuthorized(
+        project,
+        session,
+        target.targetPort,
+        target.managedInstanceId,
+      ))
     ) {
       throw new PreviewShareConflictError('nothing in this session listens on that port');
     }
     return { project, session, generation, staticMount };
   }
 
-  /** Kept separate from share existence so offline URLs never hold a sandbox awake. */
   hasLiveTarget(share: PublicPreviewShareRecord): Promise<boolean> {
     return previewTargetIsLive(share, this.options, {
       sandbox: (project, id) => this.previewSandbox(project, id),
@@ -504,7 +507,7 @@ export class PreviewShareManager {
     const sandboxProject = await this.previewSandbox(project, managed?.id);
     if (
       managed &&
-      !(await this.options.listListeningProcesses?.(project, { fresh: true }))?.some(
+      !(await this.options.listListeningProcesses?.(sandboxProject, { fresh: true }))?.some(
         (listener) => listener.instanceId === managed.id && listener.port === managed.sandboxPort,
       )
     )
@@ -1243,13 +1246,10 @@ export class PreviewShareManager {
       await this.stop(share.id);
       return;
     }
+    const target = await this.previewSandbox(project, instance.id);
     const sandbox =
       project.state === 'active'
-        ? await this.options.docker
-            .inspectContainer(
-              (await this.previewSandbox(project, share.managedInstanceId)).containerName,
-            )
-            .catch(() => undefined)
+        ? await this.options.docker.inspectContainer(target.containerName).catch(() => undefined)
         : undefined;
     try {
       if (sandbox) assertPreviewNetworkSupported(sandbox);
@@ -1268,7 +1268,7 @@ export class PreviewShareManager {
     ) {
       const currentGeneration = containerGenerationOf(sandbox);
       const listeners =
-        (await this.options.listListeningProcesses?.(project, { fresh: true })) ?? [];
+        (await this.options.listListeningProcesses?.(target, { fresh: true })) ?? [];
       offline =
         !sandbox.running ||
         !currentGeneration ||
@@ -1289,15 +1289,14 @@ export class PreviewShareManager {
       ?.slice('VERITY_PREVIEW_TARGET_ORIGIN='.length);
     const preparedPort = offline
       ? instance.sandboxPort
-      : ((await this.options.prepareTargetPort?.(project, instance.sandboxPort)) ??
+      : ((await this.options.prepareTargetPort?.(target, instance.sandboxPort)) ??
         instance.sandboxPort);
     if (
       connector?.running &&
       wasOffline === offline &&
       (offline ||
         (share.containerGeneration === generation &&
-          origin ===
-            `http://${(await this.previewSandbox(project, share.managedInstanceId)).containerName}:${preparedPort}`))
+          origin === `http://${target.containerName}:${preparedPort}`))
     )
       return;
     await this.replaceConnector(
@@ -1353,7 +1352,8 @@ export class PreviewShareManager {
     timer?: PhaseTimer,
     offline = false,
   ): Promise<string> {
-    const project = await this.options.store.getProject(share.projectId);
+    const record = await this.options.store.getProject(share.projectId);
+    const project = record && (await this.previewSandbox(record, share.managedInstanceId));
     const targetPort =
       offline || share.targetPort === null || !project
         ? share.targetPort

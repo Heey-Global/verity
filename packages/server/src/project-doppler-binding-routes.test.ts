@@ -157,6 +157,16 @@ it('protects a Secret Job catalog connection even without project bindings', asy
   }
 });
 
+it('initializes a missing default legacy catalog connection from instance settings', async () => {
+  const app = server(undefined, 'legacy-doppler');
+  try {
+    expect(await addConnection(app, 'Catalog', 'dp.sa.platform')).toBe('legacy-doppler');
+    expect(await addConnection(app, 'Separate', 'dp.sa.payments')).not.toBe('legacy-doppler');
+  } finally {
+    await app.close();
+  }
+});
+
 it('checks a same-workplace replacement against catalog-only configs', async () => {
   const connectionId = await store.dopplerConnections.add({
     label: 'Catalog',

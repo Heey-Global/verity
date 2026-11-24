@@ -41,13 +41,16 @@ export function tryParseBrokeredDopplerBinding(
 }
 
 /** The pre-0242 authority for the same migrated source, for denial and replay checks only. */
-export function legacyDopplerApprovalSnapshot(snapshot: string): string | undefined {
+export function legacyDopplerApprovalSnapshot(
+  snapshot: string,
+  options?: { includeRotated?: boolean },
+): string | undefined {
   const current = tryParseBrokeredDopplerBinding(snapshot);
   const binding = current?.bindings[0];
   if (
     current?.bindings.length !== 1 ||
     binding?.connectionId !== LEGACY_DOPPLER_CONNECTION_ID ||
-    binding.tokenRevision !== undefined
+    (binding.tokenRevision !== undefined && options?.includeRotated !== true)
   )
     return undefined;
   return JSON.stringify({

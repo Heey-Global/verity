@@ -81,19 +81,16 @@ export function createBrokeredSecretAliases(options: {
     const timedOut = new Promise<false>((resolve) => {
       deadline.addEventListener('abort', () => resolve(false), { once: true });
     });
-    const batchSize = 4;
-    for (let start = 0; start < bindings.length; start += batchSize) {
-      const batch = Promise.all(
-        bindings.slice(start, start + batchSize).map(async (binding, index) => {
-          const result = await loadNames(binding);
-          if (!deadline.aborted) entries[start + index] = result;
-        }),
-      );
-      if (!(await Promise.race([batch.then(() => true), timedOut]))) {
-        ttlMs = 10_000;
-        break;
+    let next = 0;
+    const lookup = async () => {
+      while (!deadline.aborted && next < bindings.length) {
+        const index = next++;
+        const result = await loadNames(bindings[index]!);
+        if (!deadline.aborted) entries[index] = result;
       }
-    }
+    };
+    const workers = Promise.all(Array.from({ length: Math.min(4, bindings.length) }, lookup));
+    if (!(await Promise.race([workers.then(() => true), timedOut]))) ttlMs = 10_000;
     const names = secretReferenceNames(entries.flat());
     if (cache.size >= 256) {
       const oldestKey = cache.keys().next().value;

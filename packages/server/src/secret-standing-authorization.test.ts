@@ -7,7 +7,7 @@ import { mcpGatewayInvocationId, type McpGatewayDeps } from './mcp-gateway.js';
 import { LEGACY_DOPPLER_CONNECTION_ID } from '@verity/store';
 import { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Conductor, InMemoryEventBus } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
@@ -49,7 +49,11 @@ type Tool = keyof typeof requests;
 
 // Built by the production helper: a hand-written snapshot in an outdated shape
 // fails to parse and turns every call into "Tool access changed".
-const dopplerSnapshot = (dopplerConfig: string, connectionId = 'synthetic-connection') =>
+const dopplerSnapshot = (
+  dopplerConfig: string,
+  connectionId = 'synthetic-connection',
+  tokenRevision?: string,
+) =>
   JSON.stringify(
     brokeredDopplerSnapshot([
       {
@@ -57,6 +61,7 @@ const dopplerSnapshot = (dopplerConfig: string, connectionId = 'synthetic-connec
         connectionId,
         dopplerProject: 'synthetic-project',
         dopplerConfig,
+        ...(tokenRevision ? { tokenRevision } : {}),
       },
     ]),
   );
@@ -150,7 +155,7 @@ async function harness(toolName: Tool, recordExecution = false, connectionId?: s
           projectId: input.projectId,
           sessionId: input.sessionId,
           turnId: input.turnId,
-          callId: brokeredExecutionClaimId(input.invocationId),
+          callId: input.executionClaimId ?? brokeredExecutionClaimId(input.invocationId),
           requestHash: 'synthetic-request',
         }),
       ).toBe(true);
@@ -158,6 +163,7 @@ async function harness(toolName: Tool, recordExecution = false, connectionId?: s
     return { ok: true };
   });
   let config = 'test';
+  let tokenRevision: string | undefined;
   const authorizeExecution = vi.fn(async () => {});
   let auditKey = 'first-audit-key';
   const app = buildServer({
@@ -167,7 +173,7 @@ async function harness(toolName: Tool, recordExecution = false, connectionId?: s
     mcpGateway: {
       servedTools: [toolName],
       resolveCaller: async (input) => tokens.resolve(input),
-      authorizationSnapshot: async () => dopplerSnapshot(config, connectionId),
+      authorizationSnapshot: async () => dopplerSnapshot(config, connectionId, tokenRevision),
       detachedApprovals: approvals,
       hasSecretExecutionClaim: claims.has,
       authorizeExecution,
@@ -257,6 +263,9 @@ async function harness(toolName: Tool, recordExecution = false, connectionId?: s
     conductor,
     rotateAuditKey: () => {
       auditKey = 'second-audit-key';
+    },
+    rotateDopplerToken: () => {
+      tokenRevision = randomUUID();
     },
     changeProvider: () => {
       config = 'other';
@@ -488,6 +497,20 @@ it('does not create a new card for a consumed invocation after its grant is revo
     expect(h.invokeTool).toHaveBeenCalledOnce();
     expect(await h.approvals.listPending('s1')).toEqual([]);
     expect((await h.call()).status).toBe('awaiting_approval');
+  } finally {
+    await h.app.close();
+  }
+});
+
+it('retains the execution claim after the instance token rotates', async () => {
+  const h = await harness('verity_http_request', true);
+  try {
+    await h.approve('project');
+    expect((await h.call(undefined, 's1', false, 200)).status).toBeUndefined();
+    h.rotateDopplerToken();
+    expect((await h.call(undefined, 's1', true, 200)).error).toContain('already consumed');
+    expect((await h.call(undefined, 's1', false, 201)).status).toBe('awaiting_approval');
+    expect(h.invokeTool).toHaveBeenCalledOnce();
   } finally {
     await h.app.close();
   }

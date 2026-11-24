@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import {
   AmbiguousDopplerConnectionError,
+  LEGACY_DOPPLER_CONNECTION_ID,
   DopplerConnectionUsageChangedError,
   DopplerConnectionTokenChangedError,
   type DopplerConnectionRecord,
@@ -84,10 +85,7 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       if (connectionId === undefined) return { error: 'not configured' };
     }
     const connections = deps.eventStore?.dopplerConnections;
-    const revision =
-      includeRevision && connectionId && connections
-        ? await connections.get(connectionId)
-        : undefined;
+    const revision = connectionId && connections ? await connections.get(connectionId) : undefined;
     let credential: Uint8Array | undefined;
     try {
       credential = await deps.dopplerCredentialReader(connectionId);
@@ -109,7 +107,9 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       const current = await connections!.get(revision.id);
       if (!current || current.tokenRevision !== revision.tokenRevision)
         return { error: new DopplerConnectionTokenChangedError().message };
-      return { value, connectionRevision: revision.tokenRevision ?? null };
+      return includeRevision
+        ? { value, connectionRevision: revision.tokenRevision ?? null }
+        : { value };
     } finally {
       credential.fill(0);
     }
@@ -237,6 +237,7 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       label: input.data.label,
       token: input.data.token,
       workplace: checked.workplace,
+      initializeLegacyCatalog: deps.secretJobDopplerConnectionId === LEGACY_DOPPLER_CONNECTION_ID,
     });
     reply.code(201);
     return (await listView()).find((connection) => connection.id === id);

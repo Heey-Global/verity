@@ -12,11 +12,10 @@ export function brokeredExecutionClaimId(invocationId: string): string {
 }
 
 export function brokeredExecutionClaimIds(
-  invocationId: string,
   baseInvocationId: string,
   legacySnapshot?: string,
 ): string[] {
-  const ids = [brokeredExecutionClaimId(invocationId)];
+  const ids = [brokeredExecutionClaimId(baseInvocationId)];
   if (legacySnapshot !== undefined) {
     const legacyHash = createHash('sha256').update(legacySnapshot).digest('hex');
     ids.push(claimHash(`${baseInvocationId}:${legacyHash}`));

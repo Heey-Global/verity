@@ -198,6 +198,8 @@ export async function managedProviderApproved(
   return (
     current?.authority !== undefined &&
     current.authority ===
-      (await options.store.managedDevServers.approvedProviderAuthority(entry.id))
+      (await options.store.managedDevServers
+        .approvedProviderAuthority(entry.id)
+        .catch(() => undefined))
   );
 }

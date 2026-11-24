@@ -130,19 +130,43 @@ export class DopplerConnectionStore {
     return row?.token == null ? undefined : this.cipher.decryptBytes(row.token);
   }
 
-  async add(input: { label: string; token: string; workplace: DopplerWorkplace }): Promise<string> {
-    const id = randomUUID();
-    await this.db
-      .insertInto('doppler_connections')
-      .values({
-        id,
-        label: input.label,
-        token: this.cipher.encrypt(input.token),
-        workplace_slug: input.workplace.slug,
-        workplace_name: input.workplace.name,
-      })
-      .execute();
-    return id;
+  async add(input: {
+    label: string;
+    token: string;
+    workplace: DopplerWorkplace;
+    initializeLegacyCatalog?: boolean;
+  }): Promise<string> {
+    const token = this.cipher.encrypt(input.token);
+    return this.db.transaction().execute(async (tx) => {
+      await lockDopplerTopology(tx);
+      const legacy =
+        input.initializeLegacyCatalog &&
+        !(await tx
+          .selectFrom('doppler_connections')
+          .select('id')
+          .where('id', '=', LEGACY_DOPPLER_CONNECTION_ID)
+          .executeTakeFirst());
+      const id = legacy ? LEGACY_DOPPLER_CONNECTION_ID : randomUUID();
+      await tx
+        .insertInto('doppler_connections')
+        .values({
+          id,
+          label: input.label,
+          token,
+          workplace_slug: input.workplace.slug,
+          workplace_name: input.workplace.name,
+        })
+        .execute();
+      if (legacy)
+        await tx
+          .insertInto('verity_settings')
+          .values({ id: 'global', doppler_service_token: token })
+          .onConflict((conflict) =>
+            conflict.column('id').doUpdateSet({ doppler_service_token: token }),
+          )
+          .execute();
+      return id;
+    });
   }
 
   /** Renames a connection or replaces its token; false when it does not exist. */

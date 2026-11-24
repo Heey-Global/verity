@@ -6,7 +6,7 @@ import { fixture } from './preview-share-manager.test-helper.js';
 import { PreviewShareManager } from './preview-share-manager.js';
 
 describe('managed public links', () => {
-  function managedFixture(legacyPort = false) {
+  function managedFixture(legacyPort = false, personal = false) {
     const f = fixture();
     let share: Awaited<ReturnType<EventStore['getPublicPreviewShare']>> = {
       ...f.record,
@@ -71,10 +71,14 @@ describe('managed public links', () => {
       ),
     };
     let connectorEnv: string[] = [];
+    const containerName = personal ? 'personal-sandbox' : 'verity-project';
+    const prepareTargetPort = vi.fn(
+      async (_project: { containerName: string }, port: number) => port,
+    );
     const docker = {
       ...f.docker,
       inspectContainer: vi.fn(async (id: string) =>
-        id === 'verity-project'
+        id === containerName
           ? { ...f.inspect, labels: { 'verity.container-generation': 'generation-2' } }
           : { ...f.inspect, env: connectorEnv },
       ),
@@ -89,6 +93,10 @@ describe('managed public links', () => {
       edge: f.edge,
       resolveConnectorImage: f.resolveConnectorImage,
       isDevServerRunning: async () => false,
+      prepareTargetPort,
+      ...(personal
+        ? { sandboxFor: async () => ({ containerName, networkName: 'personal-network' }) }
+        : {}),
       listSessionServers: async () =>
         running
           ? [
@@ -103,8 +111,8 @@ describe('managed public links', () => {
               },
             ]
           : [],
-      listListeningProcesses: async () =>
-        running
+      listListeningProcesses: async (project) =>
+        running && project.containerName === containerName
           ? [
               {
                 port: instance!.sandboxPort,
@@ -124,6 +132,7 @@ describe('managed public links', () => {
       edge: f.edge,
       store,
       listBindings,
+      prepareTargetPort,
       share: () => share!,
       run: (port = 41001, marker = 'instance-1') => {
         instance = { ...instance!, sandboxPort: port, state: 'running', desired: 'running' };
@@ -186,6 +195,22 @@ describe('managed public links', () => {
     await f.manager.reconcile();
     expect(f.docker.createContainer).toHaveBeenLastCalledWith(
       expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
+  });
+
+  it('probes and prepares forwarding in the managed server’s personal sandbox', async () => {
+    const f = managedFixture(false, true);
+    f.run();
+    await f.manager.reconcile();
+    expect(f.prepareTargetPort).toHaveBeenCalledWith(
+      expect.objectContaining({ containerName: 'personal-sandbox' }),
+      41001,
+    );
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        network: 'personal-network',
+        env: expect.arrayContaining(['VERITY_PREVIEW_TARGET_ORIGIN=http://personal-sandbox:41001']),
+      }),
     );
   });
 
