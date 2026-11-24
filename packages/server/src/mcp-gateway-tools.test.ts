@@ -63,7 +63,7 @@ describe('MCP gateway trusted CLI integration', () => {
           projectId: 'project-1',
           sessionId: 'session-1',
           turnId: 'turn-1',
-          callId: createHash('sha256').update('invocation-1').digest('hex'),
+          callId: `doppler-v2:${createHash('sha256').update('invocation-1').digest('hex')}`,
           requestHash: expect.stringMatching(/^[a-f0-9]{64}$/u),
         });
         return true;
@@ -341,7 +341,7 @@ it.each(['verity_http_request', 'verity_secret_run'] as const)(
       runnerRoot: dir,
     });
     const invocationId = 'same-invocation'.repeat(1_000);
-    const consumptionId = createHash('sha256').update(invocationId).digest('hex');
+    const consumptionId = `doppler-v2:${createHash('sha256').update(invocationId).digest('hex')}`;
     for (const callId of ['first-attempt', 'retry']) {
       await invoke({
         projectId: 'project-1',

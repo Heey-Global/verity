@@ -110,18 +110,22 @@ export function createManagedDevServerSecretResolver(options: {
 export async function managedRunProviderCurrent(
   store: Pick<EventStore, 'projectDopplerBindings' | 'managedDevServers'>,
   instance: ManagedDevServerInstanceRecord,
-): Promise<boolean> {
+): Promise<boolean | undefined> {
   if (instance.lastRunSecretBindings.length === 0) return true;
   const authority = instance.lastRunProviderAuthority;
   if (!authority) return false;
+  let bindings;
+  try {
+    if (authority !== (await store.managedDevServers.approvedProviderAuthority(instance.serverId)))
+      return false;
+    bindings = await store.projectDopplerBindings.list(instance.projectId);
+  } catch {
+    return undefined;
+  }
   try {
     return (
-      authority === (await store.managedDevServers.approvedProviderAuthority(instance.serverId)) &&
       authority ===
-        managedDevServerProviderSnapshot(
-          await store.projectDopplerBindings.list(instance.projectId),
-          instance.lastRunSecretBindings,
-        ).authority
+      managedDevServerProviderSnapshot(bindings, instance.lastRunSecretBindings).authority
     );
   } catch {
     return false;
@@ -133,7 +137,10 @@ export async function managedPreviewInstance(store: EventStore, input: CreatePre
   const instance = await store.managedDevServers.getInstance(input.managedInstanceId);
   if (!instance || instance.sessionId !== input.sessionId || instance.state !== 'running')
     throw new PreviewShareConflictError('managed server is not running in this session');
-  if (!(await managedRunProviderCurrent(store, instance)))
+  const current = await managedRunProviderCurrent(store, instance);
+  if (current === undefined)
+    throw new PreviewShareConflictError('Doppler access could not be verified. Try again.');
+  if (!current)
     throw new PreviewShareConflictError(
       'Doppler access changed. Review and restart the managed server.',
     );
@@ -147,12 +154,14 @@ export async function managedRunApproved(
   return !!(
     instance.lastRunCommand &&
     instance.lastRunWorkdir &&
-    (await store.managedDevServers.isApproved(
-      instance.serverId,
-      instance.lastRunCommand,
-      instance.lastRunWorkdir,
-      instance.lastRunSecretBindings,
-    )) &&
+    (await store.managedDevServers
+      .isApproved(
+        instance.serverId,
+        instance.lastRunCommand,
+        instance.lastRunWorkdir,
+        instance.lastRunSecretBindings,
+      )
+      .catch(() => false)) &&
     (await managedRunProviderCurrent(store, instance))
   );
 }

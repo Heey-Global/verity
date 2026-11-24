@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import {
   AmbiguousDopplerConnectionError,
   DopplerBindingsChangedError,
+  DopplerProjectAccessChangedError,
   type EventStore,
 } from '@verity/store';
 import { z } from 'zod';
@@ -187,8 +188,11 @@ export function registerDopplerConnectionRoutes(
         input.data.token,
         bindings.map(({ id }) => id),
         bindings[0]?.tokenRevision ?? null,
+        true,
       );
     } catch (error) {
+      if (error instanceof DopplerProjectAccessChangedError)
+        return reply.code(403).send({ error: 'Project access changed.' });
       if (error instanceof DopplerBindingsChangedError)
         return reply.code(409).send({ error: error.message });
       throw error;

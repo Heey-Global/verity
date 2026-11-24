@@ -2,8 +2,13 @@ import { createHash } from 'node:crypto';
 import type { Database } from '@verity/store';
 import type { Kysely } from 'kysely';
 
-export function brokeredExecutionClaimId(invocationId: string): string {
+function claimHash(invocationId: string): string {
   return createHash('sha256').update(invocationId).digest('hex');
+}
+
+/** The prefix lets rollback identify claims the previous gateway cannot find. */
+export function brokeredExecutionClaimId(invocationId: string): string {
+  return `doppler-v2:${claimHash(invocationId)}`;
 }
 
 export function brokeredExecutionClaimIds(
@@ -14,7 +19,7 @@ export function brokeredExecutionClaimIds(
   const ids = [brokeredExecutionClaimId(invocationId)];
   if (legacySnapshot !== undefined) {
     const legacyHash = createHash('sha256').update(legacySnapshot).digest('hex');
-    ids.push(brokeredExecutionClaimId(`${baseInvocationId}:${legacyHash}`));
+    ids.push(claimHash(`${baseInvocationId}:${legacyHash}`));
   }
   return ids;
 }

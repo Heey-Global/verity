@@ -145,10 +145,13 @@ export function configureDetachedSecretApprovals(input: {
     },
     list: async (sessionId) => {
       if (!(await store.getSession(sessionId))) return [];
-      return (await approvals.listPending(sessionId)).flatMap((record) => {
+      const pending = await approvals.listPending(sessionId);
+      const requests = [];
+      for (const record of pending) {
         const request = requestFor(record);
-        return request ? [request] : [];
-      });
+        if (request && (await matchesCurrentSnapshot(record))) requests.push(request);
+      }
+      return requests;
     },
     decide: async (sessionId, id, decision, actorId, scope) => {
       const record = await approvals.get(id, sessionId);

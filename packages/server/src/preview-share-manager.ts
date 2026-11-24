@@ -125,11 +125,7 @@ export interface PreviewEdgeControl {
 
 type ListenerRead = { fresh?: boolean };
 export interface PreviewShareManagerOptions {
-  /**
-   * The container and network of the sandbox a managed dev server runs in: its
-   * person's own sandbox, or the original one (ADR 0023 §4). Absent, every
-   * preview targets the project's original sandbox.
-   */
+  /** Managed server sandbox, defaulting to the project's original sandbox (ADR 0023 §4). */
   sandboxFor?:
     | ((
         project: ProjectRecord,
@@ -143,14 +139,12 @@ export interface PreviewShareManagerOptions {
   dataVolume?: string;
   dataVolumeRoot?: string;
   hostCloneRoot?: string;
-  /** Host source the provisioner binds onto `/opt/agent-seed`. Legacy
-   *  unversioned seed sources remain supported for existing containers. */
+  /** Host seed directory the provisioner binds onto `/opt/agent-seed`. */
   agentSeedHostPath?: string;
   isDevServerRunning: (input: {
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>;
     devServer: NonNullable<Awaited<ReturnType<EventStore['getDevServer']>>>;
   }) => Promise<boolean>;
-  /** Missing runtime discovery leaves listeners unverified. */
   listSessionServers?: (sessionId: string, options?: ListenerRead) => Promise<SessionDevServer[]>;
   prepareTargetPort?: (
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
@@ -1240,12 +1234,13 @@ export class PreviewShareManager {
       ? await this.options.store.getSession(share.sessionId)
       : undefined;
     const project = await this.options.store.getProject(share.projectId);
+    const authority = instance && (await managedRunProviderCurrent(this.options.store, instance));
     if (
       !instance ||
       !project ||
       instance.projectId !== project.id ||
       session?.projectId !== project.id ||
-      !(await managedRunProviderCurrent(this.options.store, instance))
+      authority === false
     ) {
       await this.stop(share.id);
       return;
@@ -1267,7 +1262,12 @@ export class PreviewShareManager {
     }
     let offline = true;
     let generation = share.containerGeneration;
-    if (sandbox !== undefined && instance.state === 'running' && instance.desired === 'running') {
+    if (
+      authority &&
+      sandbox !== undefined &&
+      instance.state === 'running' &&
+      instance.desired === 'running'
+    ) {
       const currentGeneration = containerGenerationOf(sandbox);
       const listeners =
         (await this.options.listListeningProcesses?.(project, { fresh: true })) ?? [];

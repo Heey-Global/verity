@@ -202,9 +202,12 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
     if (deps.dopplerValidate === undefined) return { error: 'Doppler validation is unavailable' };
     const result = await deps.dopplerValidate(token);
     if (!result.ok) return { error: result.error ?? 'Doppler rejected the token' };
-    return {
-      workplace: (await deps.dopplerWorkplace?.(token)) ?? { slug: null, name: null },
-    };
+    const workplace = await deps.dopplerWorkplace?.(token);
+    if (!workplace?.slug)
+      return {
+        error: 'Could not verify the Doppler workplace. Use a token that identifies its workplace.',
+      };
+    return { workplace };
   };
   const connectionView = (connection: DopplerConnectionRecord, projectCount: number) => ({
     id: connection.id,
@@ -266,6 +269,27 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       );
       const checked = await checkedToken(token);
       if ('error' in checked) return reply.code(400).send({ error: checked.error });
+
+      if (id === deps.secretJobDopplerConnectionId && connection.hasToken) {
+        const currentToken =
+          connection.workplaceSlug === null
+            ? await store.dopplerConnections.tokenBytes(id)
+            : undefined;
+        try {
+          const currentWorkplace =
+            connection.workplaceSlug ??
+            (currentToken === undefined
+              ? undefined
+              : (await deps.dopplerWorkplace?.(currentToken.toString('utf8')))?.slug);
+          if (currentWorkplace !== checked.workplace.slug)
+            return reply.code(409).send({
+              error:
+                'The Secret Job catalog connection must stay in its current Doppler workplace.',
+            });
+        } finally {
+          currentToken?.fill(0);
+        }
+      }
 
       const listNames = deps.listNames ?? listDopplerProjectSecretNames;
       const configs = new Map(

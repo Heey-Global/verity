@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { VeritySettingsPatch } from '@verity/store';
+import { LEGACY_DOPPLER_CONNECTION_ID, type VeritySettingsPatch } from '@verity/store';
 import { z } from 'zod';
 import type { SecretStatus } from './attention.js';
 import type { ClaudeOAuthTokenProvider } from './claudeUsage.js';
@@ -112,7 +112,18 @@ export function installSettings(
   const { refreshOpenCodeModels } = registerSettingsRoutes(app, {
     store: () => veritySettingsStore(deps.eventStore),
     agentLogin,
-    parseSettingsPatch: (body) => veritySettingsBody.parse(body),
+    parseSettingsPatch: (body) => {
+      const patch = veritySettingsBody.parse(body);
+      if (
+        patch.dopplerServiceToken !== undefined &&
+        deps.secretJobDopplerConnectionId === LEGACY_DOPPLER_CONNECTION_ID
+      )
+        throw Object.assign(
+          new Error('Update the Secret Job catalog token from the Doppler connection settings.'),
+          { statusCode: 409 },
+        );
+      return patch;
+    },
     projectEgressAvailable: deps.projectEgressAvailable,
     projectEgressStatus: deps.projectEgressStatus,
     storeAgentCredentials,

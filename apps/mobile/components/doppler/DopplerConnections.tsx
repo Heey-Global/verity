@@ -42,7 +42,7 @@ export function connectionSummary(connection: DopplerConnection): string {
     connection.hasToken
       ? connection.workplaceSlug
         ? null
-        : 'Workplace unverified · personal tokens unavailable'
+        : 'Workplace unverified'
       : 'personal tokens only',
   ].filter((part): part is string => Boolean(part));
   return parts.join(' · ');

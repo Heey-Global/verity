@@ -83,4 +83,5 @@ project and config can be bound only once per project. Members connect their own
 token for each connection the project uses; the administrator's turns fall back
 to the connection's instance token. Deleting a connection in use warns with the
 affected projects and then removes its bindings, personal tokens and grants
-everywhere. See [ADR 0031](adr/0031-multiple-doppler-connections.md).
+everywhere. A connection pinned to the Secret Job catalog stays in its current
+workplace until the catalog is reconfigured. See [ADR 0031](adr/0031-multiple-doppler-connections.md).

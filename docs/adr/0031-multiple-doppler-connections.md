@@ -70,7 +70,8 @@ administrator; project settings name the connection that needs a token.
 warning that lists those projects and bindings. In one transaction it removes
 the connection, its bindings in every project, everyone's personal tokens for
 it and the grants of those bindings. Agents that still reference such a binding
-are told it is no longer connected.
+are told it is no longer connected. A connection pinned to the Secret Job catalog
+cannot be deleted or switched to another workplace. Reconfigure the catalog first.
 
 **Access.** Connections are administrator-only. Members with read permission
 see a project's bindings; adding, changing and removing them stays with
@@ -95,3 +96,7 @@ on the new Core. Existing approvals without identifiable sources require
 review again. Core stops an existing secret-bearing dev server whose launch
 authority is unknown or stale, and a renewed approval applies only to a fresh
 process. Secret-free dev servers do not require a provider authority.
+Legacy personal tokens that predate a settings update require revalidation
+because the old schema did not record which config each token was checked against.
+Downgrade is blocked if newer denials or execution claims exist that the older
+gateway would be unable to enforce.

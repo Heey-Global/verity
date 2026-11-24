@@ -96,9 +96,22 @@ export const dopplerConnectionsMigration: Migration = {
     }
   },
   async down(db: Kysely<unknown>): Promise<void> {
-    // The previous server can only read receipts containing the legacy pair.
+    // The previous gateway cannot enforce denials and at-most-once claims for
+    // requests identified by a binding snapshot.
+    const result = await sql<{ incompatible: boolean }>`select
+      exists (select 1 from brokered_tool_approvals where status in ('denied', 'consumed')
+        and authorization_snapshot::jsonb ? 'bindings')
+      or exists (select 1 from brokered_http_consumptions where call_id like 'doppler-v2:%')
+      as incompatible`.execute(db);
+    if (result.rows[0]?.incompatible)
+      throw new Error(
+        'Cannot downgrade Doppler connections while newer approval decisions or execution claims exist.',
+      );
     await sql`delete from brokered_tool_approvals
-      where authorization_snapshot::jsonb ? 'bindings'`.execute(db);
+      where authorization_snapshot::jsonb ? 'bindings'
+        or (status in ('pending', 'approved') and exists (
+          select 1 from doppler_connections where id = ${LEGACY_DOPPLER_CONNECTION_ID}
+            and token_revision is not null))`.execute(db);
     // The old app can only use a default binding on the legacy workplace. Clear
     // complete pairs from other workplaces instead of resolving them via the old token.
     await sql`update project_settings s set doppler_project = null, doppler_config = null
@@ -110,13 +123,16 @@ export const dopplerConnectionsMigration: Migration = {
       on conflict (id) do update set doppler_service_token = excluded.doppler_service_token`.execute(
       db,
     );
+    // A token that already existed at upgrade can return to the unchanged legacy
+    // binding, even if we could not prove that binding's validation on upgrade.
     await sql`delete from user_doppler_connections u
       where connection_id <> ${LEGACY_DOPPLER_CONNECTION_ID}
         or not exists (select 1 from project_doppler_bindings b
-          where b.project_id = u.project_id and b.is_default
-            and b.connection_id = u.connection_id and b.id = any(u.validated_binding_ids))`.execute(
-      db,
-    );
+          join doppler_connections c on c.id = b.connection_id
+          where b.project_id = u.project_id and b.is_default and b.connection_id = u.connection_id
+            and (b.id = any(u.validated_binding_ids)
+              or (c.token_revision is null and b.created_at = c.created_at
+                  and u.updated_at <= c.created_at)))`.execute(db);
 
     // Only single-binding grants for the current legacy default can be carried
     // back. Older revisions, qualified references and multi-binding grants

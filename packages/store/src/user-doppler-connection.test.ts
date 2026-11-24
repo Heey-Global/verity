@@ -6,6 +6,7 @@ import { createSecretCipher } from './crypto.js';
 import { migrationProvider } from './migrations.js';
 import { EventStore } from './store.js';
 import {
+  DopplerProjectAccessChangedError,
   DopplerTokenRevalidationRequiredError,
   UserDopplerConnectionStore,
 } from './user-doppler-connection.js';
@@ -101,6 +102,20 @@ it('only returns a scoped token for a binding it was validated against', async (
   expect((await connections.tokenBytes('lena', 'p1', 'c1', stage))?.toString()).toBe(
     'revalidated-token-fixture',
   );
+});
+
+it('rejects saving a validated token after a member lost project execution access', async () => {
+  await ctx.db.insertInto('doppler_connections').values({ id: 'c1', label: 'Platform' }).execute();
+  const connections = new UserDopplerConnectionStore(ctx.db, createSecretCipher('cd'.repeat(32)));
+  const binding = await ctx.store.projectDopplerBindings.add('p1', {
+    connectionId: 'c1',
+    dopplerProject: 'portal',
+    dopplerConfig: 'dev',
+  });
+  await expect(
+    connections.set('lena', 'p1', 'c1', 'dp.st.lena', [binding.id], null, true),
+  ).rejects.toBeInstanceOf(DopplerProjectAccessChangedError);
+  expect(await connections.statuses('lena', 'p1')).toEqual(new Map());
 });
 
 // Standing grants become one person's consent. The ones that exist were approved

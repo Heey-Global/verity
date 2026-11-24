@@ -49,10 +49,11 @@ describe('managed public links', () => {
       tokenRevision: '11111111-1111-4111-8111-111111111111',
     };
     const approved = managedDevServerProviderSnapshot([dopplerBinding], secretBindings).authority;
+    const listBindings = vi.fn(async () => [dopplerBinding]);
     const store = {
       ...f.store,
       managedDevServers: { getInstance, approvedProviderAuthority: async () => approved },
-      projectDopplerBindings: { list: async () => [dopplerBinding] },
+      projectDopplerBindings: { list: listBindings },
       getSession: vi.fn<EventStore['getSession']>(
         async () =>
           ({ sessionId: 's1', projectId: 'p1', worktree: '/wt/s1' }) as Awaited<
@@ -108,6 +109,7 @@ describe('managed public links', () => {
       docker,
       edge: f.edge,
       store,
+      listBindings,
       share: () => share!,
       run: (port = 41001, marker = 'instance-1') => {
         instance = { ...instance!, sandboxPort: port, state: 'running', desired: 'running' };
@@ -151,6 +153,24 @@ describe('managed public links', () => {
     await f.manager.reconcile();
     expect(f.share().state).toBe('revoked');
     expect(f.edge.remove).toHaveBeenCalledWith('share-id');
+  });
+
+  it('takes public forwarding offline during an authority lookup failure and restores the same link', async () => {
+    const f = managedFixture();
+    f.runWithDoppler();
+    await f.manager.reconcile();
+    f.listBindings.mockRejectedValueOnce(new Error('database unavailable'));
+    await f.manager.reconcile();
+    expect(f.edge.remove).not.toHaveBeenCalled();
+    expect(f.share().state).toBe('active');
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
+    await f.manager.reconcile();
+    expect(f.share().state).toBe('active');
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ env: expect.not.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
   });
 
   it.each([false, true])(

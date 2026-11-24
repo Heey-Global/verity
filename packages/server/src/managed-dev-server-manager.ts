@@ -542,7 +542,7 @@ export class ManagedDevServerManager {
           throw error;
         }
       }
-      if (instance?.state === 'running') await this.publish(project, approved, instance);
+      if (instance?.state === 'running') await this.publish(project, instance);
     });
     return this.view(sessionId);
   }
@@ -607,18 +607,23 @@ export class ManagedDevServerManager {
     await this.locked(project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
       if (on) {
-        // Only a live process of the approved command gets the flag; anything
-        // else starts, crashed included, and an older command restarts.
-        if (
-          instance &&
-          (instance.state === 'running' || instance.state === 'starting') &&
-          (!this.ranApproved(entry, instance) ||
-            !(await managedRunProviderCurrent(this.options.store, instance)))
-        )
-          await this.stopInstance(project, instance, null);
-        else if (instance && (instance.state === 'running' || instance.state === 'starting')) {
+        // Reuse the process only while its command and authority still match.
+        if (instance && (instance.state === 'running' || instance.state === 'starting')) {
+          const authority = await managedRunProviderCurrent(this.options.store, instance);
+          if (authority === undefined) {
+            await this.unpublish(instance);
+            throw new ManagedDevServerError(
+              'Doppler access could not be verified. Try again.',
+              503,
+            );
+          }
+          if (!authority || !this.ranApproved(entry, instance)) {
+            await this.stopInstance(project, instance, null);
+            await this.startEntry(context, entry, 'operator', true, person);
+            return;
+          }
           const updated = await this.servers.updateInstance(instance.id, { localAccess: true });
-          if (updated?.state === 'running') await this.publish(project, entry, updated);
+          if (updated?.state === 'running') await this.publish(project, updated);
           return;
         }
         await this.startEntry(context, entry, 'operator', true, person);
@@ -980,6 +985,10 @@ export class ManagedDevServerManager {
       .catch(() => ({ alive: false, exitCode: null }));
     const sameProvider =
       !status.alive || (await managedRunProviderCurrent(this.options.store, instance));
+    if (sameProvider === undefined) {
+      await this.unpublish(instance);
+      throw new ManagedDevServerError('Doppler access could not be verified. Try again.', 503);
+    }
     if (
       status.alive &&
       (instance.state === 'running' || instance.state === 'starting') &&
@@ -1167,11 +1176,8 @@ export class ManagedDevServerManager {
     this.refreshQuietly(project);
   }
 
-  // ---- publishing -------------------------------------------------------
-
   private async publish(
     project: ProjectRecord,
-    entry: ManagedDevServerRecord,
     instance: ManagedDevServerInstanceRecord,
   ): Promise<void> {
     const local = this.options.localShares;
@@ -1182,11 +1188,9 @@ export class ManagedDevServerManager {
       return;
     }
     const existing = this.shareFor(instance);
-    // Recovery follows the instance's current sandbox port without replacing
-    // the durable local identity when a sandbox is recreated.
+    // Preserve local identity when the sandbox is recreated.
     if (existing && existing.expiresAt.getTime() - this.now() > 86_400_000) return;
-    // A share close to its end is replaced on the same port; the local manager
-    // would otherwise hand the old one back unchanged.
+    // Replace a share nearing expiry on the same port.
     if (existing) await this.options.localShares?.stop(existing.id).catch(() => false);
     if ((this.publishRetryAt.get(instance.id) ?? 0) > this.now()) return;
     const held = local.heldPorts();
@@ -1233,8 +1237,7 @@ export class ManagedDevServerManager {
       this.publishRetryAt.delete(instance.id);
       if (instance.detail) await this.servers.updateInstance(instance.id, { detail: null });
     } catch (error) {
-      // Most likely an ad hoc share took the port in the same instant. Release
-      // it so the next attempt reserves a free one, and say why in the meantime.
+      // Release the reservation so a later attempt can use another port.
       await this.servers.releaseNetworkPort(instance.id);
       await this.refreshReserved();
       this.publishRetryAt.set(instance.id, this.now() + 30_000);
@@ -1277,8 +1280,6 @@ export class ManagedDevServerManager {
       stopOrphanManagedProcesses(this.options, project, tags),
     ).catch(() => undefined);
   }
-
-  // ---- supervision ------------------------------------------------------
 
   /** One pass over active instances. Exposed for tests and for discovery pushes. */
   tick(): Promise<void> {
@@ -1387,7 +1388,12 @@ export class ManagedDevServerManager {
         }
         continue;
       }
-      if (!(await managedRunProviderCurrent(this.options.store, instance))) {
+      const authority = await managedRunProviderCurrent(this.options.store, instance);
+      if (authority === undefined) {
+        await this.unpublish(instance).catch(() => undefined);
+        continue;
+      }
+      if (!authority) {
         await this.stopInstance(
           project,
           instance,
@@ -1415,7 +1421,7 @@ export class ManagedDevServerManager {
           changed = true;
         }
         const current = (await this.servers.getInstance(instance.id)) ?? instance;
-        await this.publish(project, entry, current);
+        await this.publish(project, current);
         continue;
       }
       this.liveness.invalidate(instance.id);

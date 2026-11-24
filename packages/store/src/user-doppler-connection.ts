@@ -12,6 +12,8 @@ export class DopplerBindingsChangedError extends Error {
 
 export class DopplerTokenRevalidationRequiredError extends Error {}
 
+export class DopplerProjectAccessChangedError extends Error {}
+
 export interface DopplerTokenBindingScope {
   dopplerProject: string;
   dopplerConfig: string;
@@ -95,11 +97,35 @@ export class UserDopplerConnectionStore {
     token: string,
     expectedBindingIds?: readonly string[],
     expectedTokenRevision?: string | null,
+    requireProjectAccess = false,
   ): Promise<void> {
     const encrypted = this.cipher.encrypt(token);
     const validatedBindingIds = [...(expectedBindingIds ?? [])];
     await this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
+      if (requireProjectAccess) {
+        const user = await tx
+          .selectFrom('users')
+          .select('role')
+          .where('id', '=', userId)
+          .where('status', '=', 'active')
+          .forUpdate()
+          .executeTakeFirst();
+        if (!user) throw new DopplerProjectAccessChangedError();
+        if (user.role !== 'administrator') {
+          const member = await tx
+            .selectFrom('project_memberships as m')
+            .innerJoin('projects as p', 'p.id', 'm.project_id')
+            .select('m.user_id')
+            .where('m.user_id', '=', userId)
+            .where('m.project_id', '=', projectId)
+            .where('m.can_execute', '=', true)
+            .where('p.kind', '<>', 'control_plane')
+            .forUpdate('m')
+            .executeTakeFirst();
+          if (!member) throw new DopplerProjectAccessChangedError();
+        }
+      }
       if (expectedTokenRevision !== undefined) {
         const connection = await tx
           .selectFrom('doppler_connections')

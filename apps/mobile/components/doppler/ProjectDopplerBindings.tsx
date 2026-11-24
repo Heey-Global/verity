@@ -71,22 +71,33 @@ export function ProjectDopplerBindings({
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      void client.doppler
-        .personalTokens(projectId)
-        .then((value) => {
-          if (active) {
-            setPersonal(value);
-            setPersonalError(undefined);
-          }
-        })
-        .catch(() => {
-          if (active) {
-            setPersonal(undefined);
-            setPersonalError('Could not load your Doppler tokens.');
-          }
-        });
+      let loading = false;
+      const refresh = () => {
+        if (loading) return;
+        loading = true;
+        void client.doppler
+          .personalTokens(projectId)
+          .then((value) => {
+            if (active) {
+              setPersonal(value);
+              setPersonalError(undefined);
+            }
+          })
+          .catch(() => {
+            if (active) {
+              setPersonal(undefined);
+              setPersonalError('Could not load your Doppler tokens.');
+            }
+          })
+          .finally(() => {
+            loading = false;
+          });
+      };
+      refresh();
+      const timer = setInterval(refresh, 3000);
       return () => {
         active = false;
+        clearInterval(timer);
       };
     }, [client, projectId, bindingKey, personalVersion]),
   );

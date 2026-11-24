@@ -479,6 +479,11 @@ it('moves the instance token, project configs, personal tokens and grants on upg
       values ('p1', 'portal', 'prd')`.execute(raw.db);
     await sql`insert into user_doppler_connections (user_id, project_id, token)
       values ('lena', 'p1', ${cipher.encrypt('dp.st.lena')})`.execute(raw.db);
+    await sql`insert into users (id, role, status) values ('older', 'member', 'active')`.execute(
+      raw.db,
+    );
+    await sql`insert into user_doppler_connections (user_id, project_id, token, updated_at)
+      values ('older', 'p1', ${cipher.encrypt('dp.st.older')}, '2020-01-01')`.execute(raw.db);
     await sql`insert into secret_provider_permissions
         (id, project_id, binding_id, binding_version, secret_name, tool_id, scope, granted_by, state)
       values ('g1', 'p1', ${legacyDopplerBindingGrantId('portal', 'prd')}, 1, 'API_KEY',
@@ -511,6 +516,8 @@ it('moves the instance token, project configs, personal tokens and grants on upg
     const [migratedBinding] = await upgraded.projectDopplerBindings.list('p1');
     const personal = await upgraded.userDopplerConnections.statuses('lena', 'p1');
     expect(personal.get('legacy-doppler')?.validatedBindingIds).toEqual([migratedBinding?.id]);
+    const older = await upgraded.userDopplerConnections.statuses('older', 'p1');
+    expect(older.get('legacy-doppler')?.validatedBindingIds).toEqual([]);
     const grants = await sql<{ binding_id: string }>`
       select binding_id from secret_provider_permissions`.execute(raw.db);
     expect(grants.rows).toEqual([
@@ -548,6 +555,25 @@ it('moves the instance token, project configs, personal tokens and grants on upg
          '{"bindings":[]}', 'new-pending', 'pending', now()),
         ('new-approved', 'p1', 's1', 'new-approved', 'verity_http_request', '{}', 'mac', 'key',
          '{"bindings":[]}', 'new-approved', 'approved', now())`.execute(raw.db);
+    await sql`update brokered_tool_approvals set status = 'denied' where id = 'new-pending'`.execute(
+      raw.db,
+    );
+    const blockedByDenial = await migrator.migrateTo('0241_github_repository_ids');
+    expect(blockedByDenial.error).toEqual(
+      expect.objectContaining({ message: expect.stringContaining('Cannot downgrade') }),
+    );
+    await sql`update brokered_tool_approvals set status = 'pending' where id = 'new-pending'`.execute(
+      raw.db,
+    );
+    await sql`insert into brokered_http_consumptions (project_id, session_id, turn_id, call_id, request_hash)
+      values ('p1', 's1', 't1', 'doppler-v2:claim', 'hash')`.execute(raw.db);
+    const blockedByClaim = await migrator.migrateTo('0241_github_repository_ids');
+    expect(blockedByClaim.error).toEqual(
+      expect.objectContaining({ message: expect.stringContaining('Cannot downgrade') }),
+    );
+    await sql`delete from brokered_http_consumptions where call_id = 'doppler-v2:claim'`.execute(
+      raw.db,
+    );
     const downgraded = await migrator.migrateTo('0241_github_repository_ids');
     if (downgraded.error) throw new Error('Downgrade failed', { cause: downgraded.error });
     expect(
@@ -555,7 +581,7 @@ it('moves the instance token, project configs, personal tokens and grants on upg
     ).toEqual([{ id: 'legacy' }]);
     const personalTokens = await sql<{ user_id: string }>`
       select user_id from user_doppler_connections order by user_id`.execute(raw.db);
-    expect(personalTokens.rows).toEqual([{ user_id: 'lena' }]);
+    expect(personalTokens.rows).toEqual([{ user_id: 'lena' }, { user_id: 'older' }]);
     const settings = await sql<{
       project_id: string;
       doppler_project: string | null;
@@ -574,6 +600,17 @@ it('moves the instance token, project configs, personal tokens and grants on upg
       select binding_id from secret_provider_permissions`.execute(raw.db)
       ).rows,
     ).toEqual([{ binding_id: legacyDopplerBindingGrantId('portal', 'prd') }]);
+    await sql`update brokered_tool_approvals set status = 'approved' where id = 'legacy'`.execute(
+      raw.db,
+    );
+    const upgradedAgain = await migrator.migrateToLatest();
+    if (upgradedAgain.error)
+      throw new Error('Second upgrade failed', { cause: upgradedAgain.error });
+    await upgraded.dopplerConnections.update('legacy-doppler', { token: 'dp.sa.rotated' });
+    const rotatedDowngrade = await migrator.migrateTo('0241_github_repository_ids');
+    if (rotatedDowngrade.error)
+      throw new Error('Downgrade after rotation failed', { cause: rotatedDowngrade.error });
+    expect((await sql`select id from brokered_tool_approvals`.execute(raw.db)).rows).toEqual([]);
   } finally {
     await raw.close();
   }

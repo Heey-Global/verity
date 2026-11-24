@@ -145,7 +145,31 @@ it('protects a Secret Job catalog connection even without project bindings', asy
         })
       ).statusCode,
     ).toBe(409);
+    const replacement = await call(app, 'admin', 'PATCH', `/doppler/connections/${connectionId}`, {
+      token: 'dp.sa.payments',
+      confirmTokenReplacement: true,
+    });
+    expect(replacement.statusCode).toBe(409);
+    expect((await store.dopplerConnections.get(connectionId))?.workplaceSlug).toBe('platform');
     expect(await store.dopplerConnections.get(connectionId)).toBeDefined();
+  } finally {
+    await app.close();
+  }
+});
+
+it('rejects a valid instance token when it cannot identify its Doppler workplace', async () => {
+  const app = Fastify();
+  registerDopplerRoutes(app, { eventStore: store, dopplerValidate: async () => ({ ok: true }) });
+  try {
+    const response = await call(app, 'admin', 'POST', '/doppler/connections', {
+      label: 'Unverified',
+      token: 'dp.sa.platform',
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: expect.stringContaining('verify the Doppler workplace'),
+    });
+    expect(await store.dopplerConnections.list()).toEqual([]);
   } finally {
     await app.close();
   }

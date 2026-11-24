@@ -563,7 +563,7 @@ it.each(['denied', 'consumed', 'claim', 'obsolete-allow', 'unrelated-source'] as
           projectId: 'p1',
           sessionId: 's1',
           turnId: 't1',
-          callId: brokeredExecutionClaimId(invocationId),
+          callId: createHash('sha256').update(invocationId).digest('hex'),
           requestHash,
         });
       } else {
