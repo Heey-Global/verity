@@ -62,6 +62,19 @@ describe('preview target activity', () => {
     expect(await authorizedPreviewPort(f.options.store, 'p', 's', f.port, 'm')).toBe(false);
   });
 
+  it('rejects a managed listener for a raw port-only target', async () => {
+    const f = fixture();
+    expect(
+      await authorizedPreviewPort(
+        f.options.store,
+        'p',
+        's',
+        { ...f.port, managedInstanceId: 'm' },
+        null,
+      ),
+    ).toBe(false);
+  });
+
   it('does not route an unbound public link to a newly managed listener', async () => {
     const f = fixture();
     f.probes.sessionPort.mockResolvedValue({ ...f.port, managedInstanceId: 'm' });

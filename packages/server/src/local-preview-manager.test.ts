@@ -28,12 +28,15 @@ function fixture() {
     labels: { 'verity.container-generation': 'generation-1' },
   };
   const project = { id: 'p1', containerName: 'sandbox', state: 'active' };
-  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockResolvedValue({
+  const prepared: Awaited<ReturnType<PreviewShareManager['prepareLocalTarget']>> = {
     project: project as never,
     session: {} as never,
     generation: containerGenerationOf(sandbox)!,
     staticMount: undefined,
-  });
+  };
+  const prepareTarget = vi
+    .spyOn(PreviewShareManager.prototype, 'prepareLocalTarget')
+    .mockResolvedValue(prepared);
   const docker = {
     createContainer: vi.fn(async () => ({ id: 'c1' })),
     startContainer: vi.fn(async () => {}),
@@ -72,7 +75,7 @@ function fixture() {
   } as unknown as LocalPreviewManagerOptions;
   const manager = new LocalPreviewManager(options);
   managers.push(manager);
-  return { manager, docker, options };
+  return { manager, docker, options, prepared, prepareTarget };
 }
 it('deduplicates simultaneous creation and waits for connector readiness', async () => {
   const { manager, docker } = fixture();
@@ -355,7 +358,17 @@ it('waits for restoration before removing an explicitly stopped connector', asyn
 });
 
 it('follows a managed instance new target port while keeping local URL and credentials', async () => {
-  const { manager, options, docker } = fixture();
+  const { manager, options, docker, prepared, prepareTarget } = fixture();
+  const preparePort = vi.fn(async (_project: { containerName: string }, port: number) => port);
+  options.prepareTargetPort = preparePort;
+  prepareTarget.mockResolvedValue({
+    ...prepared,
+    project: {
+      ...prepared.project,
+      containerName: 'personal-sandbox',
+      previewNetwork: 'personal-network',
+    },
+  });
   const instance = {
     id: 'managed',
     serverId: 'definition',
@@ -395,11 +408,16 @@ it('follows a managed instance new target port while keeping local URL and crede
   instance.state = 'running';
   await restored.reconcile();
   expect(restored.list('s1')).toEqual([{ ...share, targetPort: 4000 }]);
+  await restored.reconcile();
+  expect(preparePort).toHaveBeenLastCalledWith(
+    expect.objectContaining({ containerName: 'personal-sandbox' }),
+    4000,
+  );
   expect(docker.createContainer).toHaveBeenLastCalledWith(
     expect.objectContaining({
       env: expect.arrayContaining([
         credentials,
-        'VERITY_PREVIEW_TARGET_ORIGIN=http://sandbox:4000',
+        'VERITY_PREVIEW_TARGET_ORIGIN=http://personal-sandbox:4000',
       ]),
     }),
   );

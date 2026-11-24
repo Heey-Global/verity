@@ -458,6 +458,14 @@ export async function buildEmbeddedServer(
   const listListeningProcesses = (project: ProjectRecord, options?: { fresh?: boolean }) =>
     listenerDiscovery?.listListeningProcesses(project, options) ??
     listenerRuntime.listWebListeningProcesses(project, options);
+  const previewSandboxFor = async (project: ProjectRecord, userId: string | null) => {
+    const sandbox = await resolveTurnSandbox(
+      eventStore,
+      project.id,
+      userId === null ? undefined : { userId },
+    );
+    return sandboxIdentity(project, sandbox);
+  };
   let previewShareManager: PreviewShareManager | undefined;
   const { withPreviewProjectMutation, withStorageProjectMutation } = createEmbeddedPreviewMutations(
     {
@@ -479,16 +487,7 @@ export async function buildEmbeddedServer(
   ) {
     previewShareManager = new PreviewShareManager({
       store: eventStore,
-      // A managed server's preview reaches the sandbox it runs in (ADR 0023 §4).
-      sandboxFor: async (project, userId) => {
-        const sandbox = await resolveTurnSandbox(
-          eventStore,
-          project.id,
-          userId === null ? undefined : { userId },
-        );
-        const identity = sandboxIdentity(project, sandbox);
-        return { containerName: identity.containerName, networkName: identity.networkName };
-      },
+      sandboxFor: previewSandboxFor,
       onShareEnded: (share) => {
         if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId, share.id);
       },
@@ -849,6 +848,7 @@ export async function buildEmbeddedServer(
     projectDocker && localConnectorImage && config.hostCloneRoot
       ? new LocalPreviewManager({
           store: eventStore,
+          sandboxFor: previewSandboxFor,
           docker: projectDocker,
           resolveConnectorImage: localConnectorImage,
           hostCloneRoot: config.hostCloneRoot,

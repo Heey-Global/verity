@@ -237,7 +237,7 @@ export class PreviewShareManager {
         project,
         session,
         target.targetPort,
-        target.managedInstanceId,
+        target.managedInstanceId ?? null,
       ))
     ) {
       throw new PreviewShareConflictError('nothing in this session listens on that port');

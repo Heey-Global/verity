@@ -768,14 +768,14 @@ export class LocalPreviewManager {
           this.reserved.add(state.port);
           continue;
         }
-        await this.targets.prepareLocalTarget(state.share.sessionId, {
+        const target = await this.targets.prepareLocalTarget(state.share.sessionId, {
           ...(state.share.targetPort === null ? {} : { targetPort: state.share.targetPort }),
           ...(state.share.staticPath === null ? {} : { staticPath: state.share.staticPath }),
           ...(saved?.managedInstanceId ? { managedInstanceId: saved?.managedInstanceId } : {}),
         });
         if (state.share.targetPort !== null) {
           const preparedPort =
-            (await this.options.prepareTargetPort?.(project, state.share.targetPort)) ??
+            (await this.options.prepareTargetPort?.(target.project, state.share.targetPort)) ??
             state.share.targetPort;
           if (preparedPort !== state.preparedPort) {
             await this.release(state.share.id);
