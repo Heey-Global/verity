@@ -102,10 +102,12 @@ export const dopplerConnectionsMigration: Migration = {
       exists (select 1 from brokered_tool_approvals where status in ('denied', 'consumed')
         and authorization_snapshot::jsonb ? 'bindings')
       or exists (select 1 from brokered_http_consumptions where call_id like 'doppler-v2:%')
+      or (exists (select 1 from secret_provider_bindings where provider = 'doppler' and state = 'active')
+        and exists (select 1 from doppler_connections where id <> ${LEGACY_DOPPLER_CONNECTION_ID}))
       as incompatible`.execute(db);
     if (result.rows[0]?.incompatible)
       throw new Error(
-        'Cannot downgrade Doppler connections while newer approval decisions or execution claims exist.',
+        'Cannot downgrade Doppler connections while newer authorization records or an independent Secret Job catalog may be in use.',
       );
     await sql`delete from brokered_tool_approvals a
       where a.authorization_snapshot::jsonb ? 'bindings'

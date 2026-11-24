@@ -167,6 +167,48 @@ it('initializes a missing default legacy catalog connection from instance settin
   }
 });
 
+it('blocks initializing an unknown workplace behind existing catalog bindings', async () => {
+  await ctx.db
+    .insertInto('secret_provider_bindings')
+    .values({
+      id: 'catalog',
+      project_id: 'p1',
+      provider: 'doppler',
+      credential_ref: 'catalog-credential',
+      version: 1,
+      state: 'active',
+      doppler_project: 'portal',
+      doppler_config: 'prd',
+    })
+    .execute();
+  const app = server(undefined, 'legacy-doppler');
+  try {
+    expect(
+      (
+        await call(app, 'admin', 'POST', '/doppler/connections', {
+          label: 'Catalog',
+          token: 'dp.sa.platform',
+        })
+      ).statusCode,
+    ).toBe(409);
+    await ctx.db
+      .insertInto('doppler_connections')
+      .values({ id: 'legacy-doppler', label: 'Legacy' })
+      .execute();
+    expect(
+      (
+        await call(app, 'admin', 'PATCH', '/doppler/connections/legacy-doppler', {
+          token: 'dp.sa.platform',
+          confirmTokenReplacement: true,
+        })
+      ).statusCode,
+    ).toBe(409);
+    expect(await store.dopplerConnections.tokenBytes('legacy-doppler')).toBeUndefined();
+  } finally {
+    await app.close();
+  }
+});
+
 it('checks a same-workplace replacement against catalog-only configs', async () => {
   const connectionId = await store.dopplerConnections.add({
     label: 'Catalog',

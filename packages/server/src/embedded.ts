@@ -520,11 +520,11 @@ export async function buildEmbeddedServer(
         new DockerProjectRuntime({
           resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
-          listListeningProcesses,
+          listListeningProcesses: listenerRuntime.listWebListeningProcesses.bind(listenerRuntime),
         }).ensurePreviewTarget(project, port),
       listSessionServers: (sessionId, options) =>
         listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
-      listListeningProcesses,
+      listListeningProcesses: listenerRuntime.listWebListeningProcesses.bind(listenerRuntime),
       edge: uplinkControl,
       // The same deferred logger as the client's: this manager is built just as
       // far ahead of `app`, and its timing lines belong next to the Uplink's.
@@ -856,14 +856,15 @@ export async function buildEmbeddedServer(
           ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
           ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
           isDevServerRunning: () => Promise.resolve(false),
-          listListeningProcesses,
+          listListeningProcesses: listenerRuntime.listWebListeningProcesses.bind(listenerRuntime),
           listSessionServers: (sessionId, options) =>
             listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
           prepareTargetPort: (project, port) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
               dockerBaseUrl: config.dockerBaseUrl,
-              listListeningProcesses,
+              listListeningProcesses:
+                listenerRuntime.listWebListeningProcesses.bind(listenerRuntime),
             }).ensurePreviewTarget(project, port),
           publicHost: process.env.VERITY_LOCAL_PREVIEW_HOST ?? 'localhost',
           connectorHost: hostname(),

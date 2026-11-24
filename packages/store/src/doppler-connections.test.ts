@@ -576,6 +576,16 @@ it.each(['rotation', 'replacement'] as const)(
       await sql`delete from brokered_http_consumptions where call_id = 'doppler-v2:claim'`.execute(
         raw.db,
       );
+      await sql`insert into secret_provider_bindings
+      (id, project_id, provider, credential_ref, version, state, doppler_project, doppler_config)
+      values ('catalog', 'p1', 'doppler', 'catalog-credential', 1, 'active', 'portal', 'prd')`.execute(
+        raw.db,
+      );
+      const blockedByCatalog = await migrator.migrateTo('0241_github_repository_ids');
+      expect(blockedByCatalog.error).toEqual(
+        expect.objectContaining({ message: expect.stringContaining('Secret Job catalog') }),
+      );
+      await sql`delete from secret_provider_bindings where id = 'catalog'`.execute(raw.db);
       const downgraded = await migrator.migrateTo('0241_github_repository_ids');
       if (downgraded.error) throw new Error('Downgrade failed', { cause: downgraded.error });
       expect(

@@ -35,8 +35,10 @@ export class AmbiguousDopplerConnectionError extends Error {
 }
 
 export class DopplerConnectionUsageChangedError extends Error {
-  constructor() {
-    super('Doppler connection usage changed. Review the affected project bindings again.');
+  constructor(
+    message = 'Doppler connection usage changed. Review the affected project bindings again.',
+  ) {
+    super(message);
     this.name = 'DopplerConnectionUsageChangedError';
   }
 }
@@ -130,12 +132,16 @@ export class DopplerConnectionStore {
     return row?.token == null ? undefined : this.cipher.decryptBytes(row.token);
   }
 
-  async add(input: {
+  async add(input: Parameters<DopplerConnectionStore['addRecord']>[0]): Promise<string> {
+    return (await this.addRecord(input)).id;
+  }
+
+  async addRecord(input: {
     label: string;
     token: string;
     workplace: DopplerWorkplace;
     initializeLegacyCatalog?: boolean;
-  }): Promise<string> {
+  }): Promise<DopplerConnectionRecord> {
     const token = this.cipher.encrypt(input.token);
     return this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
@@ -146,8 +152,15 @@ export class DopplerConnectionStore {
           .select('id')
           .where('id', '=', LEGACY_DOPPLER_CONNECTION_ID)
           .executeTakeFirst());
+      if (legacy) {
+        await sql`lock table secret_provider_bindings in share mode`.execute(tx);
+        if ((await this.catalogConfigs(tx)).length > 0)
+          throw new DopplerConnectionUsageChangedError(
+            'The Secret Job catalog already has bindings. Configure a new catalog connection and review its grants first.',
+          );
+      }
       const id = legacy ? LEGACY_DOPPLER_CONNECTION_ID : randomUUID();
-      await tx
+      const row = await tx
         .insertInto('doppler_connections')
         .values({
           id,
@@ -156,7 +169,8 @@ export class DopplerConnectionStore {
           workplace_slug: input.workplace.slug,
           workplace_name: input.workplace.name,
         })
-        .execute();
+        .returning(connectionColumns)
+        .executeTakeFirstOrThrow();
       if (legacy)
         await tx
           .insertInto('verity_settings')
@@ -165,7 +179,7 @@ export class DopplerConnectionStore {
             conflict.column('id').doUpdateSet({ doppler_service_token: token }),
           )
           .execute();
-      return id;
+      return connectionRecord(row);
     });
   }
 

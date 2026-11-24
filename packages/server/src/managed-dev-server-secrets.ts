@@ -203,3 +203,18 @@ export async function managedProviderApproved(
         .catch(() => undefined))
   );
 }
+
+export async function approvedManagedRunAuthority(
+  store: Pick<EventStore, 'managedDevServers'>,
+  instance: ManagedDevServerInstanceRecord,
+  queued: boolean,
+  person: string | null,
+): Promise<string | undefined> {
+  const approval = await store.managedDevServers.approvedProviderAuthority(instance.serverId);
+  if (!queued) return approval;
+  if (approval !== instance.lastRunProviderAuthority) return undefined;
+  return person === null ||
+    (await store.managedDevServers.get(instance.serverId))?.approvedBy === person
+    ? approval
+    : undefined;
+}

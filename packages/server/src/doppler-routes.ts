@@ -233,14 +233,19 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
     if (!input.success) return reply.code(400).send({ error: 'invalid Doppler connection' });
     const checked = await checkedToken(input.data.token);
     if ('error' in checked) return reply.code(400).send({ error: checked.error });
-    const id = await store.dopplerConnections.add({
-      label: input.data.label,
-      token: input.data.token,
-      workplace: checked.workplace,
-      initializeLegacyCatalog: deps.secretJobDopplerConnectionId === LEGACY_DOPPLER_CONNECTION_ID,
-    });
-    reply.code(201);
-    return (await listView()).find((connection) => connection.id === id);
+    try {
+      const connection = await store.dopplerConnections.addRecord({
+        label: input.data.label,
+        token: input.data.token,
+        workplace: checked.workplace,
+        initializeLegacyCatalog: deps.secretJobDopplerConnectionId === LEGACY_DOPPLER_CONNECTION_ID,
+      });
+      return reply.code(201).send(connectionView(connection, 0));
+    } catch (error) {
+      if (error instanceof DopplerConnectionUsageChangedError)
+        return reply.code(409).send({ error: error.message });
+      throw error;
+    }
   });
 
   app.patch('/doppler/connections/:id', async (request, reply) => {
@@ -271,7 +276,11 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       const checked = await checkedToken(token);
       if ('error' in checked) return reply.code(400).send({ error: checked.error });
 
-      if (id === deps.secretJobDopplerConnectionId && connection.hasToken) {
+      const catalogConfigs =
+        id === deps.secretJobDopplerConnectionId
+          ? await store.dopplerConnections.catalogConfigs()
+          : undefined;
+      if (catalogConfigs && (connection.hasToken || catalogConfigs.length > 0)) {
         const currentToken =
           connection.workplaceSlug === null
             ? await store.dopplerConnections.tokenBytes(id)
@@ -298,10 +307,6 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       }
 
       const listNames = deps.listNames ?? listDopplerProjectSecretNames;
-      const catalogConfigs =
-        id === deps.secretJobDopplerConnectionId
-          ? await store.dopplerConnections.catalogConfigs()
-          : undefined;
       const configs = new Set([
         ...bindings.map((binding) => `${binding.dopplerProject}/${binding.dopplerConfig}`),
         ...(catalogConfigs ?? []),

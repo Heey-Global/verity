@@ -168,6 +168,7 @@ describe('managed servers with secret bindings', () => {
     >,
     agentPerson?: (sessionId: string) => Promise<string | null | undefined>,
     localShares?: ManagedLocalShares,
+    wakeSandbox?: () => Promise<void>,
   ) => {
     await manager.close();
     projectBindings = ctx.store.projectDopplerBindings;
@@ -182,6 +183,7 @@ describe('managed servers with secret bindings', () => {
       resolveSecrets,
       ...(agentPerson !== undefined ? { agentPerson } : {}),
       ...(localShares !== undefined ? { localShares } : {}),
+      ...(wakeSandbox !== undefined ? { wakeSandbox } : {}),
       providerSnapshot: async (projectId, bindings) =>
         managedDevServerProviderSnapshot(await projectBindings.list(projectId), bindings),
       networkPorts: [8100, 8101],
@@ -189,6 +191,34 @@ describe('managed servers with secret bindings', () => {
       now: () => now,
     });
   };
+
+  it('does not launch when the queued approval changes while the sandbox wakes', async () => {
+    const resolve = vi.fn(async () => [{ env: 'API_KEY', value: 'synthetic' }]);
+    await withResolver(resolve, undefined, undefined, async () => {});
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    const approve = async () => {
+      await manager.approve('s1', 'api', {
+        command: entry.command,
+        workdir: '.',
+        secretBindings,
+        providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+      });
+    };
+    await approve();
+    await ctx.store.updateProjectState('p1', 'sleeping');
+    await manager.start('s1', 'api', 'operator');
+    await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'other' });
+    await approve();
+    await ctx.store.updateProjectState('p1', 'active');
+    await manager.tick();
+    expect(sandbox.started).toHaveLength(0);
+    expect(resolve).not.toHaveBeenCalled();
+    expect((await instanceOf()).state).toBe('stopped');
+  });
 
   it('rejects a provider change between display and confirmation without saving approval', async () => {
     await ctx.store.updateProjectSettings('p1', {

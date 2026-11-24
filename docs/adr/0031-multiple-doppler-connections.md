@@ -75,7 +75,10 @@ it and the grants of those bindings. Agents that still reference such a binding
 are told it is no longer connected. A connection pinned to the Secret Job catalog
 cannot be deleted or switched to another workplace behind an existing authorization.
 If the old workplace cannot be verified, configure a new catalog connection and
-review the catalog bindings and grants before resuming jobs.
+review the catalog bindings and grants before resuming jobs. Ordinary project
+bindings keep their config names when a connection moves to another workplace.
+A matching name can then point somewhere else. Verity clears personal tokens
+when it cannot verify continuity with the original workplace.
 
 **Access.** Connections are administrator-only. Members with read permission
 see a project's bindings; adding, changing and removing them stays with
@@ -103,4 +106,5 @@ process. Secret-free dev servers do not require a provider authority.
 Legacy personal tokens that predate a settings update require revalidation
 because the old schema did not record which config each token was checked against.
 Downgrade is blocked if newer denials or execution claims exist that the older
-gateway would be unable to enforce.
+gateway would be unable to enforce, or a Secret Job catalog may reference a
+connection that the older Core cannot identify.
