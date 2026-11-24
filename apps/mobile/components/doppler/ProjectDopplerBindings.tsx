@@ -338,7 +338,9 @@ export function ProjectDopplerBindings({
         ) : null}
         {picked.project && picked.config ? (
           <Text variant="body" tone="muted">
-            {`Agents write secrets as ${picked.project}/${picked.config}/API_KEY`}
+            {list.length === 0
+              ? 'The first binding becomes the default. Agents can use API_KEY.'
+              : `Agents write secrets as ${picked.project}/${picked.config}/API_KEY`}
           </Text>
         ) : null}
       </View>

@@ -993,10 +993,9 @@ export class ManagedDevServerManager {
       status.alive &&
       (instance.state === 'running' || instance.state === 'starting') &&
       (by !== 'operator' || this.ranApproved(entry, instance)) &&
-      sameProvider
+      sameProvider &&
+      instance.detail !== WAKING_DETAIL
     ) {
-      if (instance.detail === WAKING_DETAIL)
-        await this.servers.updateInstance(instance.id, { detail: null });
       this.markActive(project.id, sessionId, instance.id);
       return;
     }
@@ -1008,7 +1007,8 @@ export class ManagedDevServerManager {
     )
       instance =
         (await this.servers.updateInstance(instance.id, { localAccess: true })) ?? instance;
-    if (!sameProvider) await this.unpublish(instance).catch(() => undefined);
+    if (!sameProvider || instance.detail === WAKING_DETAIL)
+      await this.unpublish(instance).catch(() => undefined);
     if (status.alive) await this.options.runtime.stopManagedServer(target, instance.id);
     const holder = processes.find((process) => process.port === instance.sandboxPort);
     if (holder && holder.instanceId !== instance.id) {

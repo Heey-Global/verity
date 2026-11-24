@@ -132,7 +132,10 @@ export async function managedRunProviderCurrent(
   }
 }
 
-export async function managedPreviewInstance(store: EventStore, input: CreatePreviewShareInput) {
+export async function managedPreviewInstance(
+  store: EventStore,
+  input: Pick<CreatePreviewShareInput, 'managedInstanceId' | 'sessionId'>,
+) {
   if (!input.managedInstanceId) return undefined;
   const instance = await store.managedDevServers.getInstance(input.managedInstanceId);
   if (!instance || instance.sessionId !== input.sessionId || instance.state !== 'running')

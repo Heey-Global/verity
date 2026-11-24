@@ -1,7 +1,12 @@
 import type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
 export type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
 import { phaseTimer, type PhaseTimer } from './preview-share-diagnostics.js';
-import { previewTargetIsLive, previewConnectorIsLive } from './preview-target-activity.js';
+import {
+  authorizedPreviewPort,
+  previewSandboxFor,
+  previewTargetIsLive,
+  previewConnectorIsLive,
+} from './preview-target-activity.js';
 import { managedRunProviderCurrent, managedPreviewInstance } from './managed-dev-server-secrets.js';
 import { validOpenCodeGatewayConfig } from './preview-artifact-validation.js';
 import {
@@ -26,6 +31,7 @@ import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import {
   type EventStore,
   type ProjectRecord,
+  type SessionRecord,
   type PublicPreviewShareRecord,
   type PublicPreviewShareState,
 } from '@verity/store';
@@ -190,13 +196,7 @@ export class PreviewShareManager {
     project: ProjectRecord,
     managedInstanceId: string | null | undefined,
   ): Promise<ProjectRecord & { previewNetwork: string }> {
-    const instance = managedInstanceId
-      ? await this.options.store.managedDevServers.getInstance(managedInstanceId)
-      : undefined;
-    if (instance === undefined || this.options.sandboxFor === undefined)
-      return { ...project, previewNetwork: projectNetworkName(project.id) };
-    const target = await this.options.sandboxFor(project, instance.lastRunUserId);
-    return { ...project, containerName: target.containerName, previewNetwork: target.networkName };
+    return previewSandboxFor(this.options, project, managedInstanceId);
   }
 
   async prepareLocalTarget(
@@ -233,7 +233,7 @@ export class PreviewShareManager {
       staticMount = this.staticMount(root, path);
     } else if (
       target.targetPort !== undefined &&
-      !(await this.sessionPortReachable(project, session.worktree, target.targetPort))
+      !(await this.reachableSessionPort(project, session, target.targetPort))
     ) {
       throw new PreviewShareConflictError('nothing in this session listens on that port');
     }
@@ -244,7 +244,7 @@ export class PreviewShareManager {
   hasLiveTarget(share: PublicPreviewShareRecord): Promise<boolean> {
     return previewTargetIsLive(share, this.options, {
       sandbox: (project, id) => this.previewSandbox(project, id),
-      sessionPort: (project, worktree, port) => this.sessionPortReachable(project, worktree, port),
+      sessionPort: (project, session, port) => this.reachableSessionPort(project, session, port),
       staticDirectory: async (project, worktree, path) => {
         await this.validateStaticDirectory(await this.staticSourceRoot(project, worktree), path);
       },
@@ -363,21 +363,11 @@ export class PreviewShareManager {
     return sessionDevServers(processes, sandboxWorktree);
   }
 
-  /** Only publish ports reachable over the project network or prepared forwarding. */
-  private async sessionPortReachable(
-    project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
-    worktree: string,
-    port: number,
-  ): Promise<boolean> {
-    const session = this.options.listSessionServers
-      ? (await this.options.store.listSessions()).find(
-          (entry) => entry.projectId === project.id && entry.worktree === worktree,
-        )
-      : undefined;
-    const servers = session
-      ? await this.options.listSessionServers!(session.sessionId, { fresh: true })
-      : await this.sessionServers(project, worktree, { fresh: true });
-    return servers.some(
+  private async reachableSessionPort(project: ProjectRecord, session: SessionRecord, port: number) {
+    const servers = this.options.listSessionServers
+      ? await this.options.listSessionServers(session.sessionId, { fresh: true })
+      : await this.sessionServers(project, session.worktree, { fresh: true });
+    return servers.find(
       (server) =>
         server.port === port && (server.reachable || this.options.prepareTargetPort !== undefined),
     );
@@ -449,7 +439,7 @@ export class PreviewShareManager {
       throw new PreviewShareInputError('PIN must contain exactly 6 digits');
     }
     const isStatic = input.staticPath !== undefined;
-    const managed = await managedPreviewInstance(this.options.store, input);
+    let managed = await managedPreviewInstance(this.options.store, input);
     if (managed && input.targetPort !== undefined && input.targetPort !== managed.sandboxPort)
       throw new PreviewShareInputError('managed server port changed; refresh and try again');
     const port = managed?.sandboxPort ?? input.targetPort;
@@ -484,21 +474,24 @@ export class PreviewShareManager {
     }
     const project = await this.options.store.getProject(projectId);
     if (!project) throw new PreviewShareNotFoundError('project not found');
-    if (managed && managed.projectId !== project.id)
-      throw new PreviewShareInputError('managed server does not belong to project');
     if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
-    const sandboxProject = await this.previewSandbox(project, managed?.id);
     if (devServer && !(await this.options.isDevServerRunning({ project, devServer }))) {
       throw new PreviewShareConflictError('dev server is not running');
     }
-    if (
-      port !== undefined &&
-      !(await this.sessionPortReachable(project, session!.worktree, port))
-    ) {
+    const target =
+      port === undefined ? undefined : await this.reachableSessionPort(project, session!, port);
+    if (port !== undefined && !target) {
       throw new PreviewShareConflictError(
         'nothing in this session listens on that port on a reachable address',
       );
     }
+    managed ??= await managedPreviewInstance(this.options.store, {
+      ...input,
+      managedInstanceId: target?.managedInstanceId,
+    });
+    if (managed && (managed.projectId !== project.id || managed.sandboxPort !== port))
+      throw new PreviewShareConflictError('managed server ownership or port changed');
+    const sandboxProject = await this.previewSandbox(project, managed?.id);
     if (
       managed &&
       !(await this.options.listListeningProcesses?.(project, { fresh: true }))?.some(
@@ -738,7 +731,13 @@ export class PreviewShareManager {
       }
       if (
         port !== undefined &&
-        !(await this.sessionPortReachable(project, session!.worktree, port))
+        !(await authorizedPreviewPort(
+          this.options.store,
+          project.id,
+          session!.sessionId,
+          await this.reachableSessionPort(project, session!, port),
+          managed?.id,
+        ))
       ) {
         throw new Error('the session port stopped listening while the share was being created');
       }
@@ -1174,11 +1173,11 @@ export class PreviewShareManager {
               devServer.containerPort !== String(share.targetPort) ||
               !(await this.options.isDevServerRunning({ project, devServer }));
           } else if (session && share.targetPort !== null) {
-            // A reused port must never expose another session on the retained link.
-            offline = !(await this.sessionPortReachable(
-              project,
-              session.worktree,
-              share.targetPort,
+            offline = !(await authorizedPreviewPort(
+              this.options.store,
+              project.id,
+              session.sessionId,
+              await this.reachableSessionPort(project, session, share.targetPort),
             ));
           }
         }

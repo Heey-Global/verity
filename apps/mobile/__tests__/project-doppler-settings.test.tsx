@@ -143,7 +143,7 @@ describe('project Doppler settings', () => {
     await waitFor(() => expect(listDopplerConfigs).toHaveBeenCalledWith('billing', connectionId));
     fireEvent.press(await screen.findByLabelText(/^dev(,|$)/));
     expect(
-      await screen.findByText('Agents write secrets as billing/dev/API_KEY'),
+      await screen.findByText('The first binding becomes the default. Agents can use API_KEY.'),
     ).toBeOnTheScreen();
     fireEvent.press(screen.getAllByLabelText(/^Add binding(,|$)/).at(-1)!);
     await waitFor(() =>

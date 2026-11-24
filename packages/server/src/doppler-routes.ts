@@ -281,6 +281,11 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
             (currentToken === undefined
               ? undefined
               : (await deps.dopplerWorkplace?.(currentToken.toString('utf8')))?.slug);
+          if (!currentWorkplace)
+            return reply.code(409).send({
+              error:
+                'Could not verify the existing Secret Job catalog workplace. Configure a new catalog connection and review its grants before resuming jobs.',
+            });
           if (currentWorkplace !== checked.workplace.slug)
             return reply.code(409).send({
               error:

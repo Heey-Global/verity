@@ -542,33 +542,40 @@ describe('managed dev servers', () => {
 
   // A sleeping sandbox must not turn the switch into an error: the start is
   // recorded, the sandbox wakes, and supervision starts the server afterwards.
-  it('wakes a sleeping sandbox and starts the server once it is up', async () => {
-    const wake = vi.fn(async () => {
-      await ctx.store.updateProjectState('p1', 'active');
-    });
-    await manager.close();
-    manager = new ManagedDevServerManager({
-      store: ctx.store,
-      runtime: sandbox.runtime,
-      localShares: shares.local,
-      networkPorts: [8100, 8101],
-      sandboxWorktree: (_project: ProjectRecord, worktree: string) => worktree,
-      wakeSandbox: wake,
-      now: () => now,
-    });
-    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
-    await ctx.store.updateProjectState('p1', 'sleeping');
-    await manager.start('s1', 'Demo', 'agent');
-    expect(await instanceOf()).toMatchObject({ state: 'starting', detail: 'Waking sandbox…' });
-    expect(manager.hasRunningServers('p1')).toBe(false);
-    expect(manager.hasUnverifiedServers('p1')).toBe(true);
-    expect(wake).toHaveBeenCalledWith('p1', 's1');
-    expect(sandbox.started).toHaveLength(0);
-    await vi.waitFor(async () => expect((await ctx.store.getProject('p1'))?.state).toBe('active'));
-    now += 10_000;
-    await manager.tick();
-    expect(sandbox.started).toHaveLength(1);
-  });
+  it.each([false, true])(
+    'starts after wake even when a prior process survives: %s',
+    async (survives) => {
+      const wake = vi.fn(async () => {
+        await ctx.store.updateProjectState('p1', 'active');
+      });
+      await manager.close();
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        localShares: shares.local,
+        networkPorts: [8100, 8101],
+        sandboxWorktree: (_project: ProjectRecord, worktree: string) => worktree,
+        wakeSandbox: wake,
+        now: () => now,
+      });
+      await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      if (survives) await manager.start('s1', 'Demo', 'agent');
+      await ctx.store.updateProjectState('p1', 'sleeping');
+      await manager.start('s1', 'Demo', 'agent');
+      expect(await instanceOf()).toMatchObject({ state: 'starting', detail: 'Waking sandbox…' });
+      expect(manager.hasRunningServers('p1')).toBe(false);
+      expect(manager.hasUnverifiedServers('p1')).toBe(true);
+      expect(wake).toHaveBeenCalledWith('p1', 's1');
+      expect(sandbox.started).toHaveLength(survives ? 1 : 0);
+      await vi.waitFor(async () =>
+        expect((await ctx.store.getProject('p1'))?.state).toBe('active'),
+      );
+      now += 10_000;
+      await manager.tick();
+      expect(sandbox.started).toHaveLength(survives ? 2 : 1);
+      if (survives) expect(sandbox.stop).toHaveBeenCalledOnce();
+    },
+  );
 
   // A parent process (npm, a watcher) can outlive its crashed server; the
   // address must not keep pointing at nothing.

@@ -29,9 +29,10 @@ export function managedServerSecretDescription(seen: ReturnType<typeof managedSe
   const snapshot = seen.providerSnapshot!;
   const sources =
     snapshot.sources?.map(({ project, config, connectionId, connectionLabel, workplaceSlug }) => {
-      const name = connectionLabel ?? 'Connection';
-      const identity = workplaceSlug ? `workplace ${workplaceSlug}` : connectionId;
-      return `${project} / ${config} · ${name} (${identity})`;
+      const clean = (value: string) => value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').trim();
+      const name = clean(connectionLabel ?? '') || 'Connection';
+      const identity = workplaceSlug ? `workplace ${clean(workplaceSlug)}` : clean(connectionId);
+      return `${clean(project)} / ${clean(config)} · ${name} (${identity})`;
     }) ??
     new Set(
       seen.secretBindings.map(({ secretAlias }) =>

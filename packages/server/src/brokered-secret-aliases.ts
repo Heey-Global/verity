@@ -76,12 +76,25 @@ export function createBrokeredSecretAliases(options: {
         token?.fill(0);
       }
     };
-    const entries = [];
+    const entries: Awaited<ReturnType<typeof loadNames>>[] = [];
+    const deadline = AbortSignal.timeout(15_000);
+    const timedOut = new Promise<false>((resolve) => {
+      deadline.addEventListener('abort', () => resolve(false), { once: true });
+    });
     const batchSize = 4;
     for (let start = 0; start < bindings.length; start += batchSize) {
-      entries.push(...(await Promise.all(bindings.slice(start, start + batchSize).map(loadNames))));
+      const batch = Promise.all(
+        bindings.slice(start, start + batchSize).map(async (binding, index) => {
+          const result = await loadNames(binding);
+          if (!deadline.aborted) entries[start + index] = result;
+        }),
+      );
+      if (!(await Promise.race([batch.then(() => true), timedOut]))) {
+        ttlMs = 10_000;
+        break;
+      }
     }
-    const names = secretReferenceNames(entries);
+    const names = secretReferenceNames(entries.flat());
     if (cache.size >= 256) {
       const oldestKey = cache.keys().next().value;
       if (oldestKey !== undefined) cache.delete(oldestKey);

@@ -71,7 +71,9 @@ warning that lists those projects and bindings. In one transaction it removes
 the connection, its bindings in every project, everyone's personal tokens for
 it and the grants of those bindings. Agents that still reference such a binding
 are told it is no longer connected. A connection pinned to the Secret Job catalog
-cannot be deleted or switched to another workplace. Reconfigure the catalog first.
+cannot be deleted or switched to another workplace behind an existing authorization.
+If the old workplace cannot be verified, configure a new catalog connection and
+review the catalog bindings and grants before resuming jobs.
 
 **Access.** Connections are administrator-only. Members with read permission
 see a project's bindings; adding, changing and removing them stays with
@@ -81,9 +83,9 @@ token.
 ## Consequences
 
 Projects can read from several configs and Doppler projects, across workplaces,
-without reusing one token for all of them. Existing installations keep working
-without changes: their token becomes one connection and their config the
-default binding, with grants and personal tokens carried over. Approval cards
+without reusing one token for all of them. Migration makes the existing token
+one connection and the existing config the default binding. See Rollout for
+which approvals and personal tokens need revalidation. Approval cards
 for a call that reads several bindings list them instead of one project and
 config. Older clients receive a conflict and an instruction to open the
 current connection picker when a change is ambiguous.

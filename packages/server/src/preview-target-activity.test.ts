@@ -1,6 +1,7 @@
 import { observeProjectActivity, activityReasons } from './project-idle-sleep.js';
 import type { PublicPreviewShareRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
+import type { SessionDevServer } from './listening-ports.js';
 import type { PreviewShareManagerOptions } from './preview-share-manager.js';
 import { previewTargetIsLive } from './preview-target-activity.js';
 
@@ -20,7 +21,7 @@ function fixture() {
   const options = {
     store: {
       getProject: async () => project,
-      getSession: async () => ({ projectId: 'p', worktree: '/work/session' }),
+      getSession: async () => ({ sessionId: 's', projectId: 'p', worktree: '/work/session' }),
       getDevServer: async () => ({ projectId: 'p', containerPort: '3000' }),
       managedDevServers: {
         getInstance: async () => ({
@@ -30,6 +31,7 @@ function fixture() {
           sandboxPort: 3000,
           desired: 'running',
           state: 'running',
+          lastRunSecretBindings: [],
         }),
       },
     },
@@ -38,15 +40,17 @@ function fixture() {
     isDevServerRunning: vi.fn(async () => true),
     listListeningProcesses: vi.fn(async () => [{ instanceId: 'm', port: 3000 }]),
   } as unknown as PreviewShareManagerOptions;
+  const port = { port: 3000, reachable: true, pid: 1, name: 'Demo', command: 'node', workdir: '.' };
   const probes = {
     sandbox: vi.fn(async () => project as never),
-    sessionPort: vi.fn(async () => true),
+    sessionPort: vi.fn<() => Promise<SessionDevServer | undefined>>(async () => port),
     staticDirectory: vi.fn(async () => {}),
   };
   return {
     share,
     options,
     probes,
+    port,
     inspectContainer,
     live: () => previewTargetIsLive(share, options, probes),
   };
@@ -56,10 +60,10 @@ describe('preview target activity', () => {
   it('requires a live session-owned port, without changing retained share intent', async () => {
     const f = fixture();
     expect(await f.live()).toBe(true);
-    f.probes.sessionPort.mockResolvedValue(false);
+    f.probes.sessionPort.mockResolvedValue(undefined);
     expect(await f.live()).toBe(false);
     expect(f.share.state).toBe('active');
-    f.probes.sessionPort.mockResolvedValue(true);
+    f.probes.sessionPort.mockResolvedValue(f.port);
     expect(await f.live()).toBe(true);
   });
   it('does not mistake an online offline-page connector for a live sandbox target', async () => {

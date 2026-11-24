@@ -6,13 +6,13 @@ import { fixture } from './preview-share-manager.test-helper.js';
 import { PreviewShareManager } from './preview-share-manager.js';
 
 describe('managed public links', () => {
-  function managedFixture() {
+  function managedFixture(legacyPort = false) {
     const f = fixture();
     let share: Awaited<ReturnType<EventStore['getPublicPreviewShare']>> = {
       ...f.record,
       devServerId: null,
       sessionId: 's1',
-      managedInstanceId: 'instance-1',
+      managedInstanceId: legacyPort ? null : 'instance-1',
       state: 'active',
       connectorContainerId: 'connector-id',
     };
@@ -89,6 +89,20 @@ describe('managed public links', () => {
       edge: f.edge,
       resolveConnectorImage: f.resolveConnectorImage,
       isDevServerRunning: async () => false,
+      listSessionServers: async () =>
+        running
+          ? [
+              {
+                port: instance!.sandboxPort,
+                managedInstanceId: instance!.id,
+                reachable: true,
+                pid: 42,
+                command: 'node server.mjs',
+                workdir: '.',
+                name: 'Demo',
+              },
+            ]
+          : [],
       listListeningProcesses: async () =>
         running
           ? [
@@ -153,6 +167,26 @@ describe('managed public links', () => {
     await f.manager.reconcile();
     expect(f.share().state).toBe('revoked');
     expect(f.edge.remove).toHaveBeenCalledWith('share-id');
+  });
+
+  it('checks a managed listener reached through a legacy port share', async () => {
+    const f = managedFixture(true);
+    f.runWithDoppler();
+    await f.manager.reconcile();
+    expect(f.share().state).toBe('active');
+    f.rotateDopplerToken();
+    await expect(
+      f.manager.create({
+        sessionId: 's1',
+        targetPort: 41000,
+        pin: '123456',
+        ttlSeconds: 3600,
+      }),
+    ).rejects.toThrow('Doppler access changed');
+    await f.manager.reconcile();
+    expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ env: expect.arrayContaining(['VERITY_PREVIEW_OFFLINE=1']) }),
+    );
   });
 
   it('takes public forwarding offline during an authority lookup failure and restores the same link', async () => {
