@@ -154,7 +154,9 @@ describe('Doppler connections (ADR 0031)', () => {
       ).toBe(201);
     const usage = await call(app, 'admin', 'GET', `/doppler/connections/${platform}/usage`);
     expect(
-      usage.json().projects.map((project: { projectId: string }) => project.projectId),
+      usage
+        .json<{ projects: { projectId: string }[] }>()
+        .projects.map((project) => project.projectId),
     ).toEqual(['p1', 'p2']);
     expect(
       (await call(app, 'admin', 'DELETE', `/doppler/connections/${platform}`)).statusCode,
@@ -199,10 +201,11 @@ describe('project Doppler bindings (ADR 0031)', () => {
       `/projects/p1/doppler/bindings/${billing.json().id}`,
       { isDefault: true },
     );
-    expect(moved.json().bindings.map((b: { reference: string }) => b.reference)).toEqual([
-      'billing/dev',
-      'portal/prd',
-    ]);
+    expect(
+      moved
+        .json<{ bindings: { reference: string }[] }>()
+        .bindings.map((binding) => binding.reference),
+    ).toEqual(['billing/dev', 'portal/prd']);
     expect((await store.getProjectSettings('p1'))?.dopplerProject).toBe('billing');
     // Another project's binding id is not this project's.
     expect(
