@@ -195,7 +195,12 @@ async function removeBinding(
 }
 
 async function lockProject(tx: Kysely<Database>, projectId: string): Promise<void> {
-  await tx.selectFrom('projects').select('id').where('id', '=', projectId).forUpdate().execute();
+  await tx
+    .selectFrom('projects')
+    .select('id')
+    .where('id', '=', projectId)
+    .forNoKeyUpdate()
+    .execute();
 }
 
 async function insertBinding(

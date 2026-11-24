@@ -83,6 +83,7 @@ async function previewTargetEvidence(
       project.id,
       session.sessionId,
       await probes.sessionPort(target, session, share.targetPort),
+      null,
     ))
   );
 }
@@ -130,10 +131,11 @@ export async function authorizedPreviewPort(
   projectId: string,
   sessionId: string,
   target: SessionDevServer | undefined,
-  expectedInstanceId?: string,
+  expectedInstanceId?: string | null,
 ): Promise<boolean> {
-  if (!target || (expectedInstanceId && expectedInstanceId !== target.managedInstanceId))
-    return false;
+  if (!target) return false;
+  if (expectedInstanceId === null) return target.managedInstanceId === undefined;
+  if (expectedInstanceId && expectedInstanceId !== target.managedInstanceId) return false;
   const managed = await managedPreviewInstance(store, {
     sessionId,
     managedInstanceId: expectedInstanceId ?? target.managedInstanceId,
@@ -167,7 +169,12 @@ export async function authorizedManagedPreviewPort(
     instance?.projectId === sandbox.id &&
     instance.sandboxPort === port &&
     (await options.listListeningProcesses?.(sandbox, { fresh: true }))?.some(
-      (listener) => listener.instanceId === managedInstanceId && listener.port === port,
+      (listener) =>
+        listener.instanceId === managedInstanceId &&
+        listener.port === port &&
+        (listener.bind === 'any' ||
+          listener.reachable === true ||
+          (listener.bind === 'loopback' && options.prepareTargetPort !== undefined)),
     ) === true
   );
 }

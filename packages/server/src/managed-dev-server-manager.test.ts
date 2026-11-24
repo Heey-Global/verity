@@ -726,7 +726,7 @@ describe('managed dev servers', () => {
 
     // An expired link with Local off leaves nothing anyone can open; the server
     // must not keep running unnoticed and keep the sandbox awake.
-    it('stops when the last public link ends while Local is off', async () => {
+    it.each([false, true])('stops after the last public link ends (retry: %s)', async (retry) => {
       await approvedDemo();
       await manager.start('s1', 'Demo', 'operator', { local: false });
       const instanceId = await listen();
@@ -734,7 +734,12 @@ describe('managed dev servers', () => {
       await manager.publicLinkEnded(instanceId);
       expect((await instanceOf()).state).toBe('running');
       await ctx.store.transitionPublicPreviewShare(share.id, ['active', 'creating'], 'expired', {});
+      if (retry) sandbox.stop.mockRejectedValueOnce(new Error('Docker unavailable'));
       await manager.publicLinkEnded(instanceId);
+      if (retry) {
+        expect((await instanceOf()).state).toBe('running');
+        await manager.tick();
+      }
       expect((await instanceOf()).state).toBe('stopped');
     });
 

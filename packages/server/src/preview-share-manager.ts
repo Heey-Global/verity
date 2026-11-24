@@ -378,7 +378,7 @@ export class PreviewShareManager {
     project: ProjectRecord,
     session: SessionRecord,
     port: number,
-    managedId?: string,
+    managedId?: string | null,
   ) {
     if (managedId)
       return authorizedManagedPreviewPort(
@@ -749,7 +749,7 @@ export class PreviewShareManager {
       }
       if (
         port !== undefined &&
-        !(await this.sessionPortAuthorized(sandboxProject, session!, port, managed?.id))
+        !(await this.sessionPortAuthorized(sandboxProject, session!, port, managed?.id ?? null))
       ) {
         throw new Error('the session port stopped listening while the share was being created');
       }
@@ -1181,7 +1181,7 @@ export class PreviewShareManager {
               devServer.containerPort !== String(share.targetPort) ||
               !(await this.options.isDevServerRunning({ project, devServer }));
           } else if (session && share.targetPort !== null) {
-            offline = !(await this.sessionPortAuthorized(project, session, share.targetPort));
+            offline = !(await this.sessionPortAuthorized(project, session, share.targetPort, null));
           }
         }
       }

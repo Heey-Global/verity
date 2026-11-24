@@ -258,7 +258,7 @@ export class ProjectSettingsStore {
           .selectFrom('projects')
           .select('id')
           .where('id', '=', projectId)
-          .forUpdate()
+          .forNoKeyUpdate()
           .execute();
       }
       // Ensure and lock the per-project settings row before applying the patch.

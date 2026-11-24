@@ -394,7 +394,7 @@ export class DopplerConnectionStore {
               .select('id')
               .where('id', 'in', projects)
               .orderBy('id')
-              .forUpdate()
+              .forNoKeyUpdate()
               .execute();
       for (const binding of bindings) {
         await deleteDopplerBindingGrants(tx, binding.project_id, {

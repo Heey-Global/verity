@@ -62,6 +62,12 @@ describe('preview target activity', () => {
     expect(await authorizedPreviewPort(f.options.store, 'p', 's', f.port, 'm')).toBe(false);
   });
 
+  it('does not route an unbound public link to a newly managed listener', async () => {
+    const f = fixture();
+    f.probes.sessionPort.mockResolvedValue({ ...f.port, managedInstanceId: 'm' });
+    expect(await f.live()).toBe(false);
+  });
+
   it('requires a live session-owned port, without changing retained share intent', async () => {
     const f = fixture();
     expect(await f.live()).toBe(true);

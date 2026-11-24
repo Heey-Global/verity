@@ -670,7 +670,7 @@ export class ManagedDevServerManager {
                 return;
             }
             if (await this.hasLivePublicLink(current)) return;
-            await this.stopInstance(project, current, null);
+            await this.stopInstance(project, current, null, true);
           });
       }
       this.pendingLinkEnds.delete(instanceId);
@@ -1366,7 +1366,7 @@ export class ManagedDevServerManager {
               (instance.accessStartedAt ?? instance.startedAt)!.getTime(),
         );
         if (!live && ended) {
-          await this.stopInstance(project, instance, null);
+          await this.stopInstance(project, instance, null, true);
           changed = true;
           continue;
         }

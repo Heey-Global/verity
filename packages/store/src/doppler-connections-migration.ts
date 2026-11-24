@@ -107,11 +107,17 @@ export const dopplerConnectionsMigration: Migration = {
       throw new Error(
         'Cannot downgrade Doppler connections while newer approval decisions or execution claims exist.',
       );
-    await sql`delete from brokered_tool_approvals
-      where authorization_snapshot::jsonb ? 'bindings'
-        or (status in ('pending', 'approved') and exists (
-          select 1 from doppler_connections where id = ${LEGACY_DOPPLER_CONNECTION_ID}
-            and token_revision is not null))`.execute(db);
+    await sql`delete from brokered_tool_approvals a
+      where a.authorization_snapshot::jsonb ? 'bindings'
+        or (a.status in ('pending', 'approved') and not exists (
+          select 1 from project_doppler_bindings b join doppler_connections c on c.id = b.connection_id
+          where b.project_id = a.project_id and b.is_default
+            and c.id = ${LEGACY_DOPPLER_CONNECTION_ID} and c.token_revision is null
+            and b.created_at = c.created_at
+            and b.doppler_project = a.authorization_snapshot::jsonb ->> 'dopplerProject'
+            and b.doppler_config = a.authorization_snapshot::jsonb ->> 'dopplerConfig'))`.execute(
+      db,
+    );
     // The old app can only use a default binding on the legacy workplace. Clear
     // complete pairs from other workplaces instead of resolving them via the old token.
     await sql`update project_settings s set doppler_project = null, doppler_config = null
