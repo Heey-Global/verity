@@ -20,7 +20,7 @@ import { readOrMigrateProjectOverview } from './project-overview-file.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
 import { branchRenameAppliesToSession } from './embedded-support.js';
 import { personForCredential } from './personless-credential.js';
-import { brokeredSecretReferences } from './brokered-http-tool.js';
+import { brokeredGrantReferences } from './brokered-grant-references.js';
 import {
   brokeredDopplerBindingId,
   brokeredDopplerSnapshotApplies,
@@ -125,18 +125,9 @@ export function createEmbeddedConductorBindings(ctx: {
     brokeredSecretAliases,
     // ADR 0011 D2: scoped operator grants auto-approve matching brokered-secret prompts.
     checkBrokeredHttpGrant: async (input) => {
-      // Without a gateway-supplied binding, the grant must cover every binding the
-      // request reads, JWT claim references included; unreadable input never matches.
       const fallbackGrantBindingId = async (call: typeof input) => {
-        let references: readonly string[] = [call.secretAlias];
-        if (call.toolName === 'verity_http_request') {
-          try {
-            references = brokeredSecretReferences(call.toolName, call.request);
-          } catch {
-            return undefined;
-          }
-        }
-        return brokeredGrantBindingIdFor(call.projectId, references);
+        const references = brokeredGrantReferences(call.toolName, call.request, call.secretAlias);
+        return references && brokeredGrantBindingIdFor(call.projectId, references);
       };
       // A grant is per Doppler binding (ADR 0031): the call's own binding id when the
       // gateway supplied it, else the one its references read from now.
