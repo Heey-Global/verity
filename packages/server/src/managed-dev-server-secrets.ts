@@ -1,4 +1,3 @@
-import type { CreatePreviewShareInput } from './preview-share-types.js';
 import { PreviewShareConflictError } from './preview-network-policy.js';
 import { createHash } from 'node:crypto';
 import type { ManagedServerProviderSnapshot } from '@verity/events';
@@ -136,7 +135,7 @@ export class ManagedPreviewAuthorityError extends PreviewShareConflictError {}
 
 export async function managedPreviewInstance(
   store: EventStore,
-  input: Pick<CreatePreviewShareInput, 'managedInstanceId' | 'sessionId'>,
+  input: { managedInstanceId?: string | null | undefined; sessionId?: string | null | undefined },
 ) {
   if (!input.managedInstanceId) return undefined;
   const instance = await store.managedDevServers.getInstance(input.managedInstanceId);
@@ -217,4 +216,16 @@ export async function approvedManagedRunAuthority(
     (await store.managedDevServers.get(instance.serverId))?.approvedBy === person
     ? approval
     : undefined;
+}
+
+export function priorManagedSandbox(
+  instance: ManagedDevServerInstanceRecord,
+  queuedUserId: string | null,
+): string | null {
+  return (
+    instance.previousRunSandboxUserId ??
+    (instance.lastRunCommand && instance.lastRunUserId !== queuedUserId
+      ? (instance.lastRunUserId ?? '')
+      : null)
+  );
 }

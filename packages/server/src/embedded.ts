@@ -140,6 +140,7 @@ import * as devServerSecrets from './managed-dev-server-secrets.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
+import { isManagedSandboxRunning } from './managed-dev-server-recovery.js';
 import { ListenerDiscovery } from './listener-discovery.js';
 export { parsePort } from './deployment-port.js';
 import {
@@ -449,12 +450,12 @@ export async function buildEmbeddedServer(
   const { materializeOpenCodeConfig, codexModelCatalog } = models;
 
   const { projectDocker, runtimeDocker, resolvePreviewUser } = createEmbeddedDocker(config);
-  // Filled once the managed dev server manager exists, further down.
   const managedLinkEnded: { current?: (instanceId: string, shareId: string) => void } = {};
   const listenerRuntime = new DockerProjectRuntime({
     resolveUser: resolvePreviewUser,
     dockerBaseUrl: config.dockerBaseUrl,
   });
+  const scanPreviewListeners = listenerRuntime.listWebListeningProcesses.bind(listenerRuntime);
   const listListeningProcesses = (project: ProjectRecord, options?: { fresh?: boolean }) =>
     listenerDiscovery?.listListeningProcesses(project, options) ??
     listenerRuntime.listWebListeningProcesses(project, options);
@@ -519,11 +520,11 @@ export async function buildEmbeddedServer(
         new DockerProjectRuntime({
           resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
-          listListeningProcesses: listenerRuntime.listWebListeningProcesses.bind(listenerRuntime),
+          listListeningProcesses: scanPreviewListeners,
         }).ensurePreviewTarget(project, port),
       listSessionServers: (sessionId, options) =>
         listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
-      listListeningProcesses: listenerRuntime.listWebListeningProcesses.bind(listenerRuntime),
+      listListeningProcesses: scanPreviewListeners,
       edge: uplinkControl,
       // The same deferred logger as the client's: this manager is built just as
       // far ahead of `app`, and its timing lines belong next to the Uplink's.
@@ -840,7 +841,6 @@ export async function buildEmbeddedServer(
 
   const localConnectorImage =
     config.resolvePreviewConnectorImage ?? config.publicPreviews?.resolveConnectorImage;
-  // `app.log` exists only once the control plane is built further down.
   const managedDevServerLog: {
     current?: (message: string, detail?: Record<string, unknown>) => void;
   } = {};
@@ -856,15 +856,14 @@ export async function buildEmbeddedServer(
           ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
           ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
           isDevServerRunning: () => Promise.resolve(false),
-          listListeningProcesses: listenerRuntime.listWebListeningProcesses.bind(listenerRuntime),
+          listListeningProcesses: scanPreviewListeners,
           listSessionServers: (sessionId, options) =>
             listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
           prepareTargetPort: (project, port) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
               dockerBaseUrl: config.dockerBaseUrl,
-              listListeningProcesses:
-                listenerRuntime.listWebListeningProcesses.bind(listenerRuntime),
+              listListeningProcesses: scanPreviewListeners,
             }).ensurePreviewTarget(project, port),
           publicHost: process.env.VERITY_LOCAL_PREVIEW_HOST ?? 'localhost',
           connectorHost: hostname(),
@@ -890,6 +889,7 @@ export async function buildEmbeddedServer(
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
+      sandboxRunning: (name) => isManagedSandboxRunning(projectDocker, name),
       providerSnapshot: async (projectId, bindings) =>
         devServerSecrets.managedDevServerProviderSnapshot(
           await eventStore.projectDopplerBindings.list(projectId),

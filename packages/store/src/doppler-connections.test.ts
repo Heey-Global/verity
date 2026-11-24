@@ -515,9 +515,8 @@ it.each(['rotation', 'replacement'] as const)(
           await upgraded.userDopplerConnections.tokenBytes('lena', 'p1', 'legacy-doppler')
         )?.toString(),
       ).toBe('dp.st.lena');
-      const [migratedBinding] = await upgraded.projectDopplerBindings.list('p1');
       const personal = await upgraded.userDopplerConnections.statuses('lena', 'p1');
-      expect(personal.get('legacy-doppler')?.validatedBindingIds).toEqual([migratedBinding?.id]);
+      expect(personal.get('legacy-doppler')?.validatedBindingIds).toEqual([]);
       const older = await upgraded.userDopplerConnections.statuses('older', 'p1');
       expect(older.get('legacy-doppler')?.validatedBindingIds).toEqual([]);
       const grants = await sql<{ binding_id: string }>`

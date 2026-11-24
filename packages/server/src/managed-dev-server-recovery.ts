@@ -1,4 +1,5 @@
-import type { ProjectRecord } from '@verity/store';
+import { DockerError, type DockerClient } from './docker.js';
+import type { EventStore, ManagedDevServerInstanceRecord, ProjectRecord } from '@verity/store';
 import type { ManagedDevServerManagerOptions } from './managed-dev-server-manager.js';
 
 /** Recovery must probe the replacement, never reuse pre-replacement liveness. */
@@ -43,4 +44,55 @@ export async function stopOrphanManagedProcesses(
     if (!wanted.has(tag))
       await options.runtime.stopManagedServer(project, tag).catch(() => undefined);
   }
+}
+
+export async function managedSiblingEnvironment(
+  servers: EventStore['managedDevServers'],
+  projectId: string,
+  sessionId: string,
+  exceptServerId: string,
+): Promise<Record<string, string>> {
+  const [entries, instances] = await Promise.all([
+    servers.list(projectId),
+    servers.listInstances({ sessionId }),
+  ]);
+  const env: Record<string, string> = {};
+  for (const instance of instances) {
+    if (instance.serverId === exceptServerId) continue;
+    if (instance.state !== 'running' && instance.state !== 'starting') continue;
+    const entry = entries.find((value) => value.id === instance.serverId);
+    if (entry)
+      env[`VERITY_SERVER_${entry.nameKey}_URL`] =
+        `http://127.0.0.1:${String(instance.sandboxPort)}`;
+  }
+  return env;
+}
+
+export async function isManagedSandboxRunning(
+  docker: DockerClient,
+  name: string,
+): Promise<boolean> {
+  try {
+    return (await docker.inspectContainer(name)).running;
+  } catch (error) {
+    if (error instanceof DockerError && error.kind === 'container_not_found') return false;
+    throw error;
+  }
+}
+
+export async function stopPreviousManagedRun(
+  options: Pick<ManagedDevServerManagerOptions, 'store' | 'runtime' | 'sandboxRunning'>,
+  instance: ManagedDevServerInstanceRecord,
+  inSandbox: (userId: string | null) => Promise<ProjectRecord>,
+): Promise<ManagedDevServerInstanceRecord> {
+  if (instance.previousRunSandboxUserId == null) return instance;
+  const target = await inSandbox(instance.previousRunSandboxUserId || null);
+  await options.runtime.stopManagedServer(target, instance.id).catch(async (error: unknown) => {
+    if ((await options.sandboxRunning?.(target.containerName)) !== false) throw error;
+  });
+  return (
+    (await options.store.managedDevServers.updateInstance(instance.id, {
+      previousRunSandboxUserId: null,
+    })) ?? instance
+  );
 }

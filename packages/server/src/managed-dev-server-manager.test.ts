@@ -577,6 +577,43 @@ describe('managed dev servers', () => {
     },
   );
 
+  it.each([false, true])(
+    'fences the previous sandbox before launching a queued start (missing: %s)',
+    async (missing) => {
+      await manager.close();
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        networkPorts: [8100, 8101],
+        sandboxWorktree: (_project, worktree) => worktree,
+        sandboxContainer: async (_project, userId) => `sandbox-${userId ?? 'shared'}`,
+        wakeSandbox: async () => {},
+        sandboxRunning: async () => !missing,
+        now: () => now,
+      });
+      const entry = await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+      await manager.approve('s1', 'Demo', { command: entry.command, workdir: '.' });
+      await manager.start('s1', 'Demo', 'operator', { person: 'first' });
+      const id = sandbox.started[0]!.instanceId;
+      await ctx.store.updateProjectState('p1', 'sleeping');
+      await manager.start('s1', 'Demo', 'operator', { person: 'second' });
+      expect((await ctx.store.managedDevServers.getInstance(id))?.previousRunSandboxUserId).toBe(
+        'first',
+      );
+      await ctx.store.updateProjectState('p1', 'active');
+      if (missing) sandbox.stop.mockRejectedValueOnce(new Error('sandbox missing'));
+      await manager.tick();
+      expect(sandbox.stop).toHaveBeenCalledWith(
+        expect.objectContaining({ containerName: 'sandbox-first' }),
+        id,
+      );
+      expect(sandbox.started).toHaveLength(2);
+      expect(
+        (await ctx.store.managedDevServers.getInstance(id))?.previousRunSandboxUserId,
+      ).toBeNull();
+    },
+  );
+
   // A parent process (npm, a watcher) can outlive its crashed server; the
   // address must not keep pointing at nothing.
   it('crashes a running server that stays off its port while processes live', async () => {

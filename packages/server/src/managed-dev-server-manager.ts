@@ -1,6 +1,8 @@
 import type { ManagedServerProviderSnapshot } from '@verity/events';
 import {
+  managedSiblingEnvironment,
   stopOrphanManagedProcesses,
+  stopPreviousManagedRun,
   verifyRecoveryInstances,
 } from './managed-dev-server-recovery.js';
 import {
@@ -8,6 +10,7 @@ import {
   managedProviderApproved,
   managedRunApproved,
   approvedManagedRunAuthority,
+  priorManagedSandbox,
   managedRunProviderCurrent,
 } from './managed-dev-server-secrets.js';
 import { ManagedDevServerLiveness } from './managed-dev-server-liveness.js';
@@ -124,6 +127,7 @@ export interface ManagedDevServerManagerOptions {
     | undefined;
   /** Defer supervision until durable preview ownership is loaded and the store is unlocked. */
   canSupervise?: () => boolean;
+  sandboxRunning?: (containerName: string) => Promise<boolean>;
   /** Absent when local previews are unavailable; entries then run without an address. */
   localShares?: ManagedLocalShares | undefined;
   /** The local preview range, the only ports anyone sees. */
@@ -913,6 +917,10 @@ export class ManagedDevServerManager {
         state: 'starting',
         detail: WAKING_DETAIL,
         lastRunProviderAuthority: authority,
+        previousRunSandboxUserId: priorManagedSandbox(
+          instance,
+          by === 'recovery' ? instance.lastRunUserId : person,
+        ),
         lastRunCommand:
           by === 'recovery' ? (instance.lastRunCommand ?? entry.command) : entry.command,
         lastRunSecretBindings:
@@ -1026,7 +1034,7 @@ export class ManagedDevServerManager {
       });
       return;
     }
-    const siblings = await this.siblingEnv(project, sessionId, entry.id);
+    const siblings = await managedSiblingEnvironment(this.servers, project.id, sessionId, entry.id);
     let secrets: { env: string; value: string }[] = [];
     let runAuthority: string | null = null;
     try {
@@ -1128,25 +1136,10 @@ export class ManagedDevServerManager {
     });
   }
 
-  private async siblingEnv(
-    project: ProjectRecord,
-    sessionId: string,
-    exceptServerId: string,
-  ): Promise<Record<string, string>> {
-    const [entries, instances] = await Promise.all([
-      this.servers.list(project.id),
-      this.servers.listInstances({ sessionId }),
-    ]);
-    const env: Record<string, string> = {};
-    for (const instance of instances) {
-      if (instance.serverId === exceptServerId) continue;
-      if (instance.state !== 'running' && instance.state !== 'starting') continue;
-      const entry = entries.find((value) => value.id === instance.serverId);
-      if (entry)
-        env[`VERITY_SERVER_${entry.nameKey}_URL`] =
-          `http://127.0.0.1:${String(instance.sandboxPort)}`;
-    }
-    return env;
+  private async stopPriorRun(project: ProjectRecord, instance: ManagedDevServerInstanceRecord) {
+    return stopPreviousManagedRun(this.options, instance, (userId) =>
+      this.inSandbox(project, userId),
+    );
   }
 
   private async stopInstance(
@@ -1156,15 +1149,17 @@ export class ManagedDevServerManager {
     retryOnFailure = false,
   ): Promise<void> {
     this.liveness.remove(instance.id);
-    if (!retryOnFailure) await this.servers.updateInstance(instance.id, { desired: 'stopped' });
+    const retry = retryOnFailure || instance.previousRunSandboxUserId != null;
+    if (!retry) await this.servers.updateInstance(instance.id, { desired: 'stopped' });
     try {
       await this.unpublish(instance);
     } finally {
       if (project.state === 'active' && project.containerName)
-        await this.inSandbox(project, instance.lastRunUserId)
+        await this.stopPriorRun(project, instance)
+          .then(() => this.inSandbox(project, instance.lastRunUserId))
           .then((target) => this.options.runtime.stopManagedServer(target, instance.id))
           .catch((error: unknown) => {
-            if (retryOnFailure) throw error;
+            if (retry) throw error;
           });
       await this.servers.updateInstance(instance.id, {
         desired: 'stopped',
@@ -1341,9 +1336,10 @@ export class ManagedDevServerManager {
     };
     let changed = false;
     for (const snapshot of instances) {
-      // Re-read under the project lock: a stop since the pass began wins.
-      const instance = await this.servers.getInstance(snapshot.id);
-      if (!instance || instance.desired !== 'running') continue;
+      const saved = await this.servers.getInstance(snapshot.id);
+      if (!saved || saved.desired !== 'running') continue;
+      const instance = await this.stopPriorRun(project, saved).catch(() => undefined);
+      if (!instance) continue;
       if (!instance.localAccess) {
         await this.unpublish(instance).catch(() => undefined);
         const links = await this.options.store.listPublicPreviewShares(projectId);

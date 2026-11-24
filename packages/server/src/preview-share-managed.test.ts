@@ -214,6 +214,23 @@ describe('managed public links', () => {
     );
   });
 
+  it('does not start a connector if the token changes during container creation', async () => {
+    const f = managedFixture();
+    f.runWithDoppler();
+    const create = f.docker.createContainer.getMockImplementation()!;
+    f.docker.createContainer.mockImplementationOnce(async (spec) => {
+      f.rotateDopplerToken();
+      return create(spec);
+    });
+    await expect(f.manager.reconcile()).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({ message: expect.stringContaining('Doppler access changed') }),
+      ],
+    });
+    expect(f.docker.startContainer).not.toHaveBeenCalled();
+    expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+  });
+
   it('takes public forwarding offline during an authority lookup failure and restores the same link', async () => {
     const f = managedFixture();
     f.runWithDoppler();

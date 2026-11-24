@@ -70,11 +70,7 @@ export const dopplerConnectionsMigration: Migration = {
       add primary key (user_id, project_id, connection_id)`.execute(db);
     await sql`alter table user_doppler_connections
       add column validated_binding_ids text[] not null default '{}'`.execute(db);
-    // Legacy tokens can predate a project settings change. Ask those members to validate again.
-    await sql`update user_doppler_connections u set validated_binding_ids = array[b.id]
-      from project_doppler_bindings b join project_settings s on s.project_id = b.project_id
-      where b.project_id = u.project_id and b.connection_id = u.connection_id
-        and b.is_default and u.updated_at >= s.updated_at`.execute(db);
+    // Legacy tokens stay encrypted but must be revalidated against a verified workplace.
     // Grants were keyed by project and config alone; key them by the binding.
     const bindings = await sql<{
       project_id: string;

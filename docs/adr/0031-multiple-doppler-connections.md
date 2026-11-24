@@ -103,8 +103,8 @@ on the new Core. Existing approvals without identifiable sources require
 review again. Core stops an existing secret-bearing dev server whose launch
 authority is unknown or stale, and a renewed approval applies only to a fresh
 process. Secret-free dev servers do not require a provider authority.
-Legacy personal tokens that predate a settings update require revalidation
-because the old schema did not record which config each token was checked against.
+Existing personal tokens remain encrypted. Members must revalidate them
+because the old schema did not record a verified workplace for the connection.
 Downgrade is blocked if newer denials or execution claims exist that the older
 gateway would be unable to enforce, or a Secret Job catalog may reference a
 connection that the older Core cannot identify.

@@ -360,7 +360,6 @@ export class PreviewShareManager {
     try {
       processes = await this.options.listListeningProcesses(project, options);
     } catch {
-      // Probe failures remain unknown without exposing raw runner output.
       throw new PreviewShareConflictError('could not inspect the project sandbox');
     }
     return sessionDevServers(processes, sandboxWorktree);
@@ -1408,6 +1407,7 @@ export class PreviewShareManager {
       created = await this.options.docker.createContainer(spec);
     }
     try {
+      if (!offline) await managedPreviewInstance(this.options.store, share);
       await this.options.docker.startContainer(created.id);
       timer?.mark('connectorStart');
       await this.waitConnectorReady(created.id);

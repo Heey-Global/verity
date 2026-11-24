@@ -709,12 +709,12 @@ migrations['0242_doppler_connections'] = dopplerConnectionsMigration;
 
 migrations['0243_managed_dev_server_run_authority'] = {
   async up(db: Kysely<unknown>): Promise<void> {
-    await sql`alter table managed_dev_server_instances add column last_run_provider_authority text`.execute(
+    await sql`alter table managed_dev_server_instances add column last_run_provider_authority text, add column previous_run_sandbox_user_id text`.execute(
       db,
     );
   },
   async down(db: Kysely<unknown>): Promise<void> {
-    await sql`alter table managed_dev_server_instances drop column last_run_provider_authority`.execute(
+    await sql`alter table managed_dev_server_instances drop column last_run_provider_authority, drop column previous_run_sandbox_user_id`.execute(
       db,
     );
   },
