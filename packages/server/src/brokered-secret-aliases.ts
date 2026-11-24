@@ -57,27 +57,30 @@ export function createBrokeredSecretAliases(options: {
     cache.delete(cacheKey);
     if (bindings.length === 0) return [];
     let ttlMs = 60_000;
-    const entries = await Promise.all(
-      bindings.map(async (binding) => {
-        let token: Uint8Array | undefined;
-        try {
-          token = await options.credentialFor(userId, projectId, binding.connectionId, binding);
-          const names = await options.listNames({
-            dopplerProject: binding.dopplerProject,
-            dopplerConfig: binding.dopplerConfig,
-            token,
-          });
-          return { binding, names };
-        } catch {
-          // Keep provider outages best-effort without paying the same network timeout
-          // at the start of every turn. Retry soon enough to recover automatically.
-          ttlMs = 10_000;
-          return { binding, names: [] };
-        } finally {
-          token?.fill(0);
-        }
-      }),
-    );
+    const loadNames = async (binding: (typeof bindings)[number]) => {
+      let token: Uint8Array | undefined;
+      try {
+        token = await options.credentialFor(userId, projectId, binding.connectionId, binding);
+        const names = await options.listNames({
+          dopplerProject: binding.dopplerProject,
+          dopplerConfig: binding.dopplerConfig,
+          token,
+        });
+        return { binding, names };
+      } catch {
+        // Keep provider outages best-effort without paying the same network timeout
+        // at the start of every turn. Retry soon enough to recover automatically.
+        ttlMs = 10_000;
+        return { binding, names: [] };
+      } finally {
+        token?.fill(0);
+      }
+    };
+    const entries = [];
+    const batchSize = 4;
+    for (let start = 0; start < bindings.length; start += batchSize) {
+      entries.push(...(await Promise.all(bindings.slice(start, start + batchSize).map(loadNames))));
+    }
     const names = secretReferenceNames(entries);
     if (cache.size >= 256) {
       const oldestKey = cache.keys().next().value;

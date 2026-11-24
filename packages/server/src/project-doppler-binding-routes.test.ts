@@ -35,7 +35,10 @@ const readable: Record<string, string[]> = {
   'dp.sa.payments': ['billing/dev'],
 };
 
-function server(beforeList?: () => Promise<unknown>): FastifyInstance {
+function server(
+  beforeList?: () => Promise<unknown>,
+  secretJobDopplerConnectionId?: string,
+): FastifyInstance {
   const app = Fastify();
   app.decorateRequest('localUserId', null);
   app.addHook('onRequest', async (request) => {
@@ -69,6 +72,10 @@ function server(beforeList?: () => Promise<unknown>): FastifyInstance {
   );
   registerDopplerRoutes(app, {
     eventStore: store,
+    secretJobDopplerConnectionId,
+    dopplerCredentialReader: (id) =>
+      id ? store.dopplerConnections.tokenBytes(id) : Promise.resolve(undefined),
+    dopplerListConfigs: async () => [{ name: 'prd' }],
     listNames,
     dopplerValidate: async (token) =>
       token in readable ? { ok: true } : { ok: false, error: 'Doppler rejected the token' },
@@ -96,6 +103,53 @@ const addConnection = async (app: FastifyInstance, label: string, token: string)
   (await call(app, 'admin', 'POST', '/doppler/connections', { label, token })).json<{
     id: string;
   }>().id;
+
+it('rejects a selection from a catalog browsed before the token rotated', async () => {
+  const app = server();
+  try {
+    const connectionId = await addConnection(app, 'Platform', 'dp.sa.platform');
+    const catalog = await call(
+      app,
+      'admin',
+      'GET',
+      `/doppler/configs?project=portal&connectionId=${connectionId}`,
+    );
+    const { connectionRevision } = catalog.json<{ connectionRevision: string | null }>();
+    expect(connectionRevision).toBeNull();
+    await store.dopplerConnections.update(connectionId, { token: 'dp.sa.platform-next' });
+    const response = await call(app, 'manager', 'POST', '/projects/p1/doppler/bindings', {
+      connectionId,
+      connectionRevision,
+      dopplerProject: 'portal',
+      dopplerConfig: 'prd',
+    });
+    expect(response.statusCode).toBe(409);
+    expect(await store.projectDopplerBindings.list('p1')).toEqual([]);
+  } finally {
+    await app.close();
+  }
+});
+
+it('protects a Secret Job catalog connection even without project bindings', async () => {
+  const connectionId = await store.dopplerConnections.add({
+    label: 'Catalog',
+    token: 'dp.sa.platform',
+    workplace: { slug: 'platform', name: null },
+  });
+  const app = server(undefined, connectionId);
+  try {
+    expect(
+      (
+        await call(app, 'admin', 'DELETE', `/doppler/connections/${connectionId}`, {
+          bindingIds: [],
+        })
+      ).statusCode,
+    ).toBe(409);
+    expect(await store.dopplerConnections.get(connectionId)).toBeDefined();
+  } finally {
+    await app.close();
+  }
+});
 
 it('rejects a binding if its instance token rotates during validation', async () => {
   const connectionId = await store.dopplerConnections.add({

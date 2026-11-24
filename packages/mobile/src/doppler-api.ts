@@ -18,6 +18,7 @@ export const dopplerConnectionSchema = z.object({
 export type DopplerConnection = z.infer<typeof dopplerConnectionSchema>;
 
 export const dopplerConnectionUsageSchema = z.object({
+  deletionBlockedReason: z.string().optional(),
   projects: z.array(
     z.object({
       projectId: z.string(),
@@ -106,7 +107,10 @@ export type DopplerConfigSummary = z.infer<typeof dopplerConfigSummarySchema>;
  *  redacted `{ error }` envelope. `error: 'locked'` = the store is sealed;
  *  `'not configured'` = no account token. The token is NEVER on the wire. */
 export const dopplerProjectsResultSchema = z.union([
-  z.object({ projects: z.array(dopplerProjectSummarySchema) }),
+  z.object({
+    projects: z.array(dopplerProjectSummarySchema),
+    connectionRevision: z.string().nullable().optional(),
+  }),
   z.object({ error: z.string() }),
 ]);
 export type DopplerProjectsResult = z.infer<typeof dopplerProjectsResultSchema>;
@@ -115,7 +119,10 @@ export type DopplerProjectsResult = z.infer<typeof dopplerProjectsResultSchema>;
  *  project's configs from the TRUSTED account token, or a redacted `{ error }`
  *  envelope (`'locked'` / `'not configured'` / `'project is required'`). */
 export const dopplerConfigsResultSchema = z.union([
-  z.object({ configs: z.array(dopplerConfigSummarySchema) }),
+  z.object({
+    configs: z.array(dopplerConfigSummarySchema),
+    connectionRevision: z.string().nullable().optional(),
+  }),
   z.object({ error: z.string() }),
 ]);
 export type DopplerConfigsResult = z.infer<typeof dopplerConfigsResultSchema>;
@@ -170,7 +177,12 @@ export function dopplerClient(request: Request) {
     },
     addBinding: async (
       projectId: string,
-      input: { connectionId: string; dopplerProject: string; dopplerConfig: string },
+      input: {
+        connectionId: string;
+        dopplerProject: string;
+        dopplerConfig: string;
+        connectionRevision?: string | null | undefined;
+      },
     ): Promise<ProjectDopplerBinding> => {
       const res = await request(bindings(projectId), json('POST', input));
       return projectDopplerBindingSchema.parse(await res.json());

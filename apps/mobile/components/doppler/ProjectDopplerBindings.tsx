@@ -55,9 +55,12 @@ export function ProjectDopplerBindings({
   const [error, setError] = useState<string>();
   const [failedLookup, setFailedLookup] = useState<'projects' | 'configs'>();
   const [token, setToken] = useState('');
-  const [picked, setPicked] = useState<{ connection?: string; project?: string; config?: string }>(
-    {},
-  );
+  const [picked, setPicked] = useState<{
+    connection?: string;
+    project?: string;
+    config?: string;
+    connectionRevision?: string | null | undefined;
+  }>({});
   const [options, setOptions] = useState<{ projects?: string[]; configs?: string[] }>({});
   const pickerRequest = useRef(0);
   const list = bindings.data ?? [];
@@ -120,6 +123,7 @@ export function ProjectDopplerBindings({
     }
   };
   const run = async (action: () => Promise<unknown>, failure: string) => {
+    const generation = pickerRequest.current;
     setBusy(true);
     setError(undefined);
     try {
@@ -127,6 +131,18 @@ export function ProjectDopplerBindings({
       close();
       bindings.reload();
     } catch (cause) {
+      if (generation !== pickerRequest.current) return;
+      if (
+        cause instanceof VerityApiError &&
+        cause.code === 'doppler_token_changed' &&
+        picked.connection
+      ) {
+        void pickConnection(
+          picked.connection,
+          'The Doppler token changed. Select the project and config again.',
+        );
+        return;
+      }
       setError(cause instanceof Error ? cause.message : failure);
     } finally {
       setBusy(false);
@@ -175,9 +191,9 @@ export function ProjectDopplerBindings({
       setBusy(false);
     }
   };
-  const pickConnection = async (connectionId: string) => {
+  const pickConnection = async (connectionId: string, notice?: string) => {
     const request = ++pickerRequest.current;
-    setError(undefined);
+    setError(notice);
     setFailedLookup(undefined);
     setPicked({ connection: connectionId });
     setOptions({});
@@ -186,7 +202,10 @@ export function ProjectDopplerBindings({
     if (result === undefined || 'error' in result) {
       setFailedLookup('projects');
       setError(result?.error === 'locked' ? 'Unlock the secret store first.' : result?.error);
-    } else setOptions({ projects: result.projects.map((project) => project.slug) });
+    } else {
+      setPicked({ connection: connectionId, connectionRevision: result.connectionRevision });
+      setOptions({ projects: result.projects.map((project) => project.slug) });
+    }
   };
   const pickProject = async (project: string) => {
     const request = ++pickerRequest.current;
@@ -201,6 +220,11 @@ export function ProjectDopplerBindings({
     if (result === undefined || 'error' in result) {
       setFailedLookup('configs');
       setError(result?.error === 'locked' ? 'Unlock the secret store first.' : result?.error);
+    } else if (result.connectionRevision !== picked.connectionRevision && picked.connection) {
+      await pickConnection(
+        picked.connection,
+        'The Doppler token changed. Select the project and config again.',
+      );
     } else setOptions((current) => ({ ...current, configs: result.configs.map((c) => c.name) }));
   };
 
@@ -330,6 +354,9 @@ export function ProjectDopplerBindings({
                 connectionId: picked.connection!,
                 dopplerProject: picked.project!,
                 dopplerConfig: picked.config!,
+                ...(picked.connectionRevision !== undefined
+                  ? { connectionRevision: picked.connectionRevision }
+                  : {}),
               }),
             'Could not add the Doppler binding.',
           )

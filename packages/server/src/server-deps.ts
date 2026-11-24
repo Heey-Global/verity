@@ -513,6 +513,7 @@ export interface ServerDeps {
    * returns only NON-secret `{ name, environment?, root? }` summaries, redacted
    * throw on failure. Absent → `{ ok: false, error: 'not configured' }`.
    */
+  secretJobDopplerConnectionId?: string;
   dopplerListConfigs?: (token: string, project: string) => Promise<DopplerConfigSummary[]>;
   /** A Doppler connection's instance token (ADR 0031); without an id, the first
    *  connection holding one. */

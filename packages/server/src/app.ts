@@ -285,6 +285,7 @@ export interface ControlPlaneDeps {
   /** Live listing of a Doppler project's configs for the binding picker (#320,
    * `GET /doppler/configs?project=<project>`). Same trust + redaction contract as
    * {@link dopplerListProjects}. Omit → `{ error: 'not configured' }`. */
+  secretJobDopplerConnectionId?: string | undefined;
   dopplerListConfigs?:
     ((token: string, project: string) => Promise<DopplerConfigSummary[]>) | undefined;
   dopplerCredentialReader?:
@@ -595,6 +596,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.dopplerValidate !== undefined ? { dopplerValidate: deps.dopplerValidate } : {}),
     ...(deps.dopplerListProjects !== undefined
       ? { dopplerListProjects: deps.dopplerListProjects }
+      : {}),
+    ...(deps.secretJobDopplerConnectionId !== undefined
+      ? { secretJobDopplerConnectionId: deps.secretJobDopplerConnectionId }
       : {}),
     ...(deps.dopplerListConfigs !== undefined
       ? { dopplerListConfigs: deps.dopplerListConfigs }

@@ -2,6 +2,7 @@ import type { CreatePreviewShareInput, PublicPreviewShare } from './preview-shar
 export type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
 import { phaseTimer, type PhaseTimer } from './preview-share-diagnostics.js';
 import { previewTargetIsLive, previewConnectorIsLive } from './preview-target-activity.js';
+import { managedRunProviderCurrent, managedPreviewInstance } from './managed-dev-server-secrets.js';
 import { validOpenCodeGatewayConfig } from './preview-artifact-validation.js';
 import {
   PreviewShareConflictError,
@@ -454,14 +455,7 @@ export class PreviewShareManager {
       throw new PreviewShareInputError('PIN must contain exactly 6 digits');
     }
     const isStatic = input.staticPath !== undefined;
-    const managed = input.managedInstanceId
-      ? await this.options.store.managedDevServers.getInstance(input.managedInstanceId)
-      : undefined;
-    if (
-      input.managedInstanceId &&
-      (!managed || managed.sessionId !== input.sessionId || managed.state !== 'running')
-    )
-      throw new PreviewShareConflictError('managed server is not running in this session');
+    const managed = await managedPreviewInstance(this.options.store, input);
     if (managed && input.targetPort !== undefined && input.targetPort !== managed.sandboxPort)
       throw new PreviewShareInputError('managed server port changed; refresh and try again');
     const port = managed?.sandboxPort ?? input.targetPort;
@@ -1250,7 +1244,8 @@ export class PreviewShareManager {
       !instance ||
       !project ||
       instance.projectId !== project.id ||
-      session?.projectId !== project.id
+      session?.projectId !== project.id ||
+      !(await managedRunProviderCurrent(this.options.store, instance))
     ) {
       await this.stop(share.id);
       return;

@@ -114,7 +114,7 @@ export type SecretToolInvocation = z.infer<typeof secretToolInvocationSchema>;
  * never contain `/`, so the two forms cannot be confused.
  */
 export const BROKERED_SECRET_REFERENCE =
-  /^(?:([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/)?([A-Z][A-Z0-9_]{0,199})$/;
+  /^(?:([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/)?([A-Z][A-Z0-9_]*)$/;
 export const brokeredSecretReferenceSchema = z.string().regex(BROKERED_SECRET_REFERENCE);
 const brokeredSecretAliasSchema = brokeredSecretReferenceSchema;
 

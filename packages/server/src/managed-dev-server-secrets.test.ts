@@ -103,9 +103,9 @@ it('rejects a changed provider before retrieving any secret', async () => {
     ],
     resolveSecret,
   });
-  await expect(
-    resolve('p1', bindings, JSON.stringify(['demo', 'staging']), 'lena'),
-  ).rejects.toThrow('Could not resolve');
+  await expect(resolve('p1', bindings, authority('staging'), 'lena')).rejects.toThrow(
+    'Could not resolve',
+  );
   expect(resolveSecret).not.toHaveBeenCalled();
 });
 

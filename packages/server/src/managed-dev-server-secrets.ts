@@ -1,3 +1,5 @@
+import type { CreatePreviewShareInput } from './preview-share-types.js';
+import { PreviewShareConflictError } from './preview-network-policy.js';
 import { createHash } from 'node:crypto';
 import type { ManagedServerProviderSnapshot } from '@verity/events';
 import type { ManagedDevServerManagerOptions } from './managed-dev-server-manager.js';
@@ -124,6 +126,18 @@ export async function managedRunProviderCurrent(
   } catch {
     return false;
   }
+}
+
+export async function managedPreviewInstance(store: EventStore, input: CreatePreviewShareInput) {
+  if (!input.managedInstanceId) return undefined;
+  const instance = await store.managedDevServers.getInstance(input.managedInstanceId);
+  if (!instance || instance.sessionId !== input.sessionId || instance.state !== 'running')
+    throw new PreviewShareConflictError('managed server is not running in this session');
+  if (!(await managedRunProviderCurrent(store, instance)))
+    throw new PreviewShareConflictError(
+      'Doppler access changed. Review and restart the managed server.',
+    );
+  return instance;
 }
 
 export async function managedRunApproved(

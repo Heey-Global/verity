@@ -19,7 +19,12 @@ const slug = z
   .trim()
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u);
 const addBody = z
-  .object({ connectionId: z.string().min(1).max(200), dopplerProject: slug, dopplerConfig: slug })
+  .object({
+    connectionId: z.string().min(1).max(200),
+    dopplerProject: slug,
+    dopplerConfig: slug,
+    connectionRevision: z.string().max(200).nullable().optional(),
+  })
   .strict();
 const patchBody = z.object({ isDefault: z.literal(true) }).strict();
 const removeBody = z.object({ isDefault: z.boolean() }).strict().optional();
@@ -79,13 +84,24 @@ export function installDopplerBindings(app: FastifyInstance, ctx: DopplerBinding
     const connection = await ctx.store.dopplerConnections.get(input.data.connectionId);
     if (connection === undefined)
       return reply.code(404).send({ error: 'Doppler connection not found' });
+    if (
+      input.data.connectionRevision !== undefined &&
+      input.data.connectionRevision !== (connection.tokenRevision ?? null)
+    )
+      return reply.code(409).send({
+        error: new DopplerConnectionTokenChangedError().message,
+        code: 'doppler_token_changed',
+      });
     // A connection with an instance token must be able to read what it is bound to.
     if (connection.hasToken) {
       if (ctx.isSealed?.() === true) throw new SealedError();
       const token = await ctx.store.dopplerConnections.tokenBytes(connection.id);
       try {
         if (token === undefined)
-          return reply.code(409).send({ error: new DopplerConnectionTokenChangedError().message });
+          return reply.code(409).send({
+            error: new DopplerConnectionTokenChangedError().message,
+            code: 'doppler_token_changed',
+          });
         await ctx.listNames({
           dopplerProject: input.data.dopplerProject,
           dopplerConfig: input.data.dopplerConfig,
@@ -108,10 +124,9 @@ export function installDopplerBindings(app: FastifyInstance, ctx: DopplerBinding
       reply.code(201);
       return view(added);
     } catch (error) {
-      if (
-        error instanceof DuplicateDopplerBindingError ||
-        error instanceof DopplerConnectionTokenChangedError
-      )
+      if (error instanceof DopplerConnectionTokenChangedError)
+        return reply.code(409).send({ error: error.message, code: 'doppler_token_changed' });
+      if (error instanceof DuplicateDopplerBindingError)
         return reply.code(409).send({ error: error.message });
       if (error instanceof UnknownDopplerConnectionError)
         return reply.code(404).send({ error: error.message });

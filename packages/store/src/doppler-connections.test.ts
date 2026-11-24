@@ -536,8 +536,23 @@ it('moves the instance token, project configs, personal tokens and grants on upg
       raw.db,
     );
     await upgraded.userDopplerConnections.set('mia', 'p1', 'legacy-doppler', 'dp.st.unvalidated');
+    await sql`insert into sessions (session_id, worktree, model, project_id)
+      values ('s1', '/wt/s1', 'test', 'p1')`.execute(raw.db);
+    await sql`insert into brokered_tool_approvals
+      (id, project_id, session_id, invocation_id, tool_name, canonical_input,
+       request_mac, mac_key_id, authorization_snapshot, binding_digest, status, created_at)
+      values
+        ('legacy', 'p1', 's1', 'legacy', 'verity_http_request', '{}', 'mac', 'key',
+         '{"dopplerProject":"portal","dopplerConfig":"prd"}', 'legacy', 'pending', now()),
+        ('new-pending', 'p1', 's1', 'new-pending', 'verity_http_request', '{}', 'mac', 'key',
+         '{"bindings":[]}', 'new-pending', 'pending', now()),
+        ('new-approved', 'p1', 's1', 'new-approved', 'verity_http_request', '{}', 'mac', 'key',
+         '{"bindings":[]}', 'new-approved', 'approved', now())`.execute(raw.db);
     const downgraded = await migrator.migrateTo('0241_github_repository_ids');
     if (downgraded.error) throw new Error('Downgrade failed', { cause: downgraded.error });
+    expect(
+      (await sql<{ id: string }>`select id from brokered_tool_approvals`.execute(raw.db)).rows,
+    ).toEqual([{ id: 'legacy' }]);
     const personalTokens = await sql<{ user_id: string }>`
       select user_id from user_doppler_connections order by user_id`.execute(raw.db);
     expect(personalTokens.rows).toEqual([{ user_id: 'lena' }]);

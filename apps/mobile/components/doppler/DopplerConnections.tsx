@@ -39,7 +39,11 @@ export function connectionSummary(connection: DopplerConnection): string {
   const parts = [
     connection.workplaceName ?? connection.workplaceSlug,
     projects(connection.projectCount),
-    connection.hasToken ? null : 'personal tokens only',
+    connection.hasToken
+      ? connection.workplaceSlug
+        ? null
+        : 'Workplace unverified · personal tokens unavailable'
+      : 'personal tokens only',
   ].filter((part): part is string => Boolean(part));
   return parts.join(' · ');
 }
@@ -95,6 +99,10 @@ export function DopplerConnections({
     try {
       const usage = await client.doppler.connectionUsage(connection.id);
       if (generation !== dialogGeneration.current) return;
+      if (usage.deletionBlockedReason) {
+        setError(usage.deletionBlockedReason);
+        return;
+      }
       open({ kind: 'delete', connection, usage: usage.projects });
       setError(notice);
     } catch (cause) {
@@ -121,7 +129,11 @@ export function DopplerConnections({
       resource.reload();
     } catch (cause) {
       if (generation !== dialogGeneration.current) return;
-      if (cause instanceof VerityApiError && cause.status === 409) {
+      if (
+        cause instanceof VerityApiError &&
+        cause.status === 409 &&
+        cause.code !== 'doppler_catalog_in_use'
+      ) {
         setMode({ kind: 'menu', connection });
         await askDelete(
           connection,
@@ -206,7 +218,7 @@ export function DopplerConnections({
     body = (
       <HintBox
         title="Personal tokens may be disconnected"
-        message="If Verity cannot verify that the new token belongs to the same Doppler workplace, it clears personal tokens for this connection. Affected people will need to reconnect their tokens."
+        message="If Verity cannot verify that the new token belongs to the same Doppler workplace, it clears personal tokens for this connection. Affected people will need to reconnect their tokens. A token from another workplace also redirects existing bindings to matching configs in that workplace."
       />
     );
     footer = (

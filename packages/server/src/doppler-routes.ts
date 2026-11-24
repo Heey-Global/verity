@@ -26,6 +26,7 @@ export type DopplerRouteDeps = Pick<
   | 'dopplerListConfigs'
 > & {
   eventStore?: Pick<EventStore, 'dopplerConnections'> | undefined;
+  secretJobDopplerConnectionId?: string | undefined;
   listNames?: typeof listDopplerProjectSecretNames;
 };
 
@@ -41,6 +42,8 @@ const patchBody = z
   })
   .strict()
   .refine((value) => value.label !== undefined || value.token !== undefined);
+const catalogDeletionBlocked =
+  'Change the Secret Job catalog connection before deleting this connection.';
 const deleteBody = z.object({ bindingIds: z.array(connectionParams.shape.id) }).strict();
 const connectionQuery = z.object({ connectionId: z.string().min(1).max(200).optional() });
 
@@ -66,9 +69,10 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
     connectionId: string | undefined,
     use: (token: string) => Promise<T>,
     firstWithToken = false,
-  ): Promise<{ value: T } | { error: string }> => {
+  ): Promise<{ value: T; connectionRevision?: string | null } | { error: string }> => {
     if (deps.secretCipher?.isSealed() === true) return { error: 'locked' };
     if (deps.dopplerCredentialReader === undefined) return { error: 'not configured' };
+    const includeRevision = connectionId !== undefined;
     if (connectionId === undefined && deps.eventStore !== undefined) {
       const connections = await deps.eventStore.dopplerConnections.list();
       if (firstWithToken) {
@@ -79,6 +83,11 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       }
       if (connectionId === undefined) return { error: 'not configured' };
     }
+    const connections = deps.eventStore?.dopplerConnections;
+    const revision =
+      includeRevision && connectionId && connections
+        ? await connections.get(connectionId)
+        : undefined;
     let credential: Uint8Array | undefined;
     try {
       credential = await deps.dopplerCredentialReader(connectionId);
@@ -95,7 +104,12 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
         return { error: 'not configured' };
       }
       if (token.length === 0 || token.includes('\0')) return { error: 'not configured' };
-      return { value: await use(token) };
+      const value = await use(token);
+      if (!revision) return { value };
+      const current = await connections!.get(revision.id);
+      if (!current || current.tokenRevision !== revision.tokenRevision)
+        return { error: new DopplerConnectionTokenChangedError().message };
+      return { value, connectionRevision: revision.tokenRevision ?? null };
     } finally {
       credential.fill(0);
     }
@@ -108,7 +122,11 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
   // `{ slug, name }` summaries. Without `connectionId`, only a single connection can answer.
   app.get(
     '/doppler/projects',
-    async (request): Promise<{ projects: DopplerProjectSummary[] } | { error: string }> => {
+    async (
+      request,
+    ): Promise<
+      { projects: DopplerProjectSummary[]; connectionRevision?: string | null } | { error: string }
+    > => {
       if (deps.dopplerListProjects === undefined) return { error: 'not configured' };
       const query = connectionQuery.safeParse(request.query ?? {});
       if (!query.success) return { error: 'invalid connection' };
@@ -117,7 +135,14 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
           query.data.connectionId,
           deps.dopplerListProjects,
         );
-        return 'error' in resolved ? resolved : { projects: resolved.value };
+        return 'error' in resolved
+          ? resolved
+          : {
+              projects: resolved.value,
+              ...(resolved.connectionRevision !== undefined
+                ? { connectionRevision: resolved.connectionRevision }
+                : {}),
+            };
       } catch (err) {
         // The seam's throw is contractually redacted (fixed status-keyed message,
         // never the token/body).
@@ -131,7 +156,11 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
   // contract as `/doppler/projects`. `project` is REQUIRED.
   app.get(
     '/doppler/configs',
-    async (request): Promise<{ configs: DopplerConfigSummary[] } | { error: string }> => {
+    async (
+      request,
+    ): Promise<
+      { configs: DopplerConfigSummary[]; connectionRevision?: string | null } | { error: string }
+    > => {
       const query = connectionQuery
         .extend({ project: z.string().min(1) })
         .safeParse(request.query ?? {});
@@ -148,7 +177,14 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
         const resolved = await withDopplerAccountToken(connectionId, (token) =>
           deps.dopplerListConfigs!(token, project),
         );
-        return 'error' in resolved ? resolved : { configs: resolved.value };
+        return 'error' in resolved
+          ? resolved
+          : {
+              configs: resolved.value,
+              ...(resolved.connectionRevision !== undefined
+                ? { connectionRevision: resolved.connectionRevision }
+                : {}),
+            };
       } catch (err) {
         return { error: err instanceof Error ? err.message : 'could not list Doppler configs' };
       }
@@ -278,7 +314,12 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
     if (!params.success) return reply.code(400).send({ error: 'invalid Doppler connection' });
     if ((await store.dopplerConnections.get(params.data.id)) === undefined)
       return reply.code(404).send({ error: 'Doppler connection not found' });
-    return { projects: await store.dopplerConnections.usage(params.data.id) };
+    return {
+      projects: await store.dopplerConnections.usage(params.data.id),
+      ...(params.data.id === deps.secretJobDopplerConnectionId
+        ? { deletionBlockedReason: catalogDeletionBlocked }
+        : {}),
+    };
   });
 
   // Deleting a connection in use is allowed: its bindings disappear from every
@@ -286,6 +327,10 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
   app.delete('/doppler/connections/:id', async (request, reply) => {
     const params = connectionParams.safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'invalid Doppler connection' });
+    if (params.data.id === deps.secretJobDopplerConnectionId)
+      return reply
+        .code(409)
+        .send({ error: catalogDeletionBlocked, code: 'doppler_catalog_in_use' });
     const confirmation = deleteBody.safeParse(request.body ?? { bindingIds: [] });
     if (!confirmation.success)
       return reply.code(400).send({ error: 'invalid Doppler connection confirmation' });

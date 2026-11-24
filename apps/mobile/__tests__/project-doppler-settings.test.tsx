@@ -60,6 +60,7 @@ describe('project Doppler settings', () => {
               connectionLabel: 'Payments',
               dopplerProject: 'billing',
               dopplerConfig: 'dev',
+              connectionRevision: 'browse-revision',
               isDefault: false,
             }),
           ]),
@@ -113,10 +114,13 @@ describe('project Doppler settings', () => {
         : [dopplerConnection()],
     );
     const addBinding = jest.fn().mockResolvedValue(dopplerBinding({ id: 'b2', isDefault: false }));
-    const listDopplerProjects = jest
+    const listDopplerProjects = jest.fn().mockResolvedValue({
+      projects: [{ slug: 'billing', name: 'Billing' }],
+      connectionRevision: 'browse-revision',
+    });
+    const listDopplerConfigs = jest
       .fn()
-      .mockResolvedValue({ projects: [{ slug: 'billing', name: 'Billing' }] });
-    const listDopplerConfigs = jest.fn().mockResolvedValue({ configs: [{ name: 'dev' }] });
+      .mockResolvedValue({ configs: [{ name: 'dev' }], connectionRevision: 'browse-revision' });
     mockCreateVerityClient.mockReturnValue(
       makeClient({
         listDopplerProjects,

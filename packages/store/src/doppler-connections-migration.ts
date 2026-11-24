@@ -70,10 +70,11 @@ export const dopplerConnectionsMigration: Migration = {
       add primary key (user_id, project_id, connection_id)`.execute(db);
     await sql`alter table user_doppler_connections
       add column validated_binding_ids text[] not null default '{}'`.execute(db);
-    // Existing tokens were validated against their project's sole legacy pair.
+    // Legacy tokens can predate a project settings change. Ask those members to validate again.
     await sql`update user_doppler_connections u set validated_binding_ids = array[b.id]
-      from project_doppler_bindings b where b.project_id = u.project_id
-        and b.connection_id = u.connection_id and b.is_default`.execute(db);
+      from project_doppler_bindings b join project_settings s on s.project_id = b.project_id
+      where b.project_id = u.project_id and b.connection_id = u.connection_id
+        and b.is_default and u.updated_at >= s.updated_at`.execute(db);
     // Grants were keyed by project and config alone; key them by the binding.
     const bindings = await sql<{
       project_id: string;
@@ -95,6 +96,9 @@ export const dopplerConnectionsMigration: Migration = {
     }
   },
   async down(db: Kysely<unknown>): Promise<void> {
+    // The previous server can only read receipts containing the legacy pair.
+    await sql`delete from brokered_tool_approvals
+      where authorization_snapshot::jsonb ? 'bindings'`.execute(db);
     // The old app can only use a default binding on the legacy workplace. Clear
     // complete pairs from other workplaces instead of resolving them via the old token.
     await sql`update project_settings s set doppler_project = null, doppler_config = null

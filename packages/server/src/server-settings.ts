@@ -234,6 +234,7 @@ export function installSettings(
   });
 
   registerDopplerRoutes(app, {
+    secretJobDopplerConnectionId: deps.secretJobDopplerConnectionId,
     eventStore: deps.eventStore,
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.dopplerWorkplace !== undefined ? { dopplerWorkplace: deps.dopplerWorkplace } : {}),

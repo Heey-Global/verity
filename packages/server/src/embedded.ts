@@ -153,6 +153,7 @@ import {
   createSealableSecretCipher,
   EventStore,
   keyMatchesVerifier,
+  LEGACY_DOPPLER_CONNECTION_ID,
   migrateToLatest,
   migrationProvider,
   SealedError,
@@ -1186,11 +1187,6 @@ export async function buildEmbeddedServer(
     ...(config.https !== undefined ? { https: config.https } : {}),
     ...(config.devicePairing !== undefined ? { devicePairing: config.devicePairing } : {}),
     pushEnabled: config.pushEnabled === true,
-    // ADR 0011 D2: the operator's review-and-revoke surface for standing grants. The
-    // current binding is passed so each grant can be flagged with whether it would
-    // auto-approve anything today — but grants against a superseded binding are still
-    // listed, because binding ids are derived deterministically and a restored binding
-    // would put such a grant back in force. Unlistable is unrevokable.
     listBrokeredGrants: async (projectId) =>
       brokeredHttpGrants.list(projectId, await brokeredGrantBindingIds(projectId)),
     revokeBrokeredGrant: (projectId, grantId) => brokeredHttpGrants.revoke(projectId, grantId),
@@ -1249,6 +1245,12 @@ export async function buildEmbeddedServer(
     mcpGateway,
     mcpProxyResolveCaller: (input) => Promise.resolve(mcpProxyTokens.resolve(input)),
     ...dopplerServerDeps,
+    ...(config.secretJobs?.doppler !== undefined
+      ? {
+          secretJobDopplerConnectionId:
+            config.secretJobs.doppler.connectionId ?? LEGACY_DOPPLER_CONNECTION_ID,
+        }
+      : {}),
     // Real server-side ssh-keygen for the onboarding signing-key step (#320).
     // Needs `openssh-client` in the Server image (deploy/Dockerfile). Injectable
     // so tests never shell out.
