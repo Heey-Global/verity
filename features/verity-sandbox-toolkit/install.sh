@@ -185,11 +185,15 @@ if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   APT_PACKAGES=(python3 tmux git findutils coreutils curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
   apt-get update
+  # Ubuntu 26.04 keeps GNU implementations under gnu-prefixed names.
+  if apt-cache show gnu-coreutils >/dev/null 2>&1; then
+    APT_PACKAGES+=(gnu-coreutils)
+  fi
   apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
   rm -rf /var/lib/apt/lists/*
 else
   echo "!! verity-sandbox-toolkit: apt-get not found — skipping OS package install." >&2
-  echo "!!                 Ensure GNU find at /usr/bin/find, GNU timeout at /usr/bin/timeout and tmux/git/curl/jq/openssh-client/openssl exist on this base." >&2
+  echo "!!                 Ensure GNU find at /usr/bin/find, GNU timeout at /usr/bin/gnutimeout or /usr/bin/timeout and tmux/git/curl/jq/openssh-client/openssl exist on this base." >&2
 fi
 
 # Extracted release tarballs carry the ownership their publisher's CI recorded

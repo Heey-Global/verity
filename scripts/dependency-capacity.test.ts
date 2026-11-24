@@ -192,7 +192,9 @@ describe('dependency copy capacity admission', () => {
       const line = `${failure === 'filesystem boundary' ? stat.dev + 1 : stat.dev} ${stat.ino} ${stat.size} ${stat.blocks} d\n`;
       const source =
         `process.stdout.write(${JSON.stringify(line.repeat(failure === 'entry cap' ? 2 : 1))});` +
-        (failure === 'failed exit' ? 'process.exitCode = 1;' : 'setInterval(() => {}, 1000);');
+        (failure === 'failed exit'
+          ? 'process.stderr.write("find: blocked-path: Permission denied\\n"); process.exitCode = 1;'
+          : 'setInterval(() => {}, 1000);');
       const marker = join(f.root, 'scanner-closed');
       const preload = join(f.root, 'scanner-preload.mjs');
       writeFileSync(
@@ -245,7 +247,35 @@ describe('dependency copy capacity admission', () => {
           ? 'Dependency capacity inventory crosses a filesystem.'
           : `cache activation: ${reason}`,
       );
+      if (failure === 'failed exit')
+        expect(output).toContain('find: blocked-path: Permission denied');
       expect(output.trim().endsWith('true')).toBe(true);
+    },
+  );
+
+  it.each([true, false])(
+    'requires GNU timeout when the default implementation is incompatible (available: %s)',
+    (available) => {
+      const output = probe(`
+      import childProcess from 'node:child_process';
+      import {syncBuiltinESMExports} from 'node:module';
+      const original = childProcess.spawnSync;
+      const calls = [];
+      childProcess.spawnSync = (file, args, options) => {
+        calls.push([file, args]);
+        if (args[0] === '--version') return {status: 0, stdout:
+          file === '/usr/bin/gnutimeout' && ${available} ? 'timeout (GNU coreutils) 9.7' : 'timeout (uutils coreutils) 0.10.0'};
+        return original(process.execPath, ['-e', 'console.log(JSON.stringify({bytes:0,inodes:0,allocatedBytes:0}))'], options);
+      };
+      syncBuiltinESMExports();
+      try { s.measureTrees([]); console.log(calls.at(-1)[0]); }
+      catch (error) { console.log(error.message); }
+    `);
+      expect(output.trim()).toBe(
+        available
+          ? '/usr/bin/gnutimeout'
+          : 'Dependency capacity inventory requires GNU timeout; no additional copy admitted.',
+      );
     },
   );
 

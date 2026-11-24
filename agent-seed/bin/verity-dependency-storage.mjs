@@ -136,13 +136,38 @@ export const fileIdentity = (name, stat) => `${name}\0${stat.ino}`;
 export const filesKey = (files) =>
   createHash('sha256').update(files.sort().join('\n')).digest('hex');
 
+let inventoryTimeout;
+function inventoryTimeoutCommand() {
+  if (inventoryTimeout) return inventoryTimeout;
+  // Ubuntu 26.04 uses uutils for timeout; its SIGKILL does not kill descendants.
+  for (const command of ['/usr/bin/gnutimeout', '/usr/bin/timeout']) {
+    const version = spawnSync(command, ['--version'], {
+      encoding: 'utf8',
+      timeout: 1000,
+      killSignal: 'SIGKILL',
+      maxBuffer: 4096,
+    });
+    if (
+      !version.error &&
+      version.status === 0 &&
+      /^timeout \(GNU coreutils\)/u.test(version.stdout)
+    ) {
+      inventoryTimeout = command;
+      return command;
+    }
+  }
+  throw new Error(
+    'Dependency capacity inventory requires GNU timeout; no additional copy admitted.',
+  );
+}
+
 /** Bound both the work and its allocation estimate; links never authorize a target walk. */
 export function measureTrees(trees, limits = {}) {
   const started = Date.now();
   // GNU timeout owns the worker's process group, including find. Its watchdog
   // still runs if the worker cannot process its own cleanup timer.
   const result = spawnSync(
-    '/usr/bin/timeout',
+    inventoryTimeoutCommand(),
     [
       '--signal=KILL',
       '--kill-after=1s',
@@ -191,7 +216,12 @@ async function scanTrees(trees, limits, started) {
     // No names enter the protocol, so newlines in package paths are harmless.
     await new Promise((resolve, reject) => {
       const scanner = spawn('/usr/bin/find', ['-P', tree, '-xdev', '-printf', '%D %i %s %b %y\n'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let diagnostic = '';
+      scanner.stderr.setEncoding('utf8');
+      scanner.stderr.on('data', (chunk) => {
+        diagnostic = (diagnostic + chunk).slice(0, 4096);
       });
       let pending = '';
       let failure;
@@ -244,7 +274,11 @@ async function scanTrees(trees, limits, started) {
         clearTimeout(timer);
         if (failure) reject(failure);
         else if (code !== 0 || pending)
-          reject(incomplete(`metadata traversal failed (${signal ?? code})`));
+          reject(
+            incomplete(
+              `metadata traversal failed (${signal ?? code})${diagnostic ? `: ${diagnostic.trim()}` : ''}`,
+            ),
+          );
         else resolve();
       });
     });
