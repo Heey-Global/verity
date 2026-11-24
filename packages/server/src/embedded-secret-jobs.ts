@@ -1,10 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  LEGACY_DOPPLER_CONNECTION_ID,
-  ProjectDopplerBindingStore,
-  type Database,
-  type SecretCipher,
-} from '@verity/store';
+import { LEGACY_DOPPLER_CONNECTION_ID, type Database, type SecretCipher } from '@verity/store';
 import type { Kysely } from 'kysely';
 import type { FastifyInstance } from 'fastify';
 import type { AuthTokenRegistry } from './auth.js';
@@ -42,23 +37,6 @@ type SecretJobsConfig = Pick<
   | 'dockerBaseUrl'
 >;
 type DopplerCredentials = Pick<ReturnType<typeof createEmbeddedDoppler>, 'dopplerCredentialFor'>;
-
-/**
- * Catalog secret jobs name a Doppler project and config but no connection; they
- * read with the token for the project's default binding's connection (ADR 0031).
- */
-function catalogDopplerCredential(
-  db: Kysely<Database>,
-  dopplerCredentialFor: DopplerCredentials['dopplerCredentialFor'],
-) {
-  const bindings = new ProjectDopplerBindingStore(db);
-  return async (userId: string | null, projectId: string): Promise<Buffer> => {
-    const connectionId =
-      (await bindings.list(projectId)).find((binding) => binding.isDefault)?.connectionId ??
-      LEGACY_DOPPLER_CONNECTION_ID;
-    return dopplerCredentialFor(userId, projectId, connectionId);
-  };
-}
 
 export function createEmbeddedSecretJobs({
   config,
@@ -114,8 +92,9 @@ export function createEmbeddedSecretJobs({
           ? createDopplerSecretResolver({
               ...secretJobsConfig.doppler,
               catalog: secretProviderCatalog!,
+              // The catalog retains its instance connection independently of project defaults.
               readCredential: (_ref, { projectId, userId }) =>
-                catalogDopplerCredential(db, dopplerCredentialFor)(userId, projectId),
+                dopplerCredentialFor(userId, projectId, LEGACY_DOPPLER_CONNECTION_ID),
             })
           : secretJobsConfig.resolveSecrets!,
       sealEnvelope,
@@ -175,7 +154,6 @@ export function installEmbeddedSecretJobs(
   app: FastifyInstance,
   {
     config,
-    db,
     embeddedSecretJobs,
     secretProviderCatalog,
     authRegistry,
@@ -186,7 +164,6 @@ export function installEmbeddedSecretJobs(
       'embeddedSecretJobs' | 'secretProviderCatalog'
     > & {
       config: Pick<EmbeddedServerConfig, 'secretJobs'>;
-      db: Kysely<Database>;
       authRegistry: Pick<AuthTokenRegistry, 'resolveId'>;
     },
 ): void {
@@ -212,7 +189,7 @@ export function installEmbeddedSecretJobs(
       createDopplerSecretNameLister({
         ...dopplerOptions,
         readCredential: (_ref, { projectId, userId }) =>
-          catalogDopplerCredential(db, dopplerCredentialFor)(userId, projectId),
+          dopplerCredentialFor(userId, projectId, LEGACY_DOPPLER_CONNECTION_ID),
       }),
       async (header, projectId) => {
         const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];

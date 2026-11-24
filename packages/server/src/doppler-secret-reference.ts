@@ -75,6 +75,7 @@ export function resolveSecretReference(
 
 /** The identity an approval is bound to: connection, project and config. */
 export interface ApprovedDopplerBinding {
+  readonly bindingId: string;
   readonly connectionId: string;
   readonly tokenRevision?: string;
   readonly includesBareReference?: boolean;
@@ -102,6 +103,7 @@ export function referencedBindings(
     const usesDefault =
       multiple && (!reference.includes('/') || byKey.get(key)?.includesBareReference);
     byKey.set(key, {
+      bindingId: binding.id,
       connectionId: binding.connectionId,
       ...(binding.tokenRevision === undefined ? {} : { tokenRevision: binding.tokenRevision }),
       ...(usesDefault ? { includesBareReference: true } : {}),

@@ -9,7 +9,6 @@ import {
   type BrokeredHttpProjectBinding,
   type BrokeredSecretResolver,
 } from './brokered-http-tool.js';
-import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 
 /** The snapshot shown during approval and checked again against the actual secret sources. */
 export function managedDevServerProviderSnapshot(
@@ -21,8 +20,7 @@ export function managedDevServerProviderSnapshot(
   const primary =
     snapshot.bindings.find((binding) => binding.includesBareReference) ?? snapshot.bindings[0]!;
   const authority =
-    'managed-doppler-v1:' +
-    createHash('sha256').update(brokeredDopplerBindingId(snapshot)).digest('hex');
+    'managed-doppler-v1:' + createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
   return {
     provider: 'doppler' as const,
     project: primary.dopplerProject,

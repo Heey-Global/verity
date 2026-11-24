@@ -1,7 +1,12 @@
 // The instance's Doppler connections (docs/adr/0031-multiple-doppler-connections.md):
 // one token per Doppler workplace, each usable by any project's bindings. Tokens
 // are entered here once, checked by the server and never shown again.
-import type { DopplerConnection, DopplerConnectionUsage, VerityClient } from '@verity/mobile';
+import {
+  VerityApiError,
+  type DopplerConnection,
+  type DopplerConnectionUsage,
+  type VerityClient,
+} from '@verity/mobile';
 import { useCallback, useState, type ReactNode } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
@@ -76,13 +81,44 @@ export function DopplerConnections({
       setBusy(false);
     }
   };
-  const askDelete = async (connection: DopplerConnection) => {
+  const askDelete = async (connection: DopplerConnection, notice?: string) => {
     setBusy(true);
     try {
       const usage = await client.doppler.connectionUsage(connection.id);
       open({ kind: 'delete', connection, usage: usage.projects });
+      setError(notice);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not check where it is used.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmDelete = async (
+    connection: DopplerConnection,
+    usage: DopplerConnectionUsage['projects'],
+  ) => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await client.doppler.removeConnection(
+        connection.id,
+        usage.flatMap((project) => project.bindings.map((binding) => binding.id)),
+      );
+      close();
+      resource.reload();
+    } catch (cause) {
+      if (cause instanceof VerityApiError && cause.status === 409) {
+        setMode({ kind: 'menu', connection });
+        await askDelete(
+          connection,
+          'The bindings changed. Review the updated list and confirm again.',
+        );
+      } else {
+        setError(
+          cause instanceof Error ? cause.message : 'Could not delete the Doppler connection.',
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -222,12 +258,7 @@ export function DopplerConnections({
           variant="destructive"
           fullWidth
           disabled={busy}
-          onPress={() =>
-            void run(
-              () => client.doppler.removeConnection(connection.id),
-              'Could not delete the Doppler connection.',
-            )
-          }
+          onPress={() => void confirmDelete(connection, usage)}
         />
         <Button label="Cancel" variant="text" fullWidth onPress={close} />
       </View>

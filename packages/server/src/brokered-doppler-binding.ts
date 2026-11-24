@@ -5,6 +5,7 @@ import type { ApprovedDopplerBinding, ProjectDopplerBinding } from './doppler-se
 
 const bindingSchema = z
   .object({
+    bindingId: z.string().min(1),
     connectionId: z.string().trim().min(1),
     tokenRevision: z.string().uuid().optional(),
     includesBareReference: z.literal(true).optional(),
@@ -24,10 +25,19 @@ export function brokeredDopplerSnapshot(
   return snapshotSchema.parse({ bindings });
 }
 
-/** A snapshot from before several bindings existed no longer parses: the call
- *  is asked for again rather than approved against an unknown connection. */
+/** Obsolete receipts without a binding row ID must be submitted again. */
 export function parseBrokeredDopplerBinding(snapshot: string): BrokeredDopplerBinding {
   return snapshotSchema.parse(JSON.parse(snapshot));
+}
+
+export function tryParseBrokeredDopplerBinding(
+  snapshot: string,
+): BrokeredDopplerBinding | undefined {
+  try {
+    return parseBrokeredDopplerBinding(snapshot);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -35,7 +45,9 @@ export function parseBrokeredDopplerBinding(snapshot: string): BrokeredDopplerBi
  * so a grant for `API_KEY` in one config never covers `billing/dev/API_KEY` in
  * another; a call reading several uses an id for exactly that set.
  */
-export function brokeredDopplerBindingId(snapshot: BrokeredDopplerBinding): string {
+export function brokeredDopplerBindingId(snapshot: {
+  bindings: readonly Omit<BrokeredDopplerBinding['bindings'][number], 'bindingId'>[];
+}): string {
   const ids = [
     ...new Set(
       snapshot.bindings.map((binding) => {
@@ -84,10 +96,7 @@ export function assertBrokeredDopplerBinding(
   approved: BrokeredDopplerBinding | undefined,
 ): asserts current is BrokeredDopplerBinding {
   if (current === undefined) throw new Error('project Doppler binding is unavailable');
-  if (
-    approved !== undefined &&
-    brokeredDopplerBindingId(current) !== brokeredDopplerBindingId(approved)
-  ) {
+  if (approved !== undefined && JSON.stringify(current) !== JSON.stringify(approved)) {
     throw new Error('Doppler access changed after approval; submit the operation again');
   }
 }

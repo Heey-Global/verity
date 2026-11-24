@@ -321,7 +321,52 @@ describe('settings/services — Doppler connections', () => {
     expect(screen.getByText('portal/prd, portal/stg')).toBeOnTheScreen();
     expect(removeConnection).not.toHaveBeenCalled();
     fireEvent.press(screen.getAllByLabelText(/^Delete connection(,|$)/).at(-1)!);
-    await waitFor(() => expect(removeConnection).toHaveBeenCalledWith('platform'));
+    await waitFor(() => expect(removeConnection).toHaveBeenCalledWith('platform', ['b1', 'b2']));
+  });
+
+  it('requires another explicit confirmation when the binding snapshot changed', async () => {
+    const removeConnection = jest
+      .fn()
+      .mockRejectedValueOnce(new VerityApiError(409, 'Bindings changed'))
+      .mockResolvedValue(undefined);
+    const connectionUsage = jest
+      .fn()
+      .mockResolvedValueOnce({ projects: [] })
+      .mockResolvedValue({
+        projects: [
+          {
+            projectId: 'p1',
+            projectName: 'Customer Portal',
+            bindings: [
+              { id: 'b1', dopplerProject: 'portal', dopplerConfig: 'prd', isDefault: true },
+            ],
+          },
+        ],
+      });
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        doppler: {
+          listConnections: jest.fn().mockResolvedValue([platform]),
+          connectionUsage,
+          removeConnection,
+        },
+      }),
+    );
+    render(<ServicesSettingsScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Manage Platform/));
+    fireEvent.press(await screen.findByLabelText(/^Delete connection/));
+    expect(await screen.findByText('No project uses this connection.')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText(/^Delete connection/));
+
+    expect(
+      await screen.findByText('The bindings changed. Review the updated list and confirm again.'),
+    ).toBeOnTheScreen();
+    expect(screen.getByText('portal/prd')).toBeOnTheScreen();
+    expect(removeConnection).toHaveBeenCalledTimes(1);
+    expect(removeConnection).toHaveBeenNthCalledWith(1, 'platform', []);
+    fireEvent.press(screen.getByLabelText(/^Delete connection/));
+    await waitFor(() => expect(removeConnection).toHaveBeenNthCalledWith(2, 'platform', ['b1']));
   });
 });
 

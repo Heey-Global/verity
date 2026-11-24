@@ -105,6 +105,7 @@ describe('project Doppler settings', () => {
             dopplerConnection({
               id: 'payments',
               label: scenario === 'same labels' ? 'Platform' : 'Payments',
+              workplaceName: 'Northstar Finance',
             }),
           ]
         : [dopplerConnection()],
@@ -127,7 +128,7 @@ describe('project Doppler settings', () => {
     fireEvent.press(await screen.findByLabelText(/^Add binding(,|$)/));
     if (multiple) {
       const payments = await screen.findByLabelText(
-        scenario === 'same labels' ? '2. Platform' : 'Payments',
+        scenario === 'same labels' ? 'Platform · Northstar Finance' : 'Payments',
       );
       expect(listDopplerProjects).not.toHaveBeenCalled();
       fireEvent.press(payments);
@@ -147,6 +148,21 @@ describe('project Doppler settings', () => {
         dopplerConfig: 'dev',
       }),
     );
+  });
+
+  it('can recover binding management after a failed token status request', async () => {
+    const personalTokens = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('unavailable'))
+      .mockResolvedValue({ connections: [], canManageBindings: true });
+    mockCreateVerityClient.mockReturnValue(makeClient({ doppler: { personalTokens } }));
+    setSearchParams({ id: 'p/1', section: 'doppler' });
+    render(<ProjectServicesScreen />);
+
+    expect(await screen.findByText('Could not load your Doppler tokens.')).toBeOnTheScreen();
+    expect(screen.queryByLabelText(/^Add binding/)).toBeNull();
+    fireEvent.press(screen.getByLabelText(/^Retry loading tokens/));
+    expect(await screen.findByLabelText(/^Add binding/)).toBeOnTheScreen();
   });
 
   it('retries project and config requests for the selected connection', async () => {

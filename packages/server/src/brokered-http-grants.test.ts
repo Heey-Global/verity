@@ -1,3 +1,4 @@
+import { defaultDopplerGrantMember } from './brokered-doppler-binding.js';
 import { dopplerBindingGrantId, type Database } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { Kysely } from 'kysely';
@@ -255,8 +256,14 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
       { appliesNow: false },
     ]);
     await expect(store.list('project-1', new Set([target.bindingId]))).resolves.toMatchObject([
-      { appliesNow: true },
+      { appliesNow: false },
     ]);
+    await expect(
+      store.list(
+        'project-1',
+        new Set([target.bindingId, defaultDopplerGrantMember(target.bindingId)]),
+      ),
+    ).resolves.toMatchObject([{ appliesNow: true }]);
     // A project with no binding at all is the same situation, not an absent question:
     // nothing can auto-approve, so nothing may be reported as live.
     await expect(store.list('project-1', new Set())).resolves.toMatchObject([

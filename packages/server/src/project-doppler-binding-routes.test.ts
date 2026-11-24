@@ -34,7 +34,7 @@ const readable: Record<string, string[]> = {
   'dp.sa.payments': ['billing/dev'],
 };
 
-function server(): FastifyInstance {
+function server(beforeList?: () => Promise<unknown>): FastifyInstance {
   const app = Fastify();
   app.decorateRequest('localUserId', null);
   app.addHook('onRequest', async (request) => {
@@ -58,6 +58,7 @@ function server(): FastifyInstance {
   });
   const listNames = vi.fn(
     async (input: { dopplerProject: string; dopplerConfig: string; token: Uint8Array }) => {
+      await beforeList?.();
       const configs = readable[Buffer.from(input.token).toString()] ?? [];
       if (!configs.includes(`${input.dopplerProject}/${input.dopplerConfig}`))
         throw new Error('403');
@@ -92,6 +93,28 @@ const addConnection = async (app: FastifyInstance, label: string, token: string)
   (await call(app, 'admin', 'POST', '/doppler/connections', { label, token })).json<{
     id: string;
   }>().id;
+
+it('rejects a binding if its instance token rotates during validation', async () => {
+  const connectionId = await store.dopplerConnections.add({
+    label: 'Platform',
+    token: 'dp.sa.platform',
+    workplace: { slug: 'platform', name: null },
+  });
+  const app = server(() =>
+    store.dopplerConnections.update(connectionId, { token: 'dp.sa.payments' }),
+  );
+  try {
+    const response = await call(app, 'admin', 'POST', '/projects/p1/doppler/bindings', {
+      connectionId,
+      dopplerProject: 'portal',
+      dopplerConfig: 'prd',
+    });
+    expect(response.statusCode).toBe(409);
+    expect(await store.projectDopplerBindings.list('p1')).toEqual([]);
+  } finally {
+    await app.close();
+  }
+});
 
 describe('Doppler connections (ADR 0031)', () => {
   it('adds only tokens Doppler accepts and never returns them', async () => {
@@ -153,14 +176,15 @@ describe('Doppler connections (ADR 0031)', () => {
         ).statusCode,
       ).toBe(201);
     const usage = await call(app, 'admin', 'GET', `/doppler/connections/${platform}/usage`);
-    expect(
-      usage
-        .json<{ projects: { projectId: string }[] }>()
-        .projects.map((project) => project.projectId),
-    ).toEqual(['p1', 'p2']);
-    expect(
-      (await call(app, 'admin', 'DELETE', `/doppler/connections/${platform}`)).statusCode,
-    ).toBe(204);
+    const { projects } = usage.json<{
+      projects: { projectId: string; bindings: { id: string }[] }[];
+    }>();
+    expect(projects.map((project) => project.projectId)).toEqual(['p1', 'p2']);
+    const deleteConnection = (bindingIds: string[]) =>
+      call(app, 'admin', 'DELETE', `/doppler/connections/${platform}`, { bindingIds });
+    expect((await deleteConnection([])).statusCode).toBe(409);
+    const bindingIds = projects.flatMap((project) => project.bindings.map(({ id }) => id));
+    expect((await deleteConnection(bindingIds)).statusCode).toBe(204);
     const p1 = await call(app, 'admin', 'GET', '/projects/p1/doppler/bindings');
     expect(p1.json().bindings).toEqual([
       expect.objectContaining({ reference: 'billing/dev', isDefault: true }),

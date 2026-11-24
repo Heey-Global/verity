@@ -50,10 +50,10 @@ function build(
     bus: new InMemoryEventBus(),
     conductor,
     secretCipher: cipher,
-    dopplerCredentialReader: async () => {
-      const token = (await store.getVeritySettings())?.dopplerServiceToken;
-      return token ? Buffer.from(token, 'utf8') : undefined;
-    },
+    dopplerCredentialReader: (connectionId) =>
+      connectionId === undefined
+        ? Promise.resolve(undefined)
+        : store.dopplerConnections.tokenBytes(connectionId),
     ...(dopplerValidate ? { dopplerValidate } : {}),
   });
 }
@@ -138,6 +138,11 @@ describe('POST /doppler/validate route', () => {
         method: 'PATCH',
         url: '/settings',
         payload: { dopplerServiceToken: TOKEN_FIXTURE },
+      });
+      await new EventStore(ctx.db, cipher).dopplerConnections.add({
+        label: 'Second connection',
+        token: 'second-token-fixture',
+        workplace: { slug: null, name: null },
       });
       const res = await app.inject({ method: 'POST', url: '/doppler/validate' });
       const body = res.json<{ ok: boolean; projectCount?: number; error?: string }>();

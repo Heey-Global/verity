@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Kysely } from 'kysely';
 import { LEGACY_DOPPLER_CONNECTION_ID } from './doppler-connections-migration.js';
 import {
+  AmbiguousDopplerConnectionError,
   deleteDopplerBindingGrants,
   lockDopplerTopology,
   promoteDefaultBinding,
@@ -33,6 +34,13 @@ export class UnknownDopplerConnectionError extends Error {
   constructor() {
     super('Doppler connection not found');
     this.name = 'UnknownDopplerConnectionError';
+  }
+}
+
+export class DopplerConnectionTokenChangedError extends Error {
+  constructor() {
+    super('Doppler connection token changed. Try adding the binding again.');
+    this.name = 'DopplerConnectionTokenChangedError';
   }
 }
 
@@ -81,12 +89,13 @@ export class ProjectDopplerBindingStore {
   async add(
     projectId: string,
     input: { connectionId: string; dopplerProject: string; dopplerConfig: string },
+    expectedTokenRevision?: string | null,
   ): Promise<ProjectDopplerBindingRecord> {
     const id = randomUUID();
     await this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
       await lockProject(tx, projectId);
-      await insertBinding(tx, projectId, id, input);
+      await insertBinding(tx, projectId, id, input, false, expectedTokenRevision);
       await promoteDefaultBinding(tx, projectId);
     });
     const added = (await this.list(projectId)).find((binding) => binding.id === id);
@@ -179,13 +188,16 @@ async function insertBinding(
   id: string,
   input: { connectionId: string; dopplerProject: string; dopplerConfig: string },
   isDefault = false,
+  expectedTokenRevision?: string | null,
 ): Promise<void> {
   const connection = await tx
     .selectFrom('doppler_connections')
-    .select('id')
+    .select('token_revision')
     .where('id', '=', input.connectionId)
     .executeTakeFirst();
   if (connection === undefined) throw new UnknownDopplerConnectionError();
+  if (expectedTokenRevision !== undefined && connection.token_revision !== expectedTokenRevision)
+    throw new DopplerConnectionTokenChangedError();
   const duplicate = await tx
     .selectFrom('project_doppler_bindings')
     .select('id')
@@ -206,13 +218,6 @@ async function insertBinding(
       is_default: isDefault,
     })
     .execute();
-}
-
-export class AmbiguousDopplerConnectionError extends Error {
-  constructor() {
-    super('Open the Doppler connection picker in the current app to make this change.');
-    this.name = 'AmbiguousDopplerConnectionError';
-  }
 }
 
 /** Applies a legacy settings write only when it identifies a single binding and connection. */

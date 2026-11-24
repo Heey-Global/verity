@@ -328,14 +328,16 @@ export {
   UserDopplerConnectionStore,
 } from './user-doppler-connection.js';
 export {
+  AmbiguousDopplerConnectionError,
   DopplerConnectionStore,
+  DopplerConnectionUsageChangedError,
   lockDopplerTopology,
   type DopplerConnectionRecord,
   type DopplerConnectionUsage,
   type DopplerWorkplace,
 } from './doppler-connections.js';
 export {
-  AmbiguousDopplerConnectionError,
+  DopplerConnectionTokenChangedError,
   DuplicateDopplerBindingError,
   ProjectDopplerBindingStore,
   UnknownDopplerConnectionError,

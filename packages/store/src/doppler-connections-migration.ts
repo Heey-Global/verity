@@ -89,8 +89,55 @@ export const dopplerConnectionsMigration: Migration = {
     }
   },
   async down(db: Kysely<unknown>): Promise<void> {
-    await sql`delete from user_doppler_connections
-      where connection_id <> ${LEGACY_DOPPLER_CONNECTION_ID}`.execute(db);
+    // The old app can only use a default binding on the legacy workplace. Clear
+    // complete pairs from other workplaces instead of resolving them via the old token.
+    await sql`update project_settings s set doppler_project = null, doppler_config = null
+      where exists (select 1 from project_doppler_bindings b
+        where b.project_id = s.project_id and b.is_default
+          and b.connection_id <> ${LEGACY_DOPPLER_CONNECTION_ID})`.execute(db);
+    await sql`insert into verity_settings (id, doppler_service_token)
+      values ('global', (select token from doppler_connections where id = ${LEGACY_DOPPLER_CONNECTION_ID}))
+      on conflict (id) do update set doppler_service_token = excluded.doppler_service_token`.execute(
+      db,
+    );
+    await sql`delete from user_doppler_connections u
+      where connection_id <> ${LEGACY_DOPPLER_CONNECTION_ID}
+        or exists (select 1 from project_doppler_bindings b
+          where b.project_id = u.project_id and b.is_default
+            and b.connection_id <> ${LEGACY_DOPPLER_CONNECTION_ID})`.execute(db);
+
+    // Only single-binding grants for the current legacy default can be carried
+    // back. Older revisions, qualified references and multi-binding grants
+    // cannot be represented by the previous code.
+    const defaults = await sql<{
+      project_id: string;
+      doppler_project: string;
+      doppler_config: string;
+      token_revision: string | null;
+    }>`
+      select b.project_id, b.doppler_project, b.doppler_config, c.token_revision
+      from project_doppler_bindings b join doppler_connections c on c.id = b.connection_id
+      where b.is_default and c.id = ${LEGACY_DOPPLER_CONNECTION_ID}`.execute(db);
+    await sql`delete from secret_provider_permissions p
+      where (p.binding_id like 'project-doppler:%' or p.binding_id like 'project-doppler-set:%')
+        and not exists (select 1 from project_doppler_bindings b
+          where b.project_id = p.project_id and b.is_default
+            and b.connection_id = ${LEGACY_DOPPLER_CONNECTION_ID})`.execute(db);
+    for (const row of defaults.rows) {
+      const current = dopplerBindingGrantId({
+        connectionId: LEGACY_DOPPLER_CONNECTION_ID,
+        dopplerProject: row.doppler_project,
+        dopplerConfig: row.doppler_config,
+        tokenRevision: row.token_revision,
+      });
+      await sql`delete from secret_provider_permissions
+        where project_id = ${row.project_id}
+          and (binding_id like 'project-doppler:%' or binding_id like 'project-doppler-set:%')
+          and (binding_id <> ${current} or position('/' in secret_name) > 0)`.execute(db);
+      await sql`update secret_provider_permissions
+        set binding_id = ${legacyDopplerBindingGrantId(row.doppler_project, row.doppler_config)}
+        where project_id = ${row.project_id} and binding_id = ${current}`.execute(db);
+    }
     await sql`alter table user_doppler_connections drop constraint user_doppler_connections_pkey`.execute(
       db,
     );

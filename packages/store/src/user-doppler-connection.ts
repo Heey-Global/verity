@@ -52,10 +52,20 @@ export class UserDopplerConnectionStore {
     connectionId: string,
     token: string,
     expectedBindingIds?: readonly string[],
+    expectedTokenRevision?: string | null,
   ): Promise<void> {
     const encrypted = this.cipher.encrypt(token);
     await this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
+      if (expectedTokenRevision !== undefined) {
+        const connection = await tx
+          .selectFrom('doppler_connections')
+          .select('token_revision')
+          .where('id', '=', connectionId)
+          .executeTakeFirst();
+        if (connection?.token_revision !== expectedTokenRevision)
+          throw new DopplerBindingsChangedError();
+      }
       if (expectedBindingIds !== undefined) {
         const current = await tx
           .selectFrom('project_doppler_bindings')

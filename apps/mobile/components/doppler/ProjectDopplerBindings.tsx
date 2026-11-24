@@ -162,11 +162,23 @@ export function ProjectDopplerBindings({
   if (mode?.kind === 'add') {
     title = 'Add Doppler binding';
     const available = connections ?? [];
-    const hasDuplicateLabels = new Set(available.map(({ label }) => label)).size < available.length;
+    const labels = available.map((connection) => connection.label);
+    const uniqueLabels = available.map((connection) => {
+      const workplace = connection.workplaceName ?? connection.workplaceSlug;
+      const duplicate = labels.indexOf(connection.label) !== labels.lastIndexOf(connection.label);
+      return {
+        id: connection.id,
+        label: duplicate && workplace ? `${connection.label} · ${workplace}` : connection.label,
+      };
+    });
+    // OptionList identifies options by their label. Put an ordinal on them only
+    // if the names and available workplace metadata still cannot distinguish them.
+    const needsOrdinals =
+      new Set(uniqueLabels.map(({ label }) => label)).size < uniqueLabels.length;
     const connectionOptions = new Map(
-      available.map((connection, index) => [
-        hasDuplicateLabels ? `${index + 1}. ${connection.label}` : connection.label,
-        connection.id,
+      uniqueLabels.map(({ id, label }, index) => [
+        needsOrdinals ? `${index + 1}. ${label}` : label,
+        id,
       ]),
     );
     const selected = [...connectionOptions].find(([, id]) => id === picked.connection)?.[0];
@@ -436,7 +448,18 @@ export function ProjectDopplerBindings({
           onPress={() => open({ kind: 'add' })}
         />
       ) : null}
-      {personalError ? <Text tone="attention">{personalError}</Text> : null}
+      {personalError ? (
+        <HintBox title={personalError}>
+          <Button
+            label="Retry loading tokens"
+            variant="secondary"
+            onPress={() => {
+              setPersonalError(undefined);
+              setPersonalVersion((current) => current + 1);
+            }}
+          />
+        </HintBox>
+      ) : null}
       {personal && personal.connections.length > 0 ? (
         <>
           <SectionHeader title="Your Doppler tokens" />

@@ -153,6 +153,7 @@ export function registerDopplerConnectionRoutes(
         connectionId,
         input.data.token,
         bindings.map(({ id }) => id),
+        bindings[0]?.tokenRevision ?? null,
       );
     } catch (error) {
       if (error instanceof DopplerBindingsChangedError)

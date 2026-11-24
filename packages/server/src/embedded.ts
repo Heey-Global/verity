@@ -1374,7 +1374,6 @@ export async function buildEmbeddedServer(
 
   installEmbeddedSecretJobs(app, {
     config,
-    db,
     embeddedSecretJobs,
     secretProviderCatalog,
     authRegistry,

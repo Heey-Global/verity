@@ -43,8 +43,9 @@ of the same name is the usual case. The turn context lists the default's names
 bare and every other binding's in full.
 
 **Approvals and grants.** An approval is bound to the bindings the call reads,
-identified by connection, Doppler project, config, and instance token revision.
-Changing or removing a binding the call reads invalidates its approval. Adding
+identified by binding ID, connection, Doppler project, config, and instance
+token revision. Removing a binding invalidates its exact approvals, even if
+another binding is added later for the same project and config. Adding
 an unrelated binding leaves that approval in force.
 Grants are kept under the binding's id together with the reference as written,
 so a grant for `API_KEY` never covers `billing/dev/API_KEY`. A call reading

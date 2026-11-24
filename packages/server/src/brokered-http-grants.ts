@@ -7,6 +7,7 @@ import type { Kysely } from 'kysely';
 import {
   brokeredGrantBindingApplies,
   currentDopplerGrantBindingIds,
+  defaultDopplerGrantMember,
 } from './brokered-doppler-binding.js';
 
 const PROJECT_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -331,7 +332,12 @@ export function createBrokeredHttpGrantStore(
             grantedBy: row.user_id,
             appliesNow:
               row.issuer === GRANT_ISSUER &&
-              brokeredGrantBindingApplies(row.binding_id, currentBindingIds),
+              brokeredGrantBindingApplies(
+                !row.secret_name.includes('/') && row.binding_id.startsWith('project-doppler:')
+                  ? defaultDopplerGrantMember(row.binding_id)
+                  : row.binding_id,
+                currentBindingIds,
+              ),
             expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
             createdAt: new Date(row.created_at).toISOString(),
           },

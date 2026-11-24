@@ -14,8 +14,10 @@ const record = {
   decidedAt: '2026-11-20T00:01:00Z',
   canonicalInput: 'sensitive request input',
   requestMac: 'private MAC',
+  authorizationSnapshot:
+    '{"bindings":[{"bindingId":"b","connectionId":"c","dopplerProject":"p","dopplerConfig":"s"}]}',
 };
-function harness(allowed = true, unrecorded = false) {
+function harness(allowed = true, unrecorded = false, approval = record) {
   const app = Fastify();
   const reopen = vi.fn(async () => ({ ...record, status: 'pending' }));
   const refresh = vi.fn(async () => {});
@@ -23,7 +25,7 @@ function harness(allowed = true, unrecorded = false) {
     approvals: {
       listReopenable: async () => [record],
       listUnrecordedDecisions: async () => (unrecorded ? [record] : []),
-      get: async () => record,
+      get: async () => approval,
       reopen,
     } as unknown as BrokeredToolApprovalStore,
     store: { getSession: async () => ({ sessionId: 's' }) } as never,
@@ -84,6 +86,24 @@ it('preserves the previous receipt if recovery cannot record its decision before
     expect(response.statusCode).toBe(503);
     expect(refresh).toHaveBeenCalledWith('s');
     expect(reopen).not.toHaveBeenCalled();
+  } finally {
+    await app.close();
+  }
+});
+
+it('asks for a new request when the saved provider snapshot is obsolete', async () => {
+  const { app, reopen, refresh } = harness(true, false, { ...record, authorizationSnapshot: '{}' });
+  try {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/sessions/s/secret-approvals/${id}/reopen`,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: 'This approval is obsolete. Submit the secret request again.',
+    });
+    expect(reopen).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
   } finally {
     await app.close();
   }

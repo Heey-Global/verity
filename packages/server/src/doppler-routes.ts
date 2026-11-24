@@ -1,5 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { AmbiguousDopplerConnectionError, SealedError, type EventStore } from '@verity/store';
+import {
+  AmbiguousDopplerConnectionError,
+  DopplerConnectionUsageChangedError,
+  SealedError,
+  type EventStore,
+} from '@verity/store';
 import { z } from 'zod';
 import type { ServerDeps } from './server-deps.js';
 import type {
@@ -26,6 +31,7 @@ const patchBody = z
   .object({ label: labelSchema.optional(), token: tokenSchema.optional() })
   .strict()
   .refine((value) => value.label !== undefined || value.token !== undefined);
+const deleteBody = z.object({ bindingIds: z.array(connectionParams.shape.id) }).strict();
 const connectionQuery = z.object({ connectionId: z.string().min(1).max(200).optional() });
 
 export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDeps): void {
@@ -37,7 +43,7 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
   // sealed/not-configured are `{ ok: false, error }`, not thrown errors.
   app.post('/doppler/validate', async (): Promise<DopplerValidateResult> => {
     if (deps.dopplerValidate === undefined) return { ok: false, error: 'not configured' };
-    const resolved = await withDopplerAccountToken(undefined, deps.dopplerValidate);
+    const resolved = await withDopplerAccountToken(undefined, deps.dopplerValidate, true);
     return 'error' in resolved ? { ok: false, error: resolved.error } : resolved.value;
   });
 
@@ -49,13 +55,19 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
   const withDopplerAccountToken = async <T>(
     connectionId: string | undefined,
     use: (token: string) => Promise<T>,
+    firstWithToken = false,
   ): Promise<{ value: T } | { error: string }> => {
     if (deps.secretCipher?.isSealed() === true) return { error: 'locked' };
     if (deps.dopplerCredentialReader === undefined) return { error: 'not configured' };
     if (connectionId === undefined && deps.eventStore !== undefined) {
-      const [only, other] = await deps.eventStore.dopplerConnections.list();
-      if (other !== undefined) return { error: new AmbiguousDopplerConnectionError().message };
-      connectionId = only?.id;
+      const connections = await deps.eventStore.dopplerConnections.list();
+      if (firstWithToken) {
+        connectionId = connections.find((connection) => connection.hasToken)?.id;
+      } else {
+        if (connections.length > 1) return { error: new AmbiguousDopplerConnectionError().message };
+        connectionId = connections[0]?.id;
+      }
+      if (connectionId === undefined) return { error: 'not configured' };
     }
     let credential: Uint8Array | undefined;
     try {
@@ -212,8 +224,17 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
   app.delete('/doppler/connections/:id', async (request, reply) => {
     const params = connectionParams.safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'invalid Doppler connection' });
-    if (!(await store.dopplerConnections.remove(params.data.id)))
-      return reply.code(404).send({ error: 'Doppler connection not found' });
+    const confirmation = deleteBody.safeParse(request.body ?? { bindingIds: [] });
+    if (!confirmation.success)
+      return reply.code(400).send({ error: 'invalid Doppler connection confirmation' });
+    try {
+      if (!(await store.dopplerConnections.remove(params.data.id, confirmation.data.bindingIds)))
+        return reply.code(404).send({ error: 'Doppler connection not found' });
+    } catch (error) {
+      if (error instanceof DopplerConnectionUsageChangedError)
+        return reply.code(409).send({ error: error.message });
+      throw error;
+    }
     return reply.code(204).send();
   });
 }

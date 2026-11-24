@@ -7208,7 +7208,16 @@ export class EventStore implements EventSink {
 
   private async updateVeritySettingsWithoutInventoryBarrier(
     patch: VeritySettingsPatch,
+    tx?: Kysely<Database>,
   ): Promise<VeritySettingsRecord> {
+    if (tx === undefined && patch.dopplerServiceToken !== undefined)
+      return this.db.transaction().execute(async (transaction) => {
+        await this.dopplerConnections.setLegacyToken(
+          normalizeSetting(patch.dopplerServiceToken),
+          transaction,
+        );
+        return this.updateVeritySettingsWithoutInventoryBarrier(patch, transaction);
+      });
     const values = {
       id: 'global',
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
@@ -7256,7 +7265,7 @@ export class EventStore implements EventSink {
       premium_remote_access_enabled: patch.premiumRemoteAccessEnabled ?? true,
       project_egress_enabled: patch.projectEgressEnabled ?? false,
     };
-    const row = await this.db
+    const row = await (tx ?? this.db)
       .insertInto('verity_settings')
       .values(values)
       .onConflict((oc) =>
@@ -7301,11 +7310,7 @@ export class EventStore implements EventSink {
             ? { github_app_installation_id: normalizeSetting(patch.githubAppInstallationId) }
             : {}),
           ...(patch.githubAppPrivateKey !== undefined
-            ? {
-                github_app_private_key: this.encryptSecret(
-                  normalizeSetting(patch.githubAppPrivateKey),
-                ),
-              }
+            ? { github_app_private_key: values.github_app_private_key }
             : {}),
           ...(patch.githubAppClientId !== undefined
             ? { github_app_client_id: normalizeSetting(patch.githubAppClientId) }
@@ -7318,19 +7323,13 @@ export class EventStore implements EventSink {
               }
             : {}),
           ...(patch.dopplerServiceToken !== undefined
-            ? {
-                doppler_service_token: this.encryptSecret(
-                  normalizeSetting(patch.dopplerServiceToken),
-                ),
-              }
+            ? { doppler_service_token: values.doppler_service_token }
             : {}),
           ...(patch.transcribeBaseUrl !== undefined
             ? { transcribe_base_url: normalizeSetting(patch.transcribeBaseUrl) }
             : {}),
           ...(patch.transcribeApiKey !== undefined
-            ? {
-                transcribe_api_key: this.encryptSecret(normalizeSetting(patch.transcribeApiKey)),
-              }
+            ? { transcribe_api_key: values.transcribe_api_key }
             : {}),
           ...(patch.transcribeModel !== undefined
             ? { transcribe_model: normalizeSetting(patch.transcribeModel) }

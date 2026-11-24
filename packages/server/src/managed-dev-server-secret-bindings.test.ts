@@ -397,7 +397,7 @@ describe('managed servers with secret bindings', () => {
     });
   }
 
-  it.each(['replacement', 'rotation'] as const)(
+  it.each(['replacement', 'rotation', 'recreation'] as const)(
     'requires new approval after %s of a referenced connection',
     async (change) => {
       await ctx.store.updateProjectSettings('p1', { dopplerProject: 'demo', dopplerConfig: 'dev' });
@@ -439,9 +439,12 @@ describe('managed servers with secret bindings', () => {
         .where('id', '=', 'other')
         .execute();
       expect((await manager.view('s1'))[0]!.approved).toBe(true);
-      if (change === 'replacement') {
+      if (change !== 'rotation') {
         await ctx.store.projectDopplerBindings.remove('p1', binding.id);
-        await ctx.store.projectDopplerBindings.add('p1', { ...target, connectionId: 'other' });
+        await ctx.store.projectDopplerBindings.add('p1', {
+          ...target,
+          connectionId: change === 'replacement' ? 'other' : 'billing',
+        });
       } else {
         await ctx.db
           .updateTable('doppler_connections')

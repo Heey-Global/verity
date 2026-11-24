@@ -47,7 +47,12 @@ type Tool = keyof typeof requests;
 const dopplerSnapshot = (dopplerConfig: string) =>
   JSON.stringify(
     brokeredDopplerSnapshot([
-      { connectionId: 'synthetic-connection', dopplerProject: 'synthetic-project', dopplerConfig },
+      {
+        bindingId: 'synthetic-binding',
+        connectionId: 'synthetic-connection',
+        dopplerProject: 'synthetic-project',
+        dopplerConfig,
+      },
     ]),
   );
 

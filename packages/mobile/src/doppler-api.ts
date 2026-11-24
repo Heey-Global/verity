@@ -158,9 +158,9 @@ export function dopplerClient(request: Request) {
       const res = await request(`${connection(id)}/usage`, { method: 'GET' });
       return dopplerConnectionUsageSchema.parse(await res.json());
     },
-    /** Deletes a connection with its bindings in every project. */
-    removeConnection: async (id: string): Promise<void> => {
-      await request(connection(id), { method: 'DELETE' });
+    /** Deletes a connection only if its bindings match those shown at confirmation. */
+    removeConnection: async (id: string, bindingIds: readonly string[]): Promise<void> => {
+      await request(connection(id), json('DELETE', { bindingIds }));
     },
     listBindings: async (projectId: string): Promise<ProjectDopplerBinding[]> => {
       const res = await request(bindings(projectId), { method: 'GET' });

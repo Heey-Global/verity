@@ -2,6 +2,7 @@ import { dopplerBindingGrantId } from '@verity/store';
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertBrokeredDopplerBinding,
   brokeredDopplerBindingId,
   brokeredDopplerSnapshot,
   defaultDopplerGrantMember,
@@ -122,6 +123,16 @@ describe('approvals and grants per binding', () => {
     expect(
       brokeredDopplerBindingId(brokeredDopplerSnapshot(referencedBindings(switched, references))),
     ).not.toBe(brokeredDopplerBindingId(snapshot(...references)));
+  });
+
+  it('invalidates exact approvals when a binding row changes without changing grant identity', () => {
+    const approved = snapshot('API_KEY');
+    const recreated = bindings.map((binding) =>
+      binding.id === portalPrd.id ? { ...binding, id: 'recreated' } : binding,
+    );
+    const current = brokeredDopplerSnapshot(referencedBindings(recreated, ['API_KEY']));
+    expect(brokeredDopplerBindingId(current)).toBe(brokeredDopplerBindingId(approved));
+    expect(() => assertBrokeredDopplerBinding(current, approved)).toThrow('Doppler access changed');
   });
 
   it('changes authorization when a connection token is replaced', () => {

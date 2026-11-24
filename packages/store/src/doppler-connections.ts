@@ -10,6 +10,7 @@ export interface DopplerConnectionRecord {
   label: string;
   /** Whether the instance holds a token for it; the token itself is never listed. */
   hasToken: boolean;
+  tokenRevision?: string;
   workplaceSlug: string | null;
   workplaceName: string | null;
   createdAt: Date;
@@ -26,6 +27,20 @@ export interface DopplerWorkplace {
   name: string | null;
 }
 
+export class AmbiguousDopplerConnectionError extends Error {
+  constructor() {
+    super('Open the Doppler connection picker in the current app to make this change.');
+    this.name = 'AmbiguousDopplerConnectionError';
+  }
+}
+
+export class DopplerConnectionUsageChangedError extends Error {
+  constructor() {
+    super('Doppler connection usage changed. Review the affected project bindings again.');
+    this.name = 'DopplerConnectionUsageChangedError';
+  }
+}
+
 /**
  * The instance's Doppler connections (ADR 0031). Metadata stays readable while the
  * store is sealed; tokens are decrypted only by {@link tokenBytes}.
@@ -39,7 +54,15 @@ export class DopplerConnectionStore {
   async list(): Promise<DopplerConnectionRecord[]> {
     const rows = await this.db
       .selectFrom('doppler_connections')
-      .select(['id', 'label', 'token', 'workplace_slug', 'workplace_name', 'created_at'])
+      .select([
+        'id',
+        'label',
+        'token',
+        'token_revision',
+        'workplace_slug',
+        'workplace_name',
+        'created_at',
+      ])
       .orderBy('created_at')
       .orderBy('id')
       .execute();
@@ -47,6 +70,7 @@ export class DopplerConnectionStore {
       id: row.id,
       label: row.label,
       hasToken: row.token !== null,
+      ...(row.token_revision === null ? {} : { tokenRevision: row.token_revision }),
       workplaceSlug: row.workplace_slug,
       workplaceName: row.workplace_name,
       createdAt: row.created_at,
@@ -87,49 +111,76 @@ export class DopplerConnectionStore {
     id: string,
     patch: { label?: string; token?: string; workplace?: DopplerWorkplace },
   ): Promise<boolean> {
-    const result = await this.db
-      .updateTable('doppler_connections')
-      .set({
-        ...(patch.label === undefined ? {} : { label: patch.label }),
-        ...(patch.token === undefined
-          ? {}
-          : { token: this.cipher.encrypt(patch.token), token_revision: randomUUID() }),
-        ...(patch.workplace === undefined
-          ? {}
-          : { workplace_slug: patch.workplace.slug, workplace_name: patch.workplace.name }),
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    const token = patch.token === undefined ? undefined : this.cipher.encrypt(patch.token);
+    return this.db.transaction().execute(async (tx) => {
+      await lockDopplerTopology(tx);
+      const existing = await tx
+        .selectFrom('doppler_connections')
+        .select('workplace_slug')
+        .where('id', '=', id)
+        .executeTakeFirst();
+      if (existing === undefined) return false;
+      await tx
+        .updateTable('doppler_connections')
+        .set({
+          ...(patch.label === undefined ? {} : { label: patch.label }),
+          ...(token === undefined ? {} : { token, token_revision: randomUUID() }),
+          ...(patch.workplace === undefined && token === undefined
+            ? {}
+            : {
+                workplace_slug: patch.workplace?.slug ?? null,
+                workplace_name: patch.workplace?.name ?? null,
+              }),
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', id)
+        .execute();
+      if (
+        token !== undefined &&
+        (existing.workplace_slug === null || existing.workplace_slug !== patch.workplace?.slug)
+      ) {
+        await tx.deleteFrom('user_doppler_connections').where('connection_id', '=', id).execute();
+      }
+      return true;
+    });
   }
 
   /** The former single instance token setting writes through to this connection. */
-  async setLegacyToken(token: string | null): Promise<void> {
-    if (token === null) {
-      await this.db
-        .updateTable('doppler_connections')
-        .set({ token: null, token_revision: randomUUID(), updated_at: sql`now()` })
-        .where('id', '=', LEGACY_DOPPLER_CONNECTION_ID)
-        .execute();
-      return;
-    }
-    const encrypted = this.cipher.encrypt(token);
+  async setLegacyToken(token: string | null, tx?: Kysely<Database>): Promise<void> {
+    const encrypted = token === null ? null : this.cipher.encrypt(token);
     const revision = randomUUID();
-    await this.db
-      .insertInto('doppler_connections')
-      .values({
-        id: LEGACY_DOPPLER_CONNECTION_ID,
-        label: 'Doppler',
+    const write = async (transaction: Kysely<Database>) => {
+      await lockDopplerTopology(transaction);
+      const [existing, other] = await transaction
+        .selectFrom('doppler_connections')
+        .select('id')
+        .limit(2)
+        .execute();
+      if (
+        other !== undefined ||
+        (existing !== undefined && existing.id !== LEGACY_DOPPLER_CONNECTION_ID)
+      )
+        throw new AmbiguousDopplerConnectionError();
+      if (encrypted === null && existing === undefined) return;
+      const replacement = {
         token: encrypted,
         token_revision: revision,
-      })
-      .onConflict((oc) =>
-        oc
-          .column('id')
-          .doUpdateSet({ token: encrypted, token_revision: revision, updated_at: sql`now()` }),
-      )
-      .execute();
+        workplace_slug: null,
+        workplace_name: null,
+      };
+      await transaction
+        .insertInto('doppler_connections')
+        .values({ id: LEGACY_DOPPLER_CONNECTION_ID, label: 'Doppler', ...replacement })
+        .onConflict((oc) => oc.column('id').doUpdateSet({ ...replacement, updated_at: sql`now()` }))
+        .execute();
+      // Legacy token writes do not identify a workplace.
+      await transaction
+        .deleteFrom('user_doppler_connections')
+        .where('connection_id', '=', LEGACY_DOPPLER_CONNECTION_ID)
+        .execute();
+    };
+    if (tx !== undefined) await write(tx);
+    else await this.db.transaction().execute(write);
   }
 
   /** The projects whose bindings use the connection, for the delete warning. */
@@ -174,7 +225,7 @@ export class DopplerConnectionStore {
    * those bindings. A project whose default binding goes promotes its oldest
    * remaining binding. False when the connection does not exist.
    */
-  async remove(id: string): Promise<boolean> {
+  async remove(id: string, expectedBindingIds?: readonly string[]): Promise<boolean> {
     return this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
       const exists = await tx
@@ -185,9 +236,15 @@ export class DopplerConnectionStore {
       if (exists === undefined) return false;
       const bindings = await tx
         .selectFrom('project_doppler_bindings')
-        .select(['project_id', 'doppler_project', 'doppler_config'])
+        .select(['id', 'project_id', 'doppler_project', 'doppler_config'])
         .where('connection_id', '=', id)
         .execute();
+      if (
+        expectedBindingIds !== undefined &&
+        (bindings.length !== expectedBindingIds.length ||
+          bindings.some((binding) => !expectedBindingIds.includes(binding.id)))
+      )
+        throw new DopplerConnectionUsageChangedError();
       const projects = new Set(bindings.map((binding) => binding.project_id));
       for (const binding of bindings) {
         await deleteDopplerBindingGrants(tx, binding.project_id, {

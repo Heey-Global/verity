@@ -4,10 +4,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createSecretCipher } from './crypto.js';
 import { dopplerBindingGrantId, legacyDopplerBindingGrantId } from './doppler-binding-identity.js';
-import { DopplerConnectionStore } from './doppler-connections.js';
-import { migrationProvider } from './migrations.js';
 import {
   AmbiguousDopplerConnectionError,
+  DopplerConnectionStore,
+  DopplerConnectionUsageChangedError,
+} from './doppler-connections.js';
+import { migrationProvider } from './migrations.js';
+import {
+  DopplerConnectionTokenChangedError,
   DuplicateDopplerBindingError,
   ProjectDopplerBindingStore,
 } from './project-doppler-bindings.js';
@@ -204,6 +208,49 @@ describe('Doppler connections', () => {
     expect(await connections.update('missing', { label: 'x' })).toBe(false);
   });
 
+  it('requires the confirmed bindings to match a connection’s current usage', async () => {
+    const connectionId = await connections.add({
+      label: 'Platform',
+      token: 'dp.sa.a',
+      workplace: { slug: null, name: null },
+    });
+    const first = await bindings.add('p1', {
+      connectionId,
+      dopplerProject: 'app',
+      dopplerConfig: 'prd',
+    });
+    const second = await bindings.add('p2', {
+      connectionId,
+      dopplerProject: 'app',
+      dopplerConfig: 'stg',
+    });
+    await expect(connections.remove(connectionId, [first.id])).rejects.toBeInstanceOf(
+      DopplerConnectionUsageChangedError,
+    );
+    expect(await connections.usage(connectionId)).toHaveLength(2);
+    await expect(connections.remove(connectionId, [second.id, first.id])).resolves.toBe(true);
+  });
+
+  it('preserves personal tokens only on a known same-workplace rotation', async () => {
+    const workplace = { slug: 'platform', name: 'Platform' };
+    const connectionId = await connections.add({ label: 'Platform', token: 'dp.sa.a', workplace });
+    const input = { connectionId, dopplerProject: 'app', dopplerConfig: 'prd' };
+    const binding = await bindings.add('p1', input, null);
+    const tokens = ctx.store.userDopplerConnections;
+    await tokens.set('lena', 'p1', connectionId, 'dp.st.token', [binding.id], null);
+    await connections.update(connectionId, { token: 'dp.sa.b', workplace });
+    expect(await tokens.tokenBytes('lena', 'p1', connectionId)).toBeDefined();
+    await expect(
+      bindings.add('p1', { ...input, dopplerConfig: 'stg' }, null),
+    ).rejects.toBeInstanceOf(DopplerConnectionTokenChangedError);
+    await expect(
+      tokens.set('lena', 'p1', connectionId, 'dp.st.stale', [binding.id], null),
+    ).rejects.toBeInstanceOf(DopplerBindingsChangedError);
+    await connections.update(connectionId, { token: 'dp.sa.c' });
+    expect(await tokens.tokenBytes('lena', 'p1', connectionId)).toBeUndefined();
+    expect((await connections.get(connectionId))?.workplaceSlug).toBeNull();
+  });
+
   it('keeps a surviving default when default selection overlaps connection deletion', async () => {
     const platform = await connections.add({
       label: 'Platform',
@@ -388,6 +435,36 @@ it('moves the instance token, project configs, personal tokens and grants on upg
         }),
       },
     ]);
+    const otherConnection = await upgraded.dopplerConnections.add({
+      label: 'Other',
+      token: 'dp.sa.other',
+      workplace: { slug: 'other', name: null },
+    });
+    await upgraded.projectDopplerBindings.add('p2', {
+      connectionId: otherConnection,
+      dopplerProject: 'tools',
+      dopplerConfig: 'dev',
+    });
+    const downgraded = await migrator.migrateTo('0241_github_repository_ids');
+    if (downgraded.error) throw new Error('Downgrade failed', { cause: downgraded.error });
+    const settings = await sql<{
+      project_id: string;
+      doppler_project: string | null;
+      doppler_config: string | null;
+    }>`
+      select project_id, doppler_project, doppler_config from project_settings order by project_id`.execute(
+      raw.db,
+    );
+    expect(settings.rows).toEqual([
+      { project_id: 'p1', doppler_project: 'portal', doppler_config: 'prd' },
+      { project_id: 'p2', doppler_project: null, doppler_config: null },
+    ]);
+    expect(
+      (
+        await sql<{ binding_id: string }>`
+      select binding_id from secret_provider_permissions`.execute(raw.db)
+      ).rows,
+    ).toEqual([{ binding_id: legacyDopplerBindingGrantId('portal', 'prd') }]);
   } finally {
     await raw.close();
   }

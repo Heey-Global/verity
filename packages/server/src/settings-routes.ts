@@ -5,7 +5,7 @@ import type {
   VeritySettingsPatch,
   VeritySettingsRecord,
 } from '@verity/store';
-import { SealedError } from '@verity/store';
+import { AmbiguousDopplerConnectionError, SealedError } from '@verity/store';
 import type { AgentLoginService } from './agent-login.js';
 import { fetchOpenCodeModels } from './opencode-model-catalog.js';
 
@@ -30,8 +30,6 @@ export interface SettingsRouteDeps {
   };
   transcriptionConfigured: (settings: VeritySettingsRecord | null) => boolean;
   onUplinkCredentialsChanged?: (() => void) | undefined;
-  /** The former single Doppler token setting writes through to its connection (ADR 0031). */
-  onDopplerServiceTokenChanged?: ((token: string | null) => Promise<void>) | undefined;
   /** Apply the premium feature switches after either of them changed. */
   onPremiumFeatureSwitchesChanged?:
     ((settings: VeritySettingsRecord) => void | Promise<void>) | undefined;
@@ -227,15 +225,19 @@ export function registerSettingsRoutes(
       const containsAgentCredentials =
         patch.claudeCodeOauthCredentialsJson !== undefined || patch.codexAuthJson !== undefined;
       let settings: VeritySettingsRecord | undefined;
-      if (containsAgentCredentials) {
-        await deps.storeAgentCredentials(patch);
-        settings = await deps.store().getVeritySettings();
-      } else {
-        settings = await deps.store().updateVeritySettings(patch);
+      try {
+        if (containsAgentCredentials) {
+          await deps.storeAgentCredentials(patch);
+          settings = await deps.store().getVeritySettings();
+        } else {
+          settings = await deps.store().updateVeritySettings(patch);
+        }
+      } catch (error) {
+        if (error instanceof AmbiguousDopplerConnectionError)
+          throw Object.assign(error, { statusCode: 409 });
+        throw error;
       }
       if (settings === undefined) throw new Error('Verity settings disappeared after update');
-      if (patch.dopplerServiceToken !== undefined)
-        await deps.onDopplerServiceTokenChanged?.(patch.dopplerServiceToken?.trim() || null);
       if (patch.uplinkSubscriptionKey !== undefined) deps.onUplinkCredentialsChanged?.();
       if (
         patch.premiumSharingEnabled !== undefined ||

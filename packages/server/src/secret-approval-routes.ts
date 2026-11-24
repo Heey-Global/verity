@@ -3,6 +3,7 @@ import type { EventStore } from '@verity/store';
 import { z } from 'zod';
 
 import type { BrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
+import { tryParseBrokeredDopplerBinding } from './brokered-doppler-binding.js';
 
 const sessionParams = z.object({ id: z.string().min(1) });
 const approvalParams = sessionParams.extend({ approvalId: z.uuid() });
@@ -39,6 +40,10 @@ export function registerSecretApprovalRoutes(
       return reply.code(403).send({ error: 'Project execution permission is required.' });
     if (record.status === 'pending')
       return reply.code(409).send({ error: 'This approval is still pending.' });
+    if (!tryParseBrokeredDopplerBinding(record.authorizationSnapshot))
+      return reply
+        .code(409)
+        .send({ error: 'This approval is obsolete. Submit the secret request again.' });
     // Reopening retires the old outcome, so give recovery a chance to record it first.
     await deps.refresh(id);
     const unrecorded = await deps.approvals.listUnrecordedDecisions(id);

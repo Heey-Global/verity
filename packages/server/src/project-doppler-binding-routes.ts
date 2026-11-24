@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import {
+  DopplerConnectionTokenChangedError,
   DuplicateDopplerBindingError,
   SealedError,
   UnknownDopplerConnectionError,
@@ -81,12 +82,13 @@ export function installDopplerBindings(app: FastifyInstance, ctx: DopplerBinding
       if (ctx.isSealed?.() === true) throw new SealedError();
       const token = await ctx.store.dopplerConnections.tokenBytes(connection.id);
       try {
-        if (token !== undefined)
-          await ctx.listNames({
-            dopplerProject: input.data.dopplerProject,
-            dopplerConfig: input.data.dopplerConfig,
-            token,
-          });
+        if (token === undefined)
+          return reply.code(409).send({ error: new DopplerConnectionTokenChangedError().message });
+        await ctx.listNames({
+          dopplerProject: input.data.dopplerProject,
+          dopplerConfig: input.data.dopplerConfig,
+          token,
+        });
       } catch {
         return reply.code(400).send({
           error: `${connection.label} cannot read the Doppler config ${input.data.dopplerProject}/${input.data.dopplerConfig}`,
@@ -96,11 +98,18 @@ export function installDopplerBindings(app: FastifyInstance, ctx: DopplerBinding
       }
     }
     try {
-      const added = await ctx.store.projectDopplerBindings.add(projectId, input.data);
+      const added = await ctx.store.projectDopplerBindings.add(
+        projectId,
+        input.data,
+        connection.tokenRevision ?? null,
+      );
       reply.code(201);
       return view(added);
     } catch (error) {
-      if (error instanceof DuplicateDopplerBindingError)
+      if (
+        error instanceof DuplicateDopplerBindingError ||
+        error instanceof DopplerConnectionTokenChangedError
+      )
         return reply.code(409).send({ error: error.message });
       if (error instanceof UnknownDopplerConnectionError)
         return reply.code(404).send({ error: error.message });
