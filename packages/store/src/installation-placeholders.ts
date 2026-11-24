@@ -1,6 +1,6 @@
 import { sql, type Transaction } from 'kysely';
 import type { Database } from './schema.js';
-import type { ProjectKind, ProjectRecord, ProjectState } from './store.js';
+import type { ProjectKind, ProjectRecord, ProjectState } from './project-record.js';
 
 /**
  * Whether a project row is an unadopted installation-sync placeholder — a row
