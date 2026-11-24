@@ -1,3 +1,5 @@
+import { DeletedProjectError } from './deleted-project-error.js';
+export { DeletedProjectError } from './deleted-project-error.js';
 import { ProjectAccessStore } from './project-access.js';
 import { ProjectLifecycleStore } from './project-lifecycle.js';
 import { claimNextRepositoryInstance } from './project-identity-allocation.js';
@@ -487,19 +489,6 @@ export interface ClaudeEgressClientCertRecord {
   keyPem: string;
   fingerprint256: string;
   expiresAt: Date;
-}
-
-/** Thrown by {@link EventStore.createSession} when the session's project has
- *  been soft-deleted (`hidden_at` set). Project deletion reaps the project's
- *  sessions, so a session inserted afterwards would outlive its project and
- *  reappear in the overview as an orphan. Callers map this to the same 404 an
- *  unknown project id gets — a hidden project is gone as far as spawning is
- *  concerned. */
-export class DeletedProjectError extends Error {
-  constructor(readonly projectId: string) {
-    super(`project ${projectId} has been deleted`);
-    this.name = 'DeletedProjectError';
-  }
 }
 
 export interface VeritySettingsRecord {
@@ -2168,19 +2157,11 @@ export class EventStore implements EventSink {
   }
 
   async listPreparedSessionMoves() {
-    return await this.db
-      .selectFrom('session_moves')
-      .selectAll()
-      .where('result_json', 'is', null)
-      .execute();
+    return this.sessionMoves.listPreparedSessionMoves();
   }
 
   async listMovePreviewRestarts() {
-    return await this.db
-      .selectFrom('session_moves')
-      .selectAll()
-      .where('preview_restart_json', 'is not', null)
-      .execute();
+    return this.sessionMoves.listMovePreviewRestarts();
   }
 
   async setMovePreviewRestart(
@@ -2188,32 +2169,15 @@ export class EventStore implements EventSink {
     operationId: string,
     serverIds: string[] | null,
   ): Promise<void> {
-    await this.db
-      .updateTable('session_moves')
-      .set({ preview_restart_json: serverIds === null ? null : JSON.stringify(serverIds) })
-      .where('session_id', '=', sessionId)
-      .where('operation_id', '=', operationId)
-      .execute();
+    return this.sessionMoves.setMovePreviewRestart(sessionId, operationId, serverIds);
   }
 
   async getSessionMove(sessionId: string, operationId: string) {
-    return await this.db
-      .selectFrom('session_moves')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .where('operation_id', '=', operationId)
-      .executeTakeFirst();
+    return this.sessionMoves.getSessionMove(sessionId, operationId);
   }
 
   async getSessionMoveNotice(sessionId: string): Promise<string | undefined> {
-    const row = await this.db
-      .selectFrom('session_moves')
-      .select('notice')
-      .where('session_id', '=', sessionId)
-      .where('result_json', 'is not', null)
-      .orderBy('created_at', 'desc')
-      .executeTakeFirst();
-    return row?.notice;
+    return this.sessionMoves.getSessionMoveNotice(sessionId);
   }
 
   /** Reserve a destination before touching disk, so an interrupted preparation remains identifiable. */
@@ -2227,27 +2191,9 @@ export class EventStore implements EventSink {
     branch: string;
     onCommits: string;
   }): Promise<void> {
-    await this.db
-      .insertInto('session_moves')
-      .values({
-        session_id: input.sessionId,
-        operation_id: input.operationId,
-        source_project_id: input.sourceProjectId,
-        source_worktree: input.sourceWorktree,
-        target_project_id: input.targetProjectId,
-        target_worktree: input.targetWorktree,
-        branch: input.branch,
-        on_commits: input.onCommits,
-        backend_ids_json: JSON.stringify([
-          input.sessionId,
-          ...(await this.getSessionBackendStates(input.sessionId)).map(
-            (binding) => binding.backendSessionId,
-          ),
-        ]),
-        notice: '',
-        result_json: null,
-      })
-      .execute();
+    return this.sessionMoves.prepareSessionMove(input, (sessionId) =>
+      this.getSessionBackendStates(sessionId),
+    );
   }
 
   async commitSessionMove(
@@ -2317,51 +2263,7 @@ export class EventStore implements EventSink {
    * the project re-resolved via GitHub sync).
    */
   async setSessionProject(sessionId: string, projectId: string | null): Promise<boolean> {
-    if (projectId !== null) {
-      return await this.db.transaction().execute(async (tx) => {
-        const project = await tx
-          .selectFrom('projects')
-          .select('hidden_at')
-          .forShare()
-          .where('id', '=', projectId)
-          .executeTakeFirst();
-        if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
-        await tx
-          .selectFrom('sessions')
-          .select('session_id')
-          .where('session_id', '=', sessionId)
-          .forUpdate()
-          .executeTakeFirst();
-        await tx
-          .deleteFrom('session_links')
-          .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
-          .execute();
-        const result = await tx
-          .updateTable('sessions')
-          .set({ project_id: projectId })
-          .where('session_id', '=', sessionId)
-          .executeTakeFirst();
-        return result.numUpdatedRows > 0n;
-      });
-    }
-    return this.db.transaction().execute(async (tx) => {
-      await tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      await tx
-        .deleteFrom('session_links')
-        .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
-        .execute();
-      const result = await tx
-        .updateTable('sessions')
-        .set({ project_id: null })
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst();
-      return result.numUpdatedRows > 0n;
-    });
+    return this.sessionMoves.setSessionProject(sessionId, projectId);
   }
 
   /**
