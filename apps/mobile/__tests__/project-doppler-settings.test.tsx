@@ -215,6 +215,56 @@ describe('project Doppler settings', () => {
     expect(listDopplerConfigs).toHaveBeenLastCalledWith('portal', 'platform');
   });
 
+  it('leaves existing bindings visible when the picker has only tokenless connections', async () => {
+    const listDopplerProjects = jest.fn();
+    const listConnections = jest.fn().mockResolvedValue([dopplerConnection({ hasToken: false })]);
+    const listBindings = jest.fn().mockResolvedValue([dopplerBinding()]);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        listDopplerProjects,
+        doppler: { listConnections, listBindings },
+      }),
+    );
+    setSearchParams({ id: 'p/1', section: 'doppler' });
+    render(<ProjectServicesScreen />);
+
+    expect(await screen.findByText('portal/prd')).toBeOnTheScreen();
+    fireEvent.press(await screen.findByLabelText(/^Add binding/));
+    expect(await screen.findByText('No Doppler connections available')).toBeOnTheScreen();
+    expect(screen.getByText(/Add an instance token/)).toBeOnTheScreen();
+    expect(listDopplerProjects).not.toHaveBeenCalled();
+  });
+
+  it.each(['projects', 'configs'])('explains an empty %s response', async (lookup) => {
+    const listDopplerProjects = jest.fn().mockResolvedValue({
+      projects: lookup === 'projects' ? [] : [{ slug: 'portal', name: 'Portal' }],
+    });
+    const listDopplerConfigs = jest.fn().mockResolvedValue({ configs: [] });
+    const listConnections = jest
+      .fn()
+      .mockResolvedValue([
+        dopplerConnection({ id: 'personal', hasToken: false }),
+        dopplerConnection(),
+      ]);
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({
+        listDopplerProjects,
+        listDopplerConfigs,
+        doppler: { listConnections },
+      }),
+    );
+    setSearchParams({ id: 'p/1', section: 'doppler' });
+    render(<ProjectServicesScreen />);
+
+    fireEvent.press(await screen.findByLabelText(/^Add binding/));
+    if (lookup === 'configs') fireEvent.press(await screen.findByLabelText(/^portal(,|$)/));
+    expect(
+      await screen.findByText(`returned no Doppler ${lookup}.`, { exact: false }),
+    ).toBeOnTheScreen();
+    expect(listDopplerProjects).toHaveBeenCalledWith('platform');
+    expect(screen.getAllByLabelText(/^Add binding/).at(-1)).toBeDisabled();
+  });
+
   it('sets another binding as the default and removes one after confirming', async () => {
     const setDefaultBinding = jest.fn().mockResolvedValue([]);
     const removeBinding = jest.fn().mockResolvedValue(undefined);

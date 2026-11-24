@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { expect, it, vi } from 'vitest';
 import { registerSecretApprovalRoutes } from './secret-approval-routes.js';
 import type { BrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
+import { tryParseBrokeredDopplerBinding } from './brokered-doppler-binding.js';
 
 const id = 'b7aa84e6-ab38-4f5e-b26e-d5509ba90798';
 const record = {
@@ -21,6 +22,9 @@ function harness(allowed = true, unrecorded = false, approval = record) {
   const app = Fastify();
   const reopen = vi.fn(async () => ({ ...record, status: 'pending' }));
   const refresh = vi.fn(async () => {});
+  const isCurrent = vi.fn(
+    async () => tryParseBrokeredDopplerBinding(approval.authorizationSnapshot) !== undefined,
+  );
   registerSecretApprovalRoutes(app, {
     approvals: {
       listReopenable: async () => [approval],
@@ -28,11 +32,12 @@ function harness(allowed = true, unrecorded = false, approval = record) {
       get: async () => approval,
       reopen,
     } as unknown as BrokeredToolApprovalStore,
-    store: { getSession: async () => ({ sessionId: 's' }) } as never,
+    store: { getSession: async () => ({ sessionId: 's', projectId: 'p' }) } as never,
     permitted: async () => allowed,
     refresh,
+    isCurrent,
   });
-  return { app, reopen, refresh };
+  return { app, reopen, refresh, isCurrent };
 }
 
 it('lists only safe history metadata, without the saved input or MAC', async () => {
@@ -106,6 +111,27 @@ it('offers only usable receipts and asks for a new request when a snapshot is ob
     });
     expect(reopen).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
+  } finally {
+    await app.close();
+  }
+});
+
+it('does not reopen an otherwise valid receipt if its binding no longer matches', async () => {
+  const { app, reopen, isCurrent } = harness();
+  isCurrent.mockResolvedValue(false);
+  try {
+    const listed = await app.inject({ method: 'GET', url: '/sessions/s/secret-approvals' });
+    expect(listed.json()).toEqual({ requests: [] });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/sessions/s/secret-approvals/${id}/reopen`,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: 'Doppler access changed. Submit the secret request again.',
+    });
+    expect(isCurrent).toHaveBeenCalledTimes(2);
+    expect(reopen).not.toHaveBeenCalled();
   } finally {
     await app.close();
   }

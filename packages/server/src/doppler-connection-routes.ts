@@ -64,6 +64,7 @@ export function registerDopplerConnectionRoutes(
         label: string;
         bindings: string[];
         connected: boolean;
+        needsValidation: boolean;
         updatedAt: string | null;
         usesInstanceToken: boolean;
       }
@@ -75,11 +76,14 @@ export function registerDopplerConnectionRoutes(
         label: binding.connectionLabel,
         bindings: [],
         connected: status !== undefined,
+        needsValidation: false,
         updatedAt: status?.updatedAt.toISOString() ?? null,
         // Without a token of their own, the administrator's turns keep using the
         // connection's instance token, which is theirs; nobody else's ever do.
         usesInstanceToken: status === undefined && instanceTokens.has(binding.connectionId),
       };
+      if (status !== undefined && binding.createdAt.getTime() > status.updatedAt.getTime())
+        entry.needsValidation = true;
       entry.bindings.push(`${binding.dopplerProject}/${binding.dopplerConfig}`);
       connections.set(binding.connectionId, entry);
     }

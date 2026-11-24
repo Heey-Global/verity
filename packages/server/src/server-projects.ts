@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { parseForgejoRepository, parseOwnerRepo } from './canonical.js';
 import { ensureControlPlaneProject } from './control-plane-project.js';
 import { type ReleaseSummary } from './forge-provider.js';
-import { ProjectAgentNotAllowedError } from './project-agent-policy.js';
+import { isModelAllowedForProject, ProjectAgentNotAllowedError } from './project-agent-policy.js';
 import { ownDefaultModel, setOwnDefaultModel } from './own-default-model.js';
 import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
@@ -589,8 +589,10 @@ export function installProjects(
       const store = projectSettingsStore(deps.eventStore);
       // The default model is each person's own (ADR 0023 §3), never the project's.
       const { defaultModel, ...projectPatch } = patch;
-      if (defaultModel !== undefined)
-        await setOwnDefaultModel(deps.eventStore, id, viewer, defaultModel);
+      const model = defaultModel?.trim() || null;
+      if (model !== null && !isModelAllowedForProject(model, await store.getProjectSettings(id))) {
+        throw new ProjectAgentNotAllowedError(model);
+      }
       let settings: ProjectSettingsRecord | undefined;
       try {
         settings = await store.updateProjectSettings(id, projectPatch);
@@ -600,6 +602,8 @@ export function installProjects(
         }
         throw error;
       }
+      if (settings !== undefined && defaultModel !== undefined)
+        await deps.eventStore.userProviderConnections.setProjectDefaultModel(viewer, id, model);
       return settings === undefined
         ? undefined
         : {

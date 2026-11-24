@@ -58,6 +58,7 @@ export const personalDopplerTokensSchema = z.object({
         label: z.string(),
         bindings: z.array(z.string()),
         connected: z.boolean(),
+        needsValidation: z.boolean().optional(),
         updatedAt: z.string().nullable(),
         usesInstanceToken: z.boolean(),
       }),

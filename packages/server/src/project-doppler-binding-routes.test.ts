@@ -31,6 +31,7 @@ beforeEach(async () => {
 // Tokens read only the configs listed for them; anything else is refused by Doppler.
 const readable: Record<string, string[]> = {
   'dp.sa.platform': ['portal/prd', 'portal/stg'],
+  'dp.sa.platform-next': ['portal/prd', 'portal/stg'],
   'dp.sa.payments': ['billing/dev'],
 };
 
@@ -60,6 +61,7 @@ function server(beforeList?: () => Promise<unknown>): FastifyInstance {
     async (input: { dopplerProject: string; dopplerConfig: string; token: Uint8Array }) => {
       await beforeList?.();
       const configs = readable[Buffer.from(input.token).toString()] ?? [];
+      input.token.fill(0);
       if (!configs.includes(`${input.dopplerProject}/${input.dopplerConfig}`))
         throw new Error('403');
       return ['API_KEY'];
@@ -193,6 +195,28 @@ describe('Doppler connections (ADR 0031)', () => {
         error: 'The replacement token cannot read Doppler config portal/prd.',
       });
       expect((await store.dopplerConnections.get(id))?.workplaceSlug).toBe('wp-platform');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('validates a fresh token buffer for each existing config before replacing it', async () => {
+    const app = server();
+    try {
+      const id = await addConnection(app, 'Platform', 'dp.sa.platform');
+      for (const dopplerConfig of ['prd', 'stg']) {
+        await store.projectDopplerBindings.add('p1', {
+          connectionId: id,
+          dopplerProject: 'portal',
+          dopplerConfig,
+        });
+      }
+      const response = await call(app, 'admin', 'PATCH', `/doppler/connections/${id}`, {
+        token: 'dp.sa.platform-next',
+        confirmTokenReplacement: true,
+      });
+      expect(response.statusCode).toBe(200);
+      expect((await store.dopplerConnections.get(id))?.workplaceSlug).toBe('wp-platform-next');
     } finally {
       await app.close();
     }

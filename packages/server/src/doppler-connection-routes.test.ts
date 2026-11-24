@@ -100,7 +100,7 @@ function harness({ changeBindings = false } = {}) {
     if (outcome !== 'allow') return reply.code(403).send();
   });
   registerDopplerConnectionRoutes(app, { store: store as never, listNames });
-  return { app, tokens, listNames };
+  return { app, tokens, listNames, bindings };
 }
 
 const put = (app: FastifyInstance, user: string, payload: unknown) =>
@@ -138,6 +138,28 @@ describe('personal Doppler connection routes', () => {
       const response = await put(app, 'lena', { token: 'dp.st.good', connectionId: 'platform' });
       expect(response.statusCode).toBe(409);
       expect(tokens.size).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('flags saved tokens when the connection has newer bindings', async () => {
+    const { app, bindings } = harness();
+    try {
+      expect(
+        (await put(app, 'lena', { token: 'dp.st.good', connectionId: 'platform' })).statusCode,
+      ).toBe(200);
+      bindings[1]!.createdAt = new Date(1000);
+      const response = await app.inject({
+        url: '/projects/p1/doppler/connection',
+        headers: { 'x-test-user': 'lena' },
+      });
+      expect(response.json()).toMatchObject({
+        connections: [
+          { connectionId: 'platform', connected: true, needsValidation: true },
+          { connectionId: 'payments', connected: false, needsValidation: false },
+        ],
+      });
     } finally {
       await app.close();
     }

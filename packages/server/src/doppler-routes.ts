@@ -235,23 +235,21 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
       const configs = new Map(
         bindings.map((binding) => [`${binding.dopplerProject}/${binding.dopplerConfig}`, binding]),
       );
-      const bytes = Buffer.from(token, 'utf8');
-      try {
-        for (const [reference, binding] of configs) {
-          try {
-            await listNames({
-              dopplerProject: binding.dopplerProject,
-              dopplerConfig: binding.dopplerConfig,
-              token: bytes,
-            });
-          } catch {
-            return reply
-              .code(400)
-              .send({ error: `The replacement token cannot read Doppler config ${reference}.` });
-          }
+      for (const [reference, binding] of configs) {
+        const bytes = Buffer.from(token, 'utf8');
+        try {
+          await listNames({
+            dopplerProject: binding.dopplerProject,
+            dopplerConfig: binding.dopplerConfig,
+            token: bytes,
+          });
+        } catch {
+          return reply
+            .code(400)
+            .send({ error: `The replacement token cannot read Doppler config ${reference}.` });
+        } finally {
+          bytes.fill(0);
         }
-      } finally {
-        bytes.fill(0);
       }
       const updated = await store.dopplerConnections.updateRecord(
         id,

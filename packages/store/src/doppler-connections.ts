@@ -221,24 +221,32 @@ export class DopplerConnectionStore {
 
   /** The former single instance token setting writes through to this connection. */
   async setLegacyToken(token: string | null, tx?: Kysely<Database>): Promise<void> {
-    const encrypted = token === null ? null : this.cipher.encrypt(token);
-    const revision = randomUUID();
     const write = async (transaction: Kysely<Database>) => {
       await lockDopplerTopology(transaction);
-      const [existing, other] = await transaction
-        .selectFrom('doppler_connections')
+      const selectConnection = transaction.selectFrom('doppler_connections');
+      const existing = await selectConnection
+        .select('token')
+        .where('id', '=', LEGACY_DOPPLER_CONNECTION_ID)
+        .executeTakeFirst();
+      if (existing !== undefined && this.matchesLegacyToken(existing.token, token)) return;
+
+      const other = await selectConnection
         .select('id')
-        .limit(2)
-        .execute();
-      if (
-        other !== undefined ||
-        (existing !== undefined && existing.id !== LEGACY_DOPPLER_CONNECTION_ID)
-      )
-        throw new AmbiguousDopplerConnectionError();
-      if (encrypted === null && existing === undefined) return;
+        .where('id', '<>', LEGACY_DOPPLER_CONNECTION_ID)
+        .executeTakeFirst();
+      if (other !== undefined) throw new AmbiguousDopplerConnectionError();
+      if (existing === undefined && token === null) return;
+
+      const activeBinding = await transaction
+        .selectFrom('project_doppler_bindings')
+        .select('id')
+        .where('connection_id', '=', LEGACY_DOPPLER_CONNECTION_ID)
+        .executeTakeFirst();
+      if (activeBinding !== undefined) throw new AmbiguousDopplerConnectionError();
+
       const replacement = {
-        token: encrypted,
-        token_revision: revision,
+        token: token === null ? null : this.cipher.encrypt(token),
+        token_revision: randomUUID(),
         workplace_slug: null,
         workplace_name: null,
       };
@@ -255,6 +263,18 @@ export class DopplerConnectionStore {
     };
     if (tx !== undefined) await write(tx);
     else await this.db.transaction().execute(write);
+  }
+
+  private matchesLegacyToken(stored: string | null, candidate: string | null): boolean {
+    if (stored === null || candidate === null) return stored === candidate;
+    const current = this.cipher.decryptBytes(stored);
+    const replacement = Buffer.from(candidate);
+    try {
+      return current.equals(replacement);
+    } finally {
+      current.fill(0);
+      replacement.fill(0);
+    }
   }
 
   /** The projects whose bindings use the connection, for the delete warning. */

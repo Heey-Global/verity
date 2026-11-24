@@ -15,6 +15,24 @@ import {
   tryParseBrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
 
+function currentSnapshotMatcher(gateway: Pick<McpGatewayDeps, 'authorizationSnapshot'>) {
+  return async (record: BrokeredToolApprovalRecord): Promise<boolean> => {
+    if (!tryParseBrokeredDopplerBinding(record.authorizationSnapshot)) return false;
+    try {
+      const current = await gateway.authorizationSnapshot?.({
+        projectId: record.projectId,
+        sessionId: record.sessionId,
+        turnId: '',
+        toolName: record.toolName,
+        request: JSON.parse(record.canonicalInput) as Record<string, unknown>,
+      });
+      return current === record.authorizationSnapshot;
+    } catch {
+      return false;
+    }
+  };
+}
+
 /** Restoring a card never restores a caller or executes a tool. Approval is a receipt
  * for an exact future invocation, checked again by the gateway at consumption. */
 export function configureDetachedSecretApprovals(input: {
@@ -45,23 +63,7 @@ export function configureDetachedSecretApprovals(input: {
       return undefined;
     }
   };
-  const matchesCurrentSnapshot = async (
-    record: BrokeredToolApprovalRecord,
-    request: Record<string, unknown>,
-  ): Promise<boolean> => {
-    try {
-      const current = await gateway.authorizationSnapshot?.({
-        projectId: record.projectId,
-        sessionId: record.sessionId,
-        turnId: '',
-        toolName: record.toolName,
-        request,
-      });
-      return current === record.authorizationSnapshot;
-    } catch {
-      return false;
-    }
-  };
+  const matchesCurrentSnapshot = currentSnapshotMatcher(gateway);
   const actorFor = (actorId: string) =>
     input.localActor && actorId === '__local__' ? legacyAdministratorId : actorId;
   conductor.configureDetachedPermissions({
@@ -113,7 +115,7 @@ export function configureDetachedSecretApprovals(input: {
               !(await input.canExecute(actorFor(record.decidedBy!), record.projectId))
             )
               return false;
-            return matchesCurrentSnapshot(record, request.input);
+            return matchesCurrentSnapshot(record);
           },
         );
       }
@@ -136,10 +138,7 @@ export function configureDetachedSecretApprovals(input: {
       )
         return false;
       const request = requestFor(record);
-      if (
-        !request ||
-        (decision.behavior === 'allow' && !(await matchesCurrentSnapshot(record, request.input)))
-      )
+      if (!request || (decision.behavior === 'allow' && !(await matchesCurrentSnapshot(record))))
         return false;
       return (
         (await approvals.decide(id, sessionId, decision.behavior === 'allow', actorId, scope)) !==
@@ -176,6 +175,7 @@ export function installDetachedSecretApprovals(
       store: deps.eventStore,
       permitted: canExecuteAs,
       refresh: (id) => conductor.refreshDetachedPermissions(id),
+      isCurrent: currentSnapshotMatcher(gateway),
     });
   }
   return {

@@ -107,7 +107,8 @@ export function ProjectDopplerBindings({
         .then((value) => {
           if (request !== pickerRequest.current) return;
           setConnections(value);
-          if (value.length === 1) void pickConnection(value[0]!.id);
+          const choices = value.filter((connection) => connection.hasToken);
+          if (choices.length === 1) void pickConnection(choices[0]!.id);
         })
         .catch((cause: unknown) => {
           if (request === pickerRequest.current)
@@ -164,7 +165,7 @@ export function ProjectDopplerBindings({
   let footer: ReactNode = null;
   if (mode?.kind === 'add') {
     title = 'Add Doppler binding';
-    const available = connections ?? [];
+    const available = (connections ?? []).filter((connection) => connection.hasToken);
     const labels = available.map((connection) => connection.label);
     const uniqueLabels = available.map((connection) => {
       const workplace = connection.workplaceName ?? connection.workplaceSlug;
@@ -187,10 +188,15 @@ export function ProjectDopplerBindings({
     const selected = [...connectionOptions].find(([, id]) => id === picked.connection)?.[0];
     body = (
       <View style={styles.fields}>
-        {connections !== undefined && connections.length === 0 ? (
-          <Text variant="body" tone="muted">
-            Add a Doppler connection in Settings, Connectors, Doppler first.
-          </Text>
+        {connections !== undefined && available.length === 0 ? (
+          <HintBox
+            title="No Doppler connections available"
+            message={
+              connections.length === 0
+                ? 'Add a Doppler connection in Settings, Connectors, Doppler first.'
+                : 'Add an instance token to a Doppler connection in Settings, Connectors, Doppler to browse its projects and configs.'
+            }
+          />
         ) : null}
         {connectionOptions.size > 1 ? (
           <>
@@ -206,7 +212,11 @@ export function ProjectDopplerBindings({
             />
           </>
         ) : null}
-        {options.projects ? (
+        {options.projects?.length === 0 ? (
+          <Text variant="body" tone="muted">
+            This connection returned no Doppler projects.
+          </Text>
+        ) : options.projects ? (
           <>
             <SectionHeader title="Doppler project" />
             <OptionList
@@ -217,7 +227,11 @@ export function ProjectDopplerBindings({
             />
           </>
         ) : null}
-        {options.configs ? (
+        {options.configs?.length === 0 ? (
+          <Text variant="body" tone="muted">
+            The selected project returned no Doppler configs.
+          </Text>
+        ) : options.configs ? (
           <>
             <SectionHeader title="Config" />
             <OptionList
@@ -473,7 +487,9 @@ export function ProjectDopplerBindings({
                 title={connection.label}
                 subtitle={
                   connection.connected
-                    ? 'Your token saved'
+                    ? connection.needsValidation
+                      ? 'Validate your token for new bindings'
+                      : 'Your token saved'
                     : connection.usesInstanceToken
                       ? 'Using instance token'
                       : 'Connect your token'

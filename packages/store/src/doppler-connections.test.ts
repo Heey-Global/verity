@@ -231,6 +231,39 @@ describe('Doppler connections', () => {
     await expect(connections.remove(connectionId, [second.id, first.id])).resolves.toBe(true);
   });
 
+  it('keeps an unchanged legacy token and rejects unvalidated changes when bindings use it', async () => {
+    const store = ctx.store;
+    const connectionId = 'legacy-doppler';
+    await store.updateVeritySettings({ dopplerServiceToken: 'dp.sa.original' });
+    await store.updateVeritySettings({ dopplerServiceToken: 'dp.sa.changed-unbound' });
+    const binding = await bindings.add('p1', {
+      connectionId,
+      dopplerProject: 'app',
+      dopplerConfig: 'prd',
+    });
+    const current = await store.dopplerConnections.get(connectionId);
+    await store.userDopplerConnections.set('lena', 'p1', connectionId, 'dp.st.lena', [binding.id]);
+    await store.updateVeritySettings({
+      dopplerServiceToken: 'dp.sa.changed-unbound',
+      gitUserName: 'Updated name',
+    });
+    expect(await store.dopplerConnections.get(connectionId)).toEqual(current);
+    expect(await store.userDopplerConnections.tokenBytes('lena', 'p1', connectionId)).toBeDefined();
+    for (const token of ['dp.sa.unvalidated', null]) {
+      await expect(
+        store.updateVeritySettings({
+          dopplerServiceToken: token,
+          gitUserName: 'Rejected name',
+        }),
+      ).rejects.toBeInstanceOf(AmbiguousDopplerConnectionError);
+    }
+    expect(await store.getVeritySettings()).toMatchObject({
+      dopplerServiceToken: 'dp.sa.changed-unbound',
+      gitUserName: 'Updated name',
+    });
+    expect(await store.dopplerConnections.get(connectionId)).toEqual(current);
+  });
+
   it('updates a validated token and its legacy mirror only when the topology still matches', async () => {
     await connections.setLegacyToken('dp.sa.original');
     const connectionId = 'legacy-doppler';

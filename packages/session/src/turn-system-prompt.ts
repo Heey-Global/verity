@@ -198,21 +198,39 @@ export interface ExternalPermissionAnswer {
   decidedBy: PermissionDecisionSource;
 }
 
-export function formatBrokeredSecretAliases(secretAliases?: readonly string[]): string {
-  if (secretAliases === undefined || secretAliases.length === 0) return '';
+/** Rotate between bindings when the prompt cannot carry every name. */
+function selectPromptSecretAliases(aliases: readonly string[]): readonly string[] {
+  if (
+    aliases.length <= MAX_PROMPT_SECRET_ALIASES &&
+    Buffer.byteLength(aliases.join(', '), 'utf8') <= MAX_PROMPT_SECRET_ALIAS_BYTES
+  )
+    return aliases;
+  const groups = new Map<string, string[]>();
+  for (const alias of aliases) {
+    const binding = alias.slice(0, alias.lastIndexOf('/') + 1);
+    const group = groups.get(binding);
+    if (group) group.push(alias);
+    else groups.set(binding, [alias]);
+  }
   const included: string[] = [];
   let bytes = 0;
-  for (const alias of secretAliases) {
-    const addedBytes = Buffer.byteLength(`${included.length === 0 ? '' : ', '}${alias}`, 'utf8');
-    if (
-      included.length >= MAX_PROMPT_SECRET_ALIASES ||
-      bytes + addedBytes > MAX_PROMPT_SECRET_ALIAS_BYTES
-    ) {
-      break;
+  for (let round = 0; groups.size > 0; round++) {
+    for (const [binding, group] of groups) {
+      const alias = group[round]!;
+      if (round + 1 === group.length) groups.delete(binding);
+      const addedBytes = Buffer.byteLength(alias, 'utf8') + (included.length === 0 ? 0 : 2);
+      if (bytes + addedBytes > MAX_PROMPT_SECRET_ALIAS_BYTES) continue;
+      included.push(alias);
+      bytes += addedBytes;
+      if (included.length === MAX_PROMPT_SECRET_ALIASES) return included;
     }
-    included.push(alias);
-    bytes += addedBytes;
   }
+  return included;
+}
+
+export function formatBrokeredSecretAliases(secretAliases?: readonly string[]): string {
+  if (secretAliases === undefined || secretAliases.length === 0) return '';
+  const included = selectPromptSecretAliases(secretAliases);
   const omitted = secretAliases.length - included.length;
   // "Only these names", not "only one name": a trusted CLI run carries up to
   // MAX_TRUSTED_CLI_SECRETS of them and a JWT request resolves a claim source
