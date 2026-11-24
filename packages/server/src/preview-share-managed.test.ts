@@ -2,7 +2,7 @@ import type { EventStore } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 import type { DockerClient } from './docker.js';
 import { managedDevServerProviderSnapshot } from './managed-dev-server-secrets.js';
-import { fixture } from './preview-share-manager-fixture.js';
+import { fixture } from './preview-share-manager.test-helper.js';
 import { PreviewShareManager } from './preview-share-manager.js';
 
 describe('managed public links', () => {

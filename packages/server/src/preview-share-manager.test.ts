@@ -1,4 +1,4 @@
-import { devServer, digest, fixture, project } from './preview-share-manager-fixture.js';
+import { devServer, digest, fixture, project } from './preview-share-manager.test-helper.js';
 import { DockerError } from './docker.js';
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
