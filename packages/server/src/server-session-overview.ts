@@ -967,23 +967,25 @@ export function createServerSessionOverview({
         events,
         resumable.get(session.sessionId) ?? false,
       );
-    const fallbackRead = fullProjectionReadTail.then(async () => {
-      await yieldToEventLoop();
-      await deps.eventStore.visitSessionProjectionEvents(boundaries, async (id, events) => {
-        prepared.set(
-          id,
-          await prepare(
-            byId.get(id)!,
-            events.map(({ event }) => event),
-          ),
-        );
+    if (boundaries.size > 0) {
+      const fallbackRead = fullProjectionReadTail.then(async () => {
+        await yieldToEventLoop();
+        await deps.eventStore.visitSessionProjectionEvents(boundaries, async (id, events) => {
+          prepared.set(
+            id,
+            await prepare(
+              byId.get(id)!,
+              events.map(({ event }) => event),
+            ),
+          );
+        });
       });
-    });
-    fullProjectionReadTail = fallbackRead.then(
-      () => undefined,
-      () => undefined,
-    );
-    await fallbackRead;
+      fullProjectionReadTail = fallbackRead.then(
+        () => undefined,
+        () => undefined,
+      );
+      await fallbackRead;
+    }
     return Promise.all(
       sessions.map(
         async (session) =>
