@@ -2,10 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import {
   AmbiguousDopplerConnectionError,
   DopplerConnectionUsageChangedError,
+  DopplerConnectionTokenChangedError,
+  type DopplerConnectionRecord,
   SealedError,
   type EventStore,
 } from '@verity/store';
 import { z } from 'zod';
+import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
 import type { ServerDeps } from './server-deps.js';
 import type {
   DopplerValidateResult,
@@ -21,7 +24,10 @@ export type DopplerRouteDeps = Pick<
   | 'dopplerWorkplace'
   | 'dopplerListProjects'
   | 'dopplerListConfigs'
-> & { eventStore?: Pick<EventStore, 'dopplerConnections'> | undefined };
+> & {
+  eventStore?: Pick<EventStore, 'dopplerConnections'> | undefined;
+  listNames?: typeof listDopplerProjectSecretNames;
+};
 
 const connectionParams = z.object({ id: z.string().min(1).max(200) }).strict();
 const labelSchema = z.string().trim().min(1).max(80);
@@ -157,29 +163,28 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
     token: string,
   ): Promise<{ workplace: { slug: string | null; name: string | null } } | { error: string }> => {
     if (deps.secretCipher?.isSealed() === true) return { error: 'locked' };
-    if (deps.dopplerValidate !== undefined) {
-      const result = await deps.dopplerValidate(token);
-      if (!result.ok) return { error: result.error ?? 'Doppler rejected the token' };
-    }
+    if (deps.dopplerValidate === undefined) return { error: 'Doppler validation is unavailable' };
+    const result = await deps.dopplerValidate(token);
+    if (!result.ok) return { error: result.error ?? 'Doppler rejected the token' };
     return {
       workplace: (await deps.dopplerWorkplace?.(token)) ?? { slug: null, name: null },
     };
   };
-  const listView = async () => {
-    const connections = await store.dopplerConnections.list();
-    return Promise.all(
-      connections.map(async (connection) => ({
-        id: connection.id,
-        label: connection.label,
-        hasToken: connection.hasToken,
-        workplaceSlug: connection.workplaceSlug,
-        workplaceName: connection.workplaceName,
-        createdAt: connection.createdAt.toISOString(),
-        projectCount: (await store.dopplerConnections.usage(connection.id)).length,
-      })),
+  const connectionView = (connection: DopplerConnectionRecord, projectCount: number) => ({
+    id: connection.id,
+    label: connection.label,
+    hasToken: connection.hasToken,
+    workplaceSlug: connection.workplaceSlug,
+    workplaceName: connection.workplaceName,
+    createdAt: connection.createdAt.toISOString(),
+    projectCount,
+  });
+  const listView = async () =>
+    Promise.all(
+      (await store.dopplerConnections.list()).map(async (connection) =>
+        connectionView(connection, (await store.dopplerConnections.usage(connection.id)).length),
+      ),
     );
-  };
-
   // The instance's Doppler connections (ADR 0031): administrator-only by the
   // paired route policy's default. Tokens never leave the store.
   app.get('/doppler/connections', async () => ({ connections: await listView() }));
@@ -203,23 +208,70 @@ export function registerDopplerRoutes(app: FastifyInstance, deps: DopplerRouteDe
     const input = patchBody.safeParse(request.body);
     if (!params.success || !input.success)
       return reply.code(400).send({ error: 'invalid Doppler connection' });
-    let workplace: { slug: string | null; name: string | null } | undefined;
-    if (input.data.token !== undefined) {
-      if (!input.data.confirmTokenReplacement)
+    const { id } = params.data;
+    const { token, label, confirmTokenReplacement } = input.data;
+    const patch = label === undefined ? {} : { label };
+    try {
+      if (token === undefined) {
+        const updated = await store.dopplerConnections.updateRecord(id, patch);
+        return updated === undefined
+          ? reply.code(404).send({ error: 'Doppler connection not found' })
+          : connectionView(updated, updated.projectCount);
+      }
+      if (!confirmTokenReplacement)
         return reply.code(409).send({
           error: 'Confirm token replacement. Members may need to reconnect their personal tokens.',
         });
-      const checked = await checkedToken(input.data.token);
+      const connection = await store.dopplerConnections.get(id);
+      if (connection === undefined)
+        return reply.code(404).send({ error: 'Doppler connection not found' });
+      const bindings = (await store.dopplerConnections.usage(id)).flatMap(
+        (entry) => entry.bindings,
+      );
+      const checked = await checkedToken(token);
       if ('error' in checked) return reply.code(400).send({ error: checked.error });
-      workplace = checked.workplace;
+
+      const listNames = deps.listNames ?? listDopplerProjectSecretNames;
+      const configs = new Map(
+        bindings.map((binding) => [`${binding.dopplerProject}/${binding.dopplerConfig}`, binding]),
+      );
+      const bytes = Buffer.from(token, 'utf8');
+      try {
+        for (const [reference, binding] of configs) {
+          try {
+            await listNames({
+              dopplerProject: binding.dopplerProject,
+              dopplerConfig: binding.dopplerConfig,
+              token: bytes,
+            });
+          } catch {
+            return reply
+              .code(400)
+              .send({ error: `The replacement token cannot read Doppler config ${reference}.` });
+          }
+        }
+      } finally {
+        bytes.fill(0);
+      }
+      const updated = await store.dopplerConnections.updateRecord(
+        id,
+        { ...patch, token, workplace: checked.workplace },
+        {
+          bindingIds: bindings.map(({ id }) => id),
+          tokenRevision: connection.tokenRevision ?? null,
+        },
+      );
+      return updated === undefined
+        ? reply.code(404).send({ error: 'Doppler connection not found' })
+        : connectionView(updated, updated.projectCount);
+    } catch (error) {
+      if (
+        error instanceof DopplerConnectionUsageChangedError ||
+        error instanceof DopplerConnectionTokenChangedError
+      )
+        return reply.code(409).send({ error: error.message });
+      throw error;
     }
-    const updated = await store.dopplerConnections.update(params.data.id, {
-      ...(input.data.label === undefined ? {} : { label: input.data.label }),
-      ...(input.data.token === undefined ? {} : { token: input.data.token }),
-      ...(workplace === undefined ? {} : { workplace }),
-    });
-    if (!updated) return reply.code(404).send({ error: 'Doppler connection not found' });
-    return (await listView()).find((connection) => connection.id === params.data.id);
   });
 
   // What deleting would remove, for the warning before it.

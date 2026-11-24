@@ -413,6 +413,9 @@ describe('settings/services — Doppler connections', () => {
     fireEvent.press(await screen.findByLabelText(/^Manage Platform/));
     fireEvent.press(await screen.findByLabelText(/^Delete connection/));
     expect(await screen.findByText('No project uses this connection.')).toBeOnTheScreen();
+    expect(
+      screen.getByText('Deleting it also removes any personal tokens that are still saved for it.'),
+    ).toBeOnTheScreen();
     fireEvent.press(screen.getByLabelText(/^Delete connection/));
 
     expect(

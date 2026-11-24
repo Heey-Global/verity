@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
@@ -7,6 +7,7 @@ import ProjectServicesScreen from '../app/project/[id]/settings/services';
 import { dopplerBinding, dopplerConnection, makeClient } from './support/projectHarness';
 import {
   mockCreateVerityClient,
+  refocus,
   resetSettingsHarness,
   setSearchParams,
 } from './support/settingsHarness';
@@ -70,7 +71,7 @@ describe('project Doppler settings', () => {
     setSearchParams({ id: 'p/1', section: 'doppler' });
     render(<ProjectServicesScreen />);
 
-    expect(await screen.findByText('Your token connected')).toBeOnTheScreen();
+    expect(await screen.findByText('Your token saved')).toBeOnTheScreen();
     expect(screen.getByText('Connect your token')).toBeOnTheScreen();
     expect(screen.queryByLabelText(/^Add binding/)).toBeNull();
     expect(screen.queryByLabelText(/^Manage portal/)).toBeNull();
@@ -82,14 +83,14 @@ describe('project Doppler settings', () => {
       expect(connectPersonalToken).toHaveBeenCalledWith('p/1', 'payments', 'dp.st.billing'),
     );
 
-    fireEvent.press(await screen.findByLabelText(/^Platform.*Your token connected/));
+    fireEvent.press(await screen.findByLabelText(/^Platform.*Your token saved/));
     fireEvent.changeText(await screen.findByLabelText(/^New Doppler token/), 'dp.st.replacement');
     fireEvent.press(screen.getByLabelText(/^Validate and replace/));
     await waitFor(() =>
       expect(connectPersonalToken).toHaveBeenCalledWith('p/1', 'platform', 'dp.st.replacement'),
     );
 
-    fireEvent.press(await screen.findByLabelText(/^Platform.*Your token connected/));
+    fireEvent.press(await screen.findByLabelText(/^Platform.*Your token saved/));
     fireEvent.press(await screen.findByLabelText(/^Disconnect token/));
     await waitFor(() => expect(disconnectPersonalToken).toHaveBeenCalledWith('p/1', 'platform'));
     expect(await screen.findByLabelText(/^Platform.*Connect your token/)).toBeOnTheScreen();
@@ -148,6 +149,31 @@ describe('project Doppler settings', () => {
         dopplerConfig: 'dev',
       }),
     );
+  });
+
+  it('refreshes personal token status when returning to project settings', async () => {
+    let connected = true;
+    const personalTokens = jest.fn(async () => ({
+      canManageBindings: false,
+      connections: [
+        {
+          connectionId: 'platform',
+          label: 'Platform',
+          bindings: ['portal/prd'],
+          connected,
+          updatedAt: null,
+          usesInstanceToken: false,
+        },
+      ],
+    }));
+    mockCreateVerityClient.mockReturnValue(makeClient({ doppler: { personalTokens } }));
+    setSearchParams({ id: 'p/1', section: 'doppler' });
+    render(<ProjectServicesScreen />);
+
+    expect(await screen.findByText('Your token saved')).toBeOnTheScreen();
+    connected = false;
+    act(() => refocus());
+    expect(await screen.findByText('Connect your token')).toBeOnTheScreen();
   });
 
   it('can recover binding management after a failed token status request', async () => {

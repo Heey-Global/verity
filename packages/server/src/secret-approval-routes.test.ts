@@ -23,7 +23,7 @@ function harness(allowed = true, unrecorded = false, approval = record) {
   const refresh = vi.fn(async () => {});
   registerSecretApprovalRoutes(app, {
     approvals: {
-      listReopenable: async () => [record],
+      listReopenable: async () => [approval],
       listUnrecordedDecisions: async () => (unrecorded ? [record] : []),
       get: async () => approval,
       reopen,
@@ -91,9 +91,11 @@ it('preserves the previous receipt if recovery cannot record its decision before
   }
 });
 
-it('asks for a new request when the saved provider snapshot is obsolete', async () => {
+it('offers only usable receipts and asks for a new request when a snapshot is obsolete', async () => {
   const { app, reopen, refresh } = harness(true, false, { ...record, authorizationSnapshot: '{}' });
   try {
+    const listed = await app.inject({ method: 'GET', url: '/sessions/s/secret-approvals' });
+    expect(listed.json()).toEqual({ requests: [] });
     const response = await app.inject({
       method: 'POST',
       url: `/sessions/s/secret-approvals/${id}/reopen`,

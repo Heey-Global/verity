@@ -87,7 +87,11 @@ describe('embedded Runner conductor binding', () => {
         requestId: 'request',
         toolUseId: 'tool',
         toolName: 'verity_http_request',
-        input: { secretAlias: 'ATTENDEE_API_KEY', url: 'https://example.com/api' },
+        input: {
+          secretAlias: 'ATTENDEE_API_KEY',
+          url: 'https://example.com/api',
+          auth: { header: 'authorization', scheme: 'Bearer' },
+        },
       },
       'acp',
     );
@@ -107,6 +111,41 @@ describe('embedded Runner conductor binding', () => {
     );
   });
 
+  it('checks a JWT grant against the bindings of the key and every referenced claim', async () => {
+    const { wiring, context, check } = fixture();
+    const allowed = await wiring.autoApprovePermission!(
+      'session',
+      {
+        requestId: 'request',
+        toolUseId: 'tool',
+        toolName: 'verity_http_request',
+        input: {
+          url: 'https://example.com/api',
+          secretAlias: 'KEY',
+          auth: {
+            kind: 'jwt',
+            algorithm: 'ES256',
+            issuer: { alias: 'billing/dev/ISSUER' },
+            keyId: { alias: 'billing/dev/KEY_ID' },
+            subject: { alias: 'SUBJECT' },
+            audience: 'example',
+          },
+        },
+      },
+      'acp',
+    );
+    expect(allowed).toBe(true);
+    expect(context.brokeredGrantBindingIdFor).toHaveBeenCalledWith('project', [
+      'KEY',
+      'billing/dev/KEY_ID',
+      'billing/dev/ISSUER',
+      'SUBJECT',
+    ]);
+    expect(check).toHaveBeenCalledWith(
+      expect.objectContaining({ bindingId: 'binding', secretAlias: 'KEY' }),
+    );
+  });
+
   it('refuses standing grants without a running turn', async () => {
     const { wiring, store, check } = fixture();
     store.listRunningTurns.mockResolvedValue([]);
@@ -117,7 +156,11 @@ describe('embedded Runner conductor binding', () => {
           requestId: 'request',
           toolUseId: 'tool',
           toolName: 'verity_http_request',
-          input: { secretAlias: 'ATTENDEE_API_KEY', url: 'https://example.com/api' },
+          input: {
+            secretAlias: 'ATTENDEE_API_KEY',
+            url: 'https://example.com/api',
+            auth: { header: 'authorization', scheme: 'Bearer' },
+          },
         },
         'acp',
       ),

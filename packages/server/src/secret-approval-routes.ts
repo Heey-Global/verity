@@ -22,13 +22,17 @@ export function registerSecretApprovalRoutes(
     const { id } = sessionParams.parse(request.params);
     if (!(await deps.store.getSession(id)))
       return reply.code(404).send({ error: 'Session not found.' });
-    const requests = (await deps.approvals.listReopenable(id)).map((record) => ({
-      id: record.id,
-      toolName: record.toolName,
-      status: record.status === 'denied' ? 'denied' : 'expired',
-      createdAt: record.createdAt,
-      decidedAt: record.decidedAt,
-    }));
+    const requests = (await deps.approvals.listReopenable(id))
+      .filter(
+        (record) => tryParseBrokeredDopplerBinding(record.authorizationSnapshot) !== undefined,
+      )
+      .map((record) => ({
+        id: record.id,
+        toolName: record.toolName,
+        status: record.status === 'denied' ? 'denied' : 'expired',
+        createdAt: record.createdAt,
+        decidedAt: record.decidedAt,
+      }));
     return { requests };
   });
   app.post('/sessions/:id/secret-approvals/:approvalId/reopen', async (request, reply) => {

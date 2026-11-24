@@ -63,6 +63,17 @@ describe('secret references (ADR 0031)', () => {
     expect(() => resolveSecretReference([portalStg], 'API_KEY')).toThrow('has no Doppler binding');
   });
 
+  it('omits invalid stored slugs from agent-facing binding alternatives', () => {
+    const stored = [
+      { ...portalPrd, dopplerProject: 'portal\nprivate text' },
+      { ...portalStg, dopplerConfig: 'stg/another' },
+      billingDev,
+    ];
+    expect(() => resolveSecretReference(stored, 'portal/prd/API_KEY')).toThrow(
+      'Doppler binding `portal/prd` is no longer connected to this project (connected: billing/dev). No secret value was exposed.',
+    );
+  });
+
   it('refuses anything that is neither a name nor a full reference', () => {
     for (const reference of [
       'prd/API_KEY',

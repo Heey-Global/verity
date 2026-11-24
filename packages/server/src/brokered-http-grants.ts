@@ -26,6 +26,9 @@ const PROJECT_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 // Longer-lived consent requires a new approval; legacy grants must not revive on upgrade.
 const LEGACY_GRANT_ISSUER = 'brokered-prompt';
 const GRANT_ISSUER = 'brokered-prompt-v2';
+// Prompt grants use a synthetic binding version. Version 2 records that a
+// single source also supplies at least one bare secret reference.
+const DEFAULT_BOUND_GRANT_VERSION = 2;
 const TRUSTED_CLI_GRANT_TARGET = /^v[12]:\/[^#]+#[a-f0-9]{64}$/u;
 
 function validGrantTarget(toolName: BrokeredGrantToolName, target: string): boolean {
@@ -119,6 +122,9 @@ export function createBrokeredHttpGrantStore(
         throw new Error('a permanent grant cannot be approved on the ACP channel');
       }
       const toolId = `${input.toolName}:${input.target}`;
+      const approved = input.approvedBinding;
+      const requiresDefault =
+        approved?.bindings.length === 1 && approved.bindings[0]?.includesBareReference === true;
       const sessionId = input.scope === 'session' ? input.sessionId : null;
       const key = [
         input.userId,
@@ -180,15 +186,13 @@ export function createBrokeredHttpGrantStore(
             if (options.requireCurrentDopplerBinding) {
               await lockDopplerTopology(tx);
               const current = await new ProjectDopplerBindingStore(tx).list(input.projectId);
-              const approved = input.approvedBinding;
               if (approved === undefined || brokeredDopplerBindingId(approved) !== input.bindingId)
                 throw new Error('Doppler access changed before saving approval');
               const approvedRows = new Set(approved.bindings.map((binding) => binding.bindingId));
               const matchingRows = current.filter((binding) => approvedRows.has(binding.id));
-              const key =
-                approved.bindings.length === 1 && approved.bindings[0]?.includesBareReference
-                  ? defaultDopplerGrantMember(input.bindingId)
-                  : input.bindingId;
+              const key = requiresDefault
+                ? defaultDopplerGrantMember(input.bindingId)
+                : input.bindingId;
               if (
                 matchingRows.length !== approvedRows.size ||
                 !brokeredGrantBindingApplies(key, currentDopplerGrantBindingIds(matchingRows))
@@ -214,11 +218,14 @@ export function createBrokeredHttpGrantStore(
               .execute();
             const existing = await activeGrantId(tx);
             if (existing !== undefined) {
-              if (input.scope === 'project') {
+              if (input.scope === 'project' || requiresDefault) {
                 await tx
                   .updateTable('secret_provider_permissions')
                   .set({
-                    expires_at: new Date(Date.now() + PROJECT_GRANT_TTL_MS).toISOString(),
+                    ...(input.scope === 'project'
+                      ? { expires_at: new Date(Date.now() + PROJECT_GRANT_TTL_MS).toISOString() }
+                      : {}),
+                    ...(requiresDefault ? { binding_version: DEFAULT_BOUND_GRANT_VERSION } : {}),
                     updated_at: new Date().toISOString(),
                   })
                   .where('id', '=', existing)
@@ -236,7 +243,7 @@ export function createBrokeredHttpGrantStore(
                 id: randomUUID(),
                 project_id: input.projectId,
                 binding_id: input.bindingId,
-                binding_version: 1,
+                binding_version: requiresDefault ? DEFAULT_BOUND_GRANT_VERSION : 1,
                 secret_name: input.secretAlias,
                 tool_id: toolId,
                 scope: input.scope,
@@ -311,6 +318,7 @@ export function createBrokeredHttpGrantStore(
           'scope',
           'session_id',
           'binding_id',
+          'binding_version',
           'expires_at',
           'created_at',
           'issuer',
@@ -343,7 +351,9 @@ export function createBrokeredHttpGrantStore(
             appliesNow:
               row.issuer === GRANT_ISSUER &&
               brokeredGrantBindingApplies(
-                !row.secret_name.includes('/') && row.binding_id.startsWith('project-doppler:')
+                (row.binding_version === DEFAULT_BOUND_GRANT_VERSION ||
+                  !row.secret_name.includes('/')) &&
+                  row.binding_id.startsWith('project-doppler:')
                   ? defaultDopplerGrantMember(row.binding_id)
                   : row.binding_id,
                 currentBindingIds,

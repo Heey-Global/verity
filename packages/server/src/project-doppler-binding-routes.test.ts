@@ -67,6 +67,7 @@ function server(beforeList?: () => Promise<unknown>): FastifyInstance {
   );
   registerDopplerRoutes(app, {
     eventStore: store,
+    listNames,
     dopplerValidate: async (token) =>
       token in readable ? { ok: true } : { ok: false, error: 'Doppler rejected the token' },
     dopplerWorkplace: async (token) => ({ slug: `wp-${token.slice(6)}`, name: null }),
@@ -140,6 +141,21 @@ describe('Doppler connections (ADR 0031)', () => {
     expect(listed.json().connections).toHaveLength(1);
   });
 
+  it('rejects token writes if the validator is unavailable', async () => {
+    const app = Fastify();
+    registerDopplerRoutes(app, { eventStore: store });
+    try {
+      const response = await call(app, 'admin', 'POST', '/doppler/connections', {
+        label: 'Platform',
+        token: 'dp.sa.platform',
+      });
+      expect(response.statusCode).toBe(400);
+      expect(await store.dopplerConnections.list()).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it('only replaces an instance token after explicit confirmation', async () => {
     const app = server();
     try {
@@ -154,6 +170,29 @@ describe('Doppler connections (ADR 0031)', () => {
       });
       expect(confirmed.statusCode).toBe(200);
       expect((await store.dopplerConnections.get(id))?.workplaceSlug).toBe('wp-payments');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('rejects a replacement token that cannot read an existing binding', async () => {
+    const app = server();
+    try {
+      const id = await addConnection(app, 'Platform', 'dp.sa.platform');
+      await store.projectDopplerBindings.add('p1', {
+        connectionId: id,
+        dopplerProject: 'portal',
+        dopplerConfig: 'prd',
+      });
+      const response = await call(app, 'admin', 'PATCH', `/doppler/connections/${id}`, {
+        token: 'dp.sa.payments',
+        confirmTokenReplacement: true,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: 'The replacement token cannot read Doppler config portal/prd.',
+      });
+      expect((await store.dopplerConnections.get(id))?.workplaceSlug).toBe('wp-platform');
     } finally {
       await app.close();
     }

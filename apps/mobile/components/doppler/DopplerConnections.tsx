@@ -299,9 +299,10 @@ export function DopplerConnections({
             </Group>
           </>
         ) : (
-          <Text variant="body" tone="muted">
-            No project uses this connection.
-          </Text>
+          <HintBox
+            title="No project uses this connection."
+            message="Deleting it also removes any personal tokens that are still saved for it."
+          />
         )}
       </View>
     );

@@ -3,6 +3,7 @@ import type { Kysely } from 'kysely';
 import { LEGACY_DOPPLER_CONNECTION_ID } from './doppler-connections-migration.js';
 import {
   AmbiguousDopplerConnectionError,
+  DopplerConnectionTokenChangedError,
   deleteDopplerBindingGrants,
   lockDopplerTopology,
   promoteDefaultBinding,
@@ -34,13 +35,6 @@ export class UnknownDopplerConnectionError extends Error {
   constructor() {
     super('Doppler connection not found');
     this.name = 'UnknownDopplerConnectionError';
-  }
-}
-
-export class DopplerConnectionTokenChangedError extends Error {
-  constructor() {
-    super('Doppler connection token changed. Try adding the binding again.');
-    this.name = 'DopplerConnectionTokenChangedError';
   }
 }
 

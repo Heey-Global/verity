@@ -7,11 +7,11 @@ import { dopplerBindingGrantId, legacyDopplerBindingGrantId } from './doppler-bi
 import {
   AmbiguousDopplerConnectionError,
   DopplerConnectionStore,
+  DopplerConnectionTokenChangedError,
   DopplerConnectionUsageChangedError,
 } from './doppler-connections.js';
 import { migrationProvider } from './migrations.js';
 import {
-  DopplerConnectionTokenChangedError,
   DuplicateDopplerBindingError,
   ProjectDopplerBindingStore,
 } from './project-doppler-bindings.js';
@@ -229,6 +229,46 @@ describe('Doppler connections', () => {
     );
     expect(await connections.usage(connectionId)).toHaveLength(2);
     await expect(connections.remove(connectionId, [second.id, first.id])).resolves.toBe(true);
+  });
+
+  it('updates a validated token and its legacy mirror only when the topology still matches', async () => {
+    await connections.setLegacyToken('dp.sa.original');
+    const connectionId = 'legacy-doppler';
+    const oldRevision = (await connections.get(connectionId))?.tokenRevision ?? null;
+    const first = await bindings.add('p1', {
+      connectionId,
+      dopplerProject: 'app',
+      dopplerConfig: 'prd',
+    });
+    const second = await bindings.add('p2', {
+      connectionId,
+      dopplerProject: 'app',
+      dopplerConfig: 'stg',
+    });
+    const patch = { token: 'dp.sa.replacement' };
+    await expect(
+      connections.updateRecord(connectionId, patch, {
+        bindingIds: [first.id],
+        tokenRevision: oldRevision,
+      }),
+    ).rejects.toBeInstanceOf(DopplerConnectionUsageChangedError);
+    expect((await connections.tokenBytes(connectionId))?.toString()).toBe('dp.sa.original');
+    const approved = { bindingIds: [first.id, second.id], tokenRevision: oldRevision };
+    const updated = await connections.updateRecord(connectionId, patch, approved);
+    expect(updated).toMatchObject({ id: connectionId, projectCount: 2, hasToken: true });
+    expect(updated?.tokenRevision).not.toBe(oldRevision);
+    await expect(
+      connections.updateRecord(connectionId, { token: 'dp.sa.stale' }, approved),
+    ).rejects.toBeInstanceOf(DopplerConnectionTokenChangedError);
+    const settings = await ctx.db
+      .selectFrom('verity_settings')
+      .select('doppler_service_token')
+      .where('id', '=', 'global')
+      .executeTakeFirstOrThrow();
+    expect(cipher.decryptBytes(settings.doppler_service_token ?? '')?.toString()).toBe(
+      'dp.sa.replacement',
+    );
+    expect((await connections.tokenBytes(connectionId))?.toString()).toBe('dp.sa.replacement');
   });
 
   it('preserves personal tokens only on a known same-workplace rotation', async () => {

@@ -176,6 +176,35 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
     expect(grants.map((grant) => grant.grantedBy).sort()).toEqual(['lena', 'mia']);
   });
 
+  it('shows a qualified signing key grant as dormant when its bare claim source stops being default', async () => {
+    const store = createBrokeredHttpGrantStore(ctx.db);
+    await store.grant({
+      ...target,
+      secretAlias: 'portal/prd/SIGNING_KEY',
+      scope: 'project',
+      approvedBinding: {
+        bindings: [
+          {
+            bindingId: 'binding-row',
+            connectionId: 'connection',
+            dopplerProject: 'portal',
+            dopplerConfig: 'prd',
+            includesBareReference: true,
+          },
+        ],
+      },
+    });
+    await expect(
+      store.list(
+        'project-1',
+        new Set([target.bindingId, defaultDopplerGrantMember(target.bindingId)]),
+      ),
+    ).resolves.toMatchObject([{ appliesNow: true }]);
+    await expect(store.list('project-1', new Set([target.bindingId]))).resolves.toMatchObject([
+      { appliesNow: false },
+    ]);
+  });
+
   it('covers matching requests after a project-scoped grant, keyed by alias + origin', async () => {
     const store = createBrokeredHttpGrantStore(ctx.db);
     await expect(store.check(target)).resolves.toBe(false);

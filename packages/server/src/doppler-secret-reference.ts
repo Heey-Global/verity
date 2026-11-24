@@ -64,7 +64,10 @@ export function resolveSecretReference(
     (candidate) => candidate.dopplerProject === project && candidate.dopplerConfig === config,
   );
   if (binding === undefined) {
-    const connected = bindings.map(bindingLabel).join(', ');
+    const connected = bindings
+      .map(bindingLabel)
+      .filter((label) => BROKERED_SECRET_REFERENCE.test(`${label}/KEY`))
+      .join(', ');
     throw unresolvable(
       `Doppler binding \`${project}/${config}\` is no longer connected to this project` +
         (connected === '' ? '.' : ` (connected: ${connected}).`),

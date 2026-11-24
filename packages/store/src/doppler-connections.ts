@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type Selectable } from 'kysely';
 import type { SecretCipher } from './crypto.js';
 import { dopplerBindingGrantId, dopplerGrantUsesBinding } from './doppler-binding-identity.js';
 import { LEGACY_DOPPLER_CONNECTION_ID } from './doppler-connections-migration.js';
@@ -41,6 +41,60 @@ export class DopplerConnectionUsageChangedError extends Error {
   }
 }
 
+export class DopplerConnectionTokenChangedError extends Error {
+  constructor() {
+    super('Doppler connection token changed. Try again.');
+    this.name = 'DopplerConnectionTokenChangedError';
+  }
+}
+
+interface DopplerConnectionPatch {
+  label?: string;
+  token?: string;
+  workplace?: DopplerWorkplace;
+}
+
+interface ValidatedDopplerConnection {
+  bindingIds: readonly string[];
+  tokenRevision: string | null;
+}
+
+const connectionColumns = [
+  'id',
+  'label',
+  'token',
+  'token_revision',
+  'workplace_slug',
+  'workplace_name',
+  'created_at',
+] as const;
+
+type DopplerConnectionRow = Pick<
+  Selectable<Database['doppler_connections']>,
+  (typeof connectionColumns)[number]
+>;
+
+function connectionRecord(row: DopplerConnectionRow): DopplerConnectionRecord {
+  return {
+    id: row.id,
+    label: row.label,
+    hasToken: row.token !== null,
+    ...(row.token_revision === null ? {} : { tokenRevision: row.token_revision }),
+    workplaceSlug: row.workplace_slug,
+    workplaceName: row.workplace_name,
+    createdAt: row.created_at,
+  };
+}
+
+function assertConfirmedUsage(
+  bindings: readonly { id: string }[],
+  confirmed: readonly string[],
+): void {
+  const ids = new Set(confirmed);
+  if (bindings.length !== ids.size || bindings.some((binding) => !ids.has(binding.id)))
+    throw new DopplerConnectionUsageChangedError();
+}
+
 /**
  * The instance's Doppler connections (ADR 0031). Metadata stays readable while the
  * store is sealed; tokens are decrypted only by {@link tokenBytes}.
@@ -54,27 +108,11 @@ export class DopplerConnectionStore {
   async list(): Promise<DopplerConnectionRecord[]> {
     const rows = await this.db
       .selectFrom('doppler_connections')
-      .select([
-        'id',
-        'label',
-        'token',
-        'token_revision',
-        'workplace_slug',
-        'workplace_name',
-        'created_at',
-      ])
+      .select(connectionColumns)
       .orderBy('created_at')
       .orderBy('id')
       .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      label: row.label,
-      hasToken: row.token !== null,
-      ...(row.token_revision === null ? {} : { tokenRevision: row.token_revision }),
-      workplaceSlug: row.workplace_slug,
-      workplaceName: row.workplace_name,
-      createdAt: row.created_at,
-    }));
+    return rows.map(connectionRecord);
   }
 
   async get(id: string): Promise<DopplerConnectionRecord | undefined> {
@@ -109,18 +147,38 @@ export class DopplerConnectionStore {
   /** Renames a connection or replaces its token; false when it does not exist. */
   async update(
     id: string,
-    patch: { label?: string; token?: string; workplace?: DopplerWorkplace },
+    patch: DopplerConnectionPatch,
+    expected?: ValidatedDopplerConnection,
   ): Promise<boolean> {
+    return (await this.updateRecord(id, patch, expected)) !== undefined;
+  }
+
+  /** Replace the token only while the externally validated topology still matches. */
+  async updateRecord(
+    id: string,
+    patch: DopplerConnectionPatch,
+    expected?: ValidatedDopplerConnection,
+  ): Promise<(DopplerConnectionRecord & { projectCount: number }) | undefined> {
     const token = patch.token === undefined ? undefined : this.cipher.encrypt(patch.token);
     return this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
       const existing = await tx
         .selectFrom('doppler_connections')
-        .select('workplace_slug')
+        .select(['workplace_slug', 'token_revision'])
         .where('id', '=', id)
         .executeTakeFirst();
-      if (existing === undefined) return false;
-      await tx
+      if (existing === undefined) return undefined;
+      const bindings = await tx
+        .selectFrom('project_doppler_bindings')
+        .select(['id', 'project_id'])
+        .where('connection_id', '=', id)
+        .execute();
+      if (expected !== undefined) {
+        if (existing.token_revision !== expected.tokenRevision)
+          throw new DopplerConnectionTokenChangedError();
+        assertConfirmedUsage(bindings, expected.bindingIds);
+      }
+      const updated = await tx
         .updateTable('doppler_connections')
         .set({
           ...(patch.label === undefined ? {} : { label: patch.label }),
@@ -134,14 +192,30 @@ export class DopplerConnectionStore {
           updated_at: sql`now()`,
         })
         .where('id', '=', id)
-        .execute();
+        .returning(connectionColumns)
+        .executeTakeFirstOrThrow();
+      if (token !== undefined && id === LEGACY_DOPPLER_CONNECTION_ID) {
+        await tx
+          .insertInto('verity_settings')
+          .values({ id: 'global', doppler_service_token: token })
+          .onConflict((conflict) =>
+            conflict.column('id').doUpdateSet({
+              doppler_service_token: token,
+              updated_at: sql`now()`,
+            }),
+          )
+          .execute();
+      }
       if (
         token !== undefined &&
         (existing.workplace_slug === null || existing.workplace_slug !== patch.workplace?.slug)
       ) {
         await tx.deleteFrom('user_doppler_connections').where('connection_id', '=', id).execute();
       }
-      return true;
+      return {
+        ...connectionRecord(updated),
+        projectCount: new Set(bindings.map((binding) => binding.project_id)).size,
+      };
     });
   }
 
@@ -239,12 +313,7 @@ export class DopplerConnectionStore {
         .select(['id', 'project_id', 'doppler_project', 'doppler_config'])
         .where('connection_id', '=', id)
         .execute();
-      if (
-        expectedBindingIds !== undefined &&
-        (bindings.length !== expectedBindingIds.length ||
-          bindings.some((binding) => !expectedBindingIds.includes(binding.id)))
-      )
-        throw new DopplerConnectionUsageChangedError();
+      if (expectedBindingIds !== undefined) assertConfirmedUsage(bindings, expectedBindingIds);
       const projects = new Set(bindings.map((binding) => binding.project_id));
       for (const binding of bindings) {
         await deleteDopplerBindingGrants(tx, binding.project_id, {

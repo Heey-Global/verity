@@ -8,7 +8,8 @@ import type {
   ProjectDopplerBinding,
   VerityClient,
 } from '@verity/mobile';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -63,26 +64,28 @@ export function ProjectDopplerBindings({
   const bindingKey = list.map((binding) => binding.id).join(',');
 
   // Personal tokens follow the bindings: one per connection they use.
-  useEffect(() => {
-    let active = true;
-    void client.doppler
-      .personalTokens(projectId)
-      .then((value) => {
-        if (active) {
-          setPersonal(value);
-          setPersonalError(undefined);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setPersonal(undefined);
-          setPersonalError('Could not load your Doppler tokens.');
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [client, projectId, bindingKey, personalVersion]);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void client.doppler
+        .personalTokens(projectId)
+        .then((value) => {
+          if (active) {
+            setPersonal(value);
+            setPersonalError(undefined);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setPersonal(undefined);
+            setPersonalError('Could not load your Doppler tokens.');
+          }
+        });
+      return () => {
+        active = false;
+      };
+    }, [client, projectId, bindingKey, personalVersion]),
+  );
 
   const close = () => {
     pickerRequest.current++;
@@ -470,7 +473,7 @@ export function ProjectDopplerBindings({
                 title={connection.label}
                 subtitle={
                   connection.connected
-                    ? 'Your token connected'
+                    ? 'Your token saved'
                     : connection.usesInstanceToken
                       ? 'Using instance token'
                       : 'Connect your token'

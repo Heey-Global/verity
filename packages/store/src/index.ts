@@ -330,6 +330,7 @@ export {
 export {
   AmbiguousDopplerConnectionError,
   DopplerConnectionStore,
+  DopplerConnectionTokenChangedError,
   DopplerConnectionUsageChangedError,
   lockDopplerTopology,
   type DopplerConnectionRecord,
@@ -337,7 +338,6 @@ export {
   type DopplerWorkplace,
 } from './doppler-connections.js';
 export {
-  DopplerConnectionTokenChangedError,
   DuplicateDopplerBindingError,
   ProjectDopplerBindingStore,
   UnknownDopplerConnectionError,
