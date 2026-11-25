@@ -1,4 +1,4 @@
-import type { LiveConnection } from '@verity/mobile';
+import { clearConditionalReads, type LiveConnection } from '@verity/mobile';
 import { useEffect } from 'react';
 import { AppState, Platform } from 'react-native';
 import { getAuthToken, subscribeAuthToken } from '../lib/authToken';
@@ -60,6 +60,10 @@ export function LiveConnectionLifecycle(): null {
       const nextBearer = getAuthToken(baseUrl);
       if (nextBearer !== bearer) {
         connection.pause();
+        // Overview bodies remembered for revalidation belong to the previous
+        // credential. Dropping them is memory hygiene, not a correctness need:
+        // a 304 only ever confirms a byte-identical body.
+        clearConditionalReads();
         bearer = nextBearer;
       }
       // The browser authenticates with its session cookie; a native device waits

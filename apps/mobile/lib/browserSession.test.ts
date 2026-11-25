@@ -1,5 +1,11 @@
 import { generateKeyPairSync, sign, webcrypto } from 'node:crypto';
 import { createPairingUri } from './pairing';
+
+const mockClearConditionalReads = jest.fn();
+jest.mock('@verity/mobile', () => ({
+  ...jest.requireActual<typeof import('@verity/mobile')>('@verity/mobile'),
+  clearConditionalReads: () => mockClearConditionalReads(),
+}));
 import {
   authenticateBrowser,
   browserFetch,
@@ -110,8 +116,12 @@ test('device invitation establishes a cookie session without redeeming an instal
 
 test('logout clears the session only after the server revokes it', async () => {
   await refreshBrowserSession();
+  mockClearConditionalReads.mockClear();
   await logoutBrowser();
   expect(getBrowserSession()).toBeNull();
+  // A cookie sign-out changes no bearer, so this is where remembered overview
+  // bodies of the previous account are dropped.
+  expect(mockClearConditionalReads).toHaveBeenCalledTimes(1);
   expect(calls[1]).toMatchObject({
     path: '/auth/logout',
     init: { method: 'POST', credentials: 'include' },
