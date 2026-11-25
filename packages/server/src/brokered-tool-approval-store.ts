@@ -356,6 +356,20 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
         return record(row);
       });
     },
+    /** Retires an unanswered receipt whose provider binding can no longer be approved.
+     * It records no decision, so it neither blocks an identical new request nor
+     * produces an outcome notice, and it cannot be redeemed or reopened. */
+    async retirePending(id: string, sessionId: string): Promise<boolean> {
+      const row = await db
+        .updateTable('brokered_tool_approvals')
+        .set({ status: 'consumed', scope: null })
+        .where('id', '=', id)
+        .where('session_id', '=', sessionId)
+        .where('status', '=', 'pending')
+        .returning('id')
+        .executeTakeFirst();
+      return row !== undefined;
+    },
     async markScopedSaved(id: string, sessionId: string): Promise<void> {
       await db
         .updateTable('brokered_tool_approvals')

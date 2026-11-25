@@ -2,6 +2,8 @@ import { expect, it, vi } from 'vitest';
 import type { Conductor } from '@verity/session';
 
 import { configureDetachedSecretApprovals } from './detached-secret-approvals.js';
+import { referencedSnapshot } from './brokered-http-tool.js';
+import type { ProjectDopplerBinding } from './doppler-secret-reference.js';
 import type {
   BrokeredToolApprovalRecord,
   BrokeredToolApprovalStore,
@@ -33,14 +35,34 @@ const obsolete: BrokeredToolApprovalRecord = {
 };
 const malformed = { ...record, id: 'malformed', authorizationSnapshot: '{' };
 
+const staging: ProjectDopplerBinding = {
+  id: 'b',
+  connectionId: 'c',
+  dopplerProject: 'p',
+  dopplerConfig: 'staging',
+  isDefault: true,
+};
+const secretRun = (id: string, bindings: ProjectDopplerBinding[]) => ({
+  ...record,
+  id,
+  toolName: 'verity_secret_run' as const,
+  canonicalInput: JSON.stringify({
+    secrets: [{ secretAlias: 'SERVICE_REGION', env: 'SERVICE_REGION' }],
+    command: ['/usr/bin/env'],
+  }),
+  authorizationSnapshot: JSON.stringify(referencedSnapshot(bindings, ['SERVICE_REGION'])),
+});
+
 function harness({
   pending = [record],
   approved = [],
   decisions = [],
+  bindings = async () => [],
 }: {
   pending?: BrokeredToolApprovalRecord[];
   approved?: BrokeredToolApprovalRecord[];
   decisions?: BrokeredToolApprovalRecord[];
+  bindings?: () => Promise<ProjectDopplerBinding[]>;
 } = {}) {
   let provider!: Parameters<Conductor['configureDetachedPermissions']>[0];
   const decide = vi.fn(async () => ({ ...record, status: 'approved' as const }));
@@ -53,6 +75,7 @@ function harness({
     },
   );
   const getSession = vi.fn(async () => ({ projectId: 'project' }));
+  const retirePending = vi.fn(async () => true);
   configureDetachedSecretApprovals({
     conductor: {
       configureDetachedPermissions: (next) => {
@@ -60,7 +83,7 @@ function harness({
       },
       resumeDetachedPermission: resume,
     },
-    store: { getSession } as unknown as Parameters<
+    store: { getSession, projectDopplerBindings: { list: bindings } } as unknown as Parameters<
       typeof configureDetachedSecretApprovals
     >[0]['store'],
     approvals: {
@@ -68,12 +91,13 @@ function harness({
       listUnrecordedDecisions: async () => decisions,
       get: async (id: string) => pending.find((entry) => entry.id === id),
       listPending: async () => pending,
+      retirePending,
       decide,
     } as unknown as BrokeredToolApprovalStore,
     gateway: { authorizationSnapshot: snapshot },
     canExecute,
   });
-  return { provider, decide, canExecute, snapshot, getSession, resume, validated };
+  return { provider, decide, canExecute, snapshot, getSession, resume, validated, retirePending };
 }
 
 it('restores the exact secret card without restoring a caller or executing a tool', async () => {
@@ -152,6 +176,40 @@ it('recovers fresh requests and their decisions alongside obsolete and malformed
       decision: 'once',
       secretSource: { project: 'p', config: 'staging' },
     }),
+  ]);
+});
+
+// Without retirement a receipt that can never be approved stays pending forever:
+// no card is shown for it, it cannot be decided, and reopening refuses a pending
+// receipt, so the request is stuck until the agent happens to send it again.
+it('retires pending receipts whose bindings changed, but keeps those it cannot judge', async () => {
+  const moved = secretRun('moved', [staging]);
+  const transient = secretRun('transient', [staging]);
+  const production = { ...staging, id: 'b2', dopplerConfig: 'production' };
+  const bindings = vi.fn(async (): Promise<ProjectDopplerBinding[]> => [staging]);
+  const { provider, snapshot, retirePending } = harness({
+    pending: [obsolete, malformed, moved, transient],
+    bindings,
+  });
+  // The gateway sees neither as current: one moved to another config, the other
+  // hit a temporary failure while its stored binding is unchanged.
+  snapshot.mockRejectedValue(new Error('temporarily unavailable'));
+  // Legacy and malformed snapshots are stale without a lookup; `moved` reads first.
+  bindings.mockResolvedValueOnce([production]);
+
+  expect(await provider.list('session')).toEqual([]);
+  expect(retirePending.mock.calls).toEqual([
+    ['obsolete', 'session'],
+    ['malformed', 'session'],
+    ['moved', 'session'],
+  ]);
+
+  retirePending.mockClear();
+  bindings.mockRejectedValue(new Error('database unavailable'));
+  await provider.list('session');
+  expect(retirePending.mock.calls).toEqual([
+    ['obsolete', 'session'],
+    ['malformed', 'session'],
   ]);
 });
 

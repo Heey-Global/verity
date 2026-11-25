@@ -34,33 +34,48 @@ function currentSnapshotMatcher(gateway: Pick<McpGatewayDeps, 'authorizationSnap
   };
 }
 
-function historySnapshotMatcher(store: Pick<EventStore, 'projectDopplerBindings'>) {
+type BindingStore = Pick<EventStore, 'projectDopplerBindings'>;
+
+/** Compares a receipt with the project's stored bindings without contacting a
+ * provider. Only a failed binding read is unknown; a request that no longer
+ * resolves against the bindings is stale. */
+async function storedSnapshotState(
+  record: BrokeredToolApprovalRecord,
+  bindings: () => ReturnType<BindingStore['projectDopplerBindings']['list']>,
+): Promise<'current' | 'stale' | 'unknown'> {
+  if (!tryParseBrokeredDopplerBinding(record.authorizationSnapshot)) return 'stale';
+  let current;
+  try {
+    current = await bindings();
+  } catch {
+    return 'unknown';
+  }
+  try {
+    const references = brokeredSecretReferences(record.toolName, JSON.parse(record.canonicalInput));
+    return JSON.stringify(referencedSnapshot(current, references)) === record.authorizationSnapshot
+      ? 'current'
+      : 'stale';
+  } catch {
+    return 'stale';
+  }
+}
+
+function historySnapshotMatcher(store: BindingStore) {
   const byProject = new Map<string, ReturnType<typeof store.projectDopplerBindings.list>>();
-  return async (record: BrokeredToolApprovalRecord): Promise<boolean> => {
-    if (!tryParseBrokeredDopplerBinding(record.authorizationSnapshot)) return false;
-    try {
+  return async (record: BrokeredToolApprovalRecord): Promise<boolean> =>
+    (await storedSnapshotState(record, () => {
       const bindings =
         byProject.get(record.projectId) ?? store.projectDopplerBindings.list(record.projectId);
       byProject.set(record.projectId, bindings);
-      const references = brokeredSecretReferences(
-        record.toolName,
-        JSON.parse(record.canonicalInput),
-      );
-      return (
-        JSON.stringify(referencedSnapshot(await bindings, references)) ===
-        record.authorizationSnapshot
-      );
-    } catch {
-      return false;
-    }
-  };
+      return bindings;
+    })) === 'current';
 }
 
 /** Restoring a card never restores a caller or executes a tool. Approval is a receipt
  * for an exact future invocation, checked again by the gateway at consumption. */
 export function configureDetachedSecretApprovals(input: {
   conductor: Pick<Conductor, 'configureDetachedPermissions' | 'resumeDetachedPermission'>;
-  store: Pick<EventStore, 'getSession'>;
+  store: Pick<EventStore, 'getSession'> & BindingStore;
   approvals: BrokeredToolApprovalStore;
   gateway: Pick<McpGatewayDeps, 'authorizationSnapshot'>;
   localActor?: boolean;
@@ -149,7 +164,17 @@ export function configureDetachedSecretApprovals(input: {
       const requests = [];
       for (const record of pending) {
         const request = requestFor(record);
-        if (request && (await matchesCurrentSnapshot(record))) requests.push(request);
+        if (request && (await matchesCurrentSnapshot(record))) {
+          requests.push(request);
+          continue;
+        }
+        // A receipt from before a binding change (or from before the upgrade to
+        // binding snapshots) can never be approved, and stays pending without a card.
+        // Retire it so the next identical request gets a fresh card; keep it while
+        // the bindings cannot be read.
+        const bindings = () => store.projectDopplerBindings.list(record.projectId);
+        if ((await storedSnapshotState(record, bindings)) === 'stale')
+          await approvals.retirePending(record.id, sessionId);
       }
       return requests;
     },
