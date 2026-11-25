@@ -6,6 +6,23 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.103.0](https://github.com/Heey-Global/verity/compare/v4.102.1...v4.103.0) (2026-11-25)
+
+
+### Features
+
+* **doppler:** support multiple connections and project bindings ([#2885](https://github.com/Heey-Global/verity/issues/2885)) ([cf7bf80](https://github.com/Heey-Global/verity/commit/cf7bf805b056761854ec0ec148b61e747ff39b4d))
+* **mockups:** support interactive HTML reviews ([#2865](https://github.com/Heey-Global/verity/issues/2865)) ([127c0be](https://github.com/Heey-Global/verity/commit/127c0be76807ca510ce1b55142344a6ae979ae23))
+
+
+### Bug Fixes
+
+* **dependencies:** bound native inventory metadata traversal ([#2879](https://github.com/Heey-Global/verity/issues/2879)) ([7b835b5](https://github.com/Heey-Global/verity/commit/7b835b5d5ecbcb9ba55030305498c1b5583a3fb9))
+* **deps:** update dependency @devcontainers/cli to v0.91.0 ([#2873](https://github.com/Heey-Global/verity/issues/2873)) ([17a7bfc](https://github.com/Heey-Global/verity/commit/17a7bfc8537249d566d503198df9d4cf5db545f2))
+* **deps:** update dependency @fastify/rate-limit to v11.3.0 ([#2874](https://github.com/Heey-Global/verity/issues/2874)) ([7b818db](https://github.com/Heey-Global/verity/commit/7b818dbde9fa95a36961af6ba5da335e0e8c529f))
+* **deps:** update dependency @napi-rs/canvas to v1.2.0 ([#2875](https://github.com/Heey-Global/verity/issues/2875)) ([68690fa](https://github.com/Heey-Global/verity/commit/68690fac44030f7af6df259e87c2234c33ca1d01))
+* **server:** skip full-history queue for bounded session reads ([#2876](https://github.com/Heey-Global/verity/issues/2876)) ([703c206](https://github.com/Heey-Global/verity/commit/703c2061e798cb4e1a912a6e0dc0e8e09304313d))
+
 ## [4.102.1](https://github.com/Heey-Global/verity/compare/v4.102.0...v4.102.1) (2026-11-23)
 
 
