@@ -26,7 +26,7 @@ describe('conditionalJsonRoute', () => {
     expect(first.statusCode).toBe(200);
     const etag = first.headers.etag as string;
     expect(etag).toMatch(/^W\/"/u);
-    expect(first.headers['cache-control']).toBe('private, no-cache');
+    expect(first.headers['cache-control']).toBe('private, no-store');
 
     const unchanged = await app.inject({
       method: 'GET',

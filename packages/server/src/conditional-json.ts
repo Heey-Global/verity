@@ -10,7 +10,9 @@ import type { FastifyReply, FastifyRequest, RouteShorthandOptions } from 'fastif
  *
  * The tag is weak (`W/`) because it names the JSON representation, not the
  * compressed bytes on the wire. Every response is personal, so it is marked
- * `private, no-cache`: caches may keep it, but must revalidate with us.
+ * `private, no-store`: the app keeps its own copy for revalidation
+ * (`withConditionalReads`), and a browser must not leave one on disk where it
+ * would outlive a sign-out.
  */
 function conditionalJsonOnSend(
   request: FastifyRequest,
@@ -24,7 +26,7 @@ function conditionalJsonOnSend(
   }
   const etag = `W/"${createHash('sha256').update(payload).digest('base64url').slice(0, 32)}"`;
   reply.header('etag', etag);
-  reply.header('cache-control', 'private, no-cache');
+  reply.header('cache-control', 'private, no-store');
   if (ifNoneMatch(request.headers['if-none-match'], etag)) {
     reply.code(304);
     reply.removeHeader('content-type');

@@ -563,7 +563,12 @@ export class SessionListModel {
     if (hints.some((hint) => hint.deleted === true)) this.emit();
     const urgent =
       hints.length === 0 ||
-      hints.some((hint) => hint.deleted === true || hint.topics.some((t) => t !== 'events'));
+      hints.some(
+        (hint) =>
+          hint.deleted === true ||
+          hint.topics.length === 0 ||
+          hint.topics.some((t) => t !== 'events'),
+      );
     if (urgent) {
       this.cancelEventsRefresh();
       this.poll?.();

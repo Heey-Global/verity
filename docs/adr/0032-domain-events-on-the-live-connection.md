@@ -40,7 +40,7 @@ times a second.
 Before any protocol change, the overview reads become cheap to repeat:
 
 - `/sessions`, `/projects` and `/projects/:id` are gzip-compressed and carry a
-  weak ETag over their JSON (`private, no-cache`). The app revalidates them
+  weak ETag over their JSON (`private, no-store`). The app revalidates them
   with `If-None-Match` and reuses its last body on `304`.
 - The Home list reloads at once for `status`, `permission` and `session` hints,
   but at most every 10 s for hints that only report transcript growth.
