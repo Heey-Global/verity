@@ -52,7 +52,10 @@ export function withConditionalReads(fetchImpl: typeof fetch): typeof fetch {
     input: Parameters<typeof fetch>[0],
     init?: RequestInit,
   ): Promise<Response> => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    // A Request carries its own headers, which a replacement `init` would
+    // override; only plain URLs (what VerityClient sends) take part.
+    if (typeof input !== 'string' && !(input instanceof URL)) return fetchImpl(input, init);
+    const url = typeof input === 'string' ? input : input.href;
     const method = (init?.method ?? 'GET').toUpperCase();
     let path: string;
     try {

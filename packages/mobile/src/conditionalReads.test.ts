@@ -72,6 +72,17 @@ describe('withConditionalReads', () => {
     expect((seen[1] as Headers).get('if-none-match')).toBe('W/"x"');
   });
 
+  it('passes Request inputs through with their own headers', async () => {
+    const { calls, fetchImpl } = server(() => '[]');
+    const read = withConditionalReads(fetchImpl);
+    await read('https://verity.test/projects', { headers: { authorization: 'Bearer a' } });
+    const request = new Request('https://verity.test/projects', {
+      headers: { authorization: 'Bearer a' },
+    });
+    await read(request);
+    expect(calls[1]?.headers['if-none-match']).toBeUndefined();
+  });
+
   it('leaves writes and other reads untouched', async () => {
     const { calls, fetchImpl } = server(() => '{}');
     const read = withConditionalReads(fetchImpl);

@@ -61,7 +61,8 @@ export function LiveConnectionLifecycle(): null {
       if (nextBearer !== bearer) {
         connection.pause();
         // Overview bodies remembered for revalidation belong to the previous
-        // credential; a sign-out or account switch must not keep them around.
+        // credential. Dropping them is memory hygiene, not a correctness need:
+        // a 304 only ever confirms a byte-identical body.
         clearConditionalReads();
         bearer = nextBearer;
       }
