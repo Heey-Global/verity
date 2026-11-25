@@ -12,7 +12,7 @@ import type { FastifyReply, FastifyRequest, RouteShorthandOptions } from 'fastif
  * compressed bytes on the wire. Every response is personal, so it is marked
  * `private, no-cache`: caches may keep it, but must revalidate with us.
  */
-export function conditionalJsonOnSend(
+function conditionalJsonOnSend(
   request: FastifyRequest,
   reply: FastifyReply,
   payload: unknown,
