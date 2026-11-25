@@ -327,6 +327,7 @@ it('recovers a saved decision with no transcript card and deduplicates concurren
     ctx.store.appendEvent(input.sessionId, event),
     ctx.store.appendEvent(input.sessionId, event),
   ]);
+  // Either writer can acquire the database lock first.
   expect(results.filter(({ existing }) => existing)).toHaveLength(1);
   expect(results[1]).toMatchObject({ seq: results[0].seq, ts: results[0].ts });
   expect(await restarted.listUnrecordedDecisions(input.sessionId)).toEqual([]);
@@ -352,4 +353,25 @@ it('lets a decision on the current snapshot supersede a legacy denial', async ()
   expect(
     await store.findStandingAuthorizationBlock(input, 'retry', undefined, legacySnapshot),
   ).toBeUndefined();
+});
+
+// A retired receipt must leave no trace that acts like a decision: if it counted
+// as a denial the same request would stay blocked, and if it stayed redeemable an
+// approval of the old binding could still run.
+it('retires an unanswered receipt without blocking, deciding or reopening it', async () => {
+  const pending = await store.createOrFindPending(input);
+  expect(await store.retirePending(pending.id, 'other-session')).toBe(false);
+  expect(await store.retirePending(pending.id, 'session')).toBe(true);
+  expect(await store.retirePending(pending.id, 'session')).toBe(false);
+
+  expect(await store.listPending('session')).toEqual([]);
+  expect(await store.decide(pending.id, 'session', true, 'manager', 'once')).toBeUndefined();
+  expect(await store.consume(pending.id, input)).toBeUndefined();
+  expect(await store.listReopenable('session')).toEqual([]);
+  expect(await store.listUnrecordedDecisions('session')).toEqual([]);
+  expect(await store.findStandingAuthorizationBlock(input, 'retry')).toBeUndefined();
+
+  const fresh = await store.createOrFindPending({ ...input, invocationId: 'retry' });
+  expect(fresh).toMatchObject({ status: 'pending' });
+  expect(fresh.id).not.toBe(pending.id);
 });

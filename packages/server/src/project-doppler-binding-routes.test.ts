@@ -185,14 +185,14 @@ it('blocks initializing an unknown workplace behind existing catalog bindings', 
     .execute();
   const app = await server(undefined, 'legacy-doppler');
   try {
-    expect(
-      (
-        await call(app, 'admin', 'POST', '/doppler/connections', {
-          label: 'Catalog',
-          token: 'dp.sa.platform',
-        })
-      ).statusCode,
-    ).toBe(409);
+    // The token does not take over the reviewed catalog, but it can still be added
+    // as the connection the catalog is then reconfigured to.
+    const added = await call(app, 'admin', 'POST', '/doppler/connections', {
+      label: 'Catalog',
+      token: 'dp.sa.platform',
+    });
+    expect(added.statusCode).toBe(201);
+    expect(added.json<{ id: string }>().id).not.toBe('legacy-doppler');
     await ctx.db
       .insertInto('doppler_connections')
       .values({ id: 'legacy-doppler', label: 'Legacy' })
@@ -210,6 +210,32 @@ it('blocks initializing an unknown workplace behind existing catalog bindings', 
     await app.close();
   }
 });
+
+// An unconfigured Secret Job catalog reads through the legacy ID, which a fresh
+// installation never migrates. Unless its first connection takes that ID, and
+// stays protected as the catalog's, Secret Jobs have no connection to read from.
+it.each([
+  { pin: 'legacy-doppler', adopts: true },
+  { pin: 'configured-catalog', adopts: false },
+  { pin: undefined, adopts: false },
+])(
+  'lets a fresh installation adopt its first connection for the catalog ($pin)',
+  async ({ pin, adopts }) => {
+    const app = await server(undefined, pin);
+    try {
+      const first = await addConnection(app, 'Platform', 'dp.sa.platform');
+      const second = await addConnection(app, 'Payments', 'dp.sa.payments');
+      expect(first === 'legacy-doppler').toBe(adopts);
+      expect(second).not.toBe('legacy-doppler');
+      const removal = await call(app, 'admin', 'DELETE', `/doppler/connections/${first}`, {
+        bindingIds: [],
+      });
+      expect(removal.statusCode).toBe(adopts ? 409 : 204);
+    } finally {
+      await app.close();
+    }
+  },
+);
 
 it('checks a same-workplace replacement against catalog-only configs', async () => {
   const connectionId = await store.dopplerConnections.add({

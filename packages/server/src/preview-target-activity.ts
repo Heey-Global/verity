@@ -9,6 +9,7 @@ import type {
 import type { SessionDevServer } from './listening-ports.js';
 import { managedPreviewInstance, managedRunProviderCurrent } from './managed-dev-server-secrets.js';
 import type { PreviewShareManagerOptions } from './preview-share-manager.js';
+import { PreviewShareConflictError } from './preview-network-policy.js';
 
 /** A retained URL is intent, not evidence that its target is serving. Probe the
  * target on every activity check; an offline connector can itself be healthy. */
@@ -177,4 +178,34 @@ export async function authorizedManagedPreviewPort(
           (listener.bind === 'loopback' && options.prepareTargetPort !== undefined)),
     ) === true
   );
+}
+
+/** Right before a connector starts forwarding, the managed instance must still own
+ * the sandbox and port captured in its spec, with its own tagged listener up there.
+ * The instance can restart elsewhere while Docker creates the connector. */
+export async function assertManagedConnectorTarget(
+  options: PreviewShareManagerOptions,
+  share: Pick<
+    PublicPreviewShareRecord,
+    'projectId' | 'sessionId' | 'managedInstanceId' | 'targetPort'
+  >,
+  targetContainerName: string,
+): Promise<void> {
+  if (!share.managedInstanceId) return;
+  const project = await options.store.getProject(share.projectId);
+  const sandbox = project && (await previewSandboxFor(options, project, share.managedInstanceId));
+  if (
+    !sandbox ||
+    sandbox.containerName !== targetContainerName ||
+    share.targetPort === null ||
+    !share.sessionId ||
+    !(await authorizedManagedPreviewPort(
+      options,
+      sandbox,
+      share.sessionId,
+      share.targetPort,
+      share.managedInstanceId,
+    ))
+  )
+    throw new PreviewShareConflictError('managed server ownership or port changed');
 }

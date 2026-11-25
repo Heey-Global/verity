@@ -145,8 +145,8 @@ export class DopplerConnectionStore {
     const token = this.cipher.encrypt(input.token);
     return this.db.transaction().execute(async (tx) => {
       await lockDopplerTopology(tx);
-      const legacy =
-        input.initializeLegacyCatalog &&
+      let legacy =
+        input.initializeLegacyCatalog === true &&
         !(await tx
           .selectFrom('doppler_connections')
           .select('id')
@@ -154,10 +154,10 @@ export class DopplerConnectionStore {
           .executeTakeFirst());
       if (legacy) {
         await sql`lock table secret_provider_bindings in share mode`.execute(tx);
-        if ((await this.catalogConfigs(tx)).length > 0)
-          throw new DopplerConnectionUsageChangedError(
-            'The Secret Job catalog already has bindings. Configure a new catalog connection and review its grants first.',
-          );
+        // Existing catalog grants were reviewed for another token, so a new token
+        // never inherits them. It is added as an ordinary connection, which an
+        // administrator can then configure as the catalog connection.
+        legacy = (await this.catalogConfigs(tx)).length === 0;
       }
       const id = legacy ? LEGACY_DOPPLER_CONNECTION_ID : randomUUID();
       const row = await tx
