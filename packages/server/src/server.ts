@@ -7,6 +7,7 @@ import {
   createServerWorktrees,
 } from './server-runtime.js';
 import { installInfrastructureRoutes } from './server-infrastructure-routes.js';
+import { createServerMonitor, installServerMonitoring } from './metrics/server-monitor.js';
 import {
   installControlSession,
   installSessionMetadata,
@@ -127,6 +128,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const liveTickets = createLiveTickets(deps);
   startServerMessageProjection(deps);
   const { app, lifecycle, preAuthKeys, trafficLedger } = createServerApp(deps);
+  const monitor =
+    deps.serverMonitor ?? createServerMonitor({ store: undefined, version: SERVER_VERSION });
+  installServerMonitoring(app, monitor);
   const conductor = createServerConductor(app, deps);
   const publishSessionEvent = createServerEventPublisher(deps);
   const sessionDesign = createServerSessionDesign(deps, {
@@ -157,6 +161,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     liveHub,
     resources,
     pushSender,
+    monitor,
     projectsBeingDeleted,
     sessionsBeingReaped,
     deleteSession: createSessionDeletion({ app, deps }),

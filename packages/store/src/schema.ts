@@ -13,25 +13,10 @@ import type { SandboxDatabase, SandboxRepairIntentsTable } from './schema-sandbo
 export type { SandboxRepairIntentsTable } from './schema-sandbox.js';
 import type { CapacityLeaseDatabase } from './schema-capacity-leases.js';
 import type { ProjectQADatabase } from './schema-project-qa.js';
+import type { WikiDatabase } from './schema-wiki.js';
+import type { ServerMonitoringDatabase } from './schema-server-monitoring.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
-export interface WikiOccasionsTable {
-  id: string;
-  project_id: string;
-  kind: 'source' | 'meeting' | 'decision' | 'chat' | 'session' | 'merge';
-  ref: string;
-  title: string;
-  body: string | null;
-  created_at: Generated<Date>;
-  closed_at: Date | null;
-}
-
-export interface WikiMaintenanceTable {
-  project_id: string;
-  session_id: string | null;
-  last_run_at: Date | null;
-}
-
 /**
  * Postgres schema for the durable source of truth (concept §5a): an append-only
  * canonical-event log plus the session registry. The {@link EventStore} API
@@ -1728,9 +1713,9 @@ export interface Database
     SessionCoordinationDatabase,
     ProjectQADatabase,
     BrokeredApprovalDatabase,
-    ProjectInquiryDatabase {
-  wiki_occasions: WikiOccasionsTable;
-  wiki_maintenance: WikiMaintenanceTable;
+    ProjectInquiryDatabase,
+    WikiDatabase,
+    ServerMonitoringDatabase {
   sandbox_repair_intents: SandboxRepairIntentsTable;
   vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;

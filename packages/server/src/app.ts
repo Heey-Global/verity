@@ -1,3 +1,6 @@
+import { createServerMonitor } from './metrics/server-monitor.js';
+import type { MonitoringSettingsStore } from './metrics/monitoring-control.js';
+import { SERVER_VERSION } from './server-support.js';
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
 import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
@@ -60,6 +63,8 @@ export interface ControlPlaneDeps {
   sessionStorage?: ServerDeps['sessionStorage'];
   backup?: ServerDeps['backup'];
   eventStore: EventStore;
+  /** Stored monitoring settings (ADR 0032); absent, changes stay in memory. */
+  serverMonitoringSettings?: MonitoringSettingsStore | undefined;
   /** Durable server root for filesystem-backed project Knowledge. Forwarded to
    * the route layer; provisioning the same folder does not make it visible to
    * HTTP handlers unless this value crosses the composition boundary too. */
@@ -401,6 +406,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
   return buildServer({
     ...(deps.dependencyCapacity ? { dependencyCapacity: deps.dependencyCapacity } : {}),
     eventStore: deps.eventStore,
+    serverMonitor: createServerMonitor({
+      store: deps.serverMonitoringSettings,
+      version: SERVER_VERSION,
+    }),
     codeWorkspaceTurns,
     ...(deps.backup ? { backup: deps.backup } : {}),
     sessionChanges,

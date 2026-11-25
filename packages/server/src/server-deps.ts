@@ -15,6 +15,7 @@ import type { FastifyBaseLogger, FastifyRequest } from 'fastify';
 import type { ServerOptions as HttpsServerOptions } from 'node:https';
 import type { AgentLoginService } from './agent-login.js';
 import type { AuditLog } from './audit-log.js';
+import type { ServerMonitor } from './metrics/server-monitor.js';
 import type { AuditRecorder } from './audit-recorder.js';
 import type { AuthTokenRegistry } from './auth.js';
 import type { BackupRuntime } from './backup/runtime.js';
@@ -82,6 +83,10 @@ export interface ServerDeps {
   unlockClientIdentity?: ((request: FastifyRequest) => string | undefined) | undefined;
   browserRequestOrigin?: ((request: FastifyRequest) => string | undefined) | undefined;
   eventStore: EventStore;
+  /** In-memory request and traffic counters with their stored settings (ADR
+   *  0032). Absent — tests — the server measures with the defaults and keeps
+   *  setting changes in memory. */
+  serverMonitor?: ServerMonitor | undefined;
   /**
    * Verity's data root. The knowledge folders live under `<dataRoot>/knowledge`
    * (ADR 0022 D1) and the session explorer browses them from there. Absent —

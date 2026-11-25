@@ -56,6 +56,7 @@ import {
 import { repositoryPullRequestsSchema } from './projectPullRequests.js';
 import { createSecretApprovalsClient, pendingPermissionRequestSchema } from './secretApprovals.js';
 import { createSessionCollaborationClient } from './sessionCollaboration.js';
+import { serverMonitoringClient } from './server-monitoring-api.js';
 export type { PendingPermissionRequest } from './secretApprovals.js';
 import {
   projectEgressPolicySchema,
@@ -112,8 +113,6 @@ import {
   type WikiProposal,
   type WikiProposalDecision,
   type WikiProposalSummary,
-} from '@verity/events';
-import {
   recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
   selectedEvidenceExportSchema,
@@ -2602,6 +2601,7 @@ export class VerityClient {
   readonly people = peopleClient((path, init) => this.request(path, init));
   readonly projectQA = projectQAClient((path, init) => this.request(path, init));
   readonly doppler = dopplerClient((path, init) => this.request(path, init));
+  readonly monitoring = serverMonitoringClient((path, init) => this.request(path, init));
   readonly listDopplerConnections = this.doppler.listConnections;
   readonly getDopplerConnectionUsage = this.doppler.connectionUsage;
   readonly addDopplerConnection = this.doppler.addConnection;

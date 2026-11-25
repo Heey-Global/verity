@@ -1,3 +1,24 @@
+import { AuthTokenStore, type AuthTokenRecord } from './auth-tokens.js';
+export type { AuthTokenRecord } from './auth-tokens.js';
+import {
+  ClaudeEgressIdentityStore,
+  type ClaudeEgressCaRecord,
+  type ClaudeEgressClientCertRecord,
+} from './claude-egress-identity.js';
+export type {
+  ClaudeEgressCaRecord,
+  ClaudeEgressClientCertRecord,
+} from './claude-egress-identity.js';
+import {
+  HttpMcpConnectionStore,
+  type HttpMcpConnectionRecord,
+  type ProjectMcpBindingRecord,
+} from './http-mcp-connections.js';
+export {
+  httpMcpConnectionUsableBy,
+  type HttpMcpConnectionRecord,
+  type ProjectMcpBindingRecord,
+} from './http-mcp-connections.js';
 import {
   DevicePushTokenStore,
   type DevicePushTokenRecord,
@@ -324,95 +345,12 @@ export {
   type SessionAutomationInput,
 } from './session-automations.js';
 
-export interface HttpMcpConnectionRecord {
-  id: string;
-  ownerUserId?: string;
-  name: string;
-  url: string;
-  /** Decrypted only at the trusted store boundary; public APIs must project this out. */
-  authorization: string | null;
-  authType?: 'none' | 'static' | 'oauth';
-  oauthClientId?: string | null;
-  oauthClientSecret?: string | null;
-  oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
-  oauthAuthorizationEndpoint?: string | null;
-  oauthTokenEndpoint?: string | null;
-  oauthScopes?: string | null;
-  oauthAccessToken?: string | null;
-  oauthRefreshToken?: string | null;
-  oauthExpiresAt?: Date | null;
-  enabled: boolean;
-}
-
-/**
- * Whether a turn run for `userId` may use this HTTP MCP connection (ADR 0023 §3).
- * A connection that carries a credential belongs to its owner and is usable only
- * in the owner's turns; a credential-free server is project configuration and
- * usable by everyone. A turn without an initiator gets no credentialed
- * connection at all — never the administrator's as a fallback.
- */
-export function httpMcpConnectionUsableBy(
-  connection: Pick<HttpMcpConnectionRecord, 'ownerUserId' | 'authType' | 'authorization'>,
-  userId: string | undefined,
-): boolean {
-  const credentialFree =
-    connection.authorization === null && (connection.authType ?? 'none') === 'none';
-  if (credentialFree) return true;
-  return userId !== undefined && connection.ownerUserId === userId;
-}
-
-export interface ProjectMcpBindingRecord {
-  projectId: string;
-  connectionId: string;
-  enabled: boolean;
-}
-
-/** The Verity-owned Claude-egress CA + gateway server identity (singleton). The
- *  `caKeyPem`/`gatewayKeyPem` are decrypted on read; they are SECRETS and never
- *  leave the server. */
-export interface ClaudeEgressCaRecord {
-  caCertPem: string;
-  caKeyPem: string;
-  gatewayServerName: string;
-  gatewayCertPem: string;
-  gatewayKeyPem: string;
-  caExpiresAt: Date;
-  gatewayExpiresAt: Date;
-}
-
-/** A per-project Claude-egress client certificate. `keyPem` is decrypted on read
- *  (a SECRET); the cert + fingerprint are non-secret. */
-export interface ClaudeEgressClientCertRecord {
-  projectId: string;
-  /** The person whose sandbox presents this certificate (ADR 0023 §4). */
-  userId: string;
-  certPem: string;
-  keyPem: string;
-  fingerprint256: string;
-  expiresAt: Date;
-}
-
 /** Master-password key-derivation metadata (non-secret): the scrypt salt and a
  *  verifier (a fixed marker encrypted under the derived key). The raw key is
  *  never stored — only re-derived in memory on unlock. */
 export interface SecretKeyMetaRecord {
   salt: string;
   verifier: string;
-}
-
-/** A minted per-device API token as stored: an opaque public `id` (for listing/
- *  revoking), the SHA-256 `tokenHash` the gate matches against, and an optional
- *  human `label`. The raw token itself is never persisted. `lastSeenAt` is null
- *  until the device makes its first authenticated request after the server
- *  learned to stamp it. */
-export interface AuthTokenRecord {
-  expiresAt: number | null;
-  id: string;
-  userId: string;
-  tokenHash: string;
-  label: string | null;
-  createdAt: number;
-  lastSeenAt: number | null;
 }
 
 /** A persisted event tagged with its monotonic sequence (the bigserial id) and
@@ -712,6 +650,17 @@ export class EventStore implements EventSink {
     );
   }
 
+  private readonly authTokens = new AuthTokenStore(
+    () => this.db,
+    () => this.notifyBackupRevocations(),
+  );
+  private readonly claudeEgressIdentity: ClaudeEgressIdentityStore;
+  private readonly httpMcpConnections = new HttpMcpConnectionStore(
+    () => this.db,
+    (value) => this.encryptSecret(value),
+    (value) => this.decryptSecret(value),
+    (action) => this.egressDestinationMutation(action),
+  );
   private readonly devicePushTokens = new DevicePushTokenStore(() => this.db);
   private readonly previewShares = new PreviewShareStore(
     () => this.db,
@@ -780,6 +729,7 @@ export class EventStore implements EventSink {
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
     const db = rootDb;
+    this.claudeEgressIdentity = new ClaudeEgressIdentityStore(() => this.db, cipher);
     this.veritySettings = new VeritySettingsStore(
       () => this.db,
       cipher,
@@ -4901,34 +4851,13 @@ export class EventStore implements EventSink {
   /** Read the singleton Claude-egress CA + gateway identity, decrypting the CA +
    *  gateway private keys. Returns undefined before the first issuance. */
   async getClaudeEgressCa(): Promise<ClaudeEgressCaRecord | undefined> {
-    const row = await this.db
-      .selectFrom('claude_egress_ca')
-      .selectAll()
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    return {
-      caCertPem: row.ca_cert_pem,
-      // A non-null secret column always decrypts; `?? ''` only satisfies the
-      // `string | null` return of decryptSecret for a value we know is present.
-      caKeyPem: this.decryptSecret(row.ca_key_pem) ?? '',
-      gatewayServerName: row.gateway_server_name,
-      gatewayCertPem: row.gateway_cert_pem,
-      gatewayKeyPem: this.decryptSecret(row.gateway_key_pem) ?? '',
-      caExpiresAt: new Date(row.ca_expires_at),
-      gatewayExpiresAt: new Date(row.gateway_expires_at),
-    };
+    return this.claudeEgressIdentity.getClaudeEgressCa();
   }
 
   /** Insert or replace the singleton CA + gateway identity, encrypting both
    *  private keys at rest. A re-issue (rotation) overwrites the single row. */
   async upsertClaudeEgressCa(record: ClaudeEgressCaRecord): Promise<void> {
-    const values = this.claudeEgressCaValues(record);
-    await this.db
-      .insertInto('claude_egress_ca')
-      .values({ id: 'global', ...values })
-      .onConflict((oc) => oc.column('id').doUpdateSet({ ...values, updated_at: sql`now()` }))
-      .execute();
+    return this.claudeEgressIdentity.upsertClaudeEgressCa(record);
   }
 
   /**
@@ -4940,109 +4869,32 @@ export class EventStore implements EventSink {
    * world or the new one, never a fresh CA alongside orphaned old-CA client certs.
    */
   async replaceClaudeEgressCa(record: ClaudeEgressCaRecord): Promise<void> {
-    const values = this.claudeEgressCaValues(record);
-    await this.db.transaction().execute(async (tx) => {
-      await tx
-        .insertInto('claude_egress_ca')
-        .values({ id: 'global', ...values })
-        .onConflict((oc) => oc.column('id').doUpdateSet({ ...values, updated_at: sql`now()` }))
-        .execute();
-      await tx.deleteFrom('claude_egress_client_certs').execute();
-    });
-  }
-
-  /** Encrypt the two private-key columns at rest. Uses {@link cipher}.encrypt
-   *  directly (not the null-aware {@link encryptSecret}) because every egress CA
-   *  column is NOT NULL — a CA row without its keys is meaningless. */
-  private claudeEgressCaValues(record: ClaudeEgressCaRecord): {
-    ca_cert_pem: string;
-    ca_key_pem: string;
-    gateway_server_name: string;
-    gateway_cert_pem: string;
-    gateway_key_pem: string;
-    ca_expires_at: string;
-    gateway_expires_at: string;
-  } {
-    return {
-      ca_cert_pem: record.caCertPem,
-      ca_key_pem: this.cipher.encrypt(record.caKeyPem),
-      gateway_server_name: record.gatewayServerName,
-      gateway_cert_pem: record.gatewayCertPem,
-      gateway_key_pem: this.cipher.encrypt(record.gatewayKeyPem),
-      ca_expires_at: record.caExpiresAt.toISOString(),
-      gateway_expires_at: record.gatewayExpiresAt.toISOString(),
-    };
+    return this.claudeEgressIdentity.replaceClaudeEgressCa(record);
   }
 
   async getClaudeEgressClientCert(
     projectId: string,
     userId: string,
   ): Promise<ClaudeEgressClientCertRecord | undefined> {
-    const row = await this.db
-      .selectFrom('claude_egress_client_certs')
-      .selectAll()
-      .where('project_id', '=', projectId)
-      .where('user_id', '=', userId)
-      .executeTakeFirst();
-    return row ? this.claudeEgressClientCertRowToRecord(row) : undefined;
+    return this.claudeEgressIdentity.getClaudeEgressClientCert(projectId, userId);
   }
 
   /** Every stored client certificate — the source of the gateway's
    *  fingerprint→sandbox peer bindings. */
   async listClaudeEgressClientCerts(): Promise<ClaudeEgressClientCertRecord[]> {
-    const rows = await this.db
-      .selectFrom('claude_egress_client_certs')
-      .selectAll()
-      .orderBy('project_id', 'asc')
-      .orderBy('user_id', 'asc')
-      .execute();
-    return rows.map((row) => this.claudeEgressClientCertRowToRecord(row));
+    return this.claudeEgressIdentity.listClaudeEgressClientCerts();
   }
 
   /** Insert or replace a sandbox's client certificate, encrypting the key. A
    *  rotation upserts on the (project, person) key, dropping the superseded fingerprint. */
   async upsertClaudeEgressClientCert(record: ClaudeEgressClientCertRecord): Promise<void> {
-    const values = {
-      cert_pem: record.certPem,
-      key_pem: this.cipher.encrypt(record.keyPem),
-      fingerprint256: record.fingerprint256,
-      expires_at: record.expiresAt.toISOString(),
-    };
-    await this.db
-      .insertInto('claude_egress_client_certs')
-      .values({ project_id: record.projectId, user_id: record.userId, ...values })
-      .onConflict((oc) =>
-        oc.columns(['project_id', 'user_id']).doUpdateSet({ ...values, updated_at: sql`now()` }),
-      )
-      .execute();
+    return this.claudeEgressIdentity.upsertClaudeEgressClientCert(record);
   }
 
   /** Drop one sandbox's client certificate, or every one of the project when no
    *  person is named (deprovision / revocation). */
   async deleteClaudeEgressClientCert(projectId: string, userId?: string): Promise<void> {
-    let query = this.db
-      .deleteFrom('claude_egress_client_certs')
-      .where('project_id', '=', projectId);
-    if (userId !== undefined) query = query.where('user_id', '=', userId);
-    await query.execute();
-  }
-
-  private claudeEgressClientCertRowToRecord(row: {
-    project_id: string;
-    user_id: string;
-    cert_pem: string;
-    key_pem: string;
-    fingerprint256: string;
-    expires_at: Date | string;
-  }): ClaudeEgressClientCertRecord {
-    return {
-      projectId: row.project_id,
-      userId: row.user_id,
-      certPem: row.cert_pem,
-      keyPem: this.decryptSecret(row.key_pem) ?? '',
-      fingerprint256: row.fingerprint256,
-      expiresAt: new Date(row.expires_at),
-    };
+    return this.claudeEgressIdentity.deleteClaudeEgressClientCert(projectId, userId);
   }
 
   async reconcileDevServerHostPorts(projectId?: string): Promise<void> {
@@ -5156,148 +5008,55 @@ export class EventStore implements EventSink {
     /** The person the device belongs to; absent → the column default (the administrator). */
     userId?: string;
   }): Promise<string> {
-    const row = await this.db
-      .insertInto('auth_tokens')
-      .values({
-        id: record.id,
-        token_hash: record.tokenHash,
-        ...(record.userId === undefined ? {} : { user_id: record.userId }),
-        label: record.label ?? null,
-        expires_at: record.expiresAt == null ? null : new Date(record.expiresAt).toISOString(),
-      })
-      .returning('user_id')
-      .executeTakeFirstOrThrow();
-    return row.user_id;
+    return this.authTokens.insertAuthToken(record);
   }
 
   /** Every token hash currently valid — loaded once to seed the gate's in-memory
    *  set (avoids a DB round-trip on the per-request hot path). */
   async listAuthTokenHashes(): Promise<string[]> {
-    const rows = await this.db.selectFrom('auth_tokens').select('token_hash').execute();
-    return rows.map((r) => r.token_hash);
+    return this.authTokens.listAuthTokenHashes();
   }
 
   /** Tokens as records (id + label + createdAt + lastSeenAt), newest first — the
    *  device-management view. Never exposes the token or its hash's usefulness. */
   async listAuthTokens(): Promise<AuthTokenRecord[]> {
-    const rows = await this.db
-      .selectFrom('auth_tokens')
-      .select(['id', 'user_id', 'token_hash', 'label', 'created_at', 'last_seen_at', 'expires_at'])
-      .orderBy('created_at', 'desc')
-      .execute();
-    return rows.map((r) => ({
-      id: r.id,
-      userId: r.user_id,
-      tokenHash: r.token_hash,
-      expiresAt: r.expires_at === null ? null : new Date(r.expires_at).getTime(),
-      label: r.label,
-      createdAt: new Date(r.created_at).getTime(),
-      lastSeenAt: r.last_seen_at === null ? null : new Date(r.last_seen_at).getTime(),
-    }));
+    return this.authTokens.listAuthTokens();
   }
 
   /** Rename a paired device. Returns false when the id matches no row — a device
    *  revoked from another phone while this one had the rename field open. */
   async renameAuthToken(id: string, label: string): Promise<boolean> {
-    const res = await this.db
-      .updateTable('auth_tokens')
-      .set({ label })
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return (res?.numUpdatedRows ?? 0n) > 0n;
+    return this.authTokens.renameAuthToken(id, label);
   }
 
   /** Stamp a device's last authenticated request. Called off the request's
    *  critical path and throttled by the registry, never per request. */
   async touchAuthToken(id: string, expiresAt?: number): Promise<void> {
-    await this.db
-      .updateTable('auth_tokens')
-      .set({
-        last_seen_at: new Date().toISOString(),
-        ...(expiresAt === undefined ? {} : { expires_at: new Date(expiresAt).toISOString() }),
-      })
-      .where('id', '=', id)
-      .execute();
+    return this.authTokens.touchAuthToken(id, expiresAt);
   }
 
   /** Revoke a single device token by its public id. Returns true if a row went. */
   async deleteAuthToken(id: string): Promise<boolean> {
-    const deleted = await this.db.transaction().execute(async (trx) => {
-      const policy = await trx
-        .selectFrom('backup_policy')
-        .select('journal_enabled')
-        .where('id', '=', 1)
-        .forShare()
-        .executeTakeFirst();
-      await sql`lock table auth_tokens in row exclusive mode`.execute(trx);
-      const record = await trx
-        .selectFrom('auth_tokens')
-        .select('id')
-        .where('id', '=', id)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!record) return false;
-      if (policy?.journal_enabled)
-        await trx
-          .insertInto('backup_revocation_outbox')
-          .values({ id: randomUUID(), device_id: id })
-          .execute();
-      const res = await trx.deleteFrom('auth_tokens').where('id', '=', id).executeTakeFirst();
-      return (res?.numDeletedRows ?? 0n) > 0n;
-    });
-    if (deleted) await this.notifyBackupRevocations();
-    return deleted;
+    return this.authTokens.deleteAuthToken(id);
   }
 
   /** Revoke every device token (e.g. on GitHub disconnect / master-password
    *  change) — forces all devices to re-authenticate. */
   async deleteAllAuthTokens(): Promise<void> {
-    await this.db.transaction().execute(async (trx) => {
-      const policy = await trx
-        .selectFrom('backup_policy')
-        .select('journal_enabled')
-        .where('id', '=', 1)
-        .forShare()
-        .executeTakeFirst();
-      await sql`lock table auth_tokens in share row exclusive mode`.execute(trx);
-      if (policy?.journal_enabled) {
-        const devices = await trx.selectFrom('auth_tokens').select('id').forUpdate().execute();
-        for (const device of devices)
-          await trx
-            .insertInto('backup_revocation_outbox')
-            .values({ id: randomUUID(), device_id: device.id })
-            .execute();
-      }
-      await trx.deleteFrom('auth_tokens').execute();
-    });
-    await this.notifyBackupRevocations();
+    return this.authTokens.deleteAllAuthTokens();
   }
 
   /** Runtime backup policy is disabled explicitly by restore before any token cleanup. */
   async setBackupJournaling(enabled: boolean): Promise<void> {
-    await this.db
-      .updateTable('backup_policy')
-      .set({ journal_enabled: enabled })
-      .where('id', '=', 1)
-      .execute();
+    return this.authTokens.setBackupJournaling(enabled);
   }
 
   async listBackupRevocations(): Promise<{ id: string; deviceId: string; revokedAt: string }[]> {
-    const rows = await this.db
-      .selectFrom('backup_revocation_outbox')
-      .selectAll()
-      .orderBy('created_at')
-      .limit(1000)
-      .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      deviceId: row.device_id,
-      revokedAt: row.created_at.toISOString(),
-    }));
+    return this.authTokens.listBackupRevocations();
   }
 
   async acknowledgeBackupRevocation(id: string): Promise<void> {
-    await this.db.deleteFrom('backup_revocation_outbox').where('id', '=', id).execute();
+    return this.authTokens.acknowledgeBackupRevocation(id);
   }
 
   /** Stable server-owned bookkeeping; identities never come from sandbox-written markers. */
@@ -5398,77 +5157,11 @@ export class EventStore implements EventSink {
   }
 
   async upsertHttpMcpConnection(record: HttpMcpConnectionRecord): Promise<void> {
-    return this.egressDestinationMutation(async () => {
-      await this.db
-        .insertInto('http_mcp_connections')
-        .values({
-          id: record.id,
-          ...(record.ownerUserId === undefined ? {} : { owner_user_id: record.ownerUserId }),
-          name: record.name,
-          url: record.url,
-          authorization: this.encryptSecret(record.authorization),
-          auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
-          oauth_client_id: record.oauthClientId ?? null,
-          oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
-          oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
-          oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
-          oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
-          oauth_scopes: record.oauthScopes ?? null,
-          oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
-          oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
-          oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
-          enabled: record.enabled,
-        })
-        .onConflict((conflict) =>
-          conflict.column('id').doUpdateSet({
-            name: record.name,
-            url: record.url,
-            authorization: this.encryptSecret(record.authorization),
-            auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
-            oauth_client_id: record.oauthClientId ?? null,
-            oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
-            oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
-            oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
-            oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
-            oauth_scopes: record.oauthScopes ?? null,
-            oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
-            oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
-            oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
-            enabled: record.enabled,
-          }),
-        )
-        .execute();
-    });
+    return this.httpMcpConnections.upsertHttpMcpConnection(record);
   }
 
   async listHttpMcpConnections(ownerUserId?: string): Promise<HttpMcpConnectionRecord[]> {
-    let query = this.db
-      .selectFrom('http_mcp_connections')
-      .selectAll()
-      .orderBy('name', 'asc')
-      .orderBy('id', 'asc');
-    if (ownerUserId !== undefined) query = query.where('owner_user_id', '=', ownerUserId);
-    const rows = await query.execute();
-    return rows.map((row) => ({
-      id: row.id,
-      ownerUserId: row.owner_user_id,
-      name: row.name,
-      url: row.url,
-      authorization: this.decryptSecret(row.authorization),
-      authType: row.auth_type as NonNullable<HttpMcpConnectionRecord['authType']>,
-      oauthClientId: row.oauth_client_id,
-      oauthTokenAuthMethod: row.oauth_token_auth_method as NonNullable<
-        HttpMcpConnectionRecord['oauthTokenAuthMethod']
-      >,
-      oauthClientSecret: this.decryptSecret(row.oauth_client_secret),
-      oauthAuthorizationEndpoint: row.oauth_authorization_endpoint,
-      oauthTokenEndpoint: row.oauth_token_endpoint,
-      oauthScopes: row.oauth_scopes,
-      oauthAccessToken: this.decryptSecret(row.oauth_access_token),
-      oauthRefreshToken: this.decryptSecret(row.oauth_refresh_token),
-      oauthExpiresAt: row.oauth_expires_at,
-      enabled: row.enabled,
-    }));
+    return this.httpMcpConnections.listHttpMcpConnections(ownerUserId);
   }
 
   /** Persist freshly issued OAuth tokens without resurrecting a connection that
@@ -5477,85 +5170,22 @@ export class EventStore implements EventSink {
     id: string,
     tokens: { accessToken: string; refreshToken: string | null; expiresAt: Date | null },
   ): Promise<boolean> {
-    const result = await this.db
-      .updateTable('http_mcp_connections')
-      .set({
-        oauth_access_token: this.encryptSecret(tokens.accessToken),
-        oauth_refresh_token: this.encryptSecret(tokens.refreshToken),
-        oauth_expires_at: tokens.expiresAt?.toISOString() ?? null,
-      })
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return (result.numUpdatedRows ?? 0n) > 0n;
+    return this.httpMcpConnections.updateHttpMcpOAuthTokens(id, tokens);
   }
 
   async deleteHttpMcpConnection(id: string): Promise<boolean> {
-    return this.egressDestinationMutation(async () => {
-      const result = await this.db
-        .deleteFrom('http_mcp_connections')
-        .where('id', '=', id)
-        .executeTakeFirst();
-      return (result.numDeletedRows ?? 0n) > 0n;
-    });
+    return this.httpMcpConnections.deleteHttpMcpConnection(id);
   }
 
   async upsertProjectMcpBinding(binding: ProjectMcpBindingRecord): Promise<void> {
-    await this.db.transaction().execute(async (transaction) => {
-      await transaction
-        .selectFrom('projects')
-        .select('id')
-        .where('id', '=', binding.projectId)
-        .forUpdate()
-        .executeTakeFirstOrThrow();
-      if (binding.enabled) {
-        const existing = await transaction
-          .selectFrom('project_mcp_bindings')
-          .select(['connection_id', 'enabled'])
-          .where('project_id', '=', binding.projectId)
-          .execute();
-        const alreadyEnabled = existing.some(
-          (row) => row.connection_id === binding.connectionId && row.enabled,
-        );
-        if (!alreadyEnabled && existing.filter((row) => row.enabled).length >= 16) {
-          throw new Error('project MCP connection limit exceeded');
-        }
-      }
-      await transaction
-        .insertInto('project_mcp_bindings')
-        .values({
-          project_id: binding.projectId,
-          connection_id: binding.connectionId,
-          enabled: binding.enabled,
-        })
-        .onConflict((conflict) =>
-          conflict.columns(['project_id', 'connection_id']).doUpdateSet({
-            enabled: binding.enabled,
-          }),
-        )
-        .execute();
-    });
+    return this.httpMcpConnections.upsertProjectMcpBinding(binding);
   }
 
   async listProjectMcpBindings(projectId: string): Promise<ProjectMcpBindingRecord[]> {
-    const rows = await this.db
-      .selectFrom('project_mcp_bindings')
-      .selectAll()
-      .where('project_id', '=', projectId)
-      .orderBy('connection_id', 'asc')
-      .execute();
-    return rows.map((row) => ({
-      projectId: row.project_id,
-      connectionId: row.connection_id,
-      enabled: row.enabled,
-    }));
+    return this.httpMcpConnections.listProjectMcpBindings(projectId);
   }
 
   async deleteProjectMcpBinding(projectId: string, connectionId: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('project_mcp_bindings')
-      .where('project_id', '=', projectId)
-      .where('connection_id', '=', connectionId)
-      .executeTakeFirst();
-    return (result.numDeletedRows ?? 0n) > 0n;
+    return this.httpMcpConnections.deleteProjectMcpBinding(projectId, connectionId);
   }
 }
