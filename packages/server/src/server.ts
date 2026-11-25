@@ -176,7 +176,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deleteSession: createSessionDeletion({ app, deps }),
   };
   registerLiveSessionHints(app, ctx);
-  installOverviewEvents(ctx);
+  installOverviewEvents(app, ctx);
   const { pushRouter, pushFirePoints, wikiMaintenanceSessions, unsubscribePushFirePoints } =
     createServerPushRuntime(app, ctx, { describePushSessionById });
   const { schedulingTool } = createServerScheduling(app, ctx, { pushRouter, pushFirePoints });

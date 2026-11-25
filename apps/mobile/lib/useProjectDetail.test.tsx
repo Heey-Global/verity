@@ -12,6 +12,7 @@ jest.mock('./liveConnection', () => ({
     },
   }),
 }));
+jest.mock('./client', () => ({ getVerityBaseUrl: () => 'https://core.example' }));
 // The page is not on screen: no focus reload may hide the race under test.
 jest.mock('expo-router', () => ({ useFocusEffect: () => undefined }));
 
@@ -53,7 +54,6 @@ describe('useProjectDetail overview events', () => {
     // card back, even though this page is not focused and reads no more.
     let release: (detail: ProjectDetail) => void = () => undefined;
     const client = {
-      liveBaseUrl: () => 'https://core.example',
       getProject: jest.fn(() => new Promise<ProjectDetail>((resolve) => (release = resolve))),
       setProjectSetupStatus: jest.fn(),
     } as unknown as VerityClient;

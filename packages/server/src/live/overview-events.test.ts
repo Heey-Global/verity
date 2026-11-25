@@ -41,7 +41,7 @@ function setup() {
     conductor,
     lifecycle: { onClose: (stop: () => unknown) => closers.push(stop) },
   } as unknown as ServerContext;
-  installOverviewEvents(ctx);
+  installOverviewEvents({ log: { warn: () => undefined } }, ctx);
   const published: DomainRecord[] = [];
   const record = (topic: 'project:p1' | 'session:s1' | 'session:s0') =>
     domainEvents.subscribe(topic, undefined, (r) => published.push(r));
@@ -111,10 +111,16 @@ describe('installOverviewEvents', () => {
   });
 
   it('orders revisions of one session', async () => {
+    // Project lookups that resolve out of order must not reorder publication.
     const w = setup();
+    let lookups = 0;
+    (w.ctx.deps.eventStore as { getSession: (id: string) => Promise<unknown> }).getSession = (id) =>
+      new Promise((resolve) =>
+        setTimeout(() => resolve({ sessionId: id, projectId: 'p1' }), 30 - 10 * lookups++),
+      );
     w.record('session:s1');
     for (let i = 0; i < 3; i += 1) w.emit('s1', { t: 'choices', options: [{ label: 'x' }] });
-    await settle();
+    await vi.waitFor(() => expect(w.published).toHaveLength(3));
     const revs = w.published.map((r) => r.event.rev);
     expect(revs).toEqual([...revs].sort((a, b) => a - b));
     expect(new Set(revs).size).toBe(3);
@@ -174,5 +180,34 @@ describe('installOverviewEvents', () => {
     w.emit('s1', { t: 'choices', options: [{ label: 'x' }] });
     await settle();
     expect(w.published).toEqual([]);
+  });
+
+  it('hands the conductor its own decision method back when the server closes', async () => {
+    // A conductor outliving this server would otherwise keep publishing to a
+    // closed bus, and a second server would wrap the wrapper.
+    const w = setup();
+    w.record('project:p1');
+    for (const close of w.closers) close();
+    await w.ctx.conductor.decidePermission('s1', 'tool-1', { behavior: 'allow' });
+    await settle();
+    expect(w.conductor.calls).toEqual(['tool-1']);
+    expect(w.published).toEqual([]);
+  });
+
+  it('keeps publishing a session after one project lookup fails', async () => {
+    const w = setup();
+    w.record('session:s1');
+    let calls = 0;
+    (w.ctx.deps.eventStore as { getSession: (id: string) => Promise<unknown> }).getSession = (
+      id,
+    ) =>
+      calls++ === 0
+        ? Promise.resolve().then(() => {
+            throw new Error('store down');
+          })
+        : Promise.resolve({ sessionId: id, projectId: 'p1' });
+    w.emit('s1', { t: 'choices', options: [{ label: 'x' }] });
+    w.emit('s1', { t: 'choices', options: [{ label: 'y' }] });
+    await vi.waitFor(() => expect(w.published).toHaveLength(2));
   });
 });

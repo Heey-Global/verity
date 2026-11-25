@@ -20,15 +20,35 @@ type Conductor = ServerContext['conductor'];
  *   decision — from the card, a notification, a standing grant, or a detached
  *   secret approval — passes through `decidePermission`.
  */
-export function installOverviewEvents(ctx: ServerContext): void {
+export function installOverviewEvents(
+  app: { log: { warn(obj: object, msg: string): void } },
+  ctx: ServerContext,
+): void {
   const { deps, domainEvents, lifecycle } = ctx;
   const revisions = createRevisions();
 
-  const publish = async (sessionId: string, event: DomainEvent): Promise<void> => {
-    const session = await deps.eventStore.getSession(sessionId).catch(() => undefined);
-    const topics: DomainTopic[] = [domainTopic('session', sessionId)];
-    if (session?.projectId) topics.push(domainTopic('project', session.projectId));
-    for (const topic of topics) domainEvents.publish(topic, event);
+  // Publication waits for the session's project; chaining it per session keeps
+  // one session's events in revision order however the lookups resolve.
+  const queues = new Map<string, Promise<void>>();
+  const publish = (sessionId: string, event: DomainEvent): Promise<void> => {
+    const previous = queues.get(sessionId) ?? Promise.resolve();
+    const next = previous
+      .then(async () => {
+        const session = await deps.eventStore.getSession(sessionId).catch(() => undefined);
+        const topics: DomainTopic[] = [domainTopic('session', sessionId)];
+        if (session?.projectId) topics.push(domainTopic('project', session.projectId));
+        for (const topic of topics) domainEvents.publish(topic, event);
+      })
+      // A failed publication must not hold back the session's later events;
+      // views still catch up through their next read.
+      .catch((error: unknown) => {
+        app.log.warn({ err: error, sessionId }, 'verity: overview event not published');
+      })
+      .finally(() => {
+        if (queues.get(sessionId) === next) queues.delete(sessionId);
+      });
+    queues.set(sessionId, next);
+    return next;
   };
 
   // Sessions whose last question is still open. Only those announce an answer:
@@ -59,7 +79,7 @@ export function installOverviewEvents(ctx: ServerContext): void {
   });
   lifecycle.onClose(unsubscribe);
 
-  observeDecisions(ctx.conductor, (sessionId, toolUseId, allowed) => {
+  const restore = observeDecisions(ctx.conductor, (sessionId, toolUseId, allowed) => {
     void publish(sessionId, {
       t: 'permission.decided',
       sessionId,
@@ -68,6 +88,7 @@ export function installOverviewEvents(ctx: ServerContext): void {
       outcome: allowed ? 'allowed' : 'denied',
     });
   });
+  lifecycle.onClose(restore);
 }
 
 /** Per-session revisions that keep increasing across server restarts: a view
@@ -95,11 +116,25 @@ function createRevisions(now: () => number = Date.now) {
 function observeDecisions(
   conductor: Conductor,
   decided: (sessionId: string, toolUseId: string, allowed: boolean) => void,
-): void {
+): () => void {
+  // The real conductor inherits the method; an own property is put back as it was.
+  const own = Object.getOwnPropertyDescriptor(conductor, 'decidePermission');
   const decide = conductor.decidePermission.bind(conductor);
-  conductor.decidePermission = async (sessionId, toolUseId, decision, options) => {
+  const observed: Conductor['decidePermission'] = async (
+    sessionId,
+    toolUseId,
+    decision,
+    options,
+  ) => {
     const accepted = await decide(sessionId, toolUseId, decision, options);
     if (accepted) decided(sessionId, toolUseId, decision.behavior === 'allow');
     return accepted;
+  };
+  conductor.decidePermission = observed;
+  // Undone on close, so a conductor that outlives this server reports nothing.
+  return () => {
+    if (conductor.decidePermission !== observed) return;
+    if (own === undefined) delete (conductor as Partial<Conductor>).decidePermission;
+    else Object.defineProperty(conductor, 'decidePermission', own);
   };
 }

@@ -1,3 +1,4 @@
+import { getVerityBaseUrl } from './client';
 import { subscribeLiveRefresh } from './liveConnection';
 import { useOverviewTopics } from './overviewTopics';
 // One project's live record for the project screen and each of its settings
@@ -212,7 +213,8 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   const detailRef = useRef(detail);
   detailRef.current = detail;
   useOverviewTopics(
-    typeof client.liveBaseUrl === 'function' ? client.liveBaseUrl() : null,
+    // The same source as Home, so both views share one live connection.
+    getVerityBaseUrl(),
     [projectId],
     (event) => {
       if (event.t === 'permission.decided' || event.t === 'choices.answered') {
@@ -230,11 +232,13 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
           : applyOverviewEvent(current.sessions, event);
       if (effect.kind === 'none') return;
       if (effect.kind === 'local') {
+        // Applied in place: an answered card needs no project read.
         setDetail((latest) => {
           if (latest === undefined) return latest;
           const applied = applyOverviewEvent(latest.sessions, event);
           return applied.kind === 'local' ? { ...latest, sessions: applied.sessions } : latest;
         });
+        return;
       }
       if (focusedRef.current) void load(true);
     },
