@@ -392,11 +392,12 @@ export class LiveConnection implements LiveSessionTransport {
     switch (frame.k) {
       case 'ready':
         this.resourceWatching = frame.resources === true;
-        // Known before `connected` is announced, so state listeners see it.
-        this.topics.supported = frame.topics === true;
         this.ready = true;
         this.attempt = 0;
         this.unauthorizedCloses = 0;
+        // Before `connected` is announced, so state listeners see the support
+        // and a topic they subscribe is not requested twice.
+        this.topics.ready(frame.topics === true);
         this.setState('connected');
         this.sendFrame({ k: 'state', foreground: this.foreground });
         if (this.overviewListeners.size > 0) this.sendFrame({ k: 'sub', ch: 'overview' });
@@ -404,7 +405,6 @@ export class LiveConnection implements LiveSessionTransport {
           for (const entry of this.resources.values())
             this.sendFrame({ k: 'watch', resource: entry.resource });
         for (const sessionId of this.sessions.keys()) this.sendSubscription(sessionId);
-        this.topics.ready(frame.topics === true);
         return;
       case 'domain':
         this.topics.domain(frame.topic, frame.cursor, frame.event);

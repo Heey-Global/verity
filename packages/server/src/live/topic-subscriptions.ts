@@ -7,6 +7,8 @@ import {
 } from '@verity/events';
 import type { DomainEventBus, DomainRecord } from './domain-events.js';
 
+const DRAIN_CHECK_MS = 250;
+
 interface Subscription {
   cancelled: boolean;
   /** Records were dropped while the socket was behind; the client has been
@@ -29,6 +31,7 @@ export interface TopicSubscriptionsOptions {
 /** The domain-event topics one live connection holds (ADR 0033). */
 export class TopicSubscriptions {
   private readonly subscriptions = new Map<DomainTopic, Subscription>();
+  private drainTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly opts: TopicSubscriptionsOptions) {}
 
@@ -85,6 +88,7 @@ export class TopicSubscriptions {
       if (!sub.behind) {
         sub.behind = true;
         this.opts.send({ k: 'resync', topic: record.topic, cursor: record.cursor });
+        this.watchDrain();
       }
       return;
     }
@@ -102,6 +106,28 @@ export class TopicSubscriptions {
     });
   }
 
+  /** Once the socket keeps up again, ask every topic that dropped records for
+   * one more snapshot: records dropped after the first resync may be newer
+   * than what the client read then, and the topic may stay quiet afterwards. */
+  private watchDrain(): void {
+    if (this.drainTimer !== undefined) return;
+    this.drainTimer = setInterval(() => {
+      if (this.opts.overBudget()) return;
+      this.stopDrainWatch();
+      for (const [topic, sub] of this.subscriptions) {
+        if (!sub.behind || sub.cancelled) continue;
+        sub.behind = false;
+        this.opts.send({ k: 'resync', topic, cursor: this.opts.bus.head });
+      }
+    }, DRAIN_CHECK_MS);
+    this.drainTimer.unref?.();
+  }
+
+  private stopDrainWatch(): void {
+    clearInterval(this.drainTimer);
+    this.drainTimer = undefined;
+  }
+
   unsubscribe(topics: readonly DomainTopic[]): void {
     for (const topic of topics) {
       const sub = this.subscriptions.get(topic);
@@ -116,22 +142,25 @@ export class TopicSubscriptions {
    * while a socket stays open; a read granted at subscribe time is not
    * granted forever. */
   async recheck(): Promise<void> {
-    for (const [topic, sub] of [...this.subscriptions]) {
-      let allowed: boolean;
-      try {
-        allowed = await this.opts.canRead(topic);
-      } catch (error) {
-        // Fail closed: this runs when access may just have been revoked. The
-        // client retries an `error` ending, which authorizes again.
-        this.opts.logger?.warn({ err: error, topic }, 'verity: live topic recheck failed');
-        this.end(topic, sub, 'error');
-        continue;
-      }
-      if (!allowed && this.subscriptions.get(topic) === sub) this.end(topic, sub, 'forbidden');
-    }
+    await Promise.all(
+      [...this.subscriptions].map(async ([topic, sub]) => {
+        let allowed: boolean;
+        try {
+          allowed = await this.opts.canRead(topic);
+        } catch (error) {
+          // Fail closed: this runs when access may just have been revoked. The
+          // client retries an `error` ending, which authorizes again.
+          this.opts.logger?.warn({ err: error, topic }, 'verity: live topic recheck failed');
+          this.end(topic, sub, 'error');
+          return;
+        }
+        if (!allowed) this.end(topic, sub, 'forbidden');
+      }),
+    );
   }
 
   dispose(): void {
+    this.stopDrainWatch();
     this.unsubscribe([...this.subscriptions.keys()]);
   }
 

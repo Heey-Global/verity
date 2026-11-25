@@ -231,6 +231,27 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  it('asks again once a socket drains, even when the topic stays quiet', async () => {
+    // A one-shot event (a new permission request) dropped after the first
+    // resync must not wait for some later event on the topic.
+    const w = world();
+    const socket = w.connect('alice');
+    await socket.client({ k: 'topics.sub', topics: [{ topic: 'project:p1' }] });
+    socket.frames.length = 0;
+    socket.bufferedAmount = Number.MAX_SAFE_INTEGER;
+    w.bus!.publish('project:p1', lifecycle('p1', 1));
+    w.bus!.publish('project:p1', lifecycle('p1', 2));
+    expect(socket.of('resync')).toHaveLength(1);
+    socket.bufferedAmount = 0;
+    await vi.waitFor(() => expect(socket.of('resync')).toHaveLength(2));
+    expect(socket.of('resync')[1]).toEqual({
+      k: 'resync',
+      topic: 'project:p1',
+      cursor: w.bus!.head,
+    });
+    w.hub.close();
+  });
+
   it('asks a socket that fell behind to resync instead of queueing frames', async () => {
     const w = world();
     const socket = w.connect('alice');

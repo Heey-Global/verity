@@ -446,7 +446,6 @@ class LiveConnection {
           return;
         }
       }
-      await this.topics?.recheck();
       for (const sub of [...this.subscriptions.values()]) {
         if (scope.projectId !== undefined && sub.projectId !== scope.projectId) continue;
         if (scope.sessionId !== undefined && sub.sessionId !== scope.sessionId) continue;
@@ -467,6 +466,8 @@ class LiveConnection {
           reason: session === undefined ? 'not_found' : 'forbidden',
         });
       }
+      // After the session streams, whose revocation is the older contract.
+      await this.topics?.recheck();
     } catch (error) {
       if (
         scope.sessionId !== undefined &&
