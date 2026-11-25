@@ -35,6 +35,31 @@ const report = diagnosticReportSchema.parse({
   notYetMeasured: ['external_calls', 'database'],
 });
 
+it('summarises outbound calls by their busiest target', () => {
+  const withCalls = diagnosticReportSchema.parse({
+    ...report,
+    externalCalls: {
+      calls: 20_000,
+      byTarget: [
+        {
+          target: 'github',
+          calls: 18_420,
+          failed: 3,
+          duplicates: 552,
+          rateLimit: { remaining: 4_812, limit: 5_000, at: 'x' },
+        },
+        { target: 'doppler', calls: 1_580, failed: 0, duplicates: 48, rateLimit: null },
+      ],
+      topCauses: [],
+    },
+    notYetMeasured: ['database'],
+  });
+  expect(summarizeReport(withCalls).find((area) => area.title === 'External calls')).toEqual({
+    title: 'External calls',
+    summary: '20,000 calls · top: GitHub 18,420 · 3 % duplicates · last seen 4,812 of 5,000 left',
+  });
+});
+
 it('summarises each measured area and names the ones not measured yet', () => {
   expect(summarizeReport(report)).toEqual([
     { title: 'Availability', summary: '12,345 requests · 0.4 % errors · p95 180 ms' },

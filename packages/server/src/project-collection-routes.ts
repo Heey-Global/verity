@@ -1,3 +1,4 @@
+import { conditionalJsonRoute } from './conditional-json.js';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -163,7 +164,7 @@ export function registerProjectCollectionRoutes(
   app: FastifyInstance,
   deps: ProjectCollectionRouteDeps,
 ): void {
-  app.get('/projects', async (request): Promise<unknown[]> =>
+  app.get('/projects', conditionalJsonRoute, async (request): Promise<unknown[]> =>
     deps.listOverview(request.localUserId, viewerId(request)),
   );
 

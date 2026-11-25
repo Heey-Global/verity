@@ -1,3 +1,4 @@
+import { conditionalJsonRoute } from './conditional-json.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { viewerId } from './view-state-routes.js';
@@ -108,7 +109,7 @@ export function registerProjectDetailRoutes(
   app: FastifyInstance,
   deps: ProjectDetailRouteDeps,
 ): void {
-  app.get('/projects/:id', async (request, reply): Promise<unknown> => {
+  app.get('/projects/:id', conditionalJsonRoute, async (request, reply): Promise<unknown> => {
     const { id } = projectParams.parse(request.params);
     const detail = await deps.getDetail(id, viewerId(request));
     if (detail === undefined) {

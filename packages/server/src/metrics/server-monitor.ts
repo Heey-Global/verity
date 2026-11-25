@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
 import { z } from 'zod';
 import { buildDiagnosticReport, type DiagnosticReport } from './diagnostic-report.js';
+import { ExternalCallObserver } from './external-calls.js';
 import { observeHttp } from './http-observer.js';
 import { observeLiveSocket } from './live-observer.js';
 import {
@@ -21,7 +22,7 @@ export interface ServerMonitor {
     headers: Record<string, string | string[] | undefined>,
   ): void;
   report(sessionIds: 'hashed' | 'raw'): DiagnosticReport;
-  /** Stops the event-loop sampler; the server is shutting down. */
+  /** Stops the event-loop sampler and outbound observation; the server is shutting down. */
   close(): void;
 }
 
@@ -34,6 +35,7 @@ export function createServerMonitor(options: {
   const startedAt = now();
   const metrics = new ServerMetrics(now);
   const sampler = new ProcessSampler();
+  const outbound = new ExternalCallObserver((call) => metrics.recordExternal(call));
   // Switching measurement off drops what was counted: the next report covers
   // only the time measurement was on, and memory returns to the baseline.
   const control = new MonitoringControl(
@@ -42,6 +44,7 @@ export function createServerMonitor(options: {
     (enabled) => {
       metrics.reset();
       sampler.setActive(enabled);
+      outbound.setActive(enabled);
     },
     // Each detail period reports only its own slow requests, whoever starts it.
     () => {
@@ -49,11 +52,15 @@ export function createServerMonitor(options: {
     },
   );
   sampler.setActive(control.measuring);
+  outbound.setActive(control.measuring);
   return {
     metrics,
     control,
     observeLiveSocket: (socket, headers) => observeLiveSocket(socket, headers, metrics, control),
-    close: () => sampler.setActive(false),
+    close: () => {
+      sampler.setActive(false);
+      outbound.setActive(false);
+    },
     report: (sessionIds) =>
       buildDiagnosticReport({
         metrics,

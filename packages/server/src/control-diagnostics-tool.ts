@@ -297,6 +297,7 @@ export function createControlDiagnosticsTool(deps: {
         'Job inventory, queue depth and GitOps comparison are unavailable. Runtime timestamps support correlation but do not establish causality.',
         'GitHub usage covers server-side REST requests since the last restart, at most the latest 60 minutes and 20 limit events; quota values are the last headers GitHub returned.',
         'Monitoring counters cover the time since measurement was last switched on or the server restarted; bytes are response bodies as sent, without HTTP headers.',
+        'Outbound calls cover fetch and node:http requests of the server process; child processes (git, gh, docker CLIs), agents in sandboxes and connections that fail before a request is sent are not counted.',
         'No root cause is inferred from state or status codes; corroborate with other evidence.',
       ],
     };

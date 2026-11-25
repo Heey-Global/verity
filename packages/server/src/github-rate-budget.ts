@@ -17,6 +17,8 @@
  * in that mode the per-owner lock protects less than the whole quota.
  */
 
+import { withExternalCause } from './metrics/external-calls.js';
+
 export const GITHUB_CALLER_CATEGORIES = [
   'session-status',
   'repository-status',
@@ -409,9 +411,11 @@ export function trackGitHubFetch<
         },
       });
     }
-    const response = await (
-      base as unknown as (u: string | URL, i?: unknown) => Promise<TrackableResponse>
-    )(url, init);
+    // Server monitoring attributes the call to this reader rather than to
+    // `background` or to whichever request happened to wake it.
+    const response = await withExternalCause(`github:${category}`, () =>
+      (base as unknown as (u: string | URL, i?: unknown) => Promise<TrackableResponse>)(url, init),
+    );
     let bodyText: string | undefined;
     if (budget.needsBody(response.status, response.headers)) {
       const clone = (response as { clone?: () => { text(): Promise<string> } }).clone;
