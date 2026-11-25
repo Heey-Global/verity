@@ -50,10 +50,10 @@ function build(
     bus: new InMemoryEventBus(),
     conductor,
     secretCipher: cipher,
-    dopplerCredentialReader: async () => {
-      const token = (await store.getVeritySettings())?.dopplerServiceToken;
-      return token ? Buffer.from(token, 'utf8') : undefined;
-    },
+    dopplerCredentialReader: (connectionId) =>
+      connectionId === undefined
+        ? Promise.resolve(undefined)
+        : store.dopplerConnections.tokenBytes(connectionId),
     ...(dopplerValidate ? { dopplerValidate } : {}),
   });
 }
@@ -138,6 +138,11 @@ describe('POST /doppler/validate route', () => {
         method: 'PATCH',
         url: '/settings',
         payload: { dopplerServiceToken: TOKEN_FIXTURE },
+      });
+      await new EventStore(ctx.db, cipher).dopplerConnections.add({
+        label: 'Second connection',
+        token: 'second-token-fixture',
+        workplace: { slug: null, name: null },
       });
       const res = await app.inject({ method: 'POST', url: '/doppler/validate' });
       const body = res.json<{ ok: boolean; projectCount?: number; error?: string }>();
@@ -496,6 +501,22 @@ describe('GET /doppler/projects route', () => {
 });
 
 describe('GET /doppler/configs route', () => {
+  it.each(['connectionId=', 'connectionId=a&connectionId=b'])(
+    'rejects a malformed selection (%s)',
+    async (query) => {
+      const app = buildWithList(createSealableSecretCipher(), {});
+      try {
+        const response = await app.inject({
+          method: 'GET',
+          url: `/doppler/configs?project=acme-app&${query}`,
+        });
+        expect(response.json()).toEqual({ error: 'invalid connection' });
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   it('returns {error:"project is required"} when the project query is missing', async () => {
     const cipher = createSealableSecretCipher();
     let called = false;

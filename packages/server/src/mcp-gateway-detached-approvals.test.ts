@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 import { secretAuditEventInputSchema } from '@verity/secret-contracts';
 import type { ExternalPermissionAnswer } from '@verity/session';
 import type { BrokeredToolApprovalInput } from './brokered-tool-approval-store.js';
@@ -69,6 +70,24 @@ const call = (
 function resultOf(body: unknown): { content: { text: string }[]; isError?: boolean } {
   return (body as { result: { content: { text: string }[]; isError?: boolean } }).result;
 }
+
+it('reports a missing Doppler binding before asking for approval', async () => {
+  const message =
+    'Doppler binding `billing/dev` is no longer connected to this project (connected: portal/prd). No secret value was exposed.';
+  const { gateway, invokeTool, requestApproval } = harness({
+    authorizationSnapshot: async () => {
+      throw new DopplerSecretResolutionError(message, 'Doppler binding');
+    },
+  });
+  const response = await gateway.handle({
+    projectId: 'p1',
+    token: 'session-token',
+    body: call(),
+  });
+  expect(resultOf(response.body).content[0]?.text).toBe(message);
+  expect(requestApproval).not.toHaveBeenCalled();
+  expect(invokeTool).not.toHaveBeenCalled();
+});
 
 it('checks standing consent against the same provider snapshot revalidated before execution', async () => {
   const hasStandingAuthorization = vi.fn(async () => true);

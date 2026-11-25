@@ -105,6 +105,7 @@ export function createMcpGatewayToolExecutor(options: {
     toolName,
     request,
     approvedByCard,
+    executionClaimId,
     authorizationSnapshot,
   }) => {
     if (toolName === 'verity_secret_output') {
@@ -129,7 +130,7 @@ export function createMcpGatewayToolExecutor(options: {
         turnId,
         {
           id: callId,
-          consumptionId: brokeredExecutionClaimId(invocationId),
+          consumptionId: executionClaimId ?? brokeredExecutionClaimId(invocationId),
           name: 'verity_secret_run',
           input: request,
           ...(authorizationSnapshot === undefined
@@ -142,7 +143,7 @@ export function createMcpGatewayToolExecutor(options: {
     if (toolName === 'verity_http_request') {
       return await options.brokeredHttpTool(projectId, sessionId, turnId, {
         id: callId,
-        consumptionId: brokeredExecutionClaimId(invocationId),
+        consumptionId: executionClaimId ?? brokeredExecutionClaimId(invocationId),
         name: 'verity_http_request',
         input: request,
         ...(authorizationSnapshot === undefined

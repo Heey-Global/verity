@@ -4,6 +4,7 @@ import {
   forgejoConnection,
   githubRepositoryAccessReady,
   type ForgeConnection,
+  type ProjectDopplerBinding,
   type VerityClient,
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
@@ -16,6 +17,8 @@ import { useCallback, useState } from 'react';
 export function useProjectConnections(client: VerityClient, projectId: string) {
   const [connectionRefresh, setConnectionRefresh] = useState(0);
   const [usage, setUsage] = useState({ google: 0, mcp: 0, matrix: 0 });
+  /** The project's Doppler bindings, default first (ADR 0031); null until read. */
+  const [dopplerBindings, setDopplerBindings] = useState<ProjectDopplerBinding[] | null>(null);
   const [forgeConnections, setForgeConnections] = useState<ForgeConnection[] | null>(null);
   const [available, setAvailable] = useState({
     github: false,
@@ -41,6 +44,8 @@ export function useProjectConnections(client: VerityClient, projectId: string) {
         Promise.resolve().then(() => client.listProjectMcpBindings(projectId)),
         Promise.resolve().then(() => client.listProjectDriveFolders(projectId)),
         Promise.resolve().then(() => client.listConnections()),
+        Promise.resolve().then(() => client.doppler.listConnections()),
+        Promise.resolve().then(() => client.doppler.listBindings(projectId)),
       ]).then((results) => {
         if (!active) return;
         const [
@@ -54,7 +59,10 @@ export function useProjectConnections(client: VerityClient, projectId: string) {
           bindings,
           folders,
           forge,
+          dopplerConnections,
+          dopplerBound,
         ] = results;
+        setDopplerBindings(dopplerBound.status === 'fulfilled' ? dopplerBound.value : null);
         const forgeList = forge.status === 'fulfilled' ? forge.value : null;
         setForgeConnections(forgeList?.connections ?? null);
         setDriveFolderNames(
@@ -78,9 +86,10 @@ export function useProjectConnections(client: VerityClient, projectId: string) {
           forgejo:
             forgeList?.forgejoProjectsAvailable === true &&
             forgejoConnection(forgeList) !== undefined,
+          // Members cannot list the instance's connections, but see what is bound.
           doppler:
-            settings.status === 'fulfilled' &&
-            Boolean(settings.value?.dopplerServiceTokenConfigured),
+            (dopplerConnections.status === 'fulfilled' && dopplerConnections.value.length > 0) ||
+            (dopplerBound.status === 'fulfilled' && dopplerBound.value.length > 0),
           drive: drive.status === 'fulfilled' && drive.value.connected,
           google: [gmail, calendar, contacts].some(
             (item) => item.status === 'fulfilled' && item.value.connected,
@@ -99,6 +108,7 @@ export function useProjectConnections(client: VerityClient, projectId: string) {
   return {
     available,
     usage,
+    dopplerBindings,
     driveFolderNames,
     forgeConnections,
     refresh: useCallback(() => setConnectionRefresh((value) => value + 1), []),

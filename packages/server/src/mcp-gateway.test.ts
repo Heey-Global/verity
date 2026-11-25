@@ -507,6 +507,7 @@ describe('MCP gateway — every call is recorded (ADR 0014 D3)', () => {
       turnId: 'turn-1',
       callId: expect.any(String),
       invocationId: expect.any(String),
+      executionClaimId: expect.stringMatching(/^doppler-v2:[0-9a-f]{64}$/u),
       approvedByCard: true,
       toolName: 'verity_secret_run',
       request: cli,

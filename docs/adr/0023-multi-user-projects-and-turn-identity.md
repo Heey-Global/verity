@@ -401,6 +401,8 @@ connection, resolution fails with a connect prompt. The global
 becomes the administrator's personal connection. Doppler token separation
 does not by itself guarantee person-level upstream audit attribution; that
 depends on the connection type. Verity records its own initiating identity.
+[ADR 0031](0031-multiple-doppler-connections.md) extends this per Doppler
+connection: a member's token belongs to one project and one connection.
 
 **MCP connections.** `http_mcp_connections` carries credentials
 (`authorization`, `oauth_client_secret`) and is bound to the project today.

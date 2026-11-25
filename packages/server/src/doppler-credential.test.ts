@@ -2,38 +2,63 @@ import { describe, expect, it } from 'vitest';
 import { createDopplerCredentials, createStoreDopplerCredentials } from './doppler-credential.js';
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 
-function credentials(options: { personal?: Record<string, string>; instance?: string }) {
+const SCOPE = { dopplerProject: 'portal', dopplerConfig: 'prd' };
+
+function credentials(options: {
+  personal?: Record<string, string>;
+  instance?: Record<string, string>;
+}) {
   return createDopplerCredentials({
-    personal: (userId, projectId) => {
-      const token = options.personal?.[`${userId}/${projectId}`];
+    personal: (userId, projectId, connectionId) => {
+      const token = options.personal?.[`${userId}/${projectId}/${connectionId}`];
       return Promise.resolve(token === undefined ? undefined : Buffer.from(token));
     },
-    instance: () =>
-      Promise.resolve(options.instance === undefined ? undefined : Buffer.from(options.instance)),
+    instance: (connectionId) => {
+      const token = options.instance?.[connectionId];
+      return Promise.resolve(token === undefined ? undefined : Buffer.from(token));
+    },
     isAdministrator: (userId) => Promise.resolve(userId === 'admin'),
     personless: (projectId) =>
       projectId === 'shared' ? Promise.reject(new Error('refused')) : Promise.resolve('admin'),
   });
 }
 
-describe('Doppler credential per person', () => {
-  it("uses a person's own token for that project only", async () => {
-    const forPerson = credentials({ personal: { 'lena/p1': 'lena-p1' }, instance: 'instance' });
-    expect((await forPerson('lena', 'p1')).toString()).toBe('lena-p1');
+describe('Doppler credential per person and connection', () => {
+  it("uses a person's own token for that project and connection only", async () => {
+    const forPerson = credentials({
+      personal: { 'lena/p1/platform': 'lena-p1' },
+      instance: { platform: 'instance', payments: 'instance-payments' },
+    });
+    expect((await forPerson('lena', 'p1', 'platform', SCOPE)).toString()).toBe('lena-p1');
     // Lena has no token for p2 and is not the administrator: refused, not the instance token.
-    await expect(forPerson('lena', 'p2')).rejects.toMatchObject({ phase: 'Doppler connection' });
+    await expect(forPerson('lena', 'p2', 'platform', SCOPE)).rejects.toMatchObject({
+      phase: 'Doppler connection',
+    });
+    // Nor does her Platform token answer for another connection of the same project.
+    await expect(forPerson('lena', 'p1', 'payments', SCOPE)).rejects.toMatchObject({
+      phase: 'Doppler connection',
+    });
   });
 
-  // The instance token was the administrator's; it is their fallback and nobody else's.
-  it('falls back to the instance token for the administrator and a turn without a person', async () => {
-    const forPerson = credentials({ personal: { 'admin/p1': 'admin-p1' }, instance: 'instance' });
-    expect((await forPerson('admin', 'p1')).toString()).toBe('admin-p1');
-    expect((await forPerson('admin', 'p2')).toString()).toBe('instance');
+  // A connection's instance token is the administrator's; it is their fallback and
+  // nobody else's, and only for that connection.
+  it('falls back to the connection instance token for the administrator and a turn without a person', async () => {
+    const forPerson = credentials({
+      personal: { 'admin/p1/platform': 'admin-p1' },
+      instance: { platform: 'instance', payments: 'instance-payments' },
+    });
+    expect((await forPerson('admin', 'p1', 'platform', SCOPE)).toString()).toBe('admin-p1');
+    expect((await forPerson('admin', 'p2', 'platform', SCOPE)).toString()).toBe('instance');
+    expect((await forPerson('admin', 'p1', 'payments', SCOPE)).toString()).toBe(
+      'instance-payments',
+    );
     // Work without a person is the original sandbox's person's, here the administrator.
-    expect((await forPerson(null, 'p1')).toString()).toBe('admin-p1');
-    expect((await forPerson(null, 'p2')).toString()).toBe('instance');
-    await expect(forPerson(null, 'shared')).rejects.toThrow('refused');
-    await expect(forPerson('mia', 'p2')).rejects.toBeInstanceOf(DopplerSecretResolutionError);
+    expect((await forPerson(null, 'p1', 'platform', SCOPE)).toString()).toBe('admin-p1');
+    expect((await forPerson(null, 'p2', 'platform', SCOPE)).toString()).toBe('instance');
+    await expect(forPerson(null, 'shared', 'platform', SCOPE)).rejects.toThrow('refused');
+    await expect(forPerson('mia', 'p2', 'platform', SCOPE)).rejects.toBeInstanceOf(
+      DopplerSecretResolutionError,
+    );
   });
 
   // Once members share a project nobody can tell whose work a personless turn or
@@ -42,7 +67,7 @@ describe('Doppler credential per person', () => {
     const store = (members: string[]) =>
       ({
         userDopplerConnections: { tokenBytes: async () => undefined },
-        getDopplerServiceTokenBytes: async () => Buffer.from('instance'),
+        dopplerConnections: { tokenBytes: async () => Buffer.from('instance') },
         isActiveAdministrator: async (userId: string) => userId === 'admin',
         projectSandboxes: {
           projectDefault: async (projectId: string) => ({
@@ -53,16 +78,18 @@ describe('Doppler credential per person', () => {
         },
         projectTeam: { listMembers: async () => members.map((userId) => ({ userId })) },
       }) as never;
-    expect((await createStoreDopplerCredentials(store(['admin']))(null, 'p1')).toString()).toBe(
-      'instance',
-    );
+    expect(
+      (
+        await createStoreDopplerCredentials(store(['admin']))(null, 'p1', 'platform', SCOPE)
+      ).toString(),
+    ).toBe('instance');
     await expect(
-      createStoreDopplerCredentials(store(['admin', 'lena']))(null, 'p1'),
+      createStoreDopplerCredentials(store(['admin', 'lena']))(null, 'p1', 'platform', SCOPE),
     ).rejects.toMatchObject({ phase: 'Doppler connection' });
   });
 
-  it('reports a missing instance token as an authentication failure', async () => {
-    await expect(credentials({})('admin', 'p1')).rejects.toMatchObject({
+  it('reports a connection without an instance token as an authentication failure', async () => {
+    await expect(credentials({})('admin', 'p1', 'platform', SCOPE)).rejects.toMatchObject({
       phase: 'Doppler authentication',
     });
   });

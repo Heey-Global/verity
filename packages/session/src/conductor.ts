@@ -3076,9 +3076,8 @@ export class Conductor {
     this.maybeAutoApprove(sessionId, request);
   }
 
-  /** ADR 0011 D2: a matching persisted grant (session, project or forever scope) answers
-   * the brokered-secret prompt without operator interaction. Fail-open to the card: any
-   * error just leaves the prompt pending for a manual decision. */
+  /** ADR 0011 D2: a matching persisted grant answers the brokered-secret prompt; any
+   * error leaves the prompt pending for a manual decision. */
   private maybeAutoApprove(
     sessionId: string,
     request: PermissionRequest,
@@ -3143,7 +3142,7 @@ export class Conductor {
             secretAlias,
             toolName: target.toolName,
             target: target.target,
-            ...(bindingId !== undefined ? { bindingId } : {}),
+            ...(bindingId !== undefined ? { bindingId } : { request: request.input }),
           }),
         ),
       );

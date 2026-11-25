@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createSecretCipher } from './crypto.js';
 import { migrateToLatest } from './db.js';
 import { EventStore } from './store.js';
+import { LEGACY_DOPPLER_CONNECTION_ID } from './doppler-connections-migration.js';
 import { createRawDb, truncateAll, type RawTestDb } from './testing.js';
 
 // Test-only 32-byte key, built at runtime so no secret-shaped literal lands in
@@ -190,6 +191,23 @@ describe('EventStore — secret encryption at rest (ADR 0002 D3)', () => {
     const rawRead = await store.getVeritySettingsRaw();
     expect(rawRead?.dopplerServiceToken?.startsWith('enc:v1:')).toBe(true);
     expect(rawRead?.dopplerServiceToken).not.toBe(dopplerSecret);
+  });
+
+  it('keeps legacy settings and the runtime token in sync on conflicting writes', async () => {
+    await store.updateVeritySettings({ dopplerServiceToken: 'original-token-fixture' });
+    await store.dopplerConnections.add({
+      label: 'Other account',
+      token: 'other-token-fixture',
+      workplace: { slug: null, name: null },
+    });
+
+    await expect(
+      store.updateVeritySettings({ dopplerServiceToken: 'replacement-token-fixture' }),
+    ).rejects.toThrow('Doppler connection picker');
+    expect((await store.getVeritySettings())?.dopplerServiceToken).toBe('original-token-fixture');
+    expect(
+      (await store.dopplerConnections.tokenBytes(LEGACY_DOPPLER_CONNECTION_ID))?.toString(),
+    ).toBe('original-token-fixture');
   });
 
   it('encrypts the transcription API key while keeping URL and model plaintext', async () => {

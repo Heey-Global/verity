@@ -233,10 +233,11 @@ describe('Doppler Secret Resolver', () => {
       fetch: vi.fn<HttpFetch>(() => Promise.resolve(response({ UPSTREAM_API_TOKEN: SECRET }))),
     });
     await resolver(claims);
-    expect(readCredential).toHaveBeenCalledWith(binding.credentialRef, {
-      projectId: 'project-1',
-      userId: 'lena',
-    });
+    expect(readCredential).toHaveBeenCalledWith(
+      binding.credentialRef,
+      { projectId: 'project-1', userId: 'lena' },
+      { dopplerProject: binding.dopplerProject, dopplerConfig: binding.dopplerConfig },
+    );
     readCredential.mockClear();
     const withoutPerson = { ...claims };
     delete withoutPerson.initiatorUserId;

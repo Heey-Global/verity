@@ -24,6 +24,7 @@ export type DopplerSecretResolutionPhase =
   | 'project configuration'
   | 'secret alias'
   | 'Doppler connection'
+  | 'Doppler binding'
   | 'Doppler authentication'
   | 'Doppler request start'
   | 'Doppler request timeout'
@@ -56,6 +57,7 @@ export interface DopplerSecretCatalog {
 export type SecretCredentialReader = (
   credentialRef: string,
   context: { projectId: string; userId: string | null },
+  scope: { dopplerProject: string; dopplerConfig: string },
 ) => Promise<Uint8Array | undefined>;
 
 export interface DopplerSecretResolverOptions {
@@ -495,10 +497,14 @@ export function createDopplerSecretResolver(options: DopplerSecretResolverOption
         // A grant without a recorded person predates per-person connections; it
         // must not resolve through anyone's, least of all the instance token.
         if (claims.initiatorUserId === undefined) throw rejected('Doppler connection');
-        const credential = await options.readCredential(binding.credentialRef, {
-          projectId: claims.projectId,
-          userId: claims.initiatorUserId,
-        });
+        const credential = await options.readCredential(
+          binding.credentialRef,
+          {
+            projectId: claims.projectId,
+            userId: claims.initiatorUserId,
+          },
+          { dopplerProject: binding.dopplerProject, dopplerConfig: binding.dopplerConfig },
+        );
         if (credential === undefined) throw rejected('Doppler authentication', { binding });
         const keys = [...new Set(group.aliases.map(({ record }) => record.providerKey))];
         // The reader contract returns an owned buffer. downloadSecrets consumes and zeroizes it
@@ -563,10 +569,14 @@ export function createDopplerSecretNameLister(
   return async (bindingInput, userId) => {
     const binding = providerBindingRecordSchema.parse(bindingInput);
     if (binding.provider !== 'doppler' || binding.state !== 'active') throw rejected();
-    const credential = await options.readCredential(binding.credentialRef, {
-      projectId: binding.projectId,
-      userId,
-    });
+    const credential = await options.readCredential(
+      binding.credentialRef,
+      {
+        projectId: binding.projectId,
+        userId,
+      },
+      { dopplerProject: binding.dopplerProject, dopplerConfig: binding.dopplerConfig },
+    );
     if (credential === undefined) throw rejected();
     try {
       const token = utf8.decode(credential).trim();

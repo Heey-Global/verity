@@ -53,10 +53,6 @@ import {
   type AssistantToolDeps,
 } from './assistant-tool.js';
 import { type GitBranchService } from './branches.js';
-import {
-  brokeredDopplerBindingId,
-  parseBrokeredDopplerBinding,
-} from './brokered-doppler-binding.js';
 import { createControlDiagnosticsTool, diagnosticSources } from './control-diagnostics-tool.js';
 import { documentViewForSession } from './document-workspace.js';
 import './fastify-augmentation.js';
@@ -2099,9 +2095,7 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
             ...((toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
             authorizationSnapshot !== undefined
               ? {
-                  brokeredGrantBindingId: brokeredDopplerBindingId(
-                    parseBrokeredDopplerBinding(authorizationSnapshot),
-                  ),
+                  brokeredGrantBindingId: authorizationSnapshot,
                 }
               : {}),
             // Secret tools reuse consent for their bound request shape, and only the

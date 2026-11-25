@@ -12,6 +12,7 @@ import { resolveTurnSandbox } from './turn-sandbox.js';
 import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
 import { personForCredential } from './personless-credential.js';
 import type { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
+import { brokeredSecretReferences } from './brokered-http-tool.js';
 
 type RunnerWiring = Parameters<typeof buildRunnerConductorWiring>[0];
 type EmbeddedRunnerConductorDeps = Pick<
@@ -34,7 +35,11 @@ type EmbeddedRunnerConductorDeps = Pick<
   eventStore: EventStore;
   transcriptStore: RunnerWiring['transcript'];
   getLog: () => Pick<FastifyBaseLogger, 'warn'>;
-  brokeredGrantBindingId: (projectId: string) => Promise<string | undefined>;
+  /** The grant binding id of a call reading these secret references (ADR 0031). */
+  brokeredGrantBindingIdFor: (
+    projectId: string,
+    references: readonly string[],
+  ) => Promise<string | undefined>;
   brokeredHttpGrants: Pick<ReturnType<typeof createBrokeredHttpGrantStore>, 'check'>;
 };
 
@@ -53,7 +58,7 @@ export function createEmbeddedRunnerConductorWiring(
     turnCredentials,
     mcpProxyTokens,
     getLog,
-    brokeredGrantBindingId,
+    brokeredGrantBindingIdFor,
     brokeredHttpGrants,
   } = deps;
   return buildRunnerConductorWiring({
@@ -137,7 +142,15 @@ export function createEmbeddedRunnerConductorWiring(
           ? CONTROL_PLANE_RUNNER_PROJECT_ID
           : undefined);
       if (projectId == null) return false;
-      const bindingId = await brokeredGrantBindingId(projectId);
+      let references = target.secretAliases;
+      if (toolName === 'verity_http_request') {
+        try {
+          references = brokeredSecretReferences(toolName, request.input);
+        } catch {
+          return false;
+        }
+      }
+      const bindingId = await brokeredGrantBindingIdFor(projectId, references);
       if (bindingId === undefined) return false;
       // Only the running turn's person can have consented in advance (ADR 0023 §3).
       const running = (await eventStore.listRunningTurns()).find(

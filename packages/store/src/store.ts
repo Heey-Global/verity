@@ -87,6 +87,8 @@ import { UserProfileStore } from './user-profile.js';
 import { UserGitIdentityStore } from './user-git-identity.js';
 import { UserGithubAuthorizationStore } from './user-github-authorization.js';
 import { UserDopplerConnectionStore } from './user-doppler-connection.js';
+import { DopplerConnectionStore } from './doppler-connections.js';
+import { ProjectDopplerBindingStore } from './project-doppler-bindings.js';
 import { ProjectSandboxStore } from './project-sandboxes.js';
 import { SessionMoveStore } from './session-moves.js';
 import { UserProviderConnectionStore } from './user-provider-connections.js';
@@ -1188,17 +1190,6 @@ export class EventStore implements EventSink {
     return value === null ? null : this.cipher.decrypt(value);
   }
 
-  /** Read the central Doppler identity as owned, erasable bytes. */
-  async getDopplerServiceTokenBytes(): Promise<Buffer | undefined> {
-    const row = await this.db
-      .selectFrom('verity_settings')
-      .select('doppler_service_token')
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    const stored = row?.doppler_service_token;
-    return stored === null || stored === undefined ? undefined : this.cipher.decryptBytes(stored);
-  }
-
   /**
    * Register a session. The `worktree` UNIQUE constraint enforces the strict
    * 1:1 session ↔ worktree invariant (§5a) — a duplicate session id or worktree
@@ -1424,6 +1415,14 @@ export class EventStore implements EventSink {
 
   get userDopplerConnections(): UserDopplerConnectionStore {
     return new UserDopplerConnectionStore(this.db, this.cipher);
+  }
+
+  get dopplerConnections(): DopplerConnectionStore {
+    return new DopplerConnectionStore(this.db, this.cipher);
+  }
+
+  get projectDopplerBindings(): ProjectDopplerBindingStore {
+    return new ProjectDopplerBindingStore(this.db);
   }
 
   get userGithubAuthorizations(): UserGithubAuthorizationStore {
@@ -5162,7 +5161,16 @@ export class EventStore implements EventSink {
 
   private async updateVeritySettingsWithoutInventoryBarrier(
     patch: VeritySettingsPatch,
+    tx?: Kysely<Database>,
   ): Promise<VeritySettingsRecord> {
+    if (tx === undefined && patch.dopplerServiceToken !== undefined)
+      return this.db.transaction().execute(async (transaction) => {
+        await this.dopplerConnections.setLegacyToken(
+          normalizeSetting(patch.dopplerServiceToken),
+          transaction,
+        );
+        return this.updateVeritySettingsWithoutInventoryBarrier(patch, transaction);
+      });
     const values = {
       id: 'global',
       advanced_mode_enabled: patch.advancedModeEnabled ?? false,
@@ -5210,7 +5218,7 @@ export class EventStore implements EventSink {
       premium_remote_access_enabled: patch.premiumRemoteAccessEnabled ?? true,
       project_egress_enabled: patch.projectEgressEnabled ?? false,
     };
-    const row = await this.db
+    const row = await (tx ?? this.db)
       .insertInto('verity_settings')
       .values(values)
       .onConflict((oc) =>
@@ -5255,11 +5263,7 @@ export class EventStore implements EventSink {
             ? { github_app_installation_id: normalizeSetting(patch.githubAppInstallationId) }
             : {}),
           ...(patch.githubAppPrivateKey !== undefined
-            ? {
-                github_app_private_key: this.encryptSecret(
-                  normalizeSetting(patch.githubAppPrivateKey),
-                ),
-              }
+            ? { github_app_private_key: values.github_app_private_key }
             : {}),
           ...(patch.githubAppClientId !== undefined
             ? { github_app_client_id: normalizeSetting(patch.githubAppClientId) }
@@ -5272,19 +5276,13 @@ export class EventStore implements EventSink {
               }
             : {}),
           ...(patch.dopplerServiceToken !== undefined
-            ? {
-                doppler_service_token: this.encryptSecret(
-                  normalizeSetting(patch.dopplerServiceToken),
-                ),
-              }
+            ? { doppler_service_token: values.doppler_service_token }
             : {}),
           ...(patch.transcribeBaseUrl !== undefined
             ? { transcribe_base_url: normalizeSetting(patch.transcribeBaseUrl) }
             : {}),
           ...(patch.transcribeApiKey !== undefined
-            ? {
-                transcribe_api_key: this.encryptSecret(normalizeSetting(patch.transcribeApiKey)),
-              }
+            ? { transcribe_api_key: values.transcribe_api_key }
             : {}),
           ...(patch.transcribeModel !== undefined
             ? { transcribe_model: normalizeSetting(patch.transcribeModel) }

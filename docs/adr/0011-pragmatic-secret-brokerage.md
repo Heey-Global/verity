@@ -73,6 +73,8 @@ approval. The auto-approved request stays visible in the transcript through its 
 
 The alias names available to the project (Doppler config keys) are injected into the tool
 description / session context so the agent never guesses. Values stay server-side as before.
+With several Doppler bindings, names outside the default binding are listed as
+`project/config/NAME` ([ADR 0031](0031-multiple-doppler-connections.md)).
 
 ### D4 — `trusted` mode for everything that is not HTTP (interim, as agreed)
 

@@ -5,17 +5,61 @@ import { legacyAdministratorId } from './view-state-routes.js';
 import { secretApprovalNotice, type Conductor } from '@verity/session';
 import type { EventStore } from '@verity/store';
 
-import type { BrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
+import type {
+  BrokeredToolApprovalRecord,
+  BrokeredToolApprovalStore,
+} from './brokered-tool-approval-store.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
+import { brokeredSecretReferences, referencedSnapshot } from './brokered-http-tool.js';
 import {
-  brokeredDopplerBindingId,
-  parseBrokeredDopplerBinding,
+  brokeredSecretSource,
+  tryParseBrokeredDopplerBinding,
 } from './brokered-doppler-binding.js';
+
+function currentSnapshotMatcher(gateway: Pick<McpGatewayDeps, 'authorizationSnapshot'>) {
+  return async (record: BrokeredToolApprovalRecord): Promise<boolean> => {
+    if (!tryParseBrokeredDopplerBinding(record.authorizationSnapshot)) return false;
+    try {
+      const current = await gateway.authorizationSnapshot?.({
+        projectId: record.projectId,
+        sessionId: record.sessionId,
+        turnId: '',
+        toolName: record.toolName,
+        request: JSON.parse(record.canonicalInput) as Record<string, unknown>,
+      });
+      return current === record.authorizationSnapshot;
+    } catch {
+      return false;
+    }
+  };
+}
+
+function historySnapshotMatcher(store: Pick<EventStore, 'projectDopplerBindings'>) {
+  const byProject = new Map<string, ReturnType<typeof store.projectDopplerBindings.list>>();
+  return async (record: BrokeredToolApprovalRecord): Promise<boolean> => {
+    if (!tryParseBrokeredDopplerBinding(record.authorizationSnapshot)) return false;
+    try {
+      const bindings =
+        byProject.get(record.projectId) ?? store.projectDopplerBindings.list(record.projectId);
+      byProject.set(record.projectId, bindings);
+      const references = brokeredSecretReferences(
+        record.toolName,
+        JSON.parse(record.canonicalInput),
+      );
+      return (
+        JSON.stringify(referencedSnapshot(await bindings, references)) ===
+        record.authorizationSnapshot
+      );
+    } catch {
+      return false;
+    }
+  };
+}
 
 /** Restoring a card never restores a caller or executes a tool. Approval is a receipt
  * for an exact future invocation, checked again by the gateway at consumption. */
 export function configureDetachedSecretApprovals(input: {
-  conductor: Conductor;
+  conductor: Pick<Conductor, 'configureDetachedPermissions' | 'resumeDetachedPermission'>;
   store: Pick<EventStore, 'getSession'>;
   approvals: BrokeredToolApprovalStore;
   gateway: Pick<McpGatewayDeps, 'authorizationSnapshot'>;
@@ -23,34 +67,41 @@ export function configureDetachedSecretApprovals(input: {
   canExecute: (userId: string, projectId: string) => Promise<boolean>;
 }): void {
   const { conductor, store, approvals, gateway } = input;
-  const requestFor = (
-    record: Awaited<ReturnType<BrokeredToolApprovalStore['listPending']>>[number],
-  ) => {
-    const binding = parseBrokeredDopplerBinding(record.authorizationSnapshot);
-    return {
-      requestId: record.id,
-      toolUseId: record.id,
-      toolName: record.toolName,
-      createdAt: Date.parse(record.createdAt),
-      input: JSON.parse(record.canonicalInput) as Record<string, unknown>,
-      secretSource: { project: binding.dopplerProject, config: binding.dopplerConfig },
-      brokeredGrantBindingId: brokeredDopplerBindingId(binding),
-    };
+  const requestFor = (record: BrokeredToolApprovalRecord, historic = false) => {
+    const binding = tryParseBrokeredDopplerBinding(record.authorizationSnapshot);
+    if (!binding && !historic) return undefined;
+    try {
+      return {
+        requestId: record.id,
+        toolUseId: record.id,
+        toolName: record.toolName,
+        createdAt: Date.parse(record.createdAt),
+        input: JSON.parse(record.canonicalInput) as Record<string, unknown>,
+        ...(binding && {
+          secretSource: brokeredSecretSource(binding),
+          brokeredGrantBindingId: record.authorizationSnapshot,
+        }),
+      };
+    } catch {
+      return undefined;
+    }
   };
+  const matchesCurrentSnapshot = currentSnapshotMatcher(gateway);
   const actorFor = (actorId: string) =>
     input.localActor && actorId === '__local__' ? legacyAdministratorId : actorId;
   conductor.configureDetachedPermissions({
     listUnrecordedDecisions: async (sessionId) =>
-      (await approvals.listUnrecordedDecisions(sessionId)).map((record) =>
-        secretApprovalNotice(
-          requestFor(record),
+      (await approvals.listUnrecordedDecisions(sessionId)).flatMap((record) => {
+        const request = requestFor(record, true);
+        if (!request) return [];
+        const outcome =
           record.status === 'denied'
             ? record.scope === null
               ? 'denied'
               : 'save_failed'
-            : (record.scope ?? 'denied'),
-        ),
-      ),
+            : (record.scope ?? 'denied');
+        return [secretApprovalNotice(request, outcome)];
+      }),
     markScopedSaved: async (sessionId, id) => {
       await approvals.markScopedSaved(id, sessionId);
     },
@@ -64,14 +115,16 @@ export function configureDetachedSecretApprovals(input: {
     },
     resumeApproved: async (sessionId) => {
       for (const record of await approvals.listApproved(sessionId)) {
+        const request = requestFor(record);
         if (
+          !request ||
           !record.decidedBy ||
           !(await input.canExecute(actorFor(record.decidedBy), record.projectId))
         )
           continue;
         await conductor.resumeDetachedPermission(
           sessionId,
-          requestFor(record),
+          request,
           actorFor(record.decidedBy),
           async () => {
             const active = (await approvals.listApproved(sessionId)).some(
@@ -85,21 +138,20 @@ export function configureDetachedSecretApprovals(input: {
               !(await input.canExecute(actorFor(record.decidedBy!), record.projectId))
             )
               return false;
-            const snapshot = await gateway.authorizationSnapshot?.({
-              projectId: record.projectId,
-              sessionId,
-              turnId: '',
-              toolName: record.toolName,
-              request: JSON.parse(record.canonicalInput) as Record<string, unknown>,
-            });
-            return snapshot === record.authorizationSnapshot;
+            return matchesCurrentSnapshot(record);
           },
         );
       }
     },
     list: async (sessionId) => {
       if (!(await store.getSession(sessionId))) return [];
-      return (await approvals.listPending(sessionId)).map(requestFor);
+      const pending = await approvals.listPending(sessionId);
+      const requests = [];
+      for (const record of pending) {
+        const request = requestFor(record);
+        if (request && (await matchesCurrentSnapshot(record))) requests.push(request);
+      }
+      return requests;
     },
     decide: async (sessionId, id, decision, actorId, scope) => {
       const record = await approvals.get(id, sessionId);
@@ -111,16 +163,9 @@ export function configureDetachedSecretApprovals(input: {
         !(await input.canExecute(actorId, record.projectId))
       )
         return false;
-      if (decision.behavior === 'allow') {
-        const current = await gateway.authorizationSnapshot?.({
-          projectId: record.projectId,
-          sessionId,
-          turnId: '',
-          toolName: record.toolName,
-          request: JSON.parse(record.canonicalInput) as Record<string, unknown>,
-        });
-        if (current !== record.authorizationSnapshot) return false;
-      }
+      const request = requestFor(record);
+      if (!request || (decision.behavior === 'allow' && !(await matchesCurrentSnapshot(record))))
+        return false;
       return (
         (await approvals.decide(id, sessionId, decision.behavior === 'allow', actorId, scope)) !==
         undefined
@@ -156,6 +201,8 @@ export function installDetachedSecretApprovals(
       store: deps.eventStore,
       permitted: canExecuteAs,
       refresh: (id) => conductor.refreshDetachedPermissions(id),
+      isCurrent: currentSnapshotMatcher(gateway),
+      historyMatcher: () => historySnapshotMatcher(deps.eventStore),
     });
   }
   return {

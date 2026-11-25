@@ -19,6 +19,13 @@ import { PermissionRequestDetails } from './session/PermissionRequestDetails';
 import { Button, Card, StatusTag, Text } from './ui';
 
 type Request = Pick<PendingPermission, 'tool' | 'input' | 'secretSource'>;
+
+/** A call reading several Doppler bindings arrives as a list without a config. */
+function dopplerSourceLabel(source: { project: string; config: string }): string {
+  return source.config === ''
+    ? `Doppler · ${source.project}`
+    : `Doppler · ${source.project} / ${source.config}`;
+}
 type Decision = NonNullable<Extract<AgentEvent, { t: 'notice' }>['secretApproval']>['decision'];
 
 const labels: Record<Decision, string> = {
@@ -100,7 +107,7 @@ export function SecretApprovalCard({
         <>
           {source ? (
             <Text variant="footnote" tone="muted" selectable>
-              {spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)}
+              {spellOutBidiControls(dopplerSourceLabel(source))}
             </Text>
           ) : null}
           <PermissionRequestDetails input={request.input} />
@@ -116,9 +123,7 @@ export function SecretApprovalCard({
                 {spellOutBidiControls(aliases.join(', '))}
               </Text>
               <Text variant="footnote" tone="muted" selectable numberOfLines={2}>
-                {source && !pending
-                  ? spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)
-                  : 'Doppler'}
+                {source && !pending ? spellOutBidiControls(dopplerSourceLabel(source)) : 'Doppler'}
               </Text>
             </View>
           </View>
@@ -196,7 +201,7 @@ export function SecretApprovalCard({
               ) : null}
               {source ? (
                 <Text variant="footnote" tone="muted" selectable>
-                  {spellOutBidiControls(`Doppler · ${source.project} / ${source.config}`)}
+                  {spellOutBidiControls(dopplerSourceLabel(source))}
                 </Text>
               ) : null}
             </ScrollView>

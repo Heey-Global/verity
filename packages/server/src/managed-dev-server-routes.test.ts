@@ -339,7 +339,12 @@ it('forwards the displayed provider snapshot and reports stale approval conflict
     command: 'node server.mjs',
     workdir: '.',
     secretBindings: [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }],
-    providerSnapshot: { provider: 'doppler', project: 'demo', config: 'staging' },
+    providerSnapshot: {
+      provider: 'doppler',
+      project: 'demo',
+      config: 'staging',
+      authority: 'managed-doppler-v1:' + 'a'.repeat(64),
+    },
   };
   const response = await app.inject({
     method: 'POST',

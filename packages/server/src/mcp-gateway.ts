@@ -1,4 +1,8 @@
-import { brokeredExecutionClaimId } from './brokered-http-consumption.js';
+import {
+  brokeredExecutionClaimId,
+  brokeredExecutionClaimIds,
+} from './brokered-http-consumption.js';
+import { legacyDopplerApprovalSnapshot } from './brokered-doppler-binding.js';
 import { APPROVAL_REDEMPTION_TTL_MS } from './brokered-tool-approval-store.js';
 import { MCP_GATEWAY_APPROVAL_TIMEOUT_MS } from './mcp-gateway-timeout.js';
 import type {
@@ -77,18 +81,24 @@ const DOPPLER_RESOLUTION_PHASES = new Set([
   'project configuration',
   'secret alias',
   'Doppler connection',
+  'Doppler binding',
   'Doppler authentication',
   'Doppler request start',
   'Doppler request timeout',
   'Doppler response status',
   'Doppler response format',
 ]);
+const SAFE_BINDING_MESSAGE = /^[A-Za-z0-9 _./`:,()-]{1,2000}$/u;
 const SAFE_PROJECT_CONFIGURATION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}@v[1-9]\d{0,15}$/u;
 
 function dopplerResolutionMessage(error: DopplerSecretResolutionError): string | undefined {
   if (error.phase === undefined || !DOPPLER_RESOLUTION_PHASES.has(error.phase)) return undefined;
   // A fixed text naming no project or person: the agent relays it as the connect prompt.
   if (error.phase === 'Doppler connection') return DOPPLER_CONNECTION_REQUIRED_MESSAGE;
+  // Built from validated references and Doppler slugs only (doppler-secret-reference.ts),
+  // so the agent learns which binding is gone and which are connected.
+  if (error.phase === 'Doppler binding' && SAFE_BINDING_MESSAGE.test(error.message))
+    return error.message;
   if (
     error.httpStatus !== undefined &&
     (!Number.isInteger(error.httpStatus) || error.httpStatus < 100 || error.httpStatus > 599)
@@ -297,6 +307,7 @@ export interface McpGatewayDeps {
       invocationId: string;
       /** Whether this invocation passed a fresh permission card. */
       approvedByCard?: boolean;
+      executionClaimId?: string;
       /** Content the operator edited on that card, as returned by {@link approvedEdits}. */
       approvedEdits?: unknown;
       authorizationSnapshot?: string;
@@ -1015,14 +1026,20 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         toolName,
         request: request.data,
       });
-    } catch {
+    } catch (error) {
+      const detail =
+        (toolName === 'verity_http_request' || toolName === 'verity_secret_run') &&
+        error instanceof DopplerSecretResolutionError &&
+        error.phase === 'Doppler binding'
+          ? dopplerResolutionMessage(error)
+          : undefined;
       return reject(
         projectId,
         callId,
         'unavailable',
         keyed,
         toolName,
-        toolError(id, 'Tool access changed. Try again.'),
+        toolError(id, detail ?? 'Tool access changed. Try again.'),
       );
     }
     let answer: ExternalPermissionAnswer;
@@ -1071,18 +1088,17 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     if (approvalStore && secretTool) {
       if (authorizationSnapshot === undefined)
         return toolError(id, 'Secret provider identity is unavailable; nothing ran.');
-      if (
-        await deps.hasSecretExecutionClaim?.({
-          projectId,
-          sessionId,
-          turnId,
-          callId: brokeredExecutionClaimId(invocationId),
-        })
-      )
-        return toolError(
-          id,
-          "This invocation's execution claim was already consumed. Check the prior result.",
-        );
+      const legacySnapshot = legacyDopplerApprovalSnapshot(authorizationSnapshot);
+      for (const callId of brokeredExecutionClaimIds(
+        baseInvocationId,
+        legacyDopplerApprovalSnapshot(authorizationSnapshot, { includeRotated: true }),
+      )) {
+        if (await deps.hasSecretExecutionClaim?.({ projectId, sessionId, turnId, callId }))
+          return toolError(
+            id,
+            "This invocation's execution claim was already consumed. Check the prior result.",
+          );
+      }
       const binding = {
         projectId,
         sessionId,
@@ -1092,12 +1108,18 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
       } as const;
       const legacyPrefix = mcpGatewayInvocationId(id, toolName, turnId, '');
       findStandingBlock = () =>
-        approvalStore.findStandingAuthorizationBlock(binding, invocationId, legacyPrefix);
+        approvalStore.findStandingAuthorizationBlock(
+          binding,
+          invocationId,
+          legacyPrefix,
+          legacySnapshot,
+        );
       detachedApproval = standingAuthorization
         ? await findStandingBlock()
         : await approvalStore.createOrFindPending(
             { ...binding, invocationId, ...keyed },
             legacyPrefix,
+            ...(legacySnapshot === undefined ? [] : ([legacySnapshot] as [string])),
           );
     }
     if (detachedApproval) {
@@ -1296,6 +1318,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           callId,
           invocationId,
           approvedByCard: !standingAuthorization,
+          ...(secretTool ? { executionClaimId: brokeredExecutionClaimId(baseInvocationId) } : {}),
           ...(approvedEdits === undefined ? {} : { approvedEdits }),
           ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),
           toolName: toolName,

@@ -85,6 +85,63 @@ function findConsumed(
     .executeTakeFirst();
 }
 
+async function lockSession(db: Kysely<Database>, sessionId: string) {
+  await db
+    .selectFrom('sessions')
+    .select('session_id')
+    .where('session_id', '=', sessionId)
+    .forUpdate()
+    .executeTakeFirstOrThrow();
+}
+
+/** The legacy digest is used only for settled blocks, never for consent. */
+async function findLegacyBlock(
+  db: Kysely<Database>,
+  input: BrokeredToolApprovalBinding,
+  invocationId: string,
+  legacyPrefix: string | undefined,
+  legacySnapshot: string,
+) {
+  const legacyDigest = bindingDigest({ ...input, authorizationSnapshot: legacySnapshot });
+  const consumed = await findConsumed(db, legacyDigest, invocationId, legacyPrefix);
+  if (consumed) return consumed;
+  const denial = await db
+    .selectFrom('brokered_tool_approvals')
+    .selectAll()
+    .where('binding_digest', '=', legacyDigest)
+    .where('status', '=', 'denied')
+    .executeTakeFirst();
+  if (!denial) return undefined;
+
+  const currentDigest = bindingDigest(input);
+  const existing = await db
+    .selectFrom('brokered_tool_approvals')
+    .selectAll()
+    .where('binding_digest', '=', currentDigest)
+    .where((eb) =>
+      eb.or([
+        eb('status', '<>', 'consumed'),
+        eb.and([
+          eb('scope', 'in', ['session', 'project']),
+          eb('scope_saved', '=', false),
+          eb('consumed_invocation_id', 'is', null),
+        ]),
+      ]),
+    )
+    .executeTakeFirst();
+  // A decision made against the current snapshot supersedes the legacy denial.
+  if (existing) return undefined;
+  // Keep the denial's identity and decision history, while making explicit
+  // reconsideration available against the current snapshot.
+  return await db
+    .updateTable('brokered_tool_approvals')
+    .set({ authorization_snapshot: input.authorizationSnapshot, binding_digest: currentDigest })
+    .where('id', '=', denial.id)
+    .where('status', '=', 'denied')
+    .returningAll()
+    .executeTakeFirst();
+}
+
 /** Durable consent only. Callers must revalidate authority and the provider snapshot
  * before dispatch; creating or deciding a record never executes an operation. */
 export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date.now) {
@@ -92,19 +149,25 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
     async createOrFindPending(
       input: BrokeredToolApprovalInput,
       legacyPrefix?: string,
+      legacySnapshot?: string,
     ): Promise<BrokeredToolApprovalRecord> {
       return db.transaction().execute(async (tx) => {
         // Serialize receipt creation with consumption so a transport retry cannot
         // create a fresh card while its earlier identical action is being dispatched.
-        await tx
-          .selectFrom('sessions')
-          .select('session_id')
-          .where('session_id', '=', input.sessionId)
-          .forUpdate()
-          .executeTakeFirstOrThrow();
+        await lockSession(tx, input.sessionId);
         const digest = bindingDigest(input);
         const consumed = await findConsumed(tx, digest, input.invocationId, legacyPrefix);
         if (consumed) return record(consumed);
+        if (legacySnapshot !== undefined) {
+          const legacy = await findLegacyBlock(
+            tx,
+            input,
+            input.invocationId,
+            legacyPrefix,
+            legacySnapshot,
+          );
+          if (legacy) return record(legacy);
+        }
         // A retry has a new invocation/MAC but must find the original unanswered consent.
         const result = await sql<ApprovalRow>`insert into brokered_tool_approvals (
           id, project_id, session_id, invocation_id, consumed_invocation_id, tool_name, canonical_input,
@@ -124,7 +187,15 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
       input: BrokeredToolApprovalBinding,
       invocationId: string,
       legacyPrefix?: string,
+      legacySnapshot?: string,
     ): Promise<BrokeredToolApprovalRecord | undefined> {
+      if (legacySnapshot !== undefined) {
+        const legacy = await db.transaction().execute(async (tx) => {
+          await lockSession(tx, input.sessionId);
+          return findLegacyBlock(tx, input, invocationId, legacyPrefix, legacySnapshot);
+        });
+        if (legacy) return record(legacy);
+      }
       const digest = bindingDigest(input);
       const row = await db
         .selectFrom('brokered_tool_approvals')

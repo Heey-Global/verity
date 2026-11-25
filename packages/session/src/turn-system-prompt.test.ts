@@ -10,6 +10,7 @@ import {
 } from '@verity/events';
 import {
   COMPACT_RESUME_SYSTEM_PROMPT,
+  formatBrokeredSecretAliases,
   RESUME_SYSTEM_PROMPT,
   turnSystemPrompt,
 } from './turn-system-prompt.js';
@@ -163,5 +164,27 @@ describe('project repository instructions', () => {
   it('keeps document-only initialization free of repository workflows', () => {
     expect(turnSystemPrompt('documents')).not.toContain(PROJECT_REPOSITORIES_SYSTEM_PROMPT);
     expect(turnSystemPrompt('documents', true)).not.toContain(PROJECT_REPOSITORIES_SYSTEM_PROMPT);
+  });
+});
+
+describe('Doppler names within the prompt budget', () => {
+  it('includes qualified names from small bindings alongside a large default binding', () => {
+    const bareNames = Array.from({ length: 200 }, (_, index) => `DEFAULT_${index}`);
+    const prompt = formatBrokeredSecretAliases([
+      ...bareNames,
+      'billing/dev/API_KEY',
+      'portal/prod/DEPLOY_KEY',
+    ]);
+    expect(prompt).toContain('DEFAULT_0, billing/dev/API_KEY, portal/prod/DEPLOY_KEY, DEFAULT_1');
+    expect(prompt).toContain('(102 more omitted)');
+    expect(prompt).toContain('Bare names come from the default Doppler config');
+  });
+
+  it('applies the byte limit while including names from multiple bindings', () => {
+    const bareNames = Array.from({ length: 90 }, (_, index) => `${'A'.repeat(190)}_${index}`);
+    const prompt = formatBrokeredSecretAliases([...bareNames, 'billing/dev/API_KEY']);
+    expect(prompt).toContain(`${bareNames[0]}, billing/dev/API_KEY`);
+    expect(prompt).toContain('more omitted');
+    expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThan(9 * 1024);
   });
 });

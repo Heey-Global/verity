@@ -10786,8 +10786,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
       ),
     ).resolves.toBe(true);
     expect(onScopeSaved).toHaveBeenCalledWith(false);
-    // The request still executed — a grant that could not be saved must not turn
-    // into a decision the agent never received.
+    // An unsaved grant must not withhold the decision from the agent.
     await vi.waitFor(() => {
       expect(fake.decisions()).toEqual([{ behavior: 'allow' }]);
     });
@@ -10818,6 +10817,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
       channel: 'acp',
+      request: expect.objectContaining({ secretAlias: 'REVENUECAT_ADMIN_KEY' }),
     });
     await vi.waitFor(() => {
       expect(conductor.isBusy('sg3')).toBe(false);
@@ -11049,8 +11049,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
     await vi.waitFor(() => {
       expect(conductor.isBusy('sg-race')).toBe(false);
     });
-    // The late grant must not overwrite the operator's denial — the agent sees one
-    // decision, and it is the deny.
+    // A late grant must not overwrite the operator's denial; the agent sees the deny.
     expect(fake.decisions()).toEqual([{ behavior: 'deny', message: 'no' }]);
   });
 
@@ -11255,6 +11254,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
       channel: 'acp',
+      request: expect.objectContaining({ secretAlias: 'REVENUECAT_ADMIN_KEY' }),
     });
   });
 

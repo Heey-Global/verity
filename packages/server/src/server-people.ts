@@ -1,3 +1,4 @@
+import { installDopplerBindings } from './project-doppler-binding-routes.js';
 import type { administratorProviderConnections } from './administrator-provider-connections.js';
 import { fetchOpenCodeModels } from './opencode-model-catalog.js';
 import { registerProviderConnectionRoutes } from './provider-connection-routes.js';
@@ -5,6 +6,7 @@ import { registerProjectTeamRoutes } from './project-team-routes.js';
 import { registerTeamJoinRoutes } from './team-join-routes.js';
 import { createMemberRevocation } from './member-revocation.js';
 import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
+import { readDopplerWorkplace } from './doppler-token.js';
 import { registerDopplerConnectionRoutes } from './doppler-connection-routes.js';
 import { registerUserProfileRoutes } from './user-profile-routes.js';
 import { registerGitHubUserRoutes } from './github-user-routes.js';
@@ -309,7 +311,13 @@ export function installPeople(
   });
   registerDopplerConnectionRoutes(app, {
     store: deps.eventStore,
+    workplace: deps.dopplerWorkplace ?? readDopplerWorkplace,
     listNames: (input) => listDopplerProjectSecretNames(input),
+  });
+  installDopplerBindings(app, {
+    store: deps.eventStore,
+    listNames: (input) => listDopplerProjectSecretNames(input),
+    isSealed: () => deps.secretCipher?.isSealed() === true,
   });
   registerGitHubUserRoutes(app, {
     authorization:

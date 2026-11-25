@@ -129,17 +129,17 @@ import {
 } from './embedded-docker-gc.js';
 import { createEmbeddedSessionStorage } from './embedded-session-storage.js';
 import type { DockerGcReport } from './docker-gc.js';
-import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import type { BuildStorage } from './build-storage.js';
 import {
   createEmbeddedBuildStorage,
   installEmbeddedBuildStorage,
 } from './embedded-build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
-import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
+import * as devServerSecrets from './managed-dev-server-secrets.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import { ManagedDevServerManager } from './managed-dev-server-manager.js';
+import { isManagedSandboxRunning } from './managed-dev-server-recovery.js';
 import { ListenerDiscovery } from './listener-discovery.js';
 export { parsePort } from './deployment-port.js';
 import {
@@ -153,6 +153,7 @@ import {
   createSealableSecretCipher,
   EventStore,
   keyMatchesVerifier,
+  LEGACY_DOPPLER_CONNECTION_ID,
   migrateToLatest,
   migrationProvider,
   SealedError,
@@ -297,12 +298,14 @@ export async function buildEmbeddedServer(
   const {
     brokeredHttpConsumptions,
     brokeredHttpGrants,
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
+    brokeredGrantBindingIds,
+    brokeredGrantBindingIdFor,
     resolveBrokerDopplerSecret,
     brokeredHttpTool,
   } = createEmbeddedBrokeredHttp(db, eventStore, dopplerCredentialFor, dopplerPersonId);
   const { trustedCliOutput, trustedCliTool } = createEmbeddedTrustedCli(db, secretCipher, {
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
     resolveBrokerDopplerSecret,
     brokeredHttpConsumptions,
   });
@@ -325,7 +328,7 @@ export async function buildEmbeddedServer(
   const { mcpGatewayTokens, mcpProxyTokens, mcpGateway } = createEmbeddedMcpGateway(config, db, {
     secretAuditLog,
     gatewayRequestMacKeys,
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
     brokeredHttpTool,
     trustedCliTool,
     trustedCliOutput,
@@ -339,14 +342,9 @@ export async function buildEmbeddedServer(
     invokeGoogleDrive,
   });
 
-  const brokeredGrantBindingId = async (projectId: string): Promise<string | undefined> => {
-    const binding = await getBrokeredProjectBinding(projectId);
-    if (binding === undefined) return undefined;
-    return brokeredDopplerBindingId(binding);
-  };
   // ADR 0011 D3: secret NAMES (never values) for the turn context, per person.
   const brokeredSecretAliases = createBrokeredSecretAliases({
-    getProjectBinding: getBrokeredProjectBinding,
+    getProjectBindings: getBrokeredProjectBindings,
     credentialFor: dopplerCredentialFor,
     listNames: listDopplerProjectSecretNames,
   });
@@ -451,15 +449,23 @@ export async function buildEmbeddedServer(
   const { materializeOpenCodeConfig, codexModelCatalog } = models;
 
   const { projectDocker, runtimeDocker, resolvePreviewUser } = createEmbeddedDocker(config);
-  // Filled once the managed dev server manager exists, further down.
   const managedLinkEnded: { current?: (instanceId: string, shareId: string) => void } = {};
   const listenerRuntime = new DockerProjectRuntime({
     resolveUser: resolvePreviewUser,
     dockerBaseUrl: config.dockerBaseUrl,
   });
+  const scanPreviewListeners = listenerRuntime.listWebListeningProcesses.bind(listenerRuntime);
   const listListeningProcesses = (project: ProjectRecord, options?: { fresh?: boolean }) =>
     listenerDiscovery?.listListeningProcesses(project, options) ??
     listenerRuntime.listWebListeningProcesses(project, options);
+  const previewSandboxFor = async (project: ProjectRecord, userId: string | null) => {
+    const sandbox = await resolveTurnSandbox(
+      eventStore,
+      project.id,
+      userId === null ? undefined : { userId },
+    );
+    return sandboxIdentity(project, sandbox);
+  };
   let previewShareManager: PreviewShareManager | undefined;
   const { withPreviewProjectMutation, withStorageProjectMutation } = createEmbeddedPreviewMutations(
     {
@@ -481,16 +487,7 @@ export async function buildEmbeddedServer(
   ) {
     previewShareManager = new PreviewShareManager({
       store: eventStore,
-      // A managed server's preview reaches the sandbox it runs in (ADR 0023 §4).
-      sandboxFor: async (project, userId) => {
-        const sandbox = await resolveTurnSandbox(
-          eventStore,
-          project.id,
-          userId === null ? undefined : { userId },
-        );
-        const identity = sandboxIdentity(project, sandbox);
-        return { containerName: identity.containerName, networkName: identity.networkName };
-      },
+      sandboxFor: previewSandboxFor,
       onShareEnded: (share) => {
         if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId, share.id);
       },
@@ -522,11 +519,11 @@ export async function buildEmbeddedServer(
         new DockerProjectRuntime({
           resolveUser: resolvePreviewUser,
           dockerBaseUrl: config.dockerBaseUrl,
-          listListeningProcesses,
+          listListeningProcesses: scanPreviewListeners,
         }).ensurePreviewTarget(project, port),
       listSessionServers: (sessionId, options) =>
         listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
-      listListeningProcesses,
+      listListeningProcesses: scanPreviewListeners,
       edge: uplinkControl,
       // The same deferred logger as the client's: this manager is built just as
       // far ahead of `app`, and its timing lines belong next to the Uplink's.
@@ -843,7 +840,6 @@ export async function buildEmbeddedServer(
 
   const localConnectorImage =
     config.resolvePreviewConnectorImage ?? config.publicPreviews?.resolveConnectorImage;
-  // `app.log` exists only once the control plane is built further down.
   const managedDevServerLog: {
     current?: (message: string, detail?: Record<string, unknown>) => void;
   } = {};
@@ -851,6 +847,7 @@ export async function buildEmbeddedServer(
     projectDocker && localConnectorImage && config.hostCloneRoot
       ? new LocalPreviewManager({
           store: eventStore,
+          sandboxFor: previewSandboxFor,
           docker: projectDocker,
           resolveConnectorImage: localConnectorImage,
           hostCloneRoot: config.hostCloneRoot,
@@ -858,14 +855,14 @@ export async function buildEmbeddedServer(
           ...(config.dataVolumeRoot ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
           ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
           isDevServerRunning: () => Promise.resolve(false),
-          listListeningProcesses,
+          listListeningProcesses: scanPreviewListeners,
           listSessionServers: (sessionId, options) =>
             listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
           prepareTargetPort: (project, port) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
               dockerBaseUrl: config.dockerBaseUrl,
-              listListeningProcesses,
+              listListeningProcesses: scanPreviewListeners,
             }).ensurePreviewTarget(project, port),
           publicHost: process.env.VERITY_LOCAL_PREVIEW_HOST ?? 'localhost',
           connectorHost: hostname(),
@@ -891,14 +888,14 @@ export async function buildEmbeddedServer(
     managedDevServerManager = new ManagedDevServerManager({
       store: eventStore,
       canSupervise: () => previewRecoveryReady && !secretCipher.isSealed(),
-      providerAuthority: async (projectId) => {
-        const binding = await getBrokeredProjectBinding(projectId);
-        return binding
-          ? JSON.stringify([binding.dopplerProject, binding.dopplerConfig])
-          : undefined;
-      },
-      resolveSecrets: createManagedDevServerSecretResolver({
-        getProjectBinding: getBrokeredProjectBinding,
+      sandboxRunning: (name) => isManagedSandboxRunning(projectDocker, name),
+      providerSnapshot: async (projectId, bindings) =>
+        devServerSecrets.managedDevServerProviderSnapshot(
+          await eventStore.projectDopplerBindings.list(projectId),
+          bindings,
+        ),
+      resolveSecrets: devServerSecrets.createManagedDevServerSecretResolver({
+        getProjectBindings: getBrokeredProjectBindings,
         resolveSecret: resolveBrokerDopplerSecret,
       }),
       sandboxContainer: async (project, userId, start) => {
@@ -1190,13 +1187,8 @@ export async function buildEmbeddedServer(
     ...(config.https !== undefined ? { https: config.https } : {}),
     ...(config.devicePairing !== undefined ? { devicePairing: config.devicePairing } : {}),
     pushEnabled: config.pushEnabled === true,
-    // ADR 0011 D2: the operator's review-and-revoke surface for standing grants. The
-    // current binding is passed so each grant can be flagged with whether it would
-    // auto-approve anything today — but grants against a superseded binding are still
-    // listed, because binding ids are derived deterministically and a restored binding
-    // would put such a grant back in force. Unlistable is unrevokable.
     listBrokeredGrants: async (projectId) =>
-      brokeredHttpGrants.list(projectId, (await brokeredGrantBindingId(projectId)) ?? null),
+      brokeredHttpGrants.list(projectId, await brokeredGrantBindingIds(projectId)),
     revokeBrokeredGrant: (projectId, grantId) => brokeredHttpGrants.revoke(projectId, grantId),
     runtimeDiagnostics: createEmbeddedRuntimeDiagnostics({
       config,
@@ -1253,6 +1245,12 @@ export async function buildEmbeddedServer(
     mcpGateway,
     mcpProxyResolveCaller: (input) => Promise.resolve(mcpProxyTokens.resolve(input)),
     ...dopplerServerDeps,
+    ...(config.secretJobs?.doppler !== undefined
+      ? {
+          secretJobDopplerConnectionId:
+            config.secretJobs.doppler.connectionId ?? LEGACY_DOPPLER_CONNECTION_ID,
+        }
+      : {}),
     // Real server-side ssh-keygen for the onboarding signing-key step (#320).
     // Needs `openssh-client` in the Server image (deploy/Dockerfile). Injectable
     // so tests never shell out.
@@ -1304,7 +1302,8 @@ export async function buildEmbeddedServer(
       sessionStorage,
       transcriptStore,
       brokeredSecretAliases,
-      brokeredGrantBindingId,
+      brokeredGrantBindingIds,
+      brokeredGrantBindingIdFor,
       brokeredHttpGrants,
       branches,
       purgeRunnerArtifacts,

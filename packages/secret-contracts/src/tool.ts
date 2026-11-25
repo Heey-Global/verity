@@ -107,7 +107,16 @@ export const secretToolInvocationSchema = z
   .strict();
 export type SecretToolInvocation = z.infer<typeof secretToolInvocationSchema>;
 
-const brokeredSecretAliasSchema = z.string().regex(/^[A-Z][A-Z0-9_]*$/);
+/**
+ * A secret reference (ADR 0031): `NAME` in the project's default Doppler binding,
+ * or `project/config/NAME` in the binding of that Doppler project and config. The
+ * default may be written in full as well. Names follow Doppler's classic rules and
+ * never contain `/`, so the two forms cannot be confused.
+ */
+export const BROKERED_SECRET_REFERENCE =
+  /^(?:([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/)?([A-Z][A-Z0-9_]*)$/;
+export const brokeredSecretReferenceSchema = z.string().regex(BROKERED_SECRET_REFERENCE);
+const brokeredSecretAliasSchema = brokeredSecretReferenceSchema;
 
 /**
  * Printable ASCII, no control characters and nothing outside it.
@@ -145,7 +154,9 @@ export const brokeredJwtValueSchema = z.union([
   z
     .object({ alias: brokeredSecretAliasSchema })
     .strict()
-    .describe("Resolve this claim from the project's Doppler config, server-side."),
+    .describe(
+      'Resolve this claim from Doppler, server-side; the alias is written like `secretAlias`.',
+    ),
   z
     .object({ literal: cardSafeText(256) })
     .strict()
@@ -248,7 +259,7 @@ export const brokeredHttpRequestSchema = z
         'Full HTTPS URL including query string. Its host is what approval is asked for, and a kept grant covers that host only.',
       ),
     secretAlias: brokeredSecretAliasSchema.describe(
-      'The secret\'s name in the project\'s Doppler config — never its value, and never a variable name you invented. Verity resolves it server-side; you never see it. With `auth.kind: "jwt"` this names the PRIVATE KEY that signs the assertion.',
+      'The secret\'s name — never its value, and never a variable name you invented. Write `NAME` for the project\'s default Doppler config, or `project/config/NAME` for another connected Doppler project or config, exactly as listed. Verity resolves it server-side; you never see it. With `auth.kind: "jwt"` this names the PRIVATE KEY that signs the assertion.',
     ),
     auth: z
       .union([brokeredStaticAuthSchema, brokeredJwtAuthSchema])
@@ -362,12 +373,9 @@ const trustedCliInjectionSchema = z.enum(['env', 'file']);
 /** One secret and where the command receives it. */
 export const trustedCliSecretSchema = z
   .object({
-    secretAlias: z
-      .string()
-      .regex(/^[A-Z][A-Z0-9_]*$/)
-      .describe(
-        "The secret's name in the project's Doppler config. This is a lookup key, not the variable the program reads — those are often different, and `env` is what the program reads.",
-      ),
+    secretAlias: brokeredSecretReferenceSchema.describe(
+      "The secret's name: `NAME` for the project's default Doppler config, or `project/config/NAME` for another connected Doppler project or config, exactly as listed. This is a lookup key, not the variable the program reads — those are often different, and `env` is what the program reads.",
+    ),
     env: trustedCliEnvNameSchema.describe(
       'The environment variable the program reads. With `injection: "file"` it holds the path to the secret file rather than the value.',
     ),

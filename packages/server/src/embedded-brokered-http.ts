@@ -4,31 +4,72 @@ import type { createStoreDopplerCredentials, DopplerPerson } from './doppler-cre
 import { resolveDopplerProjectSecret } from './doppler-secret-resolver.js';
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
 import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
-import { createBrokeredHttpTool } from './brokered-http-tool.js';
+import {
+  brokeredDopplerBindingId,
+  currentDopplerGrantBindingIds,
+} from './brokered-doppler-binding.js';
+import {
+  createBrokeredHttpTool,
+  referencedSnapshot,
+  type BrokeredHttpProjectBinding,
+} from './brokered-http-tool.js';
 import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
 
 export function createEmbeddedBrokeredHttp(
   db: Kysely<Database>,
-  eventStore: Pick<EventStore, 'getProjectSettings'>,
+  eventStore: Pick<EventStore, 'projectDopplerBindings'>,
   dopplerCredentialFor: ReturnType<typeof createStoreDopplerCredentials>,
   dopplerPersonId: (person: DopplerPerson) => Promise<string | null>,
 ) {
   const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
-  const brokeredHttpGrants = createBrokeredHttpGrantStore(db);
+  const brokeredHttpGrants = createBrokeredHttpGrantStore(db, {
+    requireCurrentDopplerBinding: true,
+  });
   const restrictedHttpTransport = createNodeRestrictedHttpJsonTransport();
-  const getBrokeredProjectBinding = async (projectId: string) => {
-    const settings = await eventStore.getProjectSettings(projectId);
-    const dopplerProject = settings?.dopplerProject?.trim();
-    const dopplerConfig = settings?.dopplerConfig?.trim();
-    return !dopplerProject || !dopplerConfig ? undefined : { dopplerProject, dopplerConfig };
+  /** The project's Doppler bindings (ADR 0031); empty when it has none. */
+  const getBrokeredProjectBindings = async (
+    projectId: string,
+  ): Promise<readonly BrokeredHttpProjectBinding[]> =>
+    (await eventStore.projectDopplerBindings.list(projectId)).map((binding) => ({
+      id: binding.id,
+      connectionId: binding.connectionId,
+      ...(binding.tokenRevision === undefined ? {} : { tokenRevision: binding.tokenRevision }),
+      dopplerProject: binding.dopplerProject,
+      dopplerConfig: binding.dopplerConfig,
+      isDefault: binding.isDefault,
+    }));
+  // Grants are kept per Doppler binding (ADR 0031): the ids of the project's
+  // current bindings, against which a grant's binding id is checked.
+  const brokeredGrantBindingIds = async (projectId: string): Promise<ReadonlySet<string>> =>
+    currentDopplerGrantBindingIds(await getBrokeredProjectBindings(projectId));
+  /** The grant binding id of a call reading these references; undefined when one
+   *  of them names no current binding, so nothing is auto-approved for it. */
+  const brokeredGrantBindingIdFor = async (
+    projectId: string,
+    references: readonly string[],
+  ): Promise<string | undefined> => {
+    try {
+      return brokeredDopplerBindingId(
+        referencedSnapshot(await getBrokeredProjectBindings(projectId), references),
+      );
+    } catch {
+      return undefined;
+    }
   };
   const resolveBrokerDopplerSecret = async ({
     person,
+    connectionId,
     ...input
   }: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'> & {
+    connectionId: string;
     person: DopplerPerson;
   }): Promise<Uint8Array> => {
-    const token = await dopplerCredentialFor(await dopplerPersonId(person), input.projectId);
+    const token = await dopplerCredentialFor(
+      await dopplerPersonId(person),
+      input.projectId,
+      connectionId,
+      input,
+    );
     try {
       return await resolveDopplerProjectSecret({ ...input, token });
     } finally {
@@ -37,7 +78,7 @@ export function createEmbeddedBrokeredHttp(
   };
   const brokeredHttpTool = createBrokeredHttpTool({
     requireApprovalBinding: true,
-    getProjectBinding: getBrokeredProjectBinding,
+    getProjectBindings: getBrokeredProjectBindings,
     resolveSecret: resolveBrokerDopplerSecret,
     consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
     transport: restrictedHttpTransport,
@@ -46,7 +87,9 @@ export function createEmbeddedBrokeredHttp(
   return {
     brokeredHttpConsumptions,
     brokeredHttpGrants,
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
+    brokeredGrantBindingIds,
+    brokeredGrantBindingIdFor,
     resolveBrokerDopplerSecret,
     brokeredHttpTool,
   };

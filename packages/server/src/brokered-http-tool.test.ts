@@ -26,10 +26,15 @@ afterAll(async () => ctx.close());
 describe('brokered HTTP tool integration', () => {
   it('bounds the complete serialized relay result for escape-heavy bodies', async () => {
     const brokeredTool = createBrokeredHttpTool({
-      getProjectBinding: async () => ({
-        dopplerProject: 'acme-api',
-        dopplerConfig: 'prod',
-      }),
+      getProjectBindings: async () => [
+        {
+          id: 'default',
+          connectionId: 'conn',
+          isDefault: true,
+          dopplerProject: 'acme-api',
+          dopplerConfig: 'prod',
+        },
+      ],
       resolveSecret: async () => Buffer.from('doppler-secret-marker'),
       consumeApproval: async () => true,
       transport: async (input) => {

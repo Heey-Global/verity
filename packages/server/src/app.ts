@@ -287,7 +287,12 @@ export interface ControlPlaneDeps {
    * {@link dopplerListProjects}. Omit → `{ error: 'not configured' }`. */
   dopplerListConfigs?:
     ((token: string, project: string) => Promise<DopplerConfigSummary[]>) | undefined;
-  dopplerCredentialReader?: (() => Promise<Uint8Array | undefined>) | undefined;
+  /** The Doppler connection Secret Jobs resolve through (ADR 0031). */
+  secretJobDopplerConnectionId?: string | undefined;
+  dopplerCredentialReader?:
+    ((connectionId?: string) => Promise<Uint8Array | undefined>) | undefined;
+  dopplerWorkplace?:
+    ((token: string) => Promise<{ slug: string | null; name: string | null }>) | undefined;
   /** Exchanges a GitHub App manifest `code` for the created App for the manifest
    * one-click onboarding routes (#320, `/github/app/manifest/*`). Omit → the
    * callback route renders an error page (manifest onboarding not configured). */
@@ -593,12 +598,16 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.dopplerListProjects !== undefined
       ? { dopplerListProjects: deps.dopplerListProjects }
       : {}),
+    ...(deps.secretJobDopplerConnectionId !== undefined
+      ? { secretJobDopplerConnectionId: deps.secretJobDopplerConnectionId }
+      : {}),
     ...(deps.dopplerListConfigs !== undefined
       ? { dopplerListConfigs: deps.dopplerListConfigs }
       : {}),
     ...(deps.dopplerCredentialReader !== undefined
       ? { dopplerCredentialReader: deps.dopplerCredentialReader }
       : {}),
+    ...(deps.dopplerWorkplace !== undefined ? { dopplerWorkplace: deps.dopplerWorkplace } : {}),
     ...(deps.manifestConvert !== undefined ? { manifestConvert: deps.manifestConvert } : {}),
     ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
     ...(deps.listProjects !== undefined ? { listProjects: deps.listProjects } : {}),
