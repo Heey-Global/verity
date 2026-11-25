@@ -117,6 +117,9 @@ function observeDecisions(
   conductor: Conductor,
   decided: (sessionId: string, toolUseId: string, allowed: boolean) => void,
 ): () => void {
+  // Compositions without permission handling (narrow test servers) have
+  // nothing to observe.
+  if (typeof conductor.decidePermission !== 'function') return () => undefined;
   // The real conductor inherits the method; an own property is put back as it was.
   const own = Object.getOwnPropertyDescriptor(conductor, 'decidePermission');
   const decide = conductor.decidePermission.bind(conductor);

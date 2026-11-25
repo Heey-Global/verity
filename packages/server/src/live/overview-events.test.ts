@@ -173,6 +173,17 @@ describe('installOverviewEvents', () => {
     hub.close();
   });
 
+  it('installs on a composition whose conductor handles no permissions', () => {
+    // Narrow servers pass an empty conductor; building them must not throw.
+    const ctx = {
+      deps: { bus: new InMemoryEventBus(), eventStore: { getSession: async () => undefined } },
+      domainEvents: new DomainEventBus(),
+      conductor: {},
+      lifecycle: { onClose: () => undefined },
+    } as unknown as ServerContext;
+    expect(() => installOverviewEvents({ log: { warn: () => undefined } }, ctx)).not.toThrow();
+  });
+
   it('stops translating session events when the server closes', async () => {
     const w = setup();
     w.record('project:p1');
