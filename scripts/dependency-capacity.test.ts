@@ -437,6 +437,49 @@ describe('dependency copy capacity admission', () => {
     expect(readdirSync(join(preserved, 'existing'))).toHaveLength(10_001);
   }, 60_000);
 
+  it('measures a prepared replacement once for recovery and copy admission', () => {
+    const f = fixture();
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock('2.0.0'));
+    expect(f.run('install').status).toBe(0);
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock('3.0.0'));
+    expect(f.run('install').status).toBe(0);
+    writeFileSync(join(f.worktree, 'node_modules', 'patch'), 'local change');
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock('2.0.0'));
+    const measurements = join(f.root, 'measurements');
+    const preload = join(f.root, 'measurements.mjs');
+    writeFileSync(
+      preload,
+      `
+      import childProcess from 'node:child_process';
+      import fs from 'node:fs';
+      import {syncBuiltinESMExports} from 'node:module';
+      const original = childProcess.spawnSync;
+      childProcess.spawnSync = (file, args, options) => {
+        if (args.includes('--measure-trees')) {
+          const request = JSON.parse(options.input);
+          fs.appendFileSync(${JSON.stringify(measurements)}, request.limits.phase + '\\n');
+        }
+        return original(file, args, options);
+      };
+      syncBuiltinESMExports();
+    `,
+    );
+    const result = f.run('install', { NODE_OPTIONS: '--import=' + pathToFileURL(preload).href });
+    expect(result.status, result.stderr).toBe(0);
+    const phases = readFileSync(measurements, 'utf8').trim().split('\n');
+    expect(phases.filter((phase) => phase === 'cache activation')).toHaveLength(1);
+    expect(phases).not.toContain('replacement trees');
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(2);
+    const preserved = join(f.root, '.git/worktrees/test/verity-dependencies-preserved');
+    expect(
+      readdirSync(preserved).some(
+        (entry) =>
+          existsSync(join(preserved, entry, 'patch')) &&
+          readFileSync(join(preserved, entry, 'patch'), 'utf8') === 'local change',
+      ),
+    ).toBe(true);
+  }, 40_000);
+
   it('pauses additional replacement when recovery consumes its measured allowance', () => {
     const f = fixture();
     writeFileSync(join(f.worktree, 'package-lock.json'), lock('2.0.0'));
