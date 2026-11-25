@@ -17,10 +17,15 @@ import {
   type ProjectRecord,
   type ProjectKind,
   type ProjectState,
+  type ProjectSetupState,
+  type ProjectReleaseStatus,
 } from './project-record.js';
 
 export class ProjectLifecycleStore {
-  constructor(private readonly currentDb: () => Kysely<Database>) {}
+  constructor(
+    private readonly currentDb: () => Kysely<Database>,
+    private readonly readProject: (id: string) => Promise<ProjectRecord | undefined>,
+  ) {}
   private get db(): Kysely<Database> {
     return this.currentDb();
   }
@@ -506,5 +511,158 @@ export class ProjectLifecycleStore {
       return tx.deleteFrom('projects').where('id', '=', id).executeTakeFirst();
     });
     return result.numDeletedRows > 0n;
+  }
+
+  /**
+   * Atomic state transition for a project (concept §19.3, used by the
+   * provisioning worker). The body of this method runs a single UPDATE through
+   * the store's outer connection — it does NOT hold the `SELECT … FOR UPDATE`
+   * lock the worker needs around the `state != 'active' → clone → run → active`
+   * transition. Slice 3 will refactor this (likely to accept a caller-supplied
+   * `Kysely<Database>` so the lock + the UPDATE go through the same tx); until
+   * then, slice-1 callers are testing-only and the concurrency invariant is
+   * documented but not enforced here.
+   *
+   * @param provisionError NULL-binding: pass `null` to clear. A non-null value
+   *                       is ONLY written alongside `state='failed'`.
+   * @param provisionWarning NULL-binding: pass `null` to clear. A non-null value
+   *                         is only used for active projects that provisioned
+   *                         with non-fatal operator-visible caveats.
+   * @returns the resulting row; `undefined` if the project id is unknown.
+   *
+   * Together with the provisioner's in-transaction twin (`updateProjectStateInTx`)
+   * this is the only writer of `state_changed_at`, and it moves it on every call
+   * — including a repeat write of the same state, which is a fresh provisioning
+   * attempt entering that phase, not a no-op. That makes the column mean "when
+   * the worker last claimed this state", which is exactly the age the
+   * stale-provisioning sweep needs.
+   */
+  async updateProjectState(
+    id: string,
+    state: ProjectState,
+    provisionError: string | null = null,
+    provisionWarning: string | null = null,
+  ): Promise<ProjectRecord | undefined> {
+    const leavesSleepLifecycle =
+      state !== 'sleeping_starting' && state !== 'sleeping' && state !== 'waking';
+    await this.db.transaction().execute(async (trx) => {
+      await trx
+        .updateTable('projects')
+        .set({
+          state,
+          ...(leavesSleepLifecycle
+            ? {
+                sleep_compatibility_fingerprint: null,
+                sleeping_since: null,
+                wake_started_at: null,
+              }
+            : {}),
+          provision_error: provisionError,
+          provision_warning: provisionWarning,
+          state_changed_at: sql`now()`,
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', id)
+        .execute();
+      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
+        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
+      }
+    });
+    return this.readProject(id);
+  }
+
+  /** Persist a sleep/wake lifecycle transition and its recovery metadata in one
+   * statement. Callers explicitly supply every nullable field so a new state
+   * cannot silently inherit timestamps or a compatibility verdict from an old
+   * transition. */
+  async updateProjectSleepState(
+    id: string,
+    state: Extract<ProjectState, 'sleeping_starting' | 'sleeping' | 'waking' | 'active'>,
+    metadata: {
+      sleepCompatibilityFingerprint: string | null;
+      sleepingSince: Date | null;
+      wakeStartedAt: Date | null;
+    },
+  ): Promise<ProjectRecord | undefined> {
+    await this.db.transaction().execute(async (trx) => {
+      await trx
+        .updateTable('projects')
+        .set({
+          state,
+          sleep_compatibility_fingerprint: metadata.sleepCompatibilityFingerprint,
+          sleeping_since: metadata.sleepingSince,
+          wake_started_at: metadata.wakeStartedAt,
+          provision_error: null,
+          provision_warning: null,
+          state_changed_at: sql`now()`,
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', id)
+        .execute();
+      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
+        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
+      }
+    });
+    return this.readProject(id);
+  }
+
+  /** Record the effective image selected by provisioning without changing the
+   * operator-configured override in `image_override_ref`.
+   *
+   * `toolkitIdentity` is the content identity of the runner-boundary trust root
+   * that this provisioning verified the image against, and it is written in the
+   * SAME statement as the image on purpose: the two are one verdict about one
+   * image. It is required, and `null` — "nothing verified this" — is a real
+   * answer a caller must give rather than omit. An optional argument would let
+   * a new image silently inherit the previous image's verdict, which is the
+   * exact false all-clear the drift report exists to remove. */
+  async recordProjectImageRef(
+    id: string,
+    imageRef: string,
+    toolkitIdentity: string | null,
+  ): Promise<void> {
+    await this.db
+      .updateTable('projects')
+      .set({
+        image_ref: imageRef,
+        toolkit_identity: toolkitIdentity,
+        updated_at: sql`now()`,
+      })
+      .where('id', '=', id)
+      .execute();
+  }
+
+  async setProjectSetupStatus(
+    id: string,
+    status: ProjectSetupState,
+  ): Promise<ProjectRecord | undefined> {
+    await this.db
+      .updateTable('projects')
+      .set({ setup_status: status, updated_at: sql`now()` })
+      .where('id', '=', id)
+      .execute();
+    return this.readProject(id);
+  }
+
+  /**
+   * Refresh a project's latest-release display cache (overview version badge).
+   * Independent of provisioning state and project upserts: touches ONLY
+   * the `latest_release_*` columns (and `updated_at`), so a release refresh never
+   * disturbs the provisioning-worker-owned `state` or the installation-sync fields.
+   * A no-op (0 rows) for an unknown id. `published_at` is stored verbatim as
+   * GitHub's ISO string (display-only, never queried).
+   */
+  async updateProjectReleaseStatus(id: string, status: ProjectReleaseStatus): Promise<void> {
+    await this.db
+      .updateTable('projects')
+      .set({
+        latest_release_tag: status.tag,
+        latest_release_name: status.name,
+        latest_release_url: status.url,
+        latest_release_published_at: status.publishedAt,
+        updated_at: sql`now()`,
+      })
+      .where('id', '=', id)
+      .execute();
   }
 }
