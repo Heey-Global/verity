@@ -1331,7 +1331,8 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
           : await withProjectTransportAuthority(
               {
                 ...transport.identity,
-                signal: transport.signal,
+                // A caller that gave up must not keep a re-authorization poll querying the pool.
+                signal: signal ? AbortSignal.any([transport.signal, signal]) : transport.signal,
                 authorize: async () => {
                   if (transport.identity.projectId !== projectId)
                     throw new Error('Project transport mismatch');

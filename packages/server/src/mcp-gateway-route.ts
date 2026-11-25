@@ -6,6 +6,7 @@ import {
   requestArrivedInternally,
 } from './internal-listener.js';
 import type { McpGateway } from './mcp-gateway.js';
+import { serveLoggedGatewayCall } from './mcp-gateway-call-log.js';
 
 export interface McpGatewayRouteDeps {
   gateway: McpGateway;
@@ -50,14 +51,16 @@ export function registerMcpGatewayRoutes(app: FastifyInstance, deps: McpGatewayR
       }
       const signal = internalConnectionGenerationSignal(request);
       const presented = bearerToken(request.headers.authorization);
-      const response = await withCallerCancellation(request, reply, (callerSignal) =>
-        deps.gateway.handle({
-          projectId: socketIdentity.projectId,
-          token: presented,
-          body: request.body,
-          signal: callerSignal,
-          ...(signal === undefined ? {} : { transport: { identity: socketIdentity, signal } }),
-        }),
+      const response = await serveLoggedGatewayCall(request, reply, () =>
+        withCallerCancellation(request, reply, (callerSignal) =>
+          deps.gateway.handle({
+            projectId: socketIdentity.projectId,
+            token: presented,
+            body: request.body,
+            signal: callerSignal,
+            ...(signal === undefined ? {} : { transport: { identity: socketIdentity, signal } }),
+          }),
+        ),
       );
       reply.code(response.status);
       // MCP acknowledges a notification with an empty 202. Returning undefined from an
@@ -91,13 +94,15 @@ export function registerMcpGatewayRoutes(app: FastifyInstance, deps: McpGatewayR
         return { error: 'unauthorized' };
       }
       const presented = bearerToken(request.headers.authorization);
-      const response = await withCallerCancellation(request, reply, (signal) =>
-        deps.gateway.handle({
-          projectId: deps.controlProjectId,
-          token: presented,
-          body: request.body,
-          signal,
-        }),
+      const response = await serveLoggedGatewayCall(request, reply, () =>
+        withCallerCancellation(request, reply, (signal) =>
+          deps.gateway.handle({
+            projectId: deps.controlProjectId,
+            token: presented,
+            body: request.body,
+            signal,
+          }),
+        ),
       );
       reply.code(response.status);
       return response.body === undefined ? reply.send() : response.body;

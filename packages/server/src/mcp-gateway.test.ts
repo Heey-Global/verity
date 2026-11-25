@@ -1,4 +1,3 @@
-import { projectTransportFetch } from './project-transport-authority.js';
 import { matrixRequestSchema } from './matrix-tool.js';
 import type { EventStore } from '@verity/store';
 import { connectorToolAvailable } from './agent-tool-availability.js';
@@ -13,82 +12,17 @@ import {
 } from './doppler-credential.js';
 
 import {
-  createMcpGateway,
   MCP_GATEWAY_PROTOCOL_VERSIONS,
   mcpGatewayInvocationId,
-  type McpGatewayAuditRecord,
   type McpGatewayDeps,
 } from './mcp-gateway.js';
-
-const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
-
-const HTTP_ARGUMENTS = {
-  method: 'GET',
-  url: 'https://api.revenuecat.com/v2/projects',
-  secretAlias: 'REVENUECAT_ADMIN_KEY',
-  auth: { header: 'authorization', scheme: 'Bearer' },
-};
-
-const ALLOW: ExternalPermissionAnswer = { decision: { behavior: 'allow' }, decidedBy: 'card' };
+import { ALLOW, call, harness, HTTP_ARGUMENTS, resultOf } from './mcp-gateway.test-helper.js';
 
 it('scopes replay identities to the authenticated turn', () => {
   const first = mcpGatewayInvocationId(7, 'verity_google_slides', 'turn-1', 'a'.repeat(64));
   const second = mcpGatewayInvocationId(7, 'verity_google_slides', 'turn-2', 'a'.repeat(64));
   expect(first).not.toBe(second);
 });
-
-function harness(overrides: Partial<McpGatewayDeps> = {}) {
-  const records: McpGatewayAuditRecord[] = [];
-  const invokeTool = vi.fn<McpGatewayDeps['invokeTool']>(async () => ({
-    status: 200,
-    body: { ok: true },
-  }));
-  const requestApproval = vi.fn(async () => ALLOW);
-  const deps: McpGatewayDeps = {
-    resolveCaller: async ({ token }) =>
-      token === 'session-token' ? { sessionId: 'sess-1', turnId: 'turn-1' } : undefined,
-    requestApproval,
-    invokeTool,
-    recordCall: async ({ projectId, kind, ...gateway }) => {
-      // The audit event schema is where a gateway record's real invariants live: which
-      // rejections must carry a MAC, which may name a tool, which decisions exist. This file
-      // drives every one of those branches, so it parses each record through the same mapping
-      // `embedded.ts` performs. Without it a branch that writes an unpersistable record passes
-      // here and fails on the first production append.
-      secretAuditEventInputSchema.parse({
-        projectId,
-        kind,
-        aliases: [],
-        providerBindings: [],
-        gateway,
-        recordedAt: new Date().toISOString(),
-      });
-      records.push({ projectId, kind, ...gateway });
-    },
-    requestMac: async ({ request }) => ({
-      // Distinct per request shape, so a test can tell the raw call and the validated one
-      // apart without reimplementing the real HMAC.
-      requestMac: Buffer.from(JSON.stringify(request)).toString('hex').slice(0, 64).padEnd(64, '0'),
-      macKeyId: 'key-1',
-    }),
-    ...overrides,
-  };
-  return { gateway: createMcpGateway(deps), records, invokeTool, requestApproval };
-}
-
-const call = (
-  args: unknown = HTTP_ARGUMENTS,
-  name = 'verity_http_request',
-): Record<string, unknown> => ({
-  jsonrpc: '2.0',
-  id: 7,
-  method: 'tools/call',
-  params: { name, arguments: args },
-});
-
-function resultOf(body: unknown): { content: { text: string }[]; isError?: boolean } {
-  return (body as { result: { content: { text: string }[]; isError?: boolean } }).result;
-}
 
 describe('MCP gateway — handshake and discovery (ADR 0014 D1)', () => {
   it('advertises Gmail draft sending with a complete approval snapshot', async () => {
@@ -1433,62 +1367,4 @@ it('advertises and approves account-only Drive URL reads without linked folders'
       request: expect.objectContaining({ action: 'read_document_url' }),
     }),
   );
-});
-
-it('binds provider requests to the listener generation and blocks work after retirement', async () => {
-  const generation = new AbortController();
-  const provider = vi.fn(async () => 'ok');
-  const { gateway } = harness({
-    invokeTool: async () => {
-      await projectTransportFetch(provider, 'https://example.test/first', {});
-      generation.abort();
-      return projectTransportFetch(provider, 'https://example.test/second', {});
-    },
-  });
-  const response = await gateway.handle({
-    projectId: 'p1',
-    token: 'session-token',
-    body: call(),
-    transport: {
-      identity: {
-        projectId: 'p1',
-        userId: SANDBOX_USER,
-        projectDefault: true,
-        containerGeneration: 'g1',
-      },
-      signal: generation.signal,
-    },
-  });
-  expect(provider).toHaveBeenCalledTimes(1);
-  expect(resultOf(response.body).isError).toBe(true);
-});
-
-it('revalidates the initiating user after asynchronous tool credential work', async () => {
-  let revoked = false;
-  const provider = vi.fn(async () => 'ok');
-  const { gateway } = harness({
-    authorizeExecution: async () => {
-      if (revoked) throw new Error('user revoked');
-    },
-    invokeTool: async () => {
-      revoked = true;
-      return projectTransportFetch(provider, 'https://example.test', {});
-    },
-  });
-  const response = await gateway.handle({
-    projectId: 'p1',
-    token: 'session-token',
-    body: call(),
-    transport: {
-      identity: {
-        projectId: 'p1',
-        userId: SANDBOX_USER,
-        projectDefault: true,
-        containerGeneration: 'g1',
-      },
-      signal: new AbortController().signal,
-    },
-  });
-  expect(provider).not.toHaveBeenCalled();
-  expect(resultOf(response.body).isError).toBe(true);
 });

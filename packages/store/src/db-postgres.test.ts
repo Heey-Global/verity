@@ -94,6 +94,7 @@ vi.mock('pg', () => ({ default: { Pool: FakePool, Client: FakeClient } }));
 
 const {
   createPostgresDb,
+  POOL_ACQUIRE_TIMEOUT_MS,
   holdPostgresControlPlaneLock,
   isPostgresConnectionClassError,
   PostgresAdvisoryLockHeldError,
@@ -129,7 +130,18 @@ describe('createPostgresDb', () => {
     expect(pools).toHaveLength(1);
     expect(pools[0]!.config).toEqual({
       connectionString: 'postgresql://user@localhost:5432/verity',
+      connectionTimeoutMillis: POOL_ACQUIRE_TIMEOUT_MS,
     });
+    await db.destroy();
+  });
+
+  it('bounds how long a query waits for a pooled connection', async () => {
+    // pg-pool queues checkouts without any limit when the option is 0 or absent. A
+    // saturated pool then leaves every later request waiting silently, with no error.
+    const db = createPostgresDb('postgresql://localhost/x');
+    const { connectionTimeoutMillis } = pools[0]!.config as { connectionTimeoutMillis?: number };
+    expect(connectionTimeoutMillis).toBeGreaterThan(0);
+    expect(connectionTimeoutMillis).toBeLessThanOrEqual(60_000);
     await db.destroy();
   });
 
