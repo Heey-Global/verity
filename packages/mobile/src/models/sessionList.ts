@@ -606,6 +606,7 @@ export class SessionListModel {
         return;
       }
       inFlight = true;
+      this.cancelEventsRefresh();
       // Every list read carries the transcript growth seen so far, so it also
       // restarts the spacing of reloads that only report such growth.
       this.lastEventsRefreshAt = (this.opts.now ?? Date.now)();

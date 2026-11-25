@@ -9,6 +9,7 @@ export {
 } from './wire.js';
 export { SessionReducer, reduceFrames, type SessionState } from './reducer.js';
 export { publishSettledPermission, subscribeSettledPermissions } from './permissionSettlement.js';
+export { clearConditionalReads } from './conditionalReads.js';
 export {
   publishPullRequestStatusMutation,
   subscribePullRequestStatusMutations,

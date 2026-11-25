@@ -62,8 +62,9 @@ export function withConditionalReads(fetchImpl: typeof fetch): typeof fetch {
       return fetchImpl(input, init);
     }
     if (method !== 'GET' || !isConditionalReadPath(path)) return fetchImpl(input, init);
-    // A different credential may see a different body; never answer one
-    // account's request with another account's remembered read.
+    // Keyed per credential so one account's bodies are not kept under another's
+    // key. Correctness does not depend on it: the tag hashes the exact body, so
+    // a 304 only ever confirms a byte-identical answer.
     const key = `${url}\n${new Headers(init?.headers).get('authorization') ?? ''}`;
     const known = remembered.get(key);
     const response = await fetchImpl(

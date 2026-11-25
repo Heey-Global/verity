@@ -45,7 +45,7 @@ describe('withConditionalReads', () => {
     expect(await (await read(url, init)).json()).toEqual([1, 2]);
   });
 
-  it('never answers one credential with a body remembered for another', async () => {
+  it('does not revalidate one credential with a tag remembered for another', async () => {
     const { calls, fetchImpl } = server(() => '[]');
     const read = withConditionalReads(fetchImpl);
     await read('https://verity.test/projects', { headers: { authorization: 'Bearer a' } });

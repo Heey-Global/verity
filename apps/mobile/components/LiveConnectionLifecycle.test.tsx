@@ -10,6 +10,11 @@ const mockConnection = {
   onAlert: jest.fn(),
 };
 let mockToken: string | null = null;
+const mockClearConditionalReads = jest.fn();
+jest.mock('@verity/mobile', () => ({
+  ...jest.requireActual<typeof import('@verity/mobile')>('@verity/mobile'),
+  clearConditionalReads: () => mockClearConditionalReads(),
+}));
 let mockBaseUrl = 'https://core.example';
 let mockPresentation = true;
 const mockBaseUrlListeners = new Set<() => void>();
@@ -101,6 +106,18 @@ describe('LiveConnectionLifecycle', () => {
     expect(mockConnection.pause.mock.invocationCallOrder[0]).toBeLessThan(
       mockConnection.resume.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('forgets overview reads remembered for a credential that signed out', async () => {
+    mockToken = 'bearer';
+    render(<LiveConnectionLifecycle />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    mockClearConditionalReads.mockClear();
+    mockToken = null;
+    for (const listener of mockAuthListeners) listener();
+    expect(mockClearConditionalReads).toHaveBeenCalledTimes(1);
   });
 
   it('leaves the server the moment the app goes to the background', async () => {

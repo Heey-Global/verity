@@ -1,4 +1,4 @@
-import type { LiveConnection } from '@verity/mobile';
+import { clearConditionalReads, type LiveConnection } from '@verity/mobile';
 import { useEffect } from 'react';
 import { AppState, Platform } from 'react-native';
 import { getAuthToken, subscribeAuthToken } from '../lib/authToken';
@@ -60,6 +60,9 @@ export function LiveConnectionLifecycle(): null {
       const nextBearer = getAuthToken(baseUrl);
       if (nextBearer !== bearer) {
         connection.pause();
+        // Overview bodies remembered for revalidation belong to the previous
+        // credential; a sign-out or account switch must not keep them around.
+        clearConditionalReads();
         bearer = nextBearer;
       }
       // The browser authenticates with its session cookie; a native device waits
