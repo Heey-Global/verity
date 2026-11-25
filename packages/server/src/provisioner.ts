@@ -233,7 +233,7 @@ import {
   sandboxResolvConf,
 } from './gvisor-project-network.js';
 import type { ProjectSandboxLifecycleEvent } from './project-lifecycle-telemetry.js';
-import { getProjectInTx, updateProjectStateInTx, withProjectLock } from './project-persistence.js';
+import { getProjectInTx, updateProjectStateInTx, withProjectWrite } from './project-persistence.js';
 import { UNKNOWN_INITIATOR, type AuditInitiator } from './audit-log.js';
 import type { AuditRecorder } from './audit-recorder.js';
 import {
@@ -5443,7 +5443,7 @@ export class ProvisionerImpl implements Provisioner {
    *  - `absent` / `failed` → transition to `cloning`, return the row.
    */
   private async claimForCloning(projectId: string): Promise<ProjectRecord> {
-    return withProjectLock(this.opts.db, projectId, async (tx) => {
+    return withProjectWrite(this.opts.store, this.opts.db, projectId, async (tx) => {
       const project = await getProjectInTx(tx, projectId);
       if (project === undefined) {
         throw new ProvisioningError('project gone mid-lock (deprovision race?)');

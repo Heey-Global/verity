@@ -1,4 +1,5 @@
 import { installOverviewEvents } from './live/overview-events.js';
+import { installProjectEvents } from './live/project-events.js';
 import { DomainEventBus } from './live/domain-events.js';
 import { installAssistantHandoffNotices } from './assistant-handoff-notify.js';
 import { installChangeSubmissions } from './change-submissions.js';
@@ -177,6 +178,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
   registerLiveSessionHints(app, ctx);
   installOverviewEvents(app, ctx);
+  installProjectEvents(app, ctx);
   const { pushRouter, pushFirePoints, wikiMaintenanceSessions, unsubscribePushFirePoints } =
     createServerPushRuntime(app, ctx, { describePushSessionById });
   const { schedulingTool } = createServerScheduling(app, ctx, { pushRouter, pushFirePoints });

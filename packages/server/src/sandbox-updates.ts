@@ -121,6 +121,12 @@ export interface SandboxUpdateChecker {
    * there is no batch to share a target with and the answer must be fresh.
    */
   statusAll(projects: readonly ProjectRecord[]): Promise<Map<string, SandboxUpdateStatus>>;
+  /**
+   * Hear every status this checker computes, whichever read or tick asked for
+   * it, so a change can be announced to live views (ADR 0033) without a
+   * checker of its own. Returns the function that stops listening.
+   */
+  observe?(listener: (projectId: string, status: SandboxUpdateStatus) => void): () => void;
 }
 
 export type SandboxRefSource = string | (() => Promise<string | undefined>);
@@ -258,13 +264,28 @@ export function createSandboxUpdateChecker(args: {
         ? unknown('default project image is unavailable')
         : statusForInspect(inspection.inspected, target);
 
+  const listeners = new Set<(projectId: string, status: SandboxUpdateStatus) => void>();
+  const report = (projectId: string, status: SandboxUpdateStatus): SandboxUpdateStatus => {
+    for (const listener of [...listeners]) {
+      try {
+        listener(projectId, status);
+      } catch {
+        // A listener must not fail the read that computed the status.
+      }
+    }
+    return status;
+  };
+
   return {
     async status(project) {
       const inspection = await inspectProject(project);
       // Only a project that can use the target pays for resolving it: an
       // inactive or stopped container costs no image inspect and no registry
       // round trip, as before.
-      return statusFrom(inspection, inspection.ok ? await resolveTarget() : undefined);
+      return report(
+        project.id,
+        statusFrom(inspection, inspection.ok ? await resolveTarget() : undefined),
+      );
     },
     async statusAll(projects) {
       const inspections = await Promise.all(
@@ -274,8 +295,17 @@ export function createSandboxUpdateChecker(args: {
         ? await resolveTarget()
         : undefined;
       return new Map(
-        inspections.map(([project, inspection]) => [project.id, statusFrom(inspection, target)]),
+        inspections.map(([project, inspection]) => [
+          project.id,
+          report(project.id, statusFrom(inspection, target)),
+        ]),
       );
+    },
+    observe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 }

@@ -135,9 +135,12 @@ publishes the result as `pr.status`. Several viewers share one read.
 - The 15-second client fallback applies only to servers without version 2.
 - The bus is process-local, like the session bus. A multi-process deployment
   would replace it behind the same interface.
-- A guard derived from the sources must show that every caller of
-  `updateProjectState` emits an event; a new state writer that does not would
-  otherwise reintroduce silent staleness.
+- Project writes reach the emitter through the store's project change feed:
+  every store method that writes a project's state announces the project after
+  its write committed, and writes inside a caller's transaction go through a
+  project lock that announces after commit. A guard derived from the sources
+  fails when a state writer does neither, since a silent writer would
+  reintroduce staleness without breaking anything else.
 
 ## Verification
 

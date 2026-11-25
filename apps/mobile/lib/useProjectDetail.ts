@@ -13,6 +13,7 @@ import { useOverviewTopics } from './overviewTopics';
 import {
   VerityApiError,
   applyOverviewEvent,
+  projectEventUpdate,
   publishProjectStatusMutation,
   type DomainEvent,
   subscribeProjectStatusMutations,
@@ -217,6 +218,16 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     getVerityBaseUrl(),
     [projectId],
     (event) => {
+      // Sandbox and project changes: shown at once, completed by a read.
+      const update = projectEventUpdate(event);
+      if (update !== undefined) {
+        if (update.projectId !== projectId) return;
+        setDetail((latest) =>
+          latest === undefined ? latest : { ...latest, project: update.patch(latest.project) },
+        );
+        if (update.reload && focusedRef.current) void load(true);
+        return;
+      }
       if (event.t === 'permission.decided' || event.t === 'choices.answered') {
         // Kept even before the first read lands, which would otherwise bring
         // the answered card back.
