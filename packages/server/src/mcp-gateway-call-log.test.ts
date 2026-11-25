@@ -139,8 +139,14 @@ describe('serveLoggedGatewayCall', () => {
     const poll = setInterval(() => {
       if (lines.some((line) => line.msg === 'mcp gateway tool call finished')) finish();
     }, 5);
+    const deadline = setTimeout(() => finish(), 5_000);
     await finished;
     clearInterval(poll);
+    clearTimeout(deadline);
+    expect(
+      lines.some((line) => line.msg === 'mcp gateway tool call finished'),
+      'an abandoned call must still log its finish line',
+    ).toBe(true);
     const line = lines.find((entry) => entry.msg === 'mcp gateway tool call finished');
     expect(line).toMatchObject({ toolName: 'verity_project_inquiry', callerDisconnected: true });
     expect(line?.level).toBe(40);
