@@ -157,6 +157,7 @@ import {
   migrateToLatest,
   migrationProvider,
   SealedError,
+  ServerMonitoringSettingsStore,
   TranscriptStore,
   type Database,
   type ProjectRecord,
@@ -947,7 +948,6 @@ export async function buildEmbeddedServer(
 
   // Per-turn transport path allocators (ADR 0006 Stage 2.2-prep). Only exercised
   // when `config.runnerTransport` is on; cheap to build unconditionally.
-  //
   // CRITICAL: a unix-domain socket path has a ~108-char OS limit, so the socket
   // dir MUST be short — `<tmpdir>/verity-runner` with a bare `<uuid>.sock` name
   // (NOT a deep workspaces/worktree path, which would overrun the limit and fail
@@ -1095,6 +1095,7 @@ export async function buildEmbeddedServer(
     },
     ...(sessionStorage ? { sessionStorage } : {}),
     eventStore,
+    serverMonitoringSettings: new ServerMonitoringSettingsStore(db),
     ...(backup ? { backup } : {}),
     ...matrix.bindings,
     // The same root the provisioner mounts from, so the explorer and the sandbox

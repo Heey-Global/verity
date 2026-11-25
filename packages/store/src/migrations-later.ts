@@ -7,6 +7,7 @@ import { sessionCreatorMigration } from './session-creator-migration.js';
 import { changeSubmissionsMigration } from './change-submissions-migration.js';
 import { githubRepositoryIdentityMigration } from './github-repository-identity-migration.js';
 import { dopplerConnectionsMigration } from './doppler-connections-migration.js';
+import { serverMonitoringMigration } from './server-monitoring-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -719,3 +720,5 @@ migrations['0243_managed_dev_server_run_authority'] = {
     );
   },
 };
+
+migrations['0244_server_monitoring_settings'] = serverMonitoringMigration;

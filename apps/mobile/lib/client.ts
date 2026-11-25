@@ -19,6 +19,7 @@ import { throwIfAborted } from './abortSignal';
 import { exitDemoMode, hydrateDemoMode, isDemoMode } from './demoMode';
 import { serverConnection } from './serverConnection';
 import { DEMO_BASE_URL, demoFetch } from './demoTransport';
+import { clientIdentity, withClientIdentity, type ClientDevice } from './clientIdentity';
 
 // The control-plane base URL (e.g. a Tailscale address of the server). It is
 // RUNTIME-configurable + persisted on the device: the operator enters it in the
@@ -154,7 +155,7 @@ export async function setVerityBaseUrl(
  *  Wired to the per-device bearer token (audit C1): `getToken` attaches it to
  *  every request, and a 401 from a gated route drops the stored token so the app
  *  falls back to master-password re-auth. */
-export function createVerityClient(): VerityClient | null {
+export function createVerityClient(device: ClientDevice = 'phone'): VerityClient | null {
   if (isDemoMode()) {
     const client = new VerityClient({
       baseUrl: DEMO_BASE_URL,
@@ -183,8 +184,12 @@ export function createVerityClient(): VerityClient | null {
     return client;
   }
   const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === serverUrl);
+  // Names the app and its release to the server's traffic counters.
+  const identify = (base: typeof fetch) => withClientIdentity(base, clientIdentity(device));
   const pinnedFetch =
-    endpoint?.transport === 'direct' ? createPinnedFetch(endpoint.tlsPin!, true) : undefined;
+    endpoint?.transport === 'direct'
+      ? identify(createPinnedFetch(endpoint.tlsPin!, true))
+      : undefined;
   const client = new VerityClient({
     baseUrl: serverUrl,
     localPreviewBaseUrl:
@@ -192,14 +197,16 @@ export function createVerityClient(): VerityClient | null {
       (endpoint?.transport === 'uplink' ? null : serverUrl),
     appVariant: Constants.expoConfig?.extra?.appVariant === 'staging' ? 'staging' : 'production',
     recordingFetch:
-      endpoint?.transport === 'direct' ? createPinnedFetch(endpoint.tlsPin!, false) : undefined,
+      endpoint?.transport === 'direct'
+        ? identify(createPinnedFetch(endpoint.tlsPin!, false))
+        : undefined,
     recordingDigest: (text) => digestStringAsync(CryptoDigestAlgorithm.SHA256, text),
     // expo-file-system File implements Blob through Expo's native networking
     // stack. Keep ordinary API calls on the global fetch and route only uploads
     // through expo/fetch so large picked files stream without a JS copy.
     ...(pinnedFetch
       ? { fetch: pinnedFetch, uploadFetch: pinnedFetch, allowBackgroundUpload: false }
-      : { uploadFetch: expoFetch as typeof fetch }),
+      : { fetch: identify(fetch), uploadFetch: identify(expoFetch as typeof fetch) }),
     getToken: () => getAuthToken(serverUrl),
     onUnauthorized: () => {
       void clearAuthToken(serverUrl);

@@ -247,6 +247,8 @@ export function makeProject(
 export type ClientOverrides = {
   /** `client.doppler` (ADR 0031); unset methods are not implemented. */
   doppler?: Partial<Record<keyof VerityClient['doppler'], jest.Mock>>;
+  /** `client.monitoring` (ADR 0032); by default the server offers no monitoring. */
+  monitoring?: Partial<Record<keyof VerityClient['monitoring'], jest.Mock>>;
   getStorageReclamation?: VerityClient['getStorageReclamation'];
   reclaimStorage?: VerityClient['reclaimStorage'];
   validateGithubApp?: jest.Mock;
@@ -384,6 +386,14 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
     updateConnection: jest.fn(notImplemented('doppler.updateConnection')),
     removeConnection: jest.fn(notImplemented('doppler.removeConnection')),
     ...opts.doppler,
+  };
+  client.monitoring = {
+    state: jest.fn().mockRejectedValue(new Error('404')),
+    setMeasurementEnabled: jest.fn(notImplemented('monitoring.setMeasurementEnabled')),
+    startDetailMode: jest.fn(notImplemented('monitoring.startDetailMode')),
+    stopDetailMode: jest.fn(notImplemented('monitoring.stopDetailMode')),
+    report: jest.fn(notImplemented('monitoring.report')),
+    ...opts.monitoring,
   };
   // `null` stands for a server too old to have the endpoint at all — the method
   // is absent, not failing, which is a case the MCP list has to tell apart.
