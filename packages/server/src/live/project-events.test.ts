@@ -133,6 +133,9 @@ describe('installProjectEvents', () => {
     // A read or a reconciler tick later sees a new image.
     for (const observer of w.observers) observer('p1', status('available'));
     for (const observer of w.observers) observer('p1', status('available'));
+    // A failed registry read says nothing about the update.
+    for (const observer of w.observers) observer('p1', status('unknown'));
+    for (const observer of w.observers) observer('p1', status('available'));
     expect(w.events().filter((event) => event.t === 'sandbox.update')).toEqual([
       expect.objectContaining({ t: 'sandbox.update', projectId: 'p1', available: true }),
     ]);

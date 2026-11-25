@@ -34,21 +34,38 @@ describe('EventStore project change announcements', () => {
   // state until its next read, with nothing failing.
   it('announces every write of state, image, name and setup status once it is visible', async () => {
     const id = await project();
-    const seen: string[] = [];
+    // The listener reads the row as it is announced; the write must already
+    // be visible to that read.
+    let read: Promise<unknown> | undefined;
     const stop = ctx.store.projectChanges.observe((projectId) => {
-      // The listener reads the row; the write must already be visible to it.
-      void ctx.store.getProject(projectId).then((row) => seen.push(`${row?.state}`));
+      read = ctx.store.getProject(projectId);
     });
-    await ctx.store.updateProjectState(id, 'cloning');
-    await ctx.store.updateProjectSleepState(id, 'active', {
-      sleepCompatibilityFingerprint: null,
-      sleepingSince: null,
-      wakeStartedAt: null,
+    const announced = async (write: Promise<unknown>) => {
+      read = undefined;
+      await write;
+      return read;
+    };
+    await expect(announced(ctx.store.updateProjectState(id, 'cloning'))).resolves.toMatchObject({
+      state: 'cloning',
     });
-    await ctx.store.recordProjectImageRef(id, 'ghcr.io/example/image:1', null);
-    await ctx.store.renameProject(id, 'Renamed');
-    await ctx.store.setProjectSetupStatus(id, 'complete');
-    await expect.poll(() => seen).toEqual(['cloning', 'active', 'active', 'active', 'active']);
+    await expect(
+      announced(
+        ctx.store.updateProjectSleepState(id, 'active', {
+          sleepCompatibilityFingerprint: null,
+          sleepingSince: null,
+          wakeStartedAt: null,
+        }),
+      ),
+    ).resolves.toMatchObject({ state: 'active' });
+    await expect(
+      announced(ctx.store.recordProjectImageRef(id, 'ghcr.io/example/image:1', null)),
+    ).resolves.toMatchObject({ imageRef: 'ghcr.io/example/image:1' });
+    await expect(announced(ctx.store.renameProject(id, 'Renamed'))).resolves.toMatchObject({
+      name: 'Renamed',
+    });
+    await expect(announced(ctx.store.setProjectSetupStatus(id, 'complete'))).resolves.toMatchObject(
+      { setupStatus: 'complete' },
+    );
     stop();
   });
 

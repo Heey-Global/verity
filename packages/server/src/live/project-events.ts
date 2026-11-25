@@ -126,6 +126,10 @@ export function installProjectEvents(
   if (changes !== undefined) lifecycle.onClose(changes.observe(announce));
 
   const stopObserving = updates?.observe?.((projectId, status) => {
+    // `unknown` (a stopped sandbox, a failed inspect or registry read) says
+    // nothing about the update; publishing it would make every viewer read
+    // again whenever the registry stumbles.
+    if (status.state === 'unknown') return;
     const available = status.state === 'available';
     const previous = updateAvailable.get(projectId);
     updateAvailable.delete(projectId);
