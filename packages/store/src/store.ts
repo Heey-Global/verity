@@ -61,7 +61,6 @@ import { ProjectLifecycleStore } from './project-lifecycle.js';
 import { claimNextRepositoryInstance } from './project-identity-allocation.js';
 import {
   projectRowToRecord,
-  projectColumns,
   type ProjectState,
   type ProjectSetupState,
   type ProjectKind,
@@ -69,9 +68,7 @@ import {
   type ProjectRecord,
   type ProjectReleaseStatus,
   type ProjectUpsertInput,
-  PROJECT_NAME_MAX_CHARS,
   defaultProjectName,
-  InvalidProjectNameError,
 } from './project-record.js';
 export {
   type ProjectState,
@@ -4270,28 +4267,11 @@ export class EventStore implements EventSink {
    * @returns the renamed project, or `undefined` when it does not exist.
    */
   async renameProject(id: string, name: string): Promise<ProjectRecord | undefined> {
-    const trimmed = name.trim();
-    if (trimmed.length === 0) throw new InvalidProjectNameError('project name is required');
-    if (trimmed.length > PROJECT_NAME_MAX_CHARS)
-      throw new InvalidProjectNameError(
-        `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
-      );
-    const row = await this.db
-      .updateTable('projects')
-      .set({ name: trimmed, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .returningAll()
-      .executeTakeFirst();
-    return row ? projectRowToRecord(row) : undefined;
+    return this.projectLifecycle.renameProject(id, name);
   }
 
   async getProject(id: string): Promise<ProjectRecord | undefined> {
-    const row = await this.db
-      .selectFrom('projects')
-      .select(projectColumns)
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row ? projectRowToRecord(row) : undefined;
+    return this.projectLifecycle.getProject(id);
   }
 
   /** Whether `userId` created the project (ADR 0023). */
@@ -4374,15 +4354,7 @@ export class EventStore implements EventSink {
     repo: string,
     forgeConnectionId?: string | null,
   ): Promise<ProjectRecord[]> {
-    const rows = await this.db
-      .selectFrom('projects')
-      .select(projectColumns)
-      .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
-      .where('owner', '=', owner.toLowerCase())
-      .where('repo', '=', repo.toLowerCase())
-      .orderBy('repository_instance')
-      .execute();
-    return rows.map((row) => projectRowToRecord(row));
+    return this.projectLifecycle.listProjectsByOwnerRepo(owner, repo, forgeConnectionId);
   }
 
   /**
@@ -4437,49 +4409,11 @@ export class EventStore implements EventSink {
    * not, before it seeds the config file.
    */
   async listProjects(opts?: { includeHidden?: boolean }): Promise<ProjectRecord[]> {
-    let query = this.db
-      .selectFrom('projects')
-      .select(projectColumns)
-      .orderBy(sql`sort_order is null`)
-      .orderBy('sort_order', 'asc')
-      .orderBy('created_at', 'asc')
-      .orderBy('id', 'asc');
-    if (opts?.includeHidden !== true) {
-      query = query.where('hidden_at', 'is', null);
-    }
-    const rows = await query.execute();
-    return rows.map((r) => projectRowToRecord(r));
+    return this.projectLifecycle.listProjects(opts);
   }
 
   async reorderProjects(ids: string[]): Promise<ProjectRecord[]> {
-    if (new Set(ids).size !== ids.length) {
-      throw new Error('duplicate project id in reorderProjects');
-    }
-    await this.db.transaction().execute(async (tx) => {
-      const visibleRows = await tx
-        .selectFrom('projects')
-        .select('id')
-        .where('hidden_at', 'is', null)
-        .where('kind', '!=', 'control_plane')
-        .where((eb) => eb.or([eb('state', '!=', 'absent'), eb('setup_status', '=', 'pending')]))
-        .execute();
-      const visibleIds = new Set(visibleRows.map((row) => row.id));
-      if (visibleIds.size !== ids.length || ids.some((id) => !visibleIds.has(id))) {
-        throw new Error('project order must include every visible project exactly once');
-      }
-      const sortOrderCase = sql<number>`(case ${sql.ref('id')} ${sql.join(
-        ids.map((id, index) => sql`when ${id} then ${index}`),
-        sql.raw(' '),
-      )} end)::integer`;
-      await tx
-        .updateTable('projects')
-        .set({ sort_order: sortOrderCase, updated_at: sql`now()` })
-        .where('hidden_at', 'is', null)
-        .where('kind', '!=', 'control_plane')
-        .where((eb) => eb.or([eb('state', '!=', 'absent'), eb('setup_status', '=', 'pending')]))
-        .execute();
-    });
-    return this.listProjects();
+    return this.projectLifecycle.reorderProjects(ids, () => this.listProjects());
   }
 
   /**
