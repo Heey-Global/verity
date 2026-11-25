@@ -165,7 +165,9 @@ export function ProjectInquiryCards({
     pendingCount > 0
       ? `${pendingCount} awaiting approval`
       : resource.error
-        ? 'Could not load project requests'
+        ? hidesError
+          ? 'Loads once the server is back'
+          : 'Could not load project requests'
         : items.length === 1
           ? items[0]?.title
           : `${items.length} requests`;
@@ -183,7 +185,9 @@ export function ProjectInquiryCards({
           >
             <SessionBarContent
               color={
-                pendingCount > 0 || resource.error ? theme.colors.attention : theme.colors.textMuted
+                pendingCount > 0 || (resource.error && !hidesError)
+                  ? theme.colors.attention
+                  : theme.colors.textMuted
               }
               title="Project requests"
               subtitle={subtitle}

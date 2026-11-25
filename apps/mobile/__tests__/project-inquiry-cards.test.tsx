@@ -205,7 +205,10 @@ it('still says requests are missing while the server is away', async () => {
         .mockRejectedValue(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE)),
     } as unknown as VerityClient;
     const view = render(<ProjectInquiryCards client={client} sessionId="target" />);
-    fireEvent.press(await view.findByRole('button', { name: 'Project requests' }));
+    // The pinned row stays quiet too: the header's bar already raises the outage.
+    expect(await view.findByText('Loads once the server is back')).toBeTruthy();
+    expect(view.queryByText('Could not load project requests')).toBeNull();
+    fireEvent.press(view.getByRole('button', { name: 'Project requests' }));
     expect(view.getByText('Project requests load once the server is back.')).toBeTruthy();
     expect(view.queryByText(SERVER_MAINTENANCE_MESSAGE)).toBeNull();
   } finally {
