@@ -4,7 +4,10 @@
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 // The QA screens read the project detail, which otherwise keeps a live subscription open.
-jest.mock('../lib/liveConnection', () => ({ subscribeLiveRefresh: () => () => undefined }));
+jest.mock('../lib/liveConnection', () => ({
+  subscribeLiveRefresh: () => () => undefined,
+  liveConnectionFor: () => ({ subscribeTopic: () => () => undefined }),
+}));
 // The shared working pulse loops for the app's lifetime; a still value lets Jest exit.
 jest.mock('../lib/pulse', () => {
   const { Animated } = require('react-native');

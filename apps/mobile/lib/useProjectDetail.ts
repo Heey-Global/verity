@@ -1,4 +1,6 @@
+import { getVerityBaseUrl } from './client';
 import { subscribeLiveRefresh } from './liveConnection';
+import { useOverviewTopics } from './overviewTopics';
 // One project's live record for the project screen and each of its settings
 // routes.
 //
@@ -10,7 +12,9 @@ import { subscribeLiveRefresh } from './liveConnection';
 // through a stale copy each screen fetched for itself.
 import {
   VerityApiError,
+  applyOverviewEvent,
   publishProjectStatusMutation,
+  type DomainEvent,
   subscribeProjectStatusMutations,
   type ProjectDetail,
   type ProjectProfile,
@@ -59,6 +63,7 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const loadGeneration = useRef(0);
+  const answeredRef = useRef<{ event: DomainEvent; generation: number }[]>([]);
   const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
   const pendingProjectMutationRef = useRef<ProjectRecord | undefined>(undefined);
   // Polls run only while this screen is the one on top. Every route on the
@@ -126,7 +131,15 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
         if (generation === loadGeneration.current) {
           const project = pendingProjectMutationRef.current ?? next.project;
           pendingProjectMutationRef.current = undefined;
-          setDetail({ ...next, project });
+          // Answers received while this read was on its way still apply to it;
+          // reads started after an answer are the server's word.
+          answeredRef.current = answeredRef.current.filter((a) => generation <= a.generation);
+          let sessions = next.sessions;
+          for (const { event } of answeredRef.current) {
+            const applied = applyOverviewEvent(sessions, event);
+            if (applied.kind === 'local') sessions = applied.sessions;
+          }
+          setDetail({ ...next, project, sessions });
           setSavedProfile(undefined);
           // A fetch result deliberately stays off the status bus. Only an
           // action's response is published (see `onProjectUpdated`): with the
@@ -194,6 +207,44 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
         (path) => path.split('?')[0] === `/projects/${encodeURIComponent(projectId)}`,
       ),
     [client, projectId, detailLoaded, load],
+  );
+
+  // Requests and questions answered anywhere leave this page at once (ADR 0033).
+  const detailRef = useRef(detail);
+  detailRef.current = detail;
+  useOverviewTopics(
+    // The same source as Home, so both views share one live connection.
+    getVerityBaseUrl(),
+    [projectId],
+    (event) => {
+      if (event.t === 'permission.decided' || event.t === 'choices.answered') {
+        // Kept even before the first read lands, which would otherwise bring
+        // the answered card back.
+        answeredRef.current = [
+          ...answeredRef.current.slice(-63),
+          { event, generation: loadGeneration.current },
+        ];
+      }
+      const current = detailRef.current;
+      const effect =
+        current === undefined
+          ? { kind: 'none' as const }
+          : applyOverviewEvent(current.sessions, event);
+      if (effect.kind === 'none') return;
+      if (effect.kind === 'local') {
+        // Applied in place: an answered card needs no project read.
+        setDetail((latest) => {
+          if (latest === undefined) return latest;
+          const applied = applyOverviewEvent(latest.sessions, event);
+          return applied.kind === 'local' ? { ...latest, sessions: applied.sessions } : latest;
+        });
+        return;
+      }
+      if (focusedRef.current) void load(true);
+    },
+    () => {
+      if (focusedRef.current && detailRef.current !== undefined) void load(true);
+    },
   );
 
   return {

@@ -11,6 +11,13 @@ export { SessionReducer, reduceFrames, type SessionState } from './reducer.js';
 export { publishSettledPermission, subscribeSettledPermissions } from './permissionSettlement.js';
 export { clearConditionalReads } from './conditionalReads.js';
 export {
+  applyOverviewEvent,
+  RevisionGate,
+  type OverviewEventEffect,
+} from './live/overviewEvents.js';
+export type { LiveTopicSink } from './live/topics.js';
+export type { DomainEvent } from '@verity/events';
+export {
   publishPullRequestStatusMutation,
   subscribePullRequestStatusMutations,
   type PullRequestStatusMutation,

@@ -1,5 +1,6 @@
 import { reuseSnapshotRecords } from '../snapshotIdentity.js';
-import type { LiveHint } from '@verity/events';
+import type { DomainEvent, LiveHint } from '@verity/events';
+import { applyOverviewEvent, withoutPermission } from '../live/overviewEvents.js';
 import {
   VerityApiError,
   type AttentionSignal,
@@ -134,6 +135,8 @@ export class SessionListModel {
   // Sessions being deleted stay hidden even if an overlapping poll returns the
   // server's pre-delete snapshot. A successful tombstone remains until a later
   // snapshot confirms the session is absent.
+  /** Answers received live, reapplied to list reads that started before them. */
+  private answered: { event: DomainEvent; maxRequest: number }[] = [];
   private pendingDeletes = new Map<
     string,
     { active: number; removed: SessionSummary | undefined; succeeded: boolean }
@@ -230,6 +233,11 @@ export class SessionListModel {
           this.pendingSessionStatuses.delete(session.sessionId);
           return req <= pending.maxRequest ? { ...session, status: pending.status } : session;
         });
+      this.answered = this.answered.filter(({ maxRequest }) => req <= maxRequest);
+      for (const { event } of this.answered) {
+        const effect = applyOverviewEvent(this._sessions, event);
+        if (effect.kind === 'local') this._sessions = effect.sessions;
+      }
       for (const [projectId, pending] of this.pendingOrders) {
         if (req <= pending.maxRequest) this.applyOrder(projectId, pending.ids);
         else {
@@ -385,35 +393,36 @@ export class SessionListModel {
    * poll remains authoritative; this only removes the stale attention badge in
    * the gap before that poll arrives. */
   settlePermission(sessionId: string, toolUseId: string): void {
-    this._sessions = this._sessions.map((session) => {
-      if (session.sessionId !== sessionId) return session;
-      // Home builds its permission cards from the request descriptors, so the
-      // settled request must leave both lists; dropping only the id left the
-      // card on screen until the next full list read.
-      const requests = session.pendingPermissionRequests?.filter(
-        (request) => request.toolUseId !== toolUseId,
-      );
-      const requestsChanged =
-        requests !== undefined && requests.length !== session.pendingPermissionRequests?.length;
-      const pendingPermissions = (session.pendingPermissions ?? []).filter(
-        (id) => id !== toolUseId,
-      );
-      const idsChanged = pendingPermissions.length !== (session.pendingPermissions?.length ?? 0);
-      if (!idsChanged && !requestsChanged) return session;
-      return {
-        ...session,
-        ...(session.pendingPermissions === undefined ? {} : { pendingPermissions }),
-        ...(requestsChanged ? { pendingPermissionRequests: requests } : {}),
-        // Detached requests may be listed only as descriptors; the session waits
-        // until neither list holds anything.
-        ...(session.permissionAwaitingInput === true &&
-        pendingPermissions.length === 0 &&
-        (requests ?? session.pendingPermissionRequests ?? []).length === 0
-          ? { status: 'running' as const, permissionAwaitingInput: undefined }
-          : {}),
-      };
-    });
+    this._sessions = this._sessions.map((session) =>
+      session.sessionId === sessionId ? withoutPermission(session, toolUseId) : session,
+    );
     this.emit();
+  }
+
+  /**
+   * Apply an overview event from the live connection (ADR 0033). It applies
+   * whether or not the list is on screen: an answered request must not come
+   * back when Home is shown again. A list read that started before the event
+   * may still carry the answered card, so the answer is reapplied to such
+   * reads; reads started after it are the server's word. A question opened
+   * after an answer may be stripped from such an older read; its own
+   * `choices.opened` reload brings it back.
+   */
+  applyDomainEvent(event: DomainEvent): void {
+    const effect = applyOverviewEvent(this._sessions, event);
+    if (effect.kind === 'reload') {
+      // `poll` coalesces: a burst of requests is one read in flight plus one.
+      this.poll?.();
+      return;
+    }
+    if (event.t === 'permission.decided' || event.t === 'choices.answered') {
+      this.answered.push({ event, maxRequest: this.reqSeq });
+      if (this.answered.length > 256) this.answered.shift();
+    }
+    if (effect.kind === 'local') {
+      this._sessions = effect.sessions;
+      this.emit();
+    }
   }
 
   /** Apply a PR action result immediately; the regular poll then reconciles it. */
