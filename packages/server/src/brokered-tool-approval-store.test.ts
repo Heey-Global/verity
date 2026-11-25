@@ -328,8 +328,8 @@ it('recovers a saved decision with no transcript card and deduplicates concurren
     ctx.store.appendEvent(input.sessionId, event),
   ]);
   // Either writer can acquire the database lock first.
-  expect(results[0]).toMatchObject({ seq: results[1].seq, ts: results[1].ts });
-  expect(results.filter((result) => result.existing === true)).toHaveLength(1);
+  expect(results.filter(({ existing }) => existing)).toHaveLength(1);
+  expect(results[1]).toMatchObject({ seq: results[0].seq, ts: results[0].ts });
   expect(await restarted.listUnrecordedDecisions(input.sessionId)).toEqual([]);
   expect(
     (await ctx.store.getEvents(input.sessionId)).filter(({ t }) => t === 'notice'),
