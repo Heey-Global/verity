@@ -179,11 +179,11 @@ describe('project state writers', () => {
     })),
   );
 
-  /** Writers that need no announcement, and why. */
+  /** Writers that need no announcement, by file or by file and method, and why. */
   const exempt: Record<string, string> = {
     // Restores a hidden starter project, which views receive as a new entry of
     // the project list rather than as a change of a project they show.
-    'packages/store/src/store.ts': 'restores a hidden project',
+    'packages/store/src/store.ts ensureReplayStarterProject': 'restores a hidden project',
     // The in-transaction writer; its callers are checked below.
     'packages/server/src/project-persistence.ts': 'updateProjectStateInTx',
   };
@@ -195,7 +195,7 @@ describe('project state writers', () => {
         if (!/updateTable\('projects'\)[\s\S]*?\.set\(\{[^}]*\bstate\b[,:]/u.test(method.body)) {
           continue;
         }
-        if (file in exempt) continue;
+        if (`${file} ${method.name}` in exempt || file in exempt) continue;
         if (!method.body.includes('changes?.announce(')) silent.push(`${file} ${method.name}`);
       }
     }

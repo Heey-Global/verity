@@ -90,7 +90,11 @@ export function installProjectEvents(
       project.state === 'active' &&
       (previous?.lifecycle !== next.lifecycle || previous.image !== next.image)
     ) {
-      await updates.status(project);
+      // Not awaited: a slow registry must not hold back this project's next
+      // lifecycle event.
+      void updates.status(project).catch((error: unknown) => {
+        app.log.warn({ err: error, projectId }, 'verity: sandbox update check failed');
+      });
     }
   };
 
