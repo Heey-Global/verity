@@ -188,10 +188,13 @@ export class TaskQueue {
       if (!force) return this.syncing;
       // A forced sync asks for a read after now: a view just opened, and the
       // sync in flight may have started before it and skipped the list.
-      this.followUp ??= this.syncing
+      const settling = this.syncing;
+      this.followUp ??= settling
         .catch(() => undefined)
         .then(() => {
           this.followUp = null;
+          // Never chain onto the sync that has just settled.
+          if (this.syncing === settling) this.syncing = null;
           return this.sync(true);
         });
       return this.followUp;
