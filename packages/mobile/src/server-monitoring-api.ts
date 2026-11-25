@@ -68,6 +68,27 @@ export const diagnosticReportSchema = z
     resources: z
       .object({ rssBytes: z.number(), heapUsedBytes: z.number(), heapLimitBytes: z.number() })
       .passthrough(),
+    // Absent on servers before outbound-call measurement.
+    externalCalls: z
+      .object({
+        calls: z.number(),
+        byTarget: z.array(
+          z
+            .object({
+              target: z.string(),
+              calls: z.number(),
+              failed: z.number(),
+              duplicates: z.number(),
+              rateLimit: z
+                .object({ remaining: z.number(), limit: z.number().nullable() })
+                .passthrough()
+                .nullable(),
+            })
+            .passthrough(),
+        ),
+      })
+      .passthrough()
+      .optional(),
     notYetMeasured: z.array(z.string()).default([]),
   })
   .passthrough();

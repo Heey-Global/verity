@@ -1,3 +1,4 @@
+import type { ExternalObservation, ExternalTarget } from './external-calls.js';
 import { LatencyHistogram } from './latency-histogram.js';
 
 /**
@@ -13,6 +14,7 @@ export const MAX_HTTP_SERIES = 2_000;
 export const MAX_SESSIONS = 1_000;
 export const MAX_SLOW_REQUESTS = 50;
 export const MAX_LIVE_CLIENTS = 50;
+export const MAX_EXTERNAL_SERIES = 500;
 export const OVERFLOW_ROUTE = '(other)';
 /** Past a cap, every new key lands in this one series, whatever its labels. */
 const OVERFLOW_CLIENT = '(other)';
@@ -27,6 +29,8 @@ export interface HttpObservation {
   bytesOut: number;
   sessionId: string | null;
   requestId: string;
+  /** Outbound calls this request made, for detail mode. */
+  external?: { calls: number; durationMs: number } | undefined;
 }
 
 export interface HttpSeries {
@@ -66,12 +70,34 @@ export interface SlowRequest {
   status: number;
   durationMs: number;
   bytesOut: number;
+  externalCalls: number;
+  externalMs: number;
+}
+
+export interface ExternalSeries {
+  target: ExternalTarget;
+  cause: string;
+  method: string;
+  statusClass: string;
+  calls: number;
+  failed: number;
+  duplicates: number;
+  latency: LatencyHistogram;
+}
+
+export interface RateLimitSeen {
+  remaining: number;
+  limit: number | null;
+  at: string;
 }
 
 export class ServerMetrics {
   readonly http = new Map<string, HttpSeries>();
   readonly sessions = new Map<string, SessionTraffic>();
   readonly live = new Map<string, LiveSeries>();
+  readonly external = new Map<string, ExternalSeries>();
+  /** The last rate-limit headers each target returned. */
+  readonly rateLimits = new Map<ExternalTarget, RateLimitSeen>();
   /** Detail mode only: the slowest requests, slowest first. */
   slowRequests: SlowRequest[] = [];
   droppedSessions = 0;
@@ -85,6 +111,8 @@ export class ServerMetrics {
     this.http.clear();
     this.sessions.clear();
     this.live.clear();
+    this.external.clear();
+    this.rateLimits.clear();
     this.slowRequests = [];
     this.droppedSessions = 0;
     this.since = this.now();
@@ -161,9 +189,50 @@ export class ServerMetrics {
       status: observation.status,
       durationMs: Math.round(observation.durationMs),
       bytesOut: observation.bytesOut,
+      externalCalls: observation.external?.calls ?? 0,
+      externalMs: Math.round(observation.external?.durationMs ?? 0),
     });
     slowest.sort((a, b) => b.durationMs - a.durationMs);
     if (slowest.length > MAX_SLOW_REQUESTS) slowest.length = MAX_SLOW_REQUESTS;
+  }
+
+  recordExternal(observation: ExternalObservation): void {
+    const statusClass =
+      observation.status === 0 ? 'failed' : `${Math.floor(observation.status / 100)}xx`;
+    let cause = observation.cause;
+    let method = observation.method;
+    let key = `${observation.target} ${cause} ${method} ${statusClass}`;
+    // Targets and status classes are closed sets; past the cap the cause and
+    // method fold, so the overflow stays one series per target and status.
+    if (!this.external.has(key) && this.external.size >= MAX_EXTERNAL_SERIES) {
+      cause = OVERFLOW_ROUTE;
+      method = '*';
+      key = `${observation.target} ${cause} ${method} ${statusClass}`;
+    }
+    let series = this.external.get(key);
+    if (series === undefined) {
+      series = {
+        target: observation.target,
+        cause,
+        method,
+        statusClass,
+        calls: 0,
+        failed: 0,
+        duplicates: 0,
+        latency: new LatencyHistogram(),
+      };
+      this.external.set(key, series);
+    }
+    series.calls += 1;
+    if (observation.status === 0 || observation.status >= 500 || observation.status === 429)
+      series.failed += 1;
+    if (observation.duplicate) series.duplicates += 1;
+    series.latency.observe(observation.durationMs);
+    if (observation.rateLimit !== null)
+      this.rateLimits.set(observation.target, {
+        ...observation.rateLimit,
+        at: this.now().toISOString(),
+      });
   }
 
   private liveSeries(label: string): LiveSeries {

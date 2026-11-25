@@ -25,8 +25,9 @@ Settings › Diagnostics › Server monitoring, visible to administrators:
 | `availability` | Requests, 4xx and 5xx counts, latency p50/p95/p99/max, the slowest routes                                        |
 | `traffic`      | Bytes per client, top routes by bytes per client, top sessions by bytes (hashed), live WebSocket use per client  |
 | `resources`    | Process memory and heap limit, CPU time, event-loop delay                                                        |
-| `detail`       | The last detail period, kept until the next one starts: the slowest requests with request ID, route, status, duration and size |
-| `notYetMeasured` | Areas a later server version adds: external calls, database, error groups, cost, sandbox lifecycle             |
+| `externalCalls` | Outbound calls per target with failures, duplicates, p95 and the last rate limit seen; the top causes |
+| `detail`       | The last detail period, kept until the next one starts: the slowest requests with request ID, route, status, duration, size and their outbound calls |
+| `notYetMeasured` | Areas a later server version adds: database, error groups, cost, sandbox lifecycle |
 
 Bytes are response bodies as written to the network, after compression,
 without HTTP headers. Every response carries an `x-request-id` header that
@@ -34,6 +35,25 @@ matches the server log and the detail-mode entries.
 
 Never included: messages, transcripts, file contents, secrets and tokens,
 request bodies, query strings and full URLs, project and session names.
+
+## Outbound calls
+
+Every request the server process makes with `fetch` or `node:http` is counted
+through Node's diagnostics channels, so no call site has to count itself.
+Calls are labelled by target — `github`, `google`, `anthropic`, `openai`,
+`doppler`, `apple`, `expo`, `registry`, `verity`, `internal` or `other` — and
+by cause: the route template of the request that made them, a named GitHub
+reader such as `github:session-status`, or `background`. Unknown public hosts
+are reported as `other`, never by name.
+
+A duplicate is the same read (GET or HEAD of the same URL) repeated within two
+seconds. Rate limits are the last `x-ratelimit-*`, `anthropic-ratelimit-*` or
+OpenAI limit headers a target returned. Failed calls are network errors, 429
+and 5xx answers.
+
+Not counted: calls of child processes (git, gh and docker command-line tools),
+calls agents make from their sandboxes, and connections that fail before a
+request is sent.
 
 ## Clients
 
