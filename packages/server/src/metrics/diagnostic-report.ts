@@ -170,9 +170,15 @@ export function buildDiagnosticReport(input: ReportInput) {
       live: live.map((entry: LiveSeries) => ({ ...entry })).sort((a, b) => b.bytesOut - a.bytesOut),
     },
     resources,
-    detail: monitoring.detailMode.active
-      ? { slowRequests: metrics.slowRequests.map((request: SlowRequest) => ({ ...request })) }
-      : null,
+    // The last detail period stays in reports until the next one starts, so a
+    // report taken after detail mode ended still carries what it recorded.
+    detail:
+      monitoring.detailMode.active || metrics.slowRequests.length > 0
+        ? {
+            active: monitoring.detailMode.active,
+            slowRequests: metrics.slowRequests.map((request: SlowRequest) => ({ ...request })),
+          }
+        : null,
     notYetMeasured: [...NOT_YET_MEASURED],
     excluded: [...REPORT_EXCLUSIONS],
   };

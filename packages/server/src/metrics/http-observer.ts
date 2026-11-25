@@ -91,7 +91,9 @@ export function observeHttp(
         durationMs: Number(process.hrtime.bigint() - state.startedAt) / 1e6,
         bytesIn: Number.isFinite(length) && length > 0 ? length : 0,
         bytesOut: state.bytesOut,
-        sessionId: sessionIdOf(request, route),
+        // Only a session the server served: a rejected or unknown ID is the
+        // caller's text, not a session, and must not fill the session list.
+        sessionId: reply.statusCode < 400 ? sessionIdOf(request, route) : null,
         requestId: request.id,
       },
       control.detailActive,

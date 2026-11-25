@@ -25,7 +25,7 @@ Settings › Diagnostics › Server monitoring, visible to administrators:
 | `availability` | Requests, 4xx and 5xx counts, latency p50/p95/p99/max, the slowest routes                                        |
 | `traffic`      | Bytes per client, top routes by bytes per client, top sessions by bytes (hashed), live WebSocket use per client  |
 | `resources`    | Process memory and heap limit, CPU time, event-loop delay                                                        |
-| `detail`       | Detail mode only: the slowest requests with request ID, route, status, duration and size                         |
+| `detail`       | The last detail period, kept until the next one starts: the slowest requests with request ID, route, status, duration and size |
 | `notYetMeasured` | Areas a later server version adds: external calls, database, error groups, cost, sandbox lifecycle             |
 
 Bytes are response bodies as written to the network, after compression,

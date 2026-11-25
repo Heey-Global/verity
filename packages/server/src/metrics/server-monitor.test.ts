@@ -26,7 +26,11 @@ async function serve(options: { store?: MonitoringSettingsStore; now?: () => Dat
   });
   installServerMonitoring(instance, monitor);
   await instance.register(compressPlugin, { global: false, encodings: ['gzip'] });
-  instance.get('/sessions/:id/events', async () => BODY);
+  instance.get('/sessions/:id/events', async (request, reply) =>
+    (request.params as { id: string }).id.startsWith('unknown')
+      ? reply.code(404).send({ error: 'not found' })
+      : BODY,
+  );
   instance.get('/sessions/:id/history/v1', { compress: {} }, async (_request, reply) =>
     reply.type('text/plain').compress(BODY),
   );
@@ -152,7 +156,13 @@ describe('server monitoring', () => {
     );
     clock += 15 * 60_000 + 1;
     expect(report(monitor).monitoring.detailMode.active).toBe(false);
-    expect(report(monitor).detail).toBeNull();
+    // Ended, but what it recorded is still in the next report.
+    expect(report(monitor).detail).toMatchObject({ active: false });
+    expect(report(monitor).detail?.slowRequests.length).toBeGreaterThan(0);
+    const kept = report(monitor).detail?.slowRequests.length;
+    await app.inject({ url: '/sessions/s-2/events' });
+    // After it ended nothing new is recorded.
+    expect(report(monitor).detail?.slowRequests).toHaveLength(kept!);
   });
 
   // Old slow requests in a new period would point the reader at a problem that
@@ -183,6 +193,18 @@ describe('server monitoring', () => {
     failWrites = false;
     await monitor.control.startDetailMode(60, 'control');
     expect(monitor.metrics.slowRequests).toHaveLength(0);
+  });
+
+  // A caller can put any text in the path; only sessions the server actually
+  // served belong in the list Control reads with raw IDs.
+  it('lists only sessions whose requests succeeded', async () => {
+    const { app, monitor } = await serve();
+    await app.inject({ url: '/sessions/s-1/events' });
+    for (let index = 0; index < 5; index += 1)
+      await app.inject({ url: `/sessions/unknown-${index}/events` });
+    expect(monitor.report('raw').traffic.topSessions.map((entry) => entry.session)).toEqual([
+      's-1',
+    ]);
   });
 
   it('accepts only the offered detail durations', async () => {
