@@ -139,8 +139,10 @@ publishes the result as `pr.status`. Several viewers share one read.
   every store method that writes a project's state announces the project after
   its write committed, and writes inside a caller's transaction go through a
   project lock that announces after commit. A guard derived from the sources
-  fails when a state writer does neither, since a silent writer would
-  reintroduce staleness without breaking anything else.
+  checks both: store methods that update `projects.state` must announce, and
+  every in-transaction state write must sit inside the announcing lock. It
+  reads the code's usual shapes rather than proving every write, so a writer
+  that bypasses the store and the lock still needs review.
 
 ## Verification
 

@@ -60,7 +60,9 @@ export function projectEventUpdate(event: DomainEvent): ProjectEventUpdate | und
             ? { setupStatus: setupStatus.data }
             : {}),
         }),
-        reload: false,
+        // A read already in flight may still carry the old value; the read
+        // that follows it settles on the new one.
+        reload: true,
       };
     }
     default:

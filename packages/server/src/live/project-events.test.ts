@@ -205,17 +205,21 @@ describe('project state writers', () => {
   });
 
   it('writes in-transaction states only under a lock that announces after commit', () => {
-    const callers = sources.filter(
-      ({ file, text }) =>
-        !file.endsWith('project-persistence.ts') && text.includes('updateProjectStateInTx('),
-    );
-    expect(callers.length).toBeGreaterThan(0);
-    for (const { file, text } of callers) {
-      expect({ file, plainLocks: text.match(/\bwithProjectLock\(/gu) ?? [] }).toEqual({
-        file,
-        plainLocks: [],
-      });
+    const unannounced: string[] = [];
+    let calls = 0;
+    for (const { file, text } of sources) {
+      if (file.endsWith('project-persistence.ts')) continue;
+      for (const call of text.matchAll(/\bupdateProjectStateInTx\(/gu)) {
+        calls += 1;
+        // The nearest transaction opened before the call must be the lock that
+        // announces after commit, not a plain one.
+        const before = text.slice(0, call.index);
+        const opener = [...before.matchAll(/\bwithProjectWrite\(|\.transaction\(\)/gu)].at(-1);
+        if (opener?.[0] !== 'withProjectWrite(') unannounced.push(`${file}:${call.index}`);
+      }
     }
+    expect(calls).toBeGreaterThan(0);
+    expect(unannounced).toEqual([]);
   });
 });
 

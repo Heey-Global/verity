@@ -69,14 +69,14 @@ describe('projectEventUpdate', () => {
     expect(update.reload).toBe(true);
   });
 
-  it('applies renames and setup status without a read, ignoring unknown values', () => {
+  it('applies renames and setup status at once, ignoring unknown values', () => {
     const update = projectEventUpdate({
       t: 'project.changed',
       projectId: 'p1',
       rev: 1,
       patch: { name: 'Renamed', setupStatus: 'nonsense', containerName: 'x' },
     })!;
-    expect(update.reload).toBe(false);
+    expect(update.reload).toBe(true);
     expect(update.patch(project)).toEqual({ ...project, name: 'Renamed' });
   });
 
