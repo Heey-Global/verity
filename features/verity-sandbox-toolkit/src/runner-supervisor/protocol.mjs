@@ -7,6 +7,7 @@ import { lstat, open, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { TextDecoder } from 'node:util';
+import { BROKERED_SECRET_REFERENCE } from '../../../../packages/secret-contracts/src/brokered-secret-reference.ts';
 import { readTurnState, syncDirectory } from './turn-state.mjs';
 
 /** Partial or stale toolkit installations must retain the legacy runtime prompt. */
@@ -363,7 +364,7 @@ function isValidTrustedCliSecret(secret) {
   return (
     isObject(secret) &&
     typeof secret.secretAlias === 'string' &&
-    /^[A-Z][A-Z0-9_]*$/u.test(secret.secretAlias) &&
+    BROKERED_SECRET_REFERENCE.test(secret.secretAlias) &&
     typeof secret.env === 'string' &&
     /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(secret.env) &&
     typeof secret.secret === 'string' &&

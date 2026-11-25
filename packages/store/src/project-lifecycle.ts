@@ -1,4 +1,4 @@
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from './schema.js';
 import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import {
@@ -9,6 +9,8 @@ import {
 import { claimNextRepositoryInstance } from './project-identity-allocation.js';
 import {
   projectColumns,
+  PROJECT_NAME_MAX_CHARS,
+  InvalidProjectNameError,
   projectRowToRecord,
   LOCAL_PROJECT_OWNER,
   ProjectIdentityClaimConflict,
@@ -28,6 +30,322 @@ export class ProjectLifecycleStore {
   ) {}
   private get db(): Kysely<Database> {
     return this.currentDb();
+  }
+
+  /**
+   * Idempotent upsert on `(owner, repo)`. Re-running the GitHub-installation sync
+   * (slice 2) calls this with the same `(owner, repo)` and an `absent` state; the
+   * ON CONFLICT branch keeps the existing `state`/`provision_error`-state (the
+   * provisioning worker owns those fields, GitHub-sync must not clobber them).
+   * `container_name` and an explicitly supplied image override are refreshed
+   * from the input. Provisioning separately records its effective image.
+   *
+   * This method is the single lowercase-canonicalization site for the
+   * `projects` table: `owner`, `repo`, `container_name` are passed through
+   * `.toLowerCase()` BEFORE the write. The schema's `CHECK (owner = lower(owner)
+   * AND repo = lower(repo))` constraint (§19.2 lowercase-persist guarantee) is
+   * the DB-side backstop against direct writers; calling code that bypasses
+   * `upsertProject` and hits the table via raw SQL must lowercase itself or
+   * the CHECK throws.
+   *
+   * @returns the post-upsert row (CREATE form for a brand-new repo, UPDATE form
+   *          for an existing one with the merged fields). Returned via
+   *          `INSERT … ON CONFLICT DO UPDATE … RETURNING *` — atomic with the
+   *          write, no separate SELECT that could race a concurrent
+   *          `deleteProject` (slice 3) between insert and lookup.
+   */
+  async upsertProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
+    const row = await this.db.transaction().execute(async (tx) => {
+      // Knowledge lifecycle mutations take this lock before touching a project
+      // row. Match that order here so sync cannot deadlock with hide/delete.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      return this.upsertPrimaryProject(tx, input);
+    });
+    if (!row) {
+      // The only way `RETURNING *` returns undefined here is if the ORM/dialect
+      // drops the returning clause — a contract bug, not a runtime path.
+      throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
+    }
+    return projectRowToRecord(row);
+  }
+
+  /** The body of {@link upsertProject}: always targets the repository's first
+   *  project (instance 1). The caller holds the project lifecycle lock. */
+  private async upsertPrimaryProject(tx: Transaction<Database>, input: ProjectUpsertInput) {
+    // Lowercase the canonical (owner, repo) and the derived container_name so
+    // the persisted form honours §19.0/§19.2's lowercase-persist contract
+    // (without forcing every caller — including GitHub-sync — to remember).
+    const owner = input.owner.toLowerCase();
+    const repo = input.repo.toLowerCase();
+    const containerName = input.containerName.toLowerCase();
+    const legacyContainerNames = [`dev-${owner}--${repo}`, `dev-${owner}-${repo}`];
+    const shouldMigrateLegacyContainerName = containerName.startsWith('verity-');
+
+    // A sync may omit the connection, but must never change the provider of
+    // an existing project identified by its durable ID.
+    const byId = await tx
+      .selectFrom('projects')
+      .select(['kind', 'forge_connection_id', 'repository_instance'])
+      .where('id', '=', input.id)
+      .executeTakeFirst();
+    // The upsert resolves by the repository's first project. A further project
+    // of the same repository must never be rewritten into, or confused with, it.
+    if (byId && byId.repository_instance !== 1) {
+      throw new ProjectIdentityClaimConflict(
+        'Project is a further project of its repository and cannot be upserted',
+      );
+    }
+    if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
+      throw new ProjectIdentityClaimConflict(
+        'Project identity belongs to another forge connection',
+      );
+    }
+    if (input.forgeConnectionId === undefined && byId?.forge_connection_id) {
+      input = { ...input, forgeConnectionId: byId.forge_connection_id };
+    }
+    const existingBinding = await tx
+      .selectFrom('projects')
+      .select(['kind', 'forge_connection_id'])
+      .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+      .where('owner', '=', owner)
+      .where('repo', '=', repo)
+      .where('repository_instance', '=', 1)
+      .executeTakeFirst();
+    if (
+      existingBinding !== undefined &&
+      ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
+        (input.forgeConnectionId !== undefined &&
+          existingBinding.forge_connection_id !== null &&
+          existingBinding.forge_connection_id !== input.forgeConnectionId))
+    ) {
+      throw new ProjectIdentityClaimConflict(
+        'Project identity belongs to another forge connection',
+      );
+    }
+    const claimed = await tx
+      .insertInto('project_identity_claims')
+      .values({
+        owner,
+        repo,
+        project_id: input.id,
+        forge_connection_id: input.forgeConnectionId ?? null,
+      })
+      .onConflict((conflict) =>
+        conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+      )
+      .returning('project_id')
+      .executeTakeFirst();
+    if (claimed === undefined) {
+      const [claim, existing] = await Promise.all([
+        tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirstOrThrow(),
+        tx
+          .selectFrom('projects')
+          .select('id')
+          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+      ]);
+      if (existing === undefined || claim.project_id !== existing.id) {
+        throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
+      }
+    }
+    const project = await tx
+      .insertInto('projects')
+      .values({
+        id: input.id,
+        name: input.name ?? defaultProjectName({ repo }),
+        owner,
+        repo,
+        container_name: containerName,
+        kind: input.kind ?? 'github',
+        forge_connection_id: input.forgeConnectionId ?? null,
+        clone_dir: input.cloneDir ?? null,
+        image_ref: input.imageRef ?? null,
+        image_override_ref: input.imageRef ?? null,
+        state: input.state,
+        archived: input.archived ?? false,
+        overview_visible: input.overviewVisible ?? false,
+        provision_error: null,
+        provision_warning: null,
+      })
+      .onConflict((oc) =>
+        oc.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doUpdateSet({
+          // Preserve custom adopted container names, but migrate old deterministic
+          // `dev-<owner>--<repo>` / `dev-<owner>-<repo>` rows to the current
+          // canonical `verity-<owner>--<repo>` name. Without this, fresh servers
+          // can keep pointing at a legacy Dogfood container and miss current
+          // runtime mounts and gateway routing configuration.
+          container_name: shouldMigrateLegacyContainerName
+            ? sql`case when projects.container_name in (${sql.join(legacyContainerNames)}) then ${containerName} else projects.container_name end`
+            : sql`projects.container_name`,
+          // Provisioning-owned state stays untouched (the worker's
+          // `cloning/container_starting/active/failed` survives a sync pass).
+          // The image fields are only touched when the caller EXPLICITLY sets an
+          // override: `input.imageRef === undefined` means
+          // "I have no opinion, leave what's pinned" (preserves a slice-3 pin
+          // across slice-2 list refreshes), while `null` means "explicitly
+          // clear the pin" (operator-driven unpin). Slice 2's sync passes
+          // undefined → no-op.
+          // `toolkit_identity` travels with `image_ref` because it is a
+          // statement ABOUT that image: an operator pinning a NEW one has
+          // pinned something nothing has attested, and carrying the old
+          // verdict forward would let the new image inherit an all-clear it
+          // never earned. The next provisioning writes the real answer.
+          //
+          // Which is why the clear is conditional on the image actually
+          // moving. Re-saving the same pin — an idempotent settings write, a
+          // re-add of a project that never changed — leaves the effective
+          // image exactly as attested, so discarding the verdict there would
+          // manufacture an "unknown toolkit" warning about an image that was
+          // checked and passed, and it would stay wrong until the next
+          // provisioning. `is distinct from` compares against the PRE-update
+          // row (`projects.` in an ON CONFLICT update), and treats a null on
+          // either side as a difference rather than as unknown.
+          ...(input.imageRef !== undefined
+            ? {
+                image_ref: input.imageRef,
+                image_override_ref: input.imageRef,
+                toolkit_identity: sql<
+                  string | null
+                >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
+              }
+            : {}),
+          ...(input.forgeConnectionId !== undefined
+            ? { forge_connection_id: input.forgeConnectionId }
+            : {}),
+          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...(input.archived !== undefined ? { archived: input.archived } : {}),
+          ...(input.overviewVisible !== undefined
+            ? { overview_visible: input.overviewVisible }
+            : {}),
+          // `restore` (the POST /projects re-add path) un-hides an existing
+          // row. Omitted by the installation sync, so a re-sync of a repo the
+          // operator deleted keeps it hidden rather than resurrecting it.
+          ...(input.restore === true ? { hidden_at: null } : {}),
+          updated_at: sql`now()`,
+        }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+    if (project && input.archived !== undefined) {
+      // Every project of the repository shares its archive state.
+      await tx
+        .updateTable('projects')
+        .set({ archived: input.archived, updated_at: sql`now()` })
+        .where('forge_scope', '=', project.forge_scope)
+        .where('owner', '=', owner)
+        .where('repo', '=', repo)
+        .where('repository_instance', '>', 1)
+        .where('archived', '!=', input.archived)
+        .execute();
+    }
+    if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+    return project;
+  }
+
+  /**
+   * Add a repository-backed project the operator chose. While the repository's
+   * first project (instance 1) is only an installation placeholder, it is
+   * adopted; when the operator had removed it, it is restored — both exactly as
+   * {@link upsertProject} does. Once that repository already backs a visible
+   * project (or a link is reserving it), a separate project is created as the
+   * next instance, with its own ID, clone directory and container. An existing
+   * project is never returned or reset for another project's request.
+   */
+  async createRepositoryProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
+    const owner = input.owner.toLowerCase();
+    const repo = input.repo.toLowerCase();
+    const scope = input.forgeConnectionId ?? 'legacy-github';
+    const row = await this.db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      const [primary, claim] = await Promise.all([
+        tx
+          .selectFrom('projects')
+          .select(['id', 'kind', 'state', 'overview_visible', 'hidden_at', 'archived'])
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+        tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+      ]);
+      const adoptable =
+        primary === undefined
+          ? claim === undefined
+          : claim?.project_id === primary.id &&
+            (primary.hidden_at !== null ||
+              isInstallationPlaceholder({
+                kind: primary.kind as ProjectKind,
+                state: primary.state as ProjectState,
+                overviewVisible: primary.overview_visible,
+              }));
+      const repositoryArchive =
+        primary ??
+        (await tx
+          .selectFrom('projects')
+          .select('archived')
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .orderBy('repository_instance', 'asc')
+          .executeTakeFirst());
+      if (adoptable)
+        return this.upsertPrimaryProject(tx, {
+          ...input,
+          archived: input.archived ?? repositoryArchive?.archived ?? false,
+        });
+      const instance = await claimNextRepositoryInstance(
+        tx,
+        { owner, repo, forgeConnectionId: input.forgeConnectionId },
+        input.id,
+      );
+      // The project ID keeps the directory and container apart from every other
+      // project of this repository, whatever the repository is called.
+      const project = await tx
+        .insertInto('projects')
+        .values({
+          id: input.id,
+          name: input.name ?? defaultProjectName({ repo }),
+          owner,
+          repo,
+          repository_instance: instance,
+          container_name: `${input.containerName}--${input.id}`.toLowerCase(),
+          kind: input.kind ?? 'github',
+          forge_connection_id: input.forgeConnectionId ?? null,
+          clone_dir: `${input.cloneDir ?? `${owner}-${repo}`}-${input.id}`,
+          image_ref: input.imageRef ?? null,
+          image_override_ref: input.imageRef ?? null,
+          state: input.state,
+          // Archival is a property of the repository, recorded by the
+          // installation sync on its first project.
+          archived: input.archived ?? repositoryArchive?.archived ?? false,
+          overview_visible: input.overviewVisible ?? true,
+          provision_error: null,
+          provision_warning: null,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+      return project;
+    });
+    if (!row) throw new Error('verity: createRepositoryProject RETURNING yielded no row');
+    return projectRowToRecord(row);
   }
 
   /** Insert a project without adopting an existing `(owner, repo)` row. Used for
@@ -664,5 +982,116 @@ export class ProjectLifecycleStore {
       })
       .where('id', '=', id)
       .execute();
+  }
+
+  /**
+   * Gives a project a new name. Only the name changes: owner, repo, container,
+   * clone directory and every repository link stay as they are. Duplicate names
+   * across projects are allowed — the ID identifies a project, not its name.
+   *
+   * @throws {InvalidProjectNameError} when the trimmed name is empty or longer
+   *         than {@link PROJECT_NAME_MAX_CHARS}.
+   * @returns the renamed project, or `undefined` when it does not exist.
+   */
+  async renameProject(id: string, name: string): Promise<ProjectRecord | undefined> {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) throw new InvalidProjectNameError('project name is required');
+    if (trimmed.length > PROJECT_NAME_MAX_CHARS)
+      throw new InvalidProjectNameError(
+        `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
+      );
+    const row = await this.db
+      .updateTable('projects')
+      .set({ name: trimmed, updated_at: sql`now()` })
+      .where('id', '=', id)
+      .returningAll()
+      .executeTakeFirst();
+    return row ? projectRowToRecord(row) : undefined;
+  }
+
+  async getProject(id: string): Promise<ProjectRecord | undefined> {
+    const row = await this.db
+      .selectFrom('projects')
+      .select(projectColumns)
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return row ? projectRowToRecord(row) : undefined;
+  }
+
+  /** Every project of one repository, hidden ones included, first instance first. */
+  async listProjectsByOwnerRepo(
+    owner: string,
+    repo: string,
+    forgeConnectionId?: string | null,
+  ): Promise<ProjectRecord[]> {
+    const rows = await this.db
+      .selectFrom('projects')
+      .select(projectColumns)
+      .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
+      .where('owner', '=', owner.toLowerCase())
+      .where('repo', '=', repo.toLowerCase())
+      .orderBy('repository_instance')
+      .execute();
+    return rows.map((row) => projectRowToRecord(row));
+  }
+
+  /**
+   * All registered projects, ordered by operator-defined `sort_order` first and
+   * then `(created_at, id)` so listing is stable across paginated runs. Rows with
+   * no manual order sort after manually ordered rows.
+   *
+   * Soft-deleted (hidden) projects are excluded by default so the mobile picker
+   * and the installation-sync return value never show a repo the operator
+   * removed. Pass `{ includeHidden: true }` for the first-run-bootstrap check
+   * (embedded startup) that must know whether ANY project row exists, hidden or
+   * not, before it seeds the config file.
+   */
+  async listProjects(opts?: { includeHidden?: boolean }): Promise<ProjectRecord[]> {
+    let query = this.db
+      .selectFrom('projects')
+      .select(projectColumns)
+      .orderBy(sql`sort_order is null`)
+      .orderBy('sort_order', 'asc')
+      .orderBy('created_at', 'asc')
+      .orderBy('id', 'asc');
+    if (opts?.includeHidden !== true) {
+      query = query.where('hidden_at', 'is', null);
+    }
+    const rows = await query.execute();
+    return rows.map((r) => projectRowToRecord(r));
+  }
+
+  async reorderProjects(
+    ids: string[],
+    listProjects: () => Promise<ProjectRecord[]>,
+  ): Promise<ProjectRecord[]> {
+    if (new Set(ids).size !== ids.length) {
+      throw new Error('duplicate project id in reorderProjects');
+    }
+    await this.db.transaction().execute(async (tx) => {
+      const visibleRows = await tx
+        .selectFrom('projects')
+        .select('id')
+        .where('hidden_at', 'is', null)
+        .where('kind', '!=', 'control_plane')
+        .where((eb) => eb.or([eb('state', '!=', 'absent'), eb('setup_status', '=', 'pending')]))
+        .execute();
+      const visibleIds = new Set(visibleRows.map((row) => row.id));
+      if (visibleIds.size !== ids.length || ids.some((id) => !visibleIds.has(id))) {
+        throw new Error('project order must include every visible project exactly once');
+      }
+      const sortOrderCase = sql<number>`(case ${sql.ref('id')} ${sql.join(
+        ids.map((id, index) => sql`when ${id} then ${index}`),
+        sql.raw(' '),
+      )} end)::integer`;
+      await tx
+        .updateTable('projects')
+        .set({ sort_order: sortOrderCase, updated_at: sql`now()` })
+        .where('hidden_at', 'is', null)
+        .where('kind', '!=', 'control_plane')
+        .where((eb) => eb.or([eb('state', '!=', 'absent'), eb('setup_status', '=', 'pending')]))
+        .execute();
+    });
+    return listProjects();
   }
 }

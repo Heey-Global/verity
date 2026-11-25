@@ -1,3 +1,4 @@
+import { BROKERED_SECRET_REFERENCE } from './brokered-secret-reference.js';
 import { z } from 'zod';
 import {
   brokeredSecretsProtocolVersionSchema,
@@ -107,14 +108,7 @@ export const secretToolInvocationSchema = z
   .strict();
 export type SecretToolInvocation = z.infer<typeof secretToolInvocationSchema>;
 
-/**
- * A secret reference (ADR 0031): `NAME` in the project's default Doppler binding,
- * or `project/config/NAME` in the binding of that Doppler project and config. The
- * default may be written in full as well. Names follow Doppler's classic rules and
- * never contain `/`, so the two forms cannot be confused.
- */
-export const BROKERED_SECRET_REFERENCE =
-  /^(?:([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/)?([A-Z][A-Z0-9_]*)$/;
+export { BROKERED_SECRET_REFERENCE } from './brokered-secret-reference.js';
 export const brokeredSecretReferenceSchema = z.string().regex(BROKERED_SECRET_REFERENCE);
 const brokeredSecretAliasSchema = brokeredSecretReferenceSchema;
 
