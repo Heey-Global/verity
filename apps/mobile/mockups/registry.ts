@@ -3,6 +3,7 @@ import { permissionOverviewSpec } from './permission-overview';
 import { nativeMcpAppsSpec } from './native-mcp-apps';
 import { teamJoinRecoverySpec } from './team-join-recovery';
 import { sandboxUpdatesSpec } from './sandbox-updates';
+import { serverMonitoringSpec } from './server-monitoring';
 import { aiAccountsSpec } from './ai-accounts';
 import { codeWorkspaceSpec } from './code-workspace';
 import { connectionStatusSpec } from './connection-status';
@@ -37,6 +38,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   nativeMcpAppsSpec,
   teamJoinRecoverySpec,
   sandboxUpdatesSpec,
+  serverMonitoringSpec,
   aiAccountsSpec,
   codeWorkspaceSpec,
   sessionStabilitySpec,

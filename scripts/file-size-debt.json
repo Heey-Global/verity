@@ -49,7 +49,7 @@
   "packages/session/src/runner-supervisor-client.ts": 2376,
   "packages/store/src/migrations.ts": 5586,
   "packages/store/src/projects.test.ts": 1766,
-  "packages/store/src/schema.ts": 2130,
+  "packages/store/src/schema.ts": 2115,
   "packages/store/src/store.test.ts": 2611,
   "packages/store/src/store.ts": 5127,
   "scripts/ci-workflow.test.ts": 6046,

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely } from 'kysely';
-import type { Database, WikiOccasionsTable } from './schema.js';
+import type { Database } from './schema.js';
+import type { WikiOccasionsTable } from './schema-wiki.js';
 
 export type WikiOccasionKind = WikiOccasionsTable['kind'];
 
