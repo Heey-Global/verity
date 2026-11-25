@@ -15,6 +15,9 @@ import { dirname as dirname2, join as join2 } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { TextDecoder } from "node:util";
 
+// packages/secret-contracts/src/brokered-secret-reference.ts
+var BROKERED_SECRET_REFERENCE = /^(?:([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/)?([A-Z][A-Z0-9_]*)$/;
+
 // features/verity-sandbox-toolkit/src/runner-supervisor/turn-state.mjs
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -907,7 +910,7 @@ function redactTrustedCliText(bytes, secrets) {
   return text;
 }
 function isValidTrustedCliSecret(secret) {
-  return isObject(secret) && typeof secret.secretAlias === "string" && /^[A-Z][A-Z0-9_]*$/u.test(secret.secretAlias) && typeof secret.env === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(secret.env) && typeof secret.secret === "string" && secret.secret.length > 0 && !secret.secret.includes("\0") && Buffer.byteLength(secret.secret) <= 1024 * 1024 && (secret.injection === void 0 || secret.injection === "env" || secret.injection === "file") && (secret.encoding === void 0 || secret.injection === "file" && secret.encoding === "base64");
+  return isObject(secret) && typeof secret.secretAlias === "string" && BROKERED_SECRET_REFERENCE.test(secret.secretAlias) && typeof secret.env === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(secret.env) && typeof secret.secret === "string" && secret.secret.length > 0 && !secret.secret.includes("\0") && Buffer.byteLength(secret.secret) <= 1024 * 1024 && (secret.injection === void 0 || secret.injection === "env" || secret.injection === "file") && (secret.encoding === void 0 || secret.injection === "file" && secret.encoding === "base64");
 }
 function normalizeTrustedCliRequest(request) {
   if (!isObject(request) || Array.isArray(request.secrets) || typeof request.secret !== "string") {
