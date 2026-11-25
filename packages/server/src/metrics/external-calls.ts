@@ -18,20 +18,18 @@ import { isIP } from 'node:net';
  * their sandboxes, and connections that fail before a request is sent.
  */
 
-const EXTERNAL_TARGETS = [
-  'github',
-  'google',
-  'anthropic',
-  'openai',
-  'doppler',
-  'apple',
-  'expo',
-  'registry',
-  'verity',
-  'internal',
-  'other',
-] as const;
-export type ExternalTarget = (typeof EXTERNAL_TARGETS)[number];
+export type ExternalTarget =
+  | 'github'
+  | 'google'
+  | 'anthropic'
+  | 'openai'
+  | 'doppler'
+  | 'apple'
+  | 'expo'
+  | 'registry'
+  | 'verity'
+  | 'internal'
+  | 'other';
 
 const DOMAINS: readonly (readonly [ExternalTarget, readonly string[]])[] = [
   ['github', ['github.com', 'githubusercontent.com']],
@@ -79,13 +77,15 @@ export interface ExternalCause {
   readonly cause: string;
   calls: number;
   durationMs: number;
+  /** The enclosing cause: a GitHub reader inside a request counts for both. */
+  readonly parent?: ExternalCause | undefined;
 }
 
 const causes = new AsyncLocalStorage<ExternalCause>();
 
 /** Runs `fn` with `cause` as the reason for every outbound call it makes. */
 export function withExternalCause<T>(cause: string, fn: () => T): T {
-  return causes.run(createCause(cause), fn);
+  return causes.run({ cause, calls: 0, durationMs: 0, parent: causes.getStore() }, fn);
 }
 
 /** A cause whose calls are collected in the object itself (one HTTP request). */
@@ -139,6 +139,10 @@ const REMAINING = [
 ] as const;
 
 function rateLimitOf(headers: unknown): ExternalObservation['rateLimit'] {
+  // GitHub keeps separate buckets (search: 30 a minute, graphql); only the core
+  // REST quota is the one every reader shares.
+  const resource = headerOf(headers, 'x-ratelimit-resource');
+  if (resource !== undefined && resource !== 'core') return null;
   for (const [remainingName, limitName] of REMAINING) {
     const remaining = Number(headerOf(headers, remainingName));
     if (headerOf(headers, remainingName) !== undefined && Number.isFinite(remaining)) {
@@ -219,9 +223,9 @@ export class ExternalCallObserver {
     if (pending === undefined) return;
     this.pending.delete(request);
     const durationMs = Number(process.hrtime.bigint() - pending.startedAt) / 1e6;
-    if (pending.cause !== undefined) {
-      pending.cause.calls += 1;
-      pending.cause.durationMs += durationMs;
+    for (let cause = pending.cause; cause !== undefined; cause = cause.parent) {
+      cause.calls += 1;
+      cause.durationMs += durationMs;
     }
     this.record({
       target: pending.target,
@@ -282,6 +286,8 @@ export class ExternalCallObserver {
     this.start(request, host, request.method ?? 'GET', request.path ?? '');
   };
 
+  // Published when the response headers arrive, like `undici:request:headers`,
+  // so both clients measure time to headers and an unread body is still counted.
   private readonly onHttpFinish = (message: unknown): void => {
     const { request, response } = message as {
       request?: object;

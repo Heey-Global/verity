@@ -15,6 +15,11 @@ let observer: ExternalCallObserver;
 
 beforeEach(async () => {
   server = createServer((request, response) => {
+    if (request.url === '/search') {
+      response.setHeader('x-ratelimit-resource', 'search');
+      response.setHeader('x-ratelimit-remaining', '29');
+      response.setHeader('x-ratelimit-limit', '30');
+    }
     if (request.url === '/limited') {
       response.setHeader('x-ratelimit-remaining', '4812');
       response.setHeader('x-ratelimit-limit', '5000');
@@ -71,6 +76,13 @@ describe('ExternalCallObserver', () => {
       }),
       expect.objectContaining({ cause: 'background', status: 404, rateLimit: null }),
     ]);
+  });
+
+  // GitHub's search bucket holds 30 a minute; reported as the GitHub quota it
+  // would claim the shared REST budget is nearly spent.
+  it('takes the rate limit only from the shared core bucket', async () => {
+    await (await fetch(`${base}/search`)).text();
+    expect(observed[0]?.rateLimit).toBeNull();
   });
 
   it('counts node:http requests too', async () => {

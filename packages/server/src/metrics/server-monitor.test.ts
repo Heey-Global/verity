@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { pairedRoutePolicy } from '../paired-route-policy.js';
 import { hashIdentifier } from './diagnostic-report.js';
+import { withExternalCause } from './external-calls.js';
 import type { MonitoringSettingsStore } from './monitoring-control.js';
 import {
   createServerMonitor,
@@ -252,6 +253,49 @@ describe('server monitoring', () => {
       ]);
       expect(detail?.slowRequests).toEqual([
         expect.objectContaining({ route: '/projects/:id/status', externalCalls: 2 }),
+      ]);
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  // A body is read from socket events outside the request's context, and a
+  // GitHub reader opens a cause of its own: both must still count for the
+  // request, or detail mode shows no outbound calls for mutation routes and
+  // for exactly the GitHub-heavy routes it is meant to expose.
+  it('keeps the request cause for bodies and nested readers', async () => {
+    const upstream = Fastify();
+    upstream.get('/data', async () => 'ok');
+    await upstream.listen({ port: 0, host: '127.0.0.1' });
+    try {
+      const { port } = upstream.server.address() as { port: number };
+      const instance = Fastify();
+      const monitor = createServerMonitor({ store: undefined, version: '9.9.9' });
+      installServerMonitoring(instance, monitor);
+      instance.post('/projects/:id/sync', async () => {
+        await (await fetch(`http://127.0.0.1:${port}/data`)).text();
+        await withExternalCause('github:repository-status', async () => {
+          await (await fetch(`http://127.0.0.1:${port}/data?reader`)).text();
+        });
+        return 'done';
+      });
+      await instance.listen({ port: 0, host: '127.0.0.1' });
+      app = instance;
+      await monitor.control.startDetailMode(15, 'app');
+      const own = (instance.server.address() as { port: number }).port;
+      await (
+        await fetch(`http://127.0.0.1:${own}/projects/p-1/sync`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ payload: 'x'.repeat(100_000) }),
+        })
+      ).text();
+      const { externalCalls, detail } = monitor.report('hashed');
+      expect(externalCalls.topCauses.map((entry) => entry.cause)).toEqual(
+        expect.arrayContaining(['POST /projects/:id/sync', 'github:repository-status']),
+      );
+      expect(detail?.slowRequests).toEqual([
+        expect.objectContaining({ route: '/projects/:id/sync', externalCalls: 2 }),
       ]);
     } finally {
       await upstream.close();
