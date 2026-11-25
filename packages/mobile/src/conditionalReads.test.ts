@@ -72,6 +72,28 @@ describe('withConditionalReads', () => {
     expect((seen[1] as Headers).get('if-none-match')).toBe('W/"x"');
   });
 
+  it('updates remembered metadata from a 304', async () => {
+    let version = '4';
+    const fetchImpl = (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const revalidating = new Headers(init?.headers).get('if-none-match') === 'W/"x"';
+      return new Response(revalidating ? null : '[]', {
+        status: revalidating ? 304 : 200,
+        headers: {
+          ...(revalidating ? {} : { 'content-type': 'application/json' }),
+          etag: 'W/"x"',
+          'x-verity-version': version,
+        },
+      });
+    }) as typeof fetch;
+    const read = withConditionalReads(fetchImpl);
+    await read('https://verity.test/sessions');
+    version = '5';
+    const revalidated = await read('https://verity.test/sessions');
+    expect(await revalidated.json()).toEqual([]);
+    expect(revalidated.headers.get('x-verity-version')).toBe('5');
+    expect(revalidated.headers.get('content-type')).toBe('application/json');
+  });
+
   it('passes Request inputs through with their own headers', async () => {
     const { calls, fetchImpl } = server(() => '[]');
     const read = withConditionalReads(fetchImpl);

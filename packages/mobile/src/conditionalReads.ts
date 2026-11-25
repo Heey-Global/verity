@@ -46,6 +46,17 @@ function withHeader(init: RequestInit | undefined, name: string, value: string):
   return { ...init, headers: { ...headers, [name]: value } };
 }
 
+/** Response headers worth keeping with a remembered body. The transport has
+ * already decoded the body, so its encoding and length no longer describe the
+ * text handed to callers. */
+function responseHeaders(response: Response): [string, string][] {
+  const headers = response.headers as Headers | undefined;
+  if (headers?.entries === undefined) return [];
+  return [...headers.entries()].filter(
+    ([name]) => name !== 'content-encoding' && name !== 'content-length',
+  );
+}
+
 /** Wrap `fetch` so eligible GETs are sent conditionally. */
 export function withConditionalReads(fetchImpl: typeof fetch): typeof fetch {
   const wrapped = async (
@@ -75,9 +86,14 @@ export function withConditionalReads(fetchImpl: typeof fetch): typeof fetch {
       known === undefined ? init : withHeader(init, 'if-none-match', known.etag),
     );
     if (response.status === 304 && known !== undefined) {
+      // A 304 updates the stored metadata (RFC 9111 §4.3.4): the body is the
+      // same, but e.g. a server upgrade may have changed version headers.
+      const merged = new Map(known.headers);
+      for (const [name, value] of responseHeaders(response)) merged.set(name, value);
+      const refreshed = { ...known, headers: [...merged] };
       remembered.delete(key);
-      remembered.set(key, known);
-      return new Response(known.body, { status: 200, headers: known.headers });
+      remembered.set(key, refreshed);
+      return new Response(known.body, { status: 200, headers: refreshed.headers });
     }
     // Test doubles and minimal transports may answer without a Headers object.
     const headers = response.headers as Headers | undefined;
@@ -87,11 +103,7 @@ export function withConditionalReads(fetchImpl: typeof fetch): typeof fetch {
       return response;
     }
     const body = await response.text();
-    // The transport already decoded the body; its encoding and length no
-    // longer describe the text handed to callers.
-    const kept = [...headers.entries()].filter(
-      ([name]) => name !== 'content-encoding' && name !== 'content-length',
-    );
+    const kept = responseHeaders(response);
     remembered.delete(key);
     remembered.set(key, { etag, body, headers: kept });
     while (remembered.size > MAX_ENTRIES) remembered.delete(remembered.keys().next().value!);
