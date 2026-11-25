@@ -1,4 +1,8 @@
 import {
+  SessionBackendStateStore,
+  type SessionBackendStateRecord,
+} from './session-backend-state.js';
+import {
   TurnRecordStore,
   type QueuedTurnRecord,
   type QueuedTurnInput,
@@ -219,6 +223,7 @@ import {
   type SessionAutomationRecord,
   type SessionAutomationStatus,
 } from './session-automations.js';
+import { SessionPullRequestStore } from './session-pull-requests.js';
 import type { Database } from './schema.js';
 import { ManagedDevServerStore } from './managed-dev-servers.js';
 import {
@@ -332,16 +337,9 @@ export type SessionInput = Omit<
   createdByUserId?: string | null;
 };
 
-export { isInstallationPlaceholder } from './installation-placeholders.js';
+export type { SessionBackendStateRecord } from './session-backend-state.js';
 
-export interface SessionBackendStateRecord {
-  contextFingerprint?: string;
-  sessionId: string;
-  backend: string;
-  backendSessionId: string;
-  contextSeq: number;
-  updatedAt: Date;
-}
+export { isInstallationPlaceholder } from './installation-placeholders.js';
 
 /** How one scheduled automation run settled: `ok` (its check script found
  * nothing to do), `acted` (a turn was dispatched), `skipped` (the session was
@@ -487,12 +485,6 @@ export interface EventSink {
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
 }
 
-/** The person a backend-state key is scoped to, or '' for the unscoped key. */
-function backendStateScope(backend: string): string {
-  const separator = backend.indexOf('#');
-  return separator < 0 ? '' : backend.slice(separator + 1);
-}
-
 /**
  * The durable source of truth (concept §5a). Wraps the append-only Postgres
  * event log. Every event is validated against the canonical contract before it
@@ -624,6 +616,7 @@ export class EventStore implements EventSink {
     (value) => this.decryptSecret(value),
   );
   private readonly devServerConfigs = new DevServerConfigStore(() => this.db);
+  private readonly sessionBackendState = new SessionBackendStateStore(() => this.db);
   private readonly turnRecords = new TurnRecordStore(
     () => this.db,
     (id) => this.isSessionDeleting(id),
@@ -727,6 +720,7 @@ export class EventStore implements EventSink {
     this.githubRepositories = new GitHubRepositoryIdentityStore(db);
   }
 
+  private readonly sessionPullRequests = new SessionPullRequestStore(() => this.db);
   private readonly sessionAutomations: SessionAutomationStore;
   private readonly veritySettings: VeritySettingsStore;
   private readonly projectSettings: ProjectSettingsStore;
@@ -1907,28 +1901,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     backend: string,
   ): Promise<SessionBackendStateRecord | undefined> {
-    const row = await this.db
-      .selectFrom('session_backend_state')
-      .select([
-        'session_id',
-        'backend',
-        'backend_session_id',
-        'context_seq',
-        'updated_at',
-        'context_fingerprint',
-      ])
-      .where('session_id', '=', sessionId)
-      .where('backend', '=', backend)
-      .executeTakeFirst();
-    if (!row) return undefined;
-    return {
-      sessionId: row.session_id,
-      backend: row.backend,
-      backendSessionId: row.backend_session_id,
-      contextSeq: Number(row.context_seq),
-      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
-      updatedAt: row.updated_at,
-    };
+    return this.sessionBackendState.getSessionBackendState(sessionId, backend);
   }
 
   /**
@@ -1949,97 +1922,15 @@ export class EventStore implements EventSink {
     contextSeq: number;
     contextFingerprint?: string;
   }): Promise<SessionBackendStateRecord[]> {
-    return await this.db.transaction().execute(async (tx) => {
-      // Read before delete rather than `DELETE … RETURNING`: this runs on every bind,
-      // against both the Postgres and PGlite dialects, and the extra round trip inside
-      // the transaction is cheaper than a dialect-specific surprise here.
-      // A key `backend#person` is one person's own thread (ADR 0023 §3); a bind
-      // displaces only the same person's other backend, never someone else's.
-      const scope = backendStateScope(input.backend);
-      const displaced = (
-        await tx
-          .selectFrom('session_backend_state')
-          .select([
-            'session_id',
-            'backend',
-            'backend_session_id',
-            'context_seq',
-            'updated_at',
-            'context_fingerprint',
-          ])
-          .where('session_id', '=', input.sessionId)
-          .where('backend', '!=', input.backend)
-          .execute()
-      ).filter((row) => backendStateScope(row.backend) === scope);
-      if (displaced.length > 0)
-        await tx
-          .deleteFrom('session_backend_state')
-          .where('session_id', '=', input.sessionId)
-          .where(
-            'backend',
-            'in',
-            displaced.map((row) => row.backend),
-          )
-          .execute();
-      await tx
-        .insertInto('session_backend_state')
-        .values({
-          session_id: input.sessionId,
-          backend: input.backend,
-          backend_session_id: input.backendSessionId,
-          context_seq: input.contextSeq,
-          context_fingerprint: input.contextFingerprint ?? null,
-        })
-        .onConflict((oc) =>
-          oc.columns(['session_id', 'backend']).doUpdateSet({
-            backend_session_id: input.backendSessionId,
-            context_seq: input.contextSeq,
-            context_fingerprint: input.contextFingerprint ?? null,
-            updated_at: sql`now()`,
-          }),
-        )
-        .execute();
-      return displaced.map((row) => ({
-        sessionId: row.session_id,
-        backend: row.backend,
-        backendSessionId: row.backend_session_id,
-        contextSeq: Number(row.context_seq),
-        ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
-        updatedAt: row.updated_at,
-      }));
-    });
+    return this.sessionBackendState.upsertSessionBackendState(input);
   }
 
   async deleteSessionBackendState(sessionId: string, backend: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('session_backend_state')
-      .where('session_id', '=', sessionId)
-      .where('backend', '=', backend)
-      .executeTakeFirst();
-    return result.numDeletedRows > 0n;
+    return this.sessionBackendState.deleteSessionBackendState(sessionId, backend);
   }
 
   async getSessionBackendStates(sessionId: string): Promise<SessionBackendStateRecord[]> {
-    const rows = await this.db
-      .selectFrom('session_backend_state')
-      .select([
-        'session_id',
-        'backend',
-        'backend_session_id',
-        'context_seq',
-        'updated_at',
-        'context_fingerprint',
-      ])
-      .where('session_id', '=', sessionId)
-      .execute();
-    return rows.map((row) => ({
-      sessionId: row.session_id,
-      backend: row.backend,
-      backendSessionId: row.backend_session_id,
-      contextSeq: Number(row.context_seq),
-      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
-      updatedAt: row.updated_at,
-    }));
+    return this.sessionBackendState.getSessionBackendStates(sessionId);
   }
 
   /**
@@ -2054,23 +1945,7 @@ export class EventStore implements EventSink {
    * them, and a partial answer here would delete a live conversation.
    */
   async listLiveBackendSessionIds(): Promise<string[]> {
-    const [bindings, sessions, moves] = await Promise.all([
-      this.db.selectFrom('session_backend_state').select('backend_session_id').execute(),
-      this.db.selectFrom('sessions').select('session_id').execute(),
-      this.db
-        .selectFrom('session_moves')
-        .innerJoin('projects', 'projects.id', 'session_moves.source_project_id')
-        .select('backend_ids_json')
-        .where('projects.hidden_at', 'is', null)
-        .execute(),
-    ]);
-    return [
-      ...new Set([
-        ...bindings.map((row) => row.backend_session_id),
-        ...sessions.map((row) => row.session_id),
-        ...moves.flatMap((row) => JSON.parse(row.backend_ids_json) as string[]),
-      ]),
-    ];
+    return this.sessionBackendState.listLiveBackendSessionIds();
   }
 
   /**
@@ -2085,40 +1960,15 @@ export class EventStore implements EventSink {
    * `session-artifact-sweep.ts`.
    */
   async listSessionWorktrees(): Promise<string[]> {
-    const rows = await this.db.selectFrom('sessions').select('worktree').execute();
-    const retained = await this.db
-      .selectFrom('session_moves')
-      .innerJoin('projects', 'projects.id', 'session_moves.source_project_id')
-      .select('source_worktree')
-      .where('projects.hidden_at', 'is', null)
-      .where('result_json', 'is not', null)
-      .execute();
-    return [
-      ...new Set([
-        ...rows.map((row) => row.worktree),
-        ...retained.map((row) => row.source_worktree),
-      ]),
-    ];
+    return this.sessionBackendState.listSessionWorktrees();
   }
 
   async deleteSessionBackendStates(sessionId: string): Promise<number> {
-    const result = await this.db
-      .deleteFrom('session_backend_state')
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return Number(result.numDeletedRows);
+    return this.sessionBackendState.deleteSessionBackendStates(sessionId);
   }
 
   async deleteProjectSessionBackendStates(projectId: string): Promise<number> {
-    const result = await this.db
-      .deleteFrom('session_backend_state')
-      .where(
-        'session_id',
-        'in',
-        this.db.selectFrom('sessions').select('session_id').where('project_id', '=', projectId),
-      )
-      .executeTakeFirst();
-    return Number(result.numDeletedRows);
+    return this.sessionBackendState.deleteProjectSessionBackendStates(projectId);
   }
 
   /**
@@ -2278,15 +2128,12 @@ export class EventStore implements EventSink {
     url: string,
     fingerprint: string,
   ): Promise<boolean> {
-    const result = await sql<{ hidden: boolean }>`
-      insert into session_pr_visibility(session_id, worktree, pr_url, fingerprint, hidden)
-      values (${sessionId}, ${worktree}, ${url}, ${fingerprint}, false)
-      on conflict (session_id, worktree, pr_url) do update set
-        hidden = session_pr_visibility.hidden or
-          session_pr_visibility.fingerprint <> excluded.fingerprint
-      returning hidden
-    `.execute(this.db);
-    return result.rows[0]!.hidden;
+    return this.sessionPullRequests.observeSessionPrVisibility(
+      sessionId,
+      worktree,
+      url,
+      fingerprint,
+    );
   }
 
   async getSessionPrVisibility(
@@ -2294,23 +2141,12 @@ export class EventStore implements EventSink {
     worktree: string,
     url: string,
   ): Promise<{ fingerprint: string; hidden: boolean } | undefined> {
-    return this.db
-      .selectFrom('session_pr_visibility')
-      .select(['fingerprint', 'hidden'])
-      .where('session_id', '=', sessionId)
-      .where('worktree', '=', worktree)
-      .where('pr_url', '=', url)
-      .executeTakeFirst();
+    return this.sessionPullRequests.getSessionPrVisibility(sessionId, worktree, url);
   }
 
   /** Seed the final baseline after managed post-merge housekeeping has settled. */
   async clearSessionPrVisibility(sessionId: string, worktree: string, url: string): Promise<void> {
-    await this.db
-      .deleteFrom('session_pr_visibility')
-      .where('session_id', '=', sessionId)
-      .where('worktree', '=', worktree)
-      .where('pr_url', '=', url)
-      .execute();
+    return this.sessionPullRequests.clearSessionPrVisibility(sessionId, worktree, url);
   }
 
   async resetSessionPrVisibility(
@@ -2319,15 +2155,7 @@ export class EventStore implements EventSink {
     url: string,
     fingerprint: string,
   ): Promise<void> {
-    await this.db
-      .insertInto('session_pr_visibility')
-      .values({ session_id: sessionId, worktree, pr_url: url, fingerprint, hidden: false })
-      .onConflict((oc) =>
-        oc
-          .columns(['session_id', 'worktree', 'pr_url'])
-          .doUpdateSet({ fingerprint, hidden: false }),
-      )
-      .execute();
+    return this.sessionPullRequests.resetSessionPrVisibility(sessionId, worktree, url, fingerprint);
   }
 
   /** Reserve before transport: a crash spends a bounded attempt instead of resetting it. */
@@ -2336,18 +2164,7 @@ export class EventStore implements EventSink {
     marker: string,
     now: number,
   ): Promise<string | undefined> {
-    const claim = randomUUID();
-    const result = await sql<{ claim_id: string }>`
-      insert into pr_ready_delivery(session_id, marker, attempts, next_attempt_at, claim_id, lease_until)
-      values (${sessionId}, ${marker}, 1, ${now + 60_000}, ${claim}, ${now + 300_000})
-      on conflict (session_id, marker) do update set
-        attempts = pr_ready_delivery.attempts + 1,
-        next_attempt_at = case when pr_ready_delivery.attempts = 0 then ${now + 60_000}::bigint else ${now + 300_000}::bigint end, claim_id = ${claim}, lease_until = ${now + 300_000}
-      where not pr_ready_delivery.completed and pr_ready_delivery.attempts < 3
-        and pr_ready_delivery.next_attempt_at <= ${now} and pr_ready_delivery.lease_until <= ${now}
-      returning claim_id
-    `.execute(this.db);
-    return result.rows[0]?.claim_id;
+    return this.sessionPullRequests.claimPrReadyDelivery(sessionId, marker, now);
   }
 
   async finishPrReadyDelivery(
@@ -2357,14 +2174,7 @@ export class EventStore implements EventSink {
     outcome: 'done' | 'failed' | 'unattempted',
     now: number,
   ): Promise<void> {
-    // Claim identity fences a slow former sender after its lease expired.
-    await sql`update pr_ready_delivery set
-      attempts = attempts - ${outcome === 'unattempted' ? 1 : 0},
-      next_attempt_at = case when ${outcome === 'unattempted'} then ${now + 30_000} else next_attempt_at end,
-      completed = ${outcome === 'done'}, claim_id = null, lease_until = 0
-      where session_id = ${sessionId} and marker = ${marker} and claim_id = ${claim}`.execute(
-      this.db,
-    );
+    return this.sessionPullRequests.finishPrReadyDelivery(sessionId, marker, claim, outcome, now);
   }
 
   async hasSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {

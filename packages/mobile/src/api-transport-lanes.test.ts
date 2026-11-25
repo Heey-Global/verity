@@ -19,6 +19,12 @@ describe('transport admission metadata', () => {
     ['activity', (client: VerityClient) => client.getActivity('s/1'), 'interactive'],
     ['session list', (client: VerityClient) => client.listSessions(), 'interactive'],
     ['project list', (client: VerityClient) => client.listProjects(), 'interactive'],
+    ['project detail', (client: VerityClient) => client.getProject('p/1'), 'interactive'],
+    [
+      'project issues',
+      (client: VerityClient) => client.listProjectGitHubIssues('p/1'),
+      'background',
+    ],
     ['branches', (client: VerityClient) => client.getBranches('s/1'), 'background'],
     ['dev servers', (client: VerityClient) => client.listSessionDevServers('s/1'), 'background'],
     [

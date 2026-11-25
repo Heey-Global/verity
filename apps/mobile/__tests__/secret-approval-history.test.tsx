@@ -3,6 +3,19 @@ import type { VerityClient } from '@verity/mobile';
 
 import { SecretApprovalHistory } from '../components/SecretApprovalHistory';
 
+let mockFocused = true;
+jest.mock('expo-router', () => ({
+  useFocusEffect: (effect: () => void | (() => void)) => {
+    const React = jest.requireActual<typeof import('react')>('react');
+    React.useEffect(() => (mockFocused ? effect() : undefined), [effect, mockFocused]);
+  },
+}));
+
+afterEach(() => {
+  mockFocused = true;
+  jest.useRealTimers();
+});
+
 const entry = {
   id: 'a1',
   toolName: 'verity_http_request',
@@ -48,4 +61,38 @@ it('does not carry denied requests into a different session after a late respons
   );
   await act(async () => finish([entry]));
   expect(screen.queryByText('Previous secret requests')).toBeNull();
+});
+
+// Session screens stay mounted under the ones pushed over them. A poll that
+// ignores focus keeps running for every session ever opened, which flooded the
+// connection with thousands of these reads and queued everything else behind them.
+it('stops polling while its session screen is not focused', async () => {
+  jest.useFakeTimers();
+  // Each poll is scheduled only after the previous read settles.
+  const elapse = async (ms: number) => {
+    for (let left = ms; left > 0; left -= 10_000)
+      await act(async () => jest.advanceTimersByTime(Math.min(left, 10_000)));
+  };
+  const client = clientMock();
+  client.secretApprovals.list.mockResolvedValue([]);
+  const view = render(
+    <SecretApprovalHistory client={client as unknown as VerityClient} sessionId="s1" />,
+  );
+  await elapse(30_000);
+  const whileFocused = client.secretApprovals.list.mock.calls.length;
+  expect(whileFocused).toBeGreaterThanOrEqual(3);
+
+  mockFocused = false;
+  view.rerender(
+    <SecretApprovalHistory client={client as unknown as VerityClient} sessionId="s1" />,
+  );
+  await elapse(120_000);
+  expect(client.secretApprovals.list).toHaveBeenCalledTimes(whileFocused);
+
+  mockFocused = true;
+  view.rerender(
+    <SecretApprovalHistory client={client as unknown as VerityClient} sessionId="s1" />,
+  );
+  await act(async () => jest.advanceTimersByTime(0));
+  expect(client.secretApprovals.list).toHaveBeenCalledTimes(whileFocused + 1);
 });
