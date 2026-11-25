@@ -34,7 +34,7 @@ interface Dependencies {
   /** The rows the open views show; without it, the full list. `null` while no
    *  view is open: a sync then only delivers pending changes. */
   view?: () => Promise<Task[]> | null;
-  /** Which restored rows to keep; pending rows are always kept. */
+  /** Which restored rows to keep; pending and conflicting rows are always kept. */
   keep?: (task: Task) => boolean;
 }
 
@@ -63,8 +63,8 @@ export class TaskQueue {
       if (data) this.state = stateSchema.parse(JSON.parse(data));
       const { keep } = this.deps;
       if (keep) {
-        const pendingIds = new Set(this.state.pending.map((op) => op.id));
-        const tasks = this.state.tasks.filter((task) => pendingIds.has(task.id) || keep(task));
+        const held = new Set([...this.state.pending.map((op) => op.id), ...this.state.conflicts]);
+        const tasks = this.state.tasks.filter((task) => held.has(task.id) || keep(task));
         if (tasks.length !== this.state.tasks.length) {
           this.state = { ...this.state, tasks };
           await this.deps.persist(JSON.stringify(this.state));
