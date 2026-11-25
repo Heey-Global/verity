@@ -1,4 +1,13 @@
 import {
+  ClaudeEgressIdentityStore,
+  type ClaudeEgressCaRecord,
+  type ClaudeEgressClientCertRecord,
+} from './claude-egress-identity.js';
+export type {
+  ClaudeEgressCaRecord,
+  ClaudeEgressClientCertRecord,
+} from './claude-egress-identity.js';
+import {
   HttpMcpConnectionStore,
   type HttpMcpConnectionRecord,
   type ProjectMcpBindingRecord,
@@ -334,31 +343,6 @@ export {
   type SessionAutomationInput,
 } from './session-automations.js';
 
-/** The Verity-owned Claude-egress CA + gateway server identity (singleton). The
- *  `caKeyPem`/`gatewayKeyPem` are decrypted on read; they are SECRETS and never
- *  leave the server. */
-export interface ClaudeEgressCaRecord {
-  caCertPem: string;
-  caKeyPem: string;
-  gatewayServerName: string;
-  gatewayCertPem: string;
-  gatewayKeyPem: string;
-  caExpiresAt: Date;
-  gatewayExpiresAt: Date;
-}
-
-/** A per-project Claude-egress client certificate. `keyPem` is decrypted on read
- *  (a SECRET); the cert + fingerprint are non-secret. */
-export interface ClaudeEgressClientCertRecord {
-  projectId: string;
-  /** The person whose sandbox presents this certificate (ADR 0023 §4). */
-  userId: string;
-  certPem: string;
-  keyPem: string;
-  fingerprint256: string;
-  expiresAt: Date;
-}
-
 /** Master-password key-derivation metadata (non-secret): the scrypt salt and a
  *  verifier (a fixed marker encrypted under the derived key). The raw key is
  *  never stored — only re-derived in memory on unlock. */
@@ -679,6 +663,7 @@ export class EventStore implements EventSink {
     );
   }
 
+  private readonly claudeEgressIdentity: ClaudeEgressIdentityStore;
   private readonly httpMcpConnections = new HttpMcpConnectionStore(
     () => this.db,
     (value) => this.encryptSecret(value),
@@ -753,6 +738,7 @@ export class EventStore implements EventSink {
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
     const db = rootDb;
+    this.claudeEgressIdentity = new ClaudeEgressIdentityStore(() => this.db, cipher);
     this.veritySettings = new VeritySettingsStore(
       () => this.db,
       cipher,
@@ -4874,34 +4860,13 @@ export class EventStore implements EventSink {
   /** Read the singleton Claude-egress CA + gateway identity, decrypting the CA +
    *  gateway private keys. Returns undefined before the first issuance. */
   async getClaudeEgressCa(): Promise<ClaudeEgressCaRecord | undefined> {
-    const row = await this.db
-      .selectFrom('claude_egress_ca')
-      .selectAll()
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    return {
-      caCertPem: row.ca_cert_pem,
-      // A non-null secret column always decrypts; `?? ''` only satisfies the
-      // `string | null` return of decryptSecret for a value we know is present.
-      caKeyPem: this.decryptSecret(row.ca_key_pem) ?? '',
-      gatewayServerName: row.gateway_server_name,
-      gatewayCertPem: row.gateway_cert_pem,
-      gatewayKeyPem: this.decryptSecret(row.gateway_key_pem) ?? '',
-      caExpiresAt: new Date(row.ca_expires_at),
-      gatewayExpiresAt: new Date(row.gateway_expires_at),
-    };
+    return this.claudeEgressIdentity.getClaudeEgressCa();
   }
 
   /** Insert or replace the singleton CA + gateway identity, encrypting both
    *  private keys at rest. A re-issue (rotation) overwrites the single row. */
   async upsertClaudeEgressCa(record: ClaudeEgressCaRecord): Promise<void> {
-    const values = this.claudeEgressCaValues(record);
-    await this.db
-      .insertInto('claude_egress_ca')
-      .values({ id: 'global', ...values })
-      .onConflict((oc) => oc.column('id').doUpdateSet({ ...values, updated_at: sql`now()` }))
-      .execute();
+    return this.claudeEgressIdentity.upsertClaudeEgressCa(record);
   }
 
   /**
@@ -4913,109 +4878,32 @@ export class EventStore implements EventSink {
    * world or the new one, never a fresh CA alongside orphaned old-CA client certs.
    */
   async replaceClaudeEgressCa(record: ClaudeEgressCaRecord): Promise<void> {
-    const values = this.claudeEgressCaValues(record);
-    await this.db.transaction().execute(async (tx) => {
-      await tx
-        .insertInto('claude_egress_ca')
-        .values({ id: 'global', ...values })
-        .onConflict((oc) => oc.column('id').doUpdateSet({ ...values, updated_at: sql`now()` }))
-        .execute();
-      await tx.deleteFrom('claude_egress_client_certs').execute();
-    });
-  }
-
-  /** Encrypt the two private-key columns at rest. Uses {@link cipher}.encrypt
-   *  directly (not the null-aware {@link encryptSecret}) because every egress CA
-   *  column is NOT NULL — a CA row without its keys is meaningless. */
-  private claudeEgressCaValues(record: ClaudeEgressCaRecord): {
-    ca_cert_pem: string;
-    ca_key_pem: string;
-    gateway_server_name: string;
-    gateway_cert_pem: string;
-    gateway_key_pem: string;
-    ca_expires_at: string;
-    gateway_expires_at: string;
-  } {
-    return {
-      ca_cert_pem: record.caCertPem,
-      ca_key_pem: this.cipher.encrypt(record.caKeyPem),
-      gateway_server_name: record.gatewayServerName,
-      gateway_cert_pem: record.gatewayCertPem,
-      gateway_key_pem: this.cipher.encrypt(record.gatewayKeyPem),
-      ca_expires_at: record.caExpiresAt.toISOString(),
-      gateway_expires_at: record.gatewayExpiresAt.toISOString(),
-    };
+    return this.claudeEgressIdentity.replaceClaudeEgressCa(record);
   }
 
   async getClaudeEgressClientCert(
     projectId: string,
     userId: string,
   ): Promise<ClaudeEgressClientCertRecord | undefined> {
-    const row = await this.db
-      .selectFrom('claude_egress_client_certs')
-      .selectAll()
-      .where('project_id', '=', projectId)
-      .where('user_id', '=', userId)
-      .executeTakeFirst();
-    return row ? this.claudeEgressClientCertRowToRecord(row) : undefined;
+    return this.claudeEgressIdentity.getClaudeEgressClientCert(projectId, userId);
   }
 
   /** Every stored client certificate — the source of the gateway's
    *  fingerprint→sandbox peer bindings. */
   async listClaudeEgressClientCerts(): Promise<ClaudeEgressClientCertRecord[]> {
-    const rows = await this.db
-      .selectFrom('claude_egress_client_certs')
-      .selectAll()
-      .orderBy('project_id', 'asc')
-      .orderBy('user_id', 'asc')
-      .execute();
-    return rows.map((row) => this.claudeEgressClientCertRowToRecord(row));
+    return this.claudeEgressIdentity.listClaudeEgressClientCerts();
   }
 
   /** Insert or replace a sandbox's client certificate, encrypting the key. A
    *  rotation upserts on the (project, person) key, dropping the superseded fingerprint. */
   async upsertClaudeEgressClientCert(record: ClaudeEgressClientCertRecord): Promise<void> {
-    const values = {
-      cert_pem: record.certPem,
-      key_pem: this.cipher.encrypt(record.keyPem),
-      fingerprint256: record.fingerprint256,
-      expires_at: record.expiresAt.toISOString(),
-    };
-    await this.db
-      .insertInto('claude_egress_client_certs')
-      .values({ project_id: record.projectId, user_id: record.userId, ...values })
-      .onConflict((oc) =>
-        oc.columns(['project_id', 'user_id']).doUpdateSet({ ...values, updated_at: sql`now()` }),
-      )
-      .execute();
+    return this.claudeEgressIdentity.upsertClaudeEgressClientCert(record);
   }
 
   /** Drop one sandbox's client certificate, or every one of the project when no
    *  person is named (deprovision / revocation). */
   async deleteClaudeEgressClientCert(projectId: string, userId?: string): Promise<void> {
-    let query = this.db
-      .deleteFrom('claude_egress_client_certs')
-      .where('project_id', '=', projectId);
-    if (userId !== undefined) query = query.where('user_id', '=', userId);
-    await query.execute();
-  }
-
-  private claudeEgressClientCertRowToRecord(row: {
-    project_id: string;
-    user_id: string;
-    cert_pem: string;
-    key_pem: string;
-    fingerprint256: string;
-    expires_at: Date | string;
-  }): ClaudeEgressClientCertRecord {
-    return {
-      projectId: row.project_id,
-      userId: row.user_id,
-      certPem: row.cert_pem,
-      keyPem: this.decryptSecret(row.key_pem) ?? '',
-      fingerprint256: row.fingerprint256,
-      expiresAt: new Date(row.expires_at),
-    };
+    return this.claudeEgressIdentity.deleteClaudeEgressClientCert(projectId, userId);
   }
 
   async reconcileDevServerHostPorts(projectId?: string): Promise<void> {
