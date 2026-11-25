@@ -63,6 +63,8 @@ describe('installOverviewEvents', () => {
     w.emit('s1', { t: 'prompt', text: 'Ship it' });
     w.emit('s1', { t: 'prompt', text: 'also this', steered: true });
     w.emit('s1', { t: 'text', delta: 'not an overview change' });
+    // No question is open any more: a further prompt announces nothing.
+    w.emit('s1', { t: 'prompt', text: 'next task' });
     await settle();
     const byTopic = (topic: string) =>
       w.published.filter((r) => r.topic === topic).map((r) => r.event.t);

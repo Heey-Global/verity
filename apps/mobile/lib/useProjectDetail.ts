@@ -13,6 +13,7 @@ import {
   VerityApiError,
   applyOverviewEvent,
   publishProjectStatusMutation,
+  type DomainEvent,
   subscribeProjectStatusMutations,
   type ProjectDetail,
   type ProjectProfile,
@@ -61,6 +62,7 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const loadGeneration = useRef(0);
+  const answeredRef = useRef<{ event: DomainEvent; generation: number }[]>([]);
   const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
   const pendingProjectMutationRef = useRef<ProjectRecord | undefined>(undefined);
   // Polls run only while this screen is the one on top. Every route on the
@@ -128,7 +130,15 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
         if (generation === loadGeneration.current) {
           const project = pendingProjectMutationRef.current ?? next.project;
           pendingProjectMutationRef.current = undefined;
-          setDetail({ ...next, project });
+          // Answers received while this read was on its way still apply to it;
+          // reads started after an answer are the server's word.
+          answeredRef.current = answeredRef.current.filter((a) => generation <= a.generation);
+          let sessions = next.sessions;
+          for (const { event } of answeredRef.current) {
+            const applied = applyOverviewEvent(sessions, event);
+            if (applied.kind === 'local') sessions = applied.sessions;
+          }
+          setDetail({ ...next, project, sessions });
           setSavedProfile(undefined);
           // A fetch result deliberately stays off the status bus. Only an
           // action's response is published (see `onProjectUpdated`): with the
@@ -205,6 +215,14 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     typeof client.liveBaseUrl === 'function' ? client.liveBaseUrl() : null,
     [projectId],
     (event) => {
+      if (event.t === 'permission.decided' || event.t === 'choices.answered') {
+        // Kept even before the first read lands, which would otherwise bring
+        // the answered card back.
+        answeredRef.current = [
+          ...answeredRef.current.slice(-63),
+          { event, generation: loadGeneration.current },
+        ];
+      }
       const current = detailRef.current;
       const effect =
         current === undefined
@@ -218,7 +236,6 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
           return applied.kind === 'local' ? { ...latest, sessions: applied.sessions } : latest;
         });
       }
-      // A read in flight may predate the event; a newer one supersedes it.
       if (focusedRef.current) void load(true);
     },
     () => {

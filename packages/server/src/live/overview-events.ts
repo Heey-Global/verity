@@ -31,14 +31,23 @@ export function installOverviewEvents(ctx: ServerContext): void {
     for (const topic of topics) domainEvents.publish(topic, event);
   };
 
+  // Sessions whose last question is still open. Only those announce an answer:
+  // every other prompt would cost each listening view an event for nothing. A
+  // question posed before a restart is not tracked; its answer reaches views
+  // through the session's status hint instead.
+  const openQuestions = new Set<string>();
   const fromSessionEvent = (sessionId: string, event: AgentEvent): DomainEvent | undefined => {
-    const rev = revisions.next(sessionId);
     if (event.t === 'permission') {
+      const rev = revisions.next(sessionId);
       return { t: 'permission.requested', sessionId, toolUseId: event.id, rev };
     }
-    if (event.t === 'choices') return { t: 'choices.opened', sessionId, rev };
-    if (event.t === 'prompt' && event.steered !== true) {
-      return { t: 'choices.answered', sessionId, rev };
+    if (event.t === 'choices') {
+      openQuestions.add(sessionId);
+      if (openQuestions.size > 4_096) openQuestions.delete(openQuestions.values().next().value!);
+      return { t: 'choices.opened', sessionId, rev: revisions.next(sessionId) };
+    }
+    if (event.t === 'prompt' && event.steered !== true && openQuestions.delete(sessionId)) {
+      return { t: 'choices.answered', sessionId, rev: revisions.next(sessionId) };
     }
     return undefined;
   };

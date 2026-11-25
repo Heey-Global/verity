@@ -29,6 +29,7 @@ export function useOverviewTopics(
     const connection = liveConnectionFor(baseUrl);
     const gate = new RevisionGate();
     let resyncQueued = false;
+    let disposed = false;
     const sink: LiveTopicSink = {
       event: (event) => {
         if (gate.accept(event)) handlers.current.onEvent(event);
@@ -40,7 +41,7 @@ export function useOverviewTopics(
         resyncQueued = true;
         queueMicrotask(() => {
           resyncQueued = false;
-          handlers.current.onResync();
+          if (!disposed) handlers.current.onResync();
         });
       },
     };
@@ -48,6 +49,7 @@ export function useOverviewTopics(
       .split('\n')
       .map((projectId) => connection.subscribeTopic(`project:${projectId}`, sink));
     return () => {
+      disposed = true;
       for (const unsubscribe of detach) unsubscribe();
     };
   }, [baseUrl, key]);
