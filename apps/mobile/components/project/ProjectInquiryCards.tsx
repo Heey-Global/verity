@@ -95,12 +95,12 @@ export function ProjectInquiryCards({
             />
             <View style={styles.quote}>
               <Text variant="subtitle">{item.title}</Text>
-              <Text variant="bodySmall" numberOfLines={full ? undefined : CLAMPED_LINES}>
+              <Text variant="bodySmall" numberOfLines={long && !full ? CLAMPED_LINES : undefined}>
                 {item.body}
               </Text>
             </View>
             {item.answer ? (
-              <Text numberOfLines={full ? undefined : CLAMPED_LINES}>{item.answer}</Text>
+              <Text numberOfLines={long && !full ? CLAMPED_LINES : undefined}>{item.answer}</Text>
             ) : null}
             {long ? (
               <Button
@@ -160,13 +160,15 @@ export function ProjectInquiryCards({
   const visible = openSession === sessionId;
   const hasRequests = items.length > 0 || Boolean(resource.error);
   const pendingCount = items.filter((item) => item.status === 'pending').length;
-  const subtitle = resource.error
-    ? 'Could not load project requests'
-    : pendingCount > 0
+  // Pending decisions sit behind this row, so a failed refresh must not hide them.
+  const subtitle =
+    pendingCount > 0
       ? `${pendingCount} awaiting approval`
-      : items.length === 1
-        ? items[0]?.title
-        : `${items.length} requests`;
+      : resource.error
+        ? 'Could not load project requests'
+        : items.length === 1
+          ? items[0]?.title
+          : `${items.length} requests`;
   // The chat pins this area outside the transcript. Keep even multiple long
   // requests in a single row and let the sheet scroll their full details.
   return (

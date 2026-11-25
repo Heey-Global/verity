@@ -129,6 +129,27 @@ it.each(['source', 'target'])(
   },
 );
 
+// The row is the only place left that announces a pending decision; a refresh
+// failing after it loaded must not replace that with a load error.
+it('keeps announcing pending approvals when a later refresh fails', async () => {
+  const client = {
+    listProjectInquiries: jest
+      .fn()
+      .mockResolvedValueOnce([inquiry])
+      .mockRejectedValue(new Error('Network request failed')),
+    decideProjectInquiry: jest.fn().mockResolvedValue(undefined),
+  } as unknown as VerityClient;
+  const view = render(<ProjectInquiryCards client={client} sessionId="source" />);
+  fireEvent.press(await view.findByRole('button', { name: 'Project requests' }));
+  // A short request is never clamped: without the toggle it could not be unfolded.
+  expect(view.getByText(inquiry.body).props.numberOfLines).toBeUndefined();
+  expect(view.queryByRole('button', { name: 'Show full request' })).toBeNull();
+  fireEvent.press(view.getByText('Allow once'));
+  await waitFor(() => expect(view.getByText('Network request failed')).toBeTruthy());
+  expect(view.getByText('1 awaiting approval')).toBeTruthy();
+  expect(view.queryByText('Could not load project requests')).toBeNull();
+});
+
 it('shows persisted PR dependencies beside the repository workspace', async () => {
   const client = {
     listSessionRepositories: jest.fn().mockResolvedValue([
