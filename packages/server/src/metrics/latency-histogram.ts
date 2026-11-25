@@ -4,7 +4,7 @@
  * inside the bucket that holds them, which is accurate enough to tell 50 ms
  * from 500 ms and costs nothing per request beyond one array increment.
  */
-export const LATENCY_BUCKETS_MS: readonly number[] = [
+const LATENCY_BUCKETS_MS: readonly number[] = [
   5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000,
 ];
 

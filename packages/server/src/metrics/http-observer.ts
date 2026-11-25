@@ -3,8 +3,8 @@ import { clientLabel, identifyClient } from './client-identity.js';
 import type { MonitoringControl } from './monitoring-control.js';
 import type { ServerMetrics } from './server-metrics.js';
 
-export const REQUEST_ID_HEADER = 'x-request-id';
-export const UNMATCHED_ROUTE = '(unmatched)';
+const REQUEST_ID_HEADER = 'x-request-id';
+const UNMATCHED_ROUTE = '(unmatched)';
 
 interface PendingRequest {
   startedAt: bigint;
@@ -86,7 +86,13 @@ export function observeHttp(
       {
         method: request.method,
         route,
-        client: clientLabel(identifyClient(request.headers)),
+        // The version is the caller's own text. A rejected request keeps only
+        // the client kind, so unauthenticated callers cannot fill the series
+        // cap with invented versions and push real traffic into the overflow.
+        client:
+          reply.statusCode < 400
+            ? clientLabel(identifyClient(request.headers))
+            : identifyClient(request.headers).kind,
         status: reply.statusCode,
         durationMs: Number(process.hrtime.bigint() - state.startedAt) / 1e6,
         bytesIn: Number.isFinite(length) && length > 0 ? length : 0,

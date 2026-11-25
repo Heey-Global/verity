@@ -15,7 +15,7 @@ export const MAX_SLOW_REQUESTS = 50;
 export const MAX_LIVE_CLIENTS = 50;
 export const OVERFLOW_ROUTE = '(other)';
 /** Past a cap, every new key lands in this one series, whatever its labels. */
-export const OVERFLOW_CLIENT = '(other)';
+const OVERFLOW_CLIENT = '(other)';
 
 export interface HttpObservation {
   method: string;

@@ -21,6 +21,8 @@ export interface ServerMonitor {
     headers: Record<string, string | string[] | undefined>,
   ): void;
   report(sessionIds: 'hashed' | 'raw'): DiagnosticReport;
+  /** Stops the event-loop sampler; the server is shutting down. */
+  close(): void;
 }
 
 export function createServerMonitor(options: {
@@ -51,6 +53,7 @@ export function createServerMonitor(options: {
     metrics,
     control,
     observeLiveSocket: (socket, headers) => observeLiveSocket(socket, headers, metrics, control),
+    close: () => sampler.setActive(false),
     report: (sessionIds) =>
       buildDiagnosticReport({
         metrics,
@@ -83,6 +86,10 @@ const monitoringPatch = z.union([
  */
 export function installServerMonitoring(app: FastifyInstance, monitor: ServerMonitor): void {
   observeHttp(app, monitor.metrics, monitor.control);
+  app.addHook('onClose', (_instance, done) => {
+    monitor.close();
+    done();
+  });
   app.addHook('onReady', async () => {
     try {
       await monitor.control.load();

@@ -6,7 +6,7 @@
  * optional numeric version, so a client cannot widen the counter set by
  * inventing labels.
  */
-export type ClientKind = 'ios' | 'android' | 'watch' | 'web' | 'cli' | 'agent' | 'other';
+type ClientKind = 'ios' | 'android' | 'watch' | 'web' | 'cli' | 'agent' | 'other';
 
 export interface ClientIdentity {
   kind: ClientKind;
@@ -14,7 +14,7 @@ export interface ClientIdentity {
   version: string | null;
 }
 
-export const CLIENT_HEADER = 'x-verity-client';
+const CLIENT_HEADER = 'x-verity-client';
 
 const DECLARED_KINDS: ReadonlySet<string> = new Set(['ios', 'android', 'watch', 'web', 'cli']);
 const VERSION = /^\d{1,4}(?:\.\d{1,4}){0,3}$/;

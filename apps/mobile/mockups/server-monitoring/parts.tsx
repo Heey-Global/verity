@@ -38,7 +38,7 @@ export function Body({ children }: { children: ReactNode }) {
 export const value = (text: string) => <Text variant="bodySmall">{text}</Text>;
 
 /** The new section at the top of Settings › Diagnostics. */
-export function ServerMonitoringGroup({ detailActive }: { detailActive: boolean }) {
+function ServerMonitoringGroup({ detailActive }: { detailActive: boolean }) {
   return (
     <SettingsGroup
       title="Server monitoring"

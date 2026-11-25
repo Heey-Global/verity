@@ -10,11 +10,41 @@ import Fastify from 'fastify';
 import { Buffer } from 'node:buffer';
 import { Agent, request } from 'node:http';
 
-import {
-  createServerMonitor,
-  installServerMonitoring,
-} from '../packages/server/dist/metrics/server-monitor.js';
-import { MAX_HTTP_SERIES, MAX_SESSIONS } from '../packages/server/dist/metrics/server-metrics.js';
+// The built modules run; CI lints before any package is built, so the script
+// declares the part it uses itself (as scripts/inventory-agent-tools.mjs does).
+/**
+ * @typedef {{ method: string, route: string, client: string, status: number,
+ *   durationMs: number, bytesIn: number, bytesOut: number, sessionId: string | null,
+ *   requestId: string }} HttpObservation
+ * @typedef {{
+ *   control: {
+ *     setMeasurementEnabled(enabled: boolean): Promise<unknown>,
+ *     startDetailMode(minutes: 15 | 60 | 240, startedBy: 'app' | 'control'): Promise<unknown>,
+ *     stopDetailMode(): Promise<unknown>,
+ *   },
+ *   metrics: {
+ *     recordHttp(observation: HttpObservation, detail: boolean): void,
+ *     http: Map<string, unknown>,
+ *     sessions: Map<string, unknown>,
+ *   },
+ *   report(sessionIds: 'hashed' | 'raw'): unknown,
+ * }} ServerMonitor
+ */
+/**
+ * @typedef {{
+ *   createServerMonitor: (options: { store: undefined, version: string }) => ServerMonitor,
+ *   installServerMonitoring: (app: import('fastify').FastifyInstance, monitor: ServerMonitor) => void,
+ * }} MonitorModule
+ * @typedef {{ MAX_HTTP_SERIES: number, MAX_SESSIONS: number }} MetricsModule
+ */
+const monitorPath = '../packages/server/dist/metrics/server-monitor.js';
+const metricsPath = '../packages/server/dist/metrics/server-metrics.js';
+const monitorModule = /** @type {unknown} */ (await import(monitorPath));
+const metricsModule = /** @type {unknown} */ (await import(metricsPath));
+const { createServerMonitor, installServerMonitoring } = /** @type {MonitorModule} */ (
+  monitorModule
+);
+const { MAX_HTTP_SERIES, MAX_SESSIONS } = /** @type {MetricsModule} */ (metricsModule);
 
 const ROUNDS = Number(process.env.ROUNDS ?? 6);
 const PER_ROUND = Number(process.env.PER_ROUND ?? 3000);

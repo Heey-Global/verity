@@ -4,11 +4,11 @@ import type { MonitoringState } from './monitoring-control.js';
 import type { ProcessResources } from './process-sampler.js';
 import type { LiveSeries, ServerMetrics, SlowRequest } from './server-metrics.js';
 
-export const DIAGNOSTIC_REPORT_FORMAT = 'verity.diagnostic-report/1';
+const DIAGNOSTIC_REPORT_FORMAT = 'verity.diagnostic-report/1';
 const TOP = 20;
 
 /** What a report never contains; shown in the app before it is shared. */
-export const REPORT_EXCLUSIONS = [
+const REPORT_EXCLUSIONS = [
   'messages',
   'transcripts',
   'file contents',
@@ -19,7 +19,7 @@ export const REPORT_EXCLUSIONS = [
 ] as const;
 
 /** Areas of the observability plan that later versions add to the report. */
-export const NOT_YET_MEASURED = [
+const NOT_YET_MEASURED = [
   'external_calls',
   'database',
   'error_groups',

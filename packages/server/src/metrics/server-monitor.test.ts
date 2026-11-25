@@ -207,6 +207,20 @@ describe('server monitoring', () => {
     ]);
   });
 
+  // Otherwise one caller cycling through invented versions with rejected
+  // requests fills the series cap and real traffic lands in the overflow.
+  it('labels rejected requests by client kind only', async () => {
+    const { app, monitor } = await serve();
+    for (let index = 0; index < 20; index += 1)
+      await app.inject({
+        url: `/sessions/unknown-${index}/events`,
+        headers: { 'x-verity-client': `ios/9.${index}` },
+      });
+    expect(
+      [...monitor.metrics.http.values()].filter((series) => series.statusClass === '4xx'),
+    ).toEqual([expect.objectContaining({ client: 'ios', requests: 20 })]);
+  });
+
   it('accepts only the offered detail durations', async () => {
     const { app } = await serve();
     const response = await app.inject({
