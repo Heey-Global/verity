@@ -5,7 +5,7 @@ import type { FastifyReply, FastifyRequest, RouteShorthandOptions } from 'fastif
  * Overview reads (`/sessions`, `/projects`, `/projects/:id`) are re-read by
  * every device after each live hint or invalidation. Most of those reads return
  * the body the device already holds, and each one used to cross the network in
- * full and uncompressed. A strong validator lets an unchanged read answer
+ * full and uncompressed. A validator lets an unchanged read answer
  * `304 Not Modified` with no body, and gzip shrinks the reads that did change.
  *
  * The tag is weak (`W/`) because it names the JSON representation, not the

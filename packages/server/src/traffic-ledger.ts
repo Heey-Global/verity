@@ -20,8 +20,9 @@ interface Tally {
  *
  * `bodyBytes` is the serialized body before compression. `wireBytes` is what
  * left the socket for the response, measured from the socket's own counter and
- * therefore including headers and compression; it is 0 where the transport has
- * no socket of its own.
+ * therefore including headers and compression. It is approximate where
+ * responses overlap on one socket (HTTP/2) and 0 where the transport has no
+ * socket of its own.
  */
 export class TrafficLedger {
   private readonly tallies = new Map<string, Tally>();

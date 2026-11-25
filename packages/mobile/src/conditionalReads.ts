@@ -2,27 +2,25 @@
  * Conditional overview reads. The app re-reads `/sessions`, `/projects` and
  * `/projects/:id` after every live hint or invalidation, and most of those
  * reads return what the app already holds. The server tags these responses
- * with an ETag; this wrapper remembers the last body per URL and credential,
- * asks with `If-None-Match`, and turns a `304 Not Modified` back into the
- * remembered `200` so callers keep parsing a normal response.
+ * with an ETag; this wrapper remembers the last response per URL and
+ * credential, asks with `If-None-Match`, and turns a `304 Not Modified` back
+ * into the remembered `200` so callers keep parsing a normal response.
+ *
+ * Only a response the server tagged is remembered, so matching a path that is
+ * not an overview read costs nothing beyond the lookup. The match allows a
+ * path prefix, for servers reached below a base path.
  */
 
-const CONDITIONAL_PATH = /^\/(?:sessions|projects(?:\/[^/?]+)?)(?:\?envelope=1)?$/u;
+const CONDITIONAL_PATH = /(?:^|\/)(?:sessions|projects(?:\/[^/?]+)?)(?:\?envelope=1)?$/u;
 const MAX_ENTRIES = 16;
 
 interface Remembered {
   etag: string;
   body: string;
-  contentType: string;
+  headers: [string, string][];
 }
 
 const remembered = new Map<string, Remembered>();
-
-/** Normalize any HeadersInit to a lower-case record, so the credential is
- * found and forwarded whatever shape the caller passed. */
-function headerRecord(init: RequestInit | undefined): Record<string, string> {
-  return Object.fromEntries(new Headers(init?.headers).entries());
-}
 
 /** Whether a request path takes part in conditional reads. Exported for tests. */
 export function isConditionalReadPath(path: string): boolean {
@@ -33,6 +31,19 @@ export function isConditionalReadPath(path: string): boolean {
  * hygiene (tests, memory), not a correctness requirement. */
 export function clearConditionalReads(): void {
   remembered.clear();
+}
+
+/** Add one header while keeping the caller's own HeadersInit shape, which a
+ * custom transport may depend on. */
+function withHeader(init: RequestInit | undefined, name: string, value: string): RequestInit {
+  const headers = init?.headers;
+  if (headers instanceof Headers) {
+    const copy = new Headers(headers);
+    copy.set(name, value);
+    return { ...init, headers: copy };
+  }
+  if (Array.isArray(headers)) return { ...init, headers: [...headers, [name, value]] };
+  return { ...init, headers: { ...headers, [name]: value } };
 }
 
 /** Wrap `fetch` so eligible GETs are sent conditionally. */
@@ -51,39 +62,36 @@ export function withConditionalReads(fetchImpl: typeof fetch): typeof fetch {
       return fetchImpl(input, init);
     }
     if (method !== 'GET' || !isConditionalReadPath(path)) return fetchImpl(input, init);
-    const headers = headerRecord(init);
     // A different credential may see a different body; never answer one
     // account's request with another account's remembered read.
-    const key = `${url}\n${headers.authorization ?? ''}`;
+    const key = `${url}\n${new Headers(init?.headers).get('authorization') ?? ''}`;
     const known = remembered.get(key);
-    if (known !== undefined) headers['if-none-match'] = known.etag;
-    const response = await fetchImpl(input, { ...init, headers });
+    const response = await fetchImpl(
+      input,
+      known === undefined ? init : withHeader(init, 'if-none-match', known.etag),
+    );
     if (response.status === 304 && known !== undefined) {
       remembered.delete(key);
       remembered.set(key, known);
-      return new Response(known.body, {
-        status: 200,
-        headers: { 'content-type': known.contentType },
-      });
+      return new Response(known.body, { status: 200, headers: known.headers });
     }
     // Test doubles and minimal transports may answer without a Headers object.
-    const etag = (response.headers as Headers | undefined)?.get?.('etag') ?? null;
-    if (response.status !== 200 || etag === null) {
+    const headers = response.headers as Headers | undefined;
+    const etag = headers?.get?.('etag') ?? null;
+    if (response.status !== 200 || etag === null || headers === undefined) {
       remembered.delete(key);
       return response;
     }
     const body = await response.text();
+    // The transport already decoded the body; its encoding and length no
+    // longer describe the text handed to callers.
+    const kept = [...headers.entries()].filter(
+      ([name]) => name !== 'content-encoding' && name !== 'content-length',
+    );
     remembered.delete(key);
-    remembered.set(key, {
-      etag,
-      body,
-      contentType: response.headers.get('content-type') ?? 'application/json',
-    });
+    remembered.set(key, { etag, body, headers: kept });
     while (remembered.size > MAX_ENTRIES) remembered.delete(remembered.keys().next().value!);
-    return new Response(body, {
-      status: 200,
-      headers: { 'content-type': response.headers.get('content-type') ?? 'application/json', etag },
-    });
+    return new Response(body, { status: 200, headers: kept });
   };
   return wrapped;
 }

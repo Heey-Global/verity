@@ -53,6 +53,25 @@ describe('withConditionalReads', () => {
     expect(calls[1]?.headers['if-none-match']).toBeUndefined();
   });
 
+  it("keeps the caller's header shape and the server's response headers", async () => {
+    const seen: unknown[] = [];
+    const fetchImpl = (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      seen.push(init?.headers);
+      return new Response('[]', {
+        status: 200,
+        headers: { 'content-type': 'application/json', etag: 'W/"x"', 'x-verity-version': '4' },
+      });
+    }) as typeof fetch;
+    const read = withConditionalReads(fetchImpl);
+    const headers = new Headers({ Authorization: 'Bearer a' });
+    const first = await read('https://verity.test/projects', { headers });
+    expect(first.headers.get('x-verity-version')).toBe('4');
+    await read('https://verity.test/projects', { headers });
+    expect(seen[1]).toBeInstanceOf(Headers);
+    expect((seen[1] as Headers).get('authorization')).toBe('Bearer a');
+    expect((seen[1] as Headers).get('if-none-match')).toBe('W/"x"');
+  });
+
   it('leaves writes and other reads untouched', async () => {
     const { calls, fetchImpl } = server(() => '{}');
     const read = withConditionalReads(fetchImpl);
@@ -71,5 +90,6 @@ describe('withConditionalReads', () => {
     expect(isConditionalReadPath('/projects/p1')).toBe(true);
     expect(isConditionalReadPath('/projects/p1/pull-requests')).toBe(false);
     expect(isConditionalReadPath('/sessions/s1')).toBe(false);
+    expect(isConditionalReadPath('/verity/sessions?envelope=1')).toBe(true);
   });
 });
