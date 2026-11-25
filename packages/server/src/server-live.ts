@@ -146,7 +146,7 @@ export function installLive(
   ctx: ServerContext,
   { tickets }: { tickets: ReturnType<typeof createLiveTickets> },
 ): void {
-  const { deps, liveHub } = ctx;
+  const { deps, liveHub, monitor } = ctx;
   const { mint: mintLiveTicket, consume: consumeLiveTicket } = tickets;
   // The app-wide live connection: one WebSocket per paired device carrying the
   // multiplexed session streams, overview hints, foreground presence and
@@ -195,6 +195,7 @@ export function installLive(
       }
       const registry = deps.authRegistry;
       if (registry?.isEnabled() !== true) {
+        monitor.observeLiveSocket(socket, request.headers);
         liveHub.attach(socket, {});
         return;
       }
@@ -203,6 +204,7 @@ export function installLive(
         socket.close(1008, 'unauthorized');
         return;
       }
+      monitor.observeLiveSocket(socket, request.headers);
       liveHub.attach(socket, identity);
     });
     done();

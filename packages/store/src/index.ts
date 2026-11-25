@@ -441,3 +441,9 @@ export {
   type GitHubRepositoryObservation,
   type GitHubRepositoryReconciliation,
 } from './github-repository-identity.js';
+export {
+  DEFAULT_SERVER_MONITORING_SETTINGS,
+  ServerMonitoringSettingsStore,
+  type DetailModeStarter,
+  type ServerMonitoringSettings,
+} from './server-monitoring-settings.js';

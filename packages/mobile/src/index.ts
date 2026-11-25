@@ -911,3 +911,11 @@ export type {
   KnowledgeFileUploaded,
   KnowledgeRelocated,
 } from './knowledge-files-api.js';
+export {
+  DETAIL_MODE_MINUTES,
+  diagnosticReportSchema,
+  monitoringStateSchema,
+  type DetailModeMinutes,
+  type DiagnosticReport,
+  type MonitoringState,
+} from './server-monitoring-api.js';
