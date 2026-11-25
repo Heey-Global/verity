@@ -67,7 +67,10 @@ export class TopicSubscriptions {
       this.deliver(sub, record),
     );
     sub.unsubscribe = unsubscribe;
-    if (replay.kind === 'gap') {
+    // Without a cursor the client holds no position, and with a gap its
+    // position is lost: either way it reads its snapshot now that the
+    // subscription is live, so nothing published before this point is missed.
+    if (cursor === undefined || replay.kind === 'gap') {
       this.opts.send({ k: 'resync', topic, cursor: replay.head });
       return;
     }
@@ -118,7 +121,10 @@ export class TopicSubscriptions {
       try {
         allowed = await this.opts.canRead(topic);
       } catch (error) {
+        // Fail closed: this runs when access may just have been revoked. The
+        // client retries an `error` ending, which authorizes again.
         this.opts.logger?.warn({ err: error, topic }, 'verity: live topic recheck failed');
+        this.end(topic, sub, 'error');
         continue;
       }
       if (!allowed && this.subscriptions.get(topic) === sub) this.end(topic, sub, 'forbidden');

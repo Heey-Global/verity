@@ -412,9 +412,14 @@ export class LiveConnection implements LiveSessionTransport {
       case 'resync':
         this.topics.resync(frame.topic, frame.cursor);
         return;
-      case 'topic_ended':
-        this.topics.ended(frame.topic, frame.reason);
+      case 'topic_ended': {
+        if (!this.topics.ended(frame.topic, frame.reason)) return;
+        const generation = this.generation;
+        this.schedule(() => {
+          if (generation === this.generation) this.topics.retry(frame.topic);
+        }, SUBSCRIPTION_RETRY_MS);
         return;
+      }
       case 'invalidate':
         for (const entry of this.resources.values()) {
           if (entry.resource.path === frame.path)

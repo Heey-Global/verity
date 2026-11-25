@@ -117,9 +117,7 @@ describe('LiveConnection topics', () => {
     expect(view.sink.resync).not.toHaveBeenCalled();
   });
 
-  it('reloads views that hold no cursor when a connection becomes ready', async () => {
-    // Without a cursor nothing can be replayed; a change made while the view
-    // was not subscribed would otherwise never reach it.
+  it('subscribes topics added while disconnected once the server is ready', async () => {
     const h = await harness();
     const view = recorder();
     h.connection.subscribeTopic('project:p1', view.sink);
@@ -128,7 +126,21 @@ describe('LiveConnection topics', () => {
     expect(h.socket().topicFrames()).toEqual([
       { k: 'topics.sub', topics: [{ topic: 'project:p1' }] },
     ]);
-    expect(view.sink.resync).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a topic the server ended with a transient error', async () => {
+    const h = await harness();
+    h.socket().ready(true);
+    const view = recorder();
+    h.connection.subscribeTopic('project:p1', view.sink);
+    h.socket().serve({ k: 'domain', topic: 'project:p1', cursor: 3, event: change(1) });
+    h.socket().serve({ k: 'topic_ended', topic: 'project:p1', reason: 'error' });
+    expect(view.sink.ended).not.toHaveBeenCalled();
+    await h.reconnect(); // runs the scheduled retry
+    expect(h.socket().topicFrames().at(-1)).toEqual({
+      k: 'topics.sub',
+      topics: [{ topic: 'project:p1', cursor: 3 }],
+    });
   });
 
   it('turns a server resync into a snapshot reload and continues from its cursor', async () => {

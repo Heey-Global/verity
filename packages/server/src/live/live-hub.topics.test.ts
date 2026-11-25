@@ -157,6 +157,37 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  it('answers a subscription without a cursor with a resync once it is live', async () => {
+    // The client reads its snapshot on this resync. Were it to read before the
+    // subscription is live (authorization is async), a change published in
+    // between would be in neither the snapshot nor the stream.
+    const w = world();
+    const socket = w.connect('alice');
+    await socket.client({ k: 'topics.sub', topics: [{ topic: 'project:p1' }] });
+    expect(socket.of('resync')).toEqual([
+      { k: 'resync', topic: 'project:p1', cursor: w.bus!.head },
+    ]);
+    const record = w.bus!.publish('project:p1', lifecycle('p1', 1));
+    expect(socket.of('domain').map(({ cursor }) => cursor)).toEqual([record.cursor]);
+    w.hub.close();
+  });
+
+  it('fails closed when a recheck cannot decide', async () => {
+    const w = world();
+    const socket = w.connect('bob');
+    await socket.client({ k: 'topics.sub', topics: [{ topic: 'project:p2' }] });
+    w.readable.delete('bob');
+    w.readable.set('bob', {
+      has: () => {
+        throw new Error('membership store unavailable');
+      },
+    } as unknown as Set<string>);
+    w.hub.authorizationChanged({ userId: 'bob' });
+    await vi.waitFor(() => expect(socket.of('topic_ended')).toHaveLength(1));
+    expect(socket.of('topic_ended')[0]).toMatchObject({ topic: 'project:p2', reason: 'error' });
+    w.hub.close();
+  });
+
   it('ends a topic whose access was revoked while the socket stayed open', async () => {
     const w = world();
     const socket = w.connect('bob');
@@ -204,6 +235,7 @@ describe('LiveHub domain-event topics', () => {
     const w = world();
     const socket = w.connect('alice');
     await socket.client({ k: 'topics.sub', topics: [{ topic: 'project:p1' }] });
+    socket.frames.length = 0;
     socket.bufferedAmount = Number.MAX_SAFE_INTEGER;
     const dropped = w.bus!.publish('project:p1', lifecycle('p1', 1));
     w.bus!.publish('project:p1', lifecycle('p1', 2));

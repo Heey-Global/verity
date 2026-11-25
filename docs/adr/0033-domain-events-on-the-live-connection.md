@@ -89,8 +89,17 @@ with `topics.sub` and the last cursor it applied per topic, and receives
 `domain` frames with a per-topic cursor. The server keeps a bounded ring
 buffer per topic. A client that reconnects within the buffer receives what it
 missed; one that fell behind receives `resync` and reads the affected
-snapshots through the existing HTTP routes. Version 1 clients keep hints and
-resource watches unchanged.
+snapshots through the existing HTTP routes. A subscription without a cursor
+is also answered with `resync`, sent once the subscription is live: a view
+reads its snapshot then, so a change published while the subscription was
+still being authorized is in either the snapshot or the stream. Cursors share
+one server-wide sequence seeded from the wall clock, so a cursor from an
+earlier server process answers `resync` rather than an incomplete replay.
+
+A topic ends with `topic_ended`: `forbidden` and `limit` are final, while
+`error` (an authorization check that could not decide) is retried by the
+client. A recheck that cannot decide fails closed. Version 1 clients keep
+hints and resource watches unchanged.
 
 ### One store in the app
 

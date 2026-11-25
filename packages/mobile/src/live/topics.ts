@@ -16,8 +16,9 @@ export interface LiveTopicSink {
    * absence, a socket that fell behind). Read the topic's snapshots again;
    * events keep arriving after this. */
   resync(): void;
-  /** The server refused or ended the topic for good, e.g. access was revoked. */
-  ended?(reason: TopicEndedReason): void;
+  /** The server ended the topic for good: access was revoked, or the
+   * connection holds too many topics. A transient `error` is retried instead. */
+  ended?(reason: Exclude<TopicEndedReason, 'error'>): void;
 }
 
 interface TopicEntry {
@@ -34,8 +35,9 @@ interface TopicEntry {
  * across reconnects so a drop costs no events, and turns `resync` into a
  * snapshot reload of every view that listens.
  *
- * Subscribe before reading a snapshot: an event published in between then
- * arrives after the read, and its revision decides whether it still applies.
+ * A new subscription holds no cursor; the server answers it with `resync`
+ * once it is live, and that is when a view reads its snapshot. Events that
+ * arrive before the snapshot answer are applied by revision like any other.
  */
 export class LiveTopics {
   private readonly topics = new Map<DomainTopic, TopicEntry>();
@@ -71,12 +73,6 @@ export class LiveTopics {
     for (let i = 0; i < requests.length; i += LIVE_MAX_TOPIC_SUBSCRIPTIONS) {
       this.send({ k: 'topics.sub', topics: requests.slice(i, i + LIVE_MAX_TOPIC_SUBSCRIPTIONS) });
     }
-    // Without a cursor nothing can be replayed: whatever changed while this
-    // connection was not subscribed is only in a fresh snapshot.
-    for (const entry of this.topics.values()) {
-      if (entry.cursor !== undefined) continue;
-      for (const sink of [...entry.sinks]) sink.resync();
-    }
   }
 
   /** The connection dropped; nothing arrives until the next {@link ready}. */
@@ -100,10 +96,24 @@ export class LiveTopics {
     for (const sink of [...entry.sinks]) sink.resync();
   }
 
-  ended(topic: DomainTopic, reason: TopicEndedReason): void {
+  /** The server ended a topic. Returns true when the caller should retry the
+   * subscription later (a transient `error`); the views keep listening. */
+  ended(topic: DomainTopic, reason: TopicEndedReason): boolean {
     const entry = this.topics.get(topic);
-    if (entry === undefined) return;
+    if (entry === undefined) return false;
+    if (reason === 'error') return true;
     this.topics.delete(topic);
     for (const sink of [...entry.sinks]) sink.ended?.(reason);
+    return false;
+  }
+
+  /** Subscribe a still-wanted topic again after a transient failure. */
+  retry(topic: DomainTopic): void {
+    const entry = this.topics.get(topic);
+    if (entry === undefined || !this.supported) return;
+    this.send({
+      k: 'topics.sub',
+      topics: [entry.cursor === undefined ? { topic } : { topic, cursor: entry.cursor }],
+    });
   }
 }
