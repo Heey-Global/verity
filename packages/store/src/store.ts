@@ -1183,7 +1183,10 @@ export class EventStore implements EventSink {
   }
 
   private get projectLifecycle(): ProjectLifecycleStore {
-    return new ProjectLifecycleStore(() => this.db);
+    return new ProjectLifecycleStore(
+      () => this.db,
+      (id) => this.getProject(id),
+    );
   }
 
   get calendarWatch(): CalendarWatchStore {
@@ -4529,32 +4532,7 @@ export class EventStore implements EventSink {
     provisionError: string | null = null,
     provisionWarning: string | null = null,
   ): Promise<ProjectRecord | undefined> {
-    const leavesSleepLifecycle =
-      state !== 'sleeping_starting' && state !== 'sleeping' && state !== 'waking';
-    await this.db.transaction().execute(async (trx) => {
-      await trx
-        .updateTable('projects')
-        .set({
-          state,
-          ...(leavesSleepLifecycle
-            ? {
-                sleep_compatibility_fingerprint: null,
-                sleeping_since: null,
-                wake_started_at: null,
-              }
-            : {}),
-          provision_error: provisionError,
-          provision_warning: provisionWarning,
-          state_changed_at: sql`now()`,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .execute();
-      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
-        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
-      }
-    });
-    return this.getProject(id);
+    return this.projectLifecycle.updateProjectState(id, state, provisionError, provisionWarning);
   }
 
   /** Persist a sleep/wake lifecycle transition and its recovery metadata in one
@@ -4570,26 +4548,7 @@ export class EventStore implements EventSink {
       wakeStartedAt: Date | null;
     },
   ): Promise<ProjectRecord | undefined> {
-    await this.db.transaction().execute(async (trx) => {
-      await trx
-        .updateTable('projects')
-        .set({
-          state,
-          sleep_compatibility_fingerprint: metadata.sleepCompatibilityFingerprint,
-          sleeping_since: metadata.sleepingSince,
-          wake_started_at: metadata.wakeStartedAt,
-          provision_error: null,
-          provision_warning: null,
-          state_changed_at: sql`now()`,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .execute();
-      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
-        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
-      }
-    });
-    return this.getProject(id);
+    return this.projectLifecycle.updateProjectSleepState(id, state, metadata);
   }
 
   /** Record the effective image selected by provisioning without changing the
@@ -4607,27 +4566,14 @@ export class EventStore implements EventSink {
     imageRef: string,
     toolkitIdentity: string | null,
   ): Promise<void> {
-    await this.db
-      .updateTable('projects')
-      .set({
-        image_ref: imageRef,
-        toolkit_identity: toolkitIdentity,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    return this.projectLifecycle.recordProjectImageRef(id, imageRef, toolkitIdentity);
   }
 
   async setProjectSetupStatus(
     id: string,
     status: ProjectSetupState,
   ): Promise<ProjectRecord | undefined> {
-    await this.db
-      .updateTable('projects')
-      .set({ setup_status: status, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .execute();
-    return this.getProject(id);
+    return this.projectLifecycle.setProjectSetupStatus(id, status);
   }
 
   /**
@@ -4639,17 +4585,7 @@ export class EventStore implements EventSink {
    * GitHub's ISO string (display-only, never queried).
    */
   async updateProjectReleaseStatus(id: string, status: ProjectReleaseStatus): Promise<void> {
-    await this.db
-      .updateTable('projects')
-      .set({
-        latest_release_tag: status.tag,
-        latest_release_name: status.name,
-        latest_release_url: status.url,
-        latest_release_published_at: status.publishedAt,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    return this.projectLifecycle.updateProjectReleaseStatus(id, status);
   }
 
   async setSessionAutomation(
