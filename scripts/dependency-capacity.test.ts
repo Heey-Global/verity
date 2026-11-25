@@ -135,22 +135,25 @@ describe('dependency copy capacity admission', () => {
   it('refuses a proven recovery overflow before reaching the traversal cap', () => {
     const f = fixture();
     const tree = join(f.worktree, 'over-budget');
-    mkdirSync(tree);
-    writeFileSync(join(tree, 'keep'), 'preserved content');
+    const content = Buffer.alloc(8192, 1);
+    writeFileSync(tree, content);
+    const tail = join(f.worktree, 'beyond-cap');
+    writeFileSync(tail, 'preserved tail');
     const allocated = statSync(tree).blocks * 512;
     expect(allocated).toBeGreaterThan(0);
     expect(() =>
       probe(
-        `s.measureTrees([process.argv[1]], {
+        `s.measureTrees([process.argv[1], process.argv[2]], {
         entries: 1, phase: 'retained recovery trees',
         recoveryBudget: {remaining: 0, added: 4096, budget: 4096}
       });`,
-        [tree],
+        [tree, tail],
       ),
     ).toThrow(
       `Dependency recovery budget exceeded: at least ${allocated} retained bytes plus 4096 newly preserved bytes exceed the 4096-byte measured installation allowance.`,
     );
-    expect(readFileSync(join(tree, 'keep'), 'utf8')).toBe('preserved content');
+    expect(readFileSync(tree)).toEqual(content);
+    expect(readFileSync(tail, 'utf8')).toBe('preserved tail');
   });
 
   it('finishes metadata traversal when per-file Node calls would exhaust the deadline', () => {
