@@ -1,3 +1,4 @@
+import { DomainEventBus } from './live/domain-events.js';
 import { installAssistantHandoffNotices } from './assistant-handoff-notify.js';
 import { installChangeSubmissions } from './change-submissions.js';
 import {
@@ -152,13 +153,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   const { pushSender, describePushSession, describePushSessionById } = createServerPush(app, deps);
   const resources = createLiveResources(app, deps, lifecycle);
-  const liveHub = createServerLiveHub(app, deps, { resources, lifecycle, trafficLedger });
+  const domainEvents = new DomainEventBus();
+  const liveHub = createServerLiveHub(app, deps, {
+    resources,
+    lifecycle,
+    trafficLedger,
+    domainEvents,
+  });
   const ctx: ServerContext = {
     app,
     deps,
     lifecycle,
     conductor,
     liveHub,
+    domainEvents,
     resources,
     pushSender,
     monitor,

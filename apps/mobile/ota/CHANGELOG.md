@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.95.5](https://github.com/Heey-Global/verity/compare/mobile-v1.95.4...mobile-v1.95.5) (2026-11-25)
+
+
+### Features
+
+* **server:** count outbound calls per target and cause ([#2910](https://github.com/Heey-Global/verity/issues/2910)) ([7d8c7ca](https://github.com/Heey-Global/verity/commit/7d8c7ca1df5531fb6dcf609b4d5e299e7e5b7837))
+* **server:** in-memory server monitoring and diagnostic report ([#2905](https://github.com/Heey-Global/verity/issues/2905)) ([f2febee](https://github.com/Heey-Global/verity/commit/f2febee15153fd1c1561e87971252460acfd3164))
+
+
+### Bug Fixes
+
+* **mobile:** keep project requests from covering the session chat ([#2912](https://github.com/Heey-Global/verity/issues/2912)) ([35d98ca](https://github.com/Heey-Global/verity/commit/35d98caca724d0d4746c5996b470c212ed5bf2c1))
+
+
+### Performance Improvements
+
+* **live:** compress and revalidate overview reads, settle Home cards ([#2909](https://github.com/Heey-Global/verity/issues/2909)) ([a8dd0ff](https://github.com/Heey-Global/verity/commit/a8dd0ffec4d3fa8b9cb5f799457780ff2ba954a5))
+
 ## [1.95.4](https://github.com/Heey-Global/verity/compare/mobile-v1.95.3...mobile-v1.95.4) (2026-11-25)
 
 

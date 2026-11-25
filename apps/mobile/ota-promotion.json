@@ -1,22 +1,17 @@
 {
   "schema": 1,
-  "version": "1.95.4",
+  "version": "1.95.5",
   "runtime": "1.95.0",
   "channel": "production",
-  "commit": "ba7f02cd75d7b7c2449953c2dff725dcb817b2fd",
-  "tag": "mobile-v1.95.4",
-  "branch": "staging-mobile-v1.95.4-ba7f02cd75d7b7c2449953c2dff725dcb817b2fd",
-  "baseline": "mobile-v1.95.0",
-  "group": "7bc61051-b4d6-4395-ac79-3db7b0b6fb9b",
+  "commit": "0301f1ab07e1d1dffe65b50125fc01ca4d5c5fbc",
+  "tag": "mobile-v1.95.5",
+  "branch": "staging-mobile-v1.95.5-0301f1ab07e1d1dffe65b50125fc01ca4d5c5fbc",
+  "baseline": "mobile-v1.95.4",
+  "group": "21d1c735-4140-4030-bf9c-d98c547e19db",
   "notes": [
-    "support multiple connections and project bindings (#2885)",
-    "support interactive HTML reviews (#2865)",
-    "show pull requests across repositories (#2847)",
-    "select multiple recent images in the add menu (#2858)",
-    "keep project rename input visible (#2854)",
-    "reduce secret approval card text size (#2855)",
-    "address session requests to the person who asked (#2840)",
-    "shorten approval cards and hide legacy chat notices (#2842)",
-    "streamline approval cards and continuation in chat (#2825)"
+    "keep project requests from covering the session chat (#2912)",
+    "count outbound calls per target and cause (#2910)",
+    "compress and revalidate overview reads, settle Home cards (#2909)",
+    "in-memory server monitoring and diagnostic report (#2905)"
   ]
 }

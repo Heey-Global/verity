@@ -1,3 +1,4 @@
+import type { DomainEventBus } from './live/domain-events.js';
 import type { Conductor } from '@verity/session';
 import type { FastifyInstance } from 'fastify';
 
@@ -71,6 +72,8 @@ export interface ServerContext {
   readonly lifecycle: ServerLifecycle;
   readonly conductor: Conductor;
   readonly liveHub: LiveHub;
+  /** Typed overview events per user, project and session topic (ADR 0033). */
+  readonly domainEvents: DomainEventBus;
   readonly resources: ResourceObserver;
   readonly pushSender: PushSender | undefined;
   /** In-memory request, traffic and resource counters (ADR 0032). */

@@ -1,4 +1,4 @@
-# ADR 0032: Domain events on the live connection
+# ADR 0033: Domain events on the live connection
 
 - Status: accepted
 - Date: 2026-11-25
@@ -89,8 +89,19 @@ with `topics.sub` and the last cursor it applied per topic, and receives
 `domain` frames with a per-topic cursor. The server keeps a bounded ring
 buffer per topic. A client that reconnects within the buffer receives what it
 missed; one that fell behind receives `resync` and reads the affected
-snapshots through the existing HTTP routes. Version 1 clients keep hints and
-resource watches unchanged.
+snapshots through the existing HTTP routes. A subscription without a cursor
+is also answered with `resync`, sent once the subscription is live: a view
+reads its snapshot then, so a change published while the subscription was
+still being authorized is in either the snapshot or the stream. Cursors share
+one server-wide sequence that is valid within an epoch announced in `ready`; a
+client holding cursors of another epoch (a restarted server) drops them and
+reads snapshots. The sequence also starts from the wall clock, so an old
+cursor that still arrives answers `resync` rather than an incomplete replay.
+
+A topic ends with `topic_ended`: `forbidden` and `limit` are final, while
+`error` (an authorization check that could not decide) is retried by the
+client. A recheck that cannot decide fails closed. Version 1 clients keep
+hints and resource watches unchanged.
 
 ### One store in the app
 

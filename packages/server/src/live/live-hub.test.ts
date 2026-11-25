@@ -1,4 +1,4 @@
-import type { AgentEvent, LiveServerFrame } from '@verity/events';
+import { LIVE_PROTOCOL_VERSION, type AgentEvent, type LiveServerFrame } from '@verity/events';
 import type { SequencedEvent } from '@verity/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LiveHub, type LiveHubDeps, type LiveSessionRef, type LiveSocket } from './live-hub.js';
@@ -143,7 +143,7 @@ describe('LiveHub', () => {
   it('greets every connection with the protocol version and its limits', () => {
     const w = world();
     const socket = connect(w, 'alice', 'd1');
-    expect(socket.frames[0]).toEqual({ k: 'ready', v: 1, maxSessions: 8 });
+    expect(socket.frames[0]).toEqual({ k: 'ready', v: LIVE_PROTOCOL_VERSION, maxSessions: 8 });
     w.hub.close();
   });
 
