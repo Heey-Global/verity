@@ -732,6 +732,7 @@ export {
   type BubbleRest,
 } from './tasks.js';
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';
+export { isViewedTask, listTaskView } from './taskView.js';
 
 export { type ProjectGitHubIssues, type ProjectGitHubIssue, type RepositoryIssues } from './api.js';
 export {

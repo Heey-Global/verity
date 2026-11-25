@@ -12,6 +12,7 @@ jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enable
 jest.mock('../lib/tasksStore', () => ({
   taskAccountScope: () => null,
   useTasks: () => ({ tasks: [], pending: [], conflicts: [] }),
+  useTaskView: () => undefined,
 }));
 jest.mock('../lib/sessionLayout', () => ({
   sessionLayout: () => ({ wide: false, sidebarWidth: 320 }),

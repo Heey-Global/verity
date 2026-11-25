@@ -21,7 +21,7 @@ import { subscribeAuthToken } from '../lib/authToken';
 import { subscribeBrowserSession } from '../lib/browserSession';
 import { subscribeMeeting } from '../lib/liveMeetingSession';
 import { subscribeFollowedRemoteMeeting } from '../lib/liveMeetingSync';
-import { taskAccountScope, refreshTasks, startTasksStore, useTasks } from '../lib/tasksStore';
+import { taskAccountScope, refreshTasks, startTasksStore } from '../lib/tasksStore';
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { subscribeVerityShortcut } from '../lib/voiceShortcut';
 import { useVerity } from '../lib/verityConversation';
@@ -63,7 +63,6 @@ export function VerityBubble() {
   const pathname = usePathname();
   const params = useGlobalSearchParams<{ id?: string; selected?: string }>();
   const preferences = useTaskPreferences();
-  const { tasks } = useTasks();
   const { projects, sessions, projectsScope } = useTaskContext();
   const [keyboard, setKeyboard] = useState(Keyboard.isVisible());
   const [meeting, setMeeting] = useState(false);

@@ -31,6 +31,11 @@ interface Dependencies {
   };
   active: () => boolean;
   changed: (state: TaskQueueState) => void;
+  /** The rows the open views show; without it, the full list. `null` while no
+   *  view is open: a sync then only delivers pending changes. */
+  view?: () => Promise<Task[]> | null;
+  /** Which restored rows to keep; pending rows are always kept. */
+  keep?: (task: Task) => boolean;
 }
 
 /** One server/credential pair. Local saves never wait behind a network request. */
@@ -38,6 +43,7 @@ export class TaskQueue {
   private state: TaskQueueState = { tasks: [], pending: [], conflicts: [] };
   private chain: Promise<unknown> = Promise.resolve();
   private syncing: Promise<void> | null = null;
+  private followUp: Promise<void> | null = null;
   private retryAt = 0;
   private failures = 0;
   constructor(private readonly deps: Dependencies) {}
@@ -55,6 +61,15 @@ export class TaskQueue {
     return this.serial(async () => {
       const data = await this.deps.load();
       if (data) this.state = stateSchema.parse(JSON.parse(data));
+      const { keep } = this.deps;
+      if (keep) {
+        const pendingIds = new Set(this.state.pending.map((op) => op.id));
+        const tasks = this.state.tasks.filter((task) => pendingIds.has(task.id) || keep(task));
+        if (tasks.length !== this.state.tasks.length) {
+          this.state = { ...this.state, tasks };
+          await this.deps.persist(JSON.stringify(this.state));
+        }
+      }
       if (this.deps.active()) this.deps.changed(this.state);
     });
   }
@@ -169,7 +184,18 @@ export class TaskQueue {
   }
   sync(force = false): Promise<void> {
     if (!force && Date.now() < this.retryAt) return Promise.resolve();
-    if (this.syncing) return this.syncing;
+    if (this.syncing) {
+      if (!force) return this.syncing;
+      // A forced sync asks for a read after now: a view just opened, and the
+      // sync in flight may have started before it and skipped the list.
+      this.followUp ??= this.syncing
+        .catch(() => undefined)
+        .then(() => {
+          this.followUp = null;
+          return this.sync(true);
+        });
+      return this.followUp;
+    }
     const run = this.flush().then(
       () => {
         this.failures = 0;
@@ -264,7 +290,9 @@ export class TaskQueue {
       });
     }
     if (!this.deps.active()) return;
-    const remote = await this.deps.api.listTasks();
+    const read = this.deps.view ? this.deps.view() : this.deps.api.listTasks();
+    if (read === null) return;
+    const remote = await read;
     if (!this.deps.active()) return;
     await this.serial(async () => {
       const pendingIds = new Set(this.state.pending.map((op) => op.id));

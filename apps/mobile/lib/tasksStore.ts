@@ -1,6 +1,8 @@
 import Storage from 'expo-sqlite/kv-store';
 import { subscribeLiveRefresh } from './liveConnection';
 import {
+  isViewedTask,
+  listTaskView,
   TaskQueue,
   projectRecordSchema,
   sessionSummarySchema,
@@ -13,7 +15,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
-import { useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import { Platform } from 'react-native';
 import { getAuthToken, getAuthTokenId, subscribeAuthToken } from './authToken';
 import { getBrowserSession, subscribeBrowserSession } from './browserSession';
@@ -26,6 +28,12 @@ let queue: TaskQueue | null = null;
 let detachLive: (() => void) | undefined;
 let ready: Promise<void> = Promise.resolve();
 const listeners = new Set<() => void>();
+/** The open task views, each with the session whose agent steps it shows. Only
+ *  while one is open does the store read the list and follow its changes. */
+const views = new Map<symbol, string | null>();
+function viewedSessions(): string[] {
+  return [...new Set([...views.values()].filter((id): id is string => id !== null))];
+}
 function publish(next: TaskQueueState): void {
   state = next;
   for (const listener of listeners) listener();
@@ -52,13 +60,20 @@ function attachLiveRefresh(api: VerityClient, instance: TaskQueue): void {
     [{ path: '/tasks' }],
   );
 }
+function followViews(): void {
+  if (views.size === 0 || !queue) {
+    detachLive?.();
+    detachLive = undefined;
+    return;
+  }
+  if (detachLive) return;
+  const api = createVerityClient();
+  if (api) attachLiveRefresh(api, queue);
+}
 function switchScope(): void {
   const next = taskAccountScope();
   if (next === scope) {
-    if (queue && !detachLive) {
-      const api = createVerityClient();
-      if (api) attachLiveRefresh(api, queue);
-    }
+    followViews();
     return;
   }
   detachLive?.();
@@ -74,10 +89,13 @@ function switchScope(): void {
     load: () => Storage.getItem(`verity.tasks.v1.${next}`),
     persist: (data) => Storage.setItem(`verity.tasks.v1.${next}`, data),
     changed: publish,
+    view: () => (views.size === 0 ? null : listTaskView(api, viewedSessions())),
+    // Rows a view would not show again only cost storage and parsing at start.
+    keep: (task) => isViewedTask(task, []),
   });
   queue = instance;
   ready = instance.restore();
-  attachLiveRefresh(api, instance);
+  followViews();
   void ready.then(() => instance.sync()).catch(() => undefined);
 }
 export function startTasksStore(): () => void {
@@ -92,6 +110,22 @@ export function startTasksStore(): () => void {
     detachLive?.();
     detachLive = undefined;
   };
+}
+/** Keeps the task list read and current while the calling view is mounted.
+ *  `sessionId` adds the agent steps recorded in that session. */
+export function useTaskView(sessionId: string | null, enabled = true): void {
+  useEffect(() => {
+    if (!enabled) return;
+    const key = Symbol('task view');
+    views.set(key, sessionId);
+    switchScope();
+    followViews();
+    void ready.then(() => queue?.sync(true)).catch(() => undefined);
+    return () => {
+      views.delete(key);
+      followViews();
+    };
+  }, [sessionId, enabled]);
 }
 export function useTasks(): TaskQueueState {
   return useSyncExternalStore(
