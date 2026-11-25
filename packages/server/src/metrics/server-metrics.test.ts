@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { LatencyHistogram } from './latency-histogram.js';
 import {
   MAX_HTTP_SERIES,
+  MAX_LIVE_CLIENTS,
   MAX_SESSIONS,
   MAX_SLOW_REQUESTS,
   OVERFLOW_ROUTE,
@@ -62,6 +63,27 @@ describe('ServerMetrics', () => {
     expect(
       [...metrics.http.values()].find((entry) => entry.route === OVERFLOW_ROUTE)?.requests,
     ).toBe(10);
+  });
+
+  // A client chooses its own version label; folding only the route would still
+  // let it mint one overflow series per invented version and grow the heap.
+  it('keeps one overflow series however the labels vary past the cap', () => {
+    const metrics = new ServerMetrics();
+    for (let index = 0; index < MAX_HTTP_SERIES; index += 1)
+      metrics.recordHttp(request({ route: `/r${index}` }), false);
+    for (let index = 0; index < 500; index += 1)
+      metrics.recordHttp(
+        request({ route: `/x${index}`, client: `ios/1.${index}`, status: 200 + (index % 400) }),
+        false,
+      );
+    expect(metrics.http.size).toBe(MAX_HTTP_SERIES + 1);
+  });
+
+  it('caps live connections per client label', () => {
+    const metrics = new ServerMetrics();
+    for (let index = 0; index < MAX_LIVE_CLIENTS + 30; index += 1)
+      metrics.liveOpened(`ios/2.${index}`);
+    expect(metrics.live.size).toBe(MAX_LIVE_CLIENTS + 1);
   });
 
   it('tracks a bounded number of sessions and counts the ones it leaves out', () => {

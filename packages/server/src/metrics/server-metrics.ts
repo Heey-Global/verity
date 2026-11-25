@@ -12,7 +12,10 @@ import { LatencyHistogram } from './latency-histogram.js';
 export const MAX_HTTP_SERIES = 2_000;
 export const MAX_SESSIONS = 1_000;
 export const MAX_SLOW_REQUESTS = 50;
+export const MAX_LIVE_CLIENTS = 50;
 export const OVERFLOW_ROUTE = '(other)';
+/** Past a cap, every new key lands in this one series, whatever its labels. */
+export const OVERFLOW_CLIENT = '(other)';
 
 export interface HttpObservation {
   method: string;
@@ -89,19 +92,28 @@ export class ServerMetrics {
 
   recordHttp(observation: HttpObservation, detail: boolean): void {
     const statusClass = `${Math.floor(observation.status / 100)}xx`;
+    let method = observation.method;
     let route = observation.route;
-    let key = `${observation.method} ${route} ${observation.client} ${statusClass}`;
+    let client = observation.client;
+    let status = statusClass;
+    let key = `${method} ${route} ${client} ${status}`;
+    // Folding only the route would still let a caller mint a new series per
+    // invented method, client version or status: fold every label, so the
+    // overflow is one series however the labels vary.
     if (!this.http.has(key) && this.http.size >= MAX_HTTP_SERIES) {
+      method = '*';
       route = OVERFLOW_ROUTE;
-      key = `${observation.method} ${route} ${observation.client} ${statusClass}`;
+      client = OVERFLOW_CLIENT;
+      status = '*';
+      key = `${method} ${route} ${client} ${status}`;
     }
     let series = this.http.get(key);
     if (series === undefined) {
       series = {
-        method: observation.method,
+        method,
         route,
-        client: observation.client,
-        statusClass,
+        client,
+        statusClass: status,
         requests: 0,
         bytesIn: 0,
         bytesOut: 0,
@@ -154,7 +166,9 @@ export class ServerMetrics {
     if (slowest.length > MAX_SLOW_REQUESTS) slowest.length = MAX_SLOW_REQUESTS;
   }
 
-  private liveSeries(client: string): LiveSeries {
+  private liveSeries(label: string): LiveSeries {
+    const client =
+      this.live.has(label) || this.live.size < MAX_LIVE_CLIENTS ? label : OVERFLOW_CLIENT;
     let series = this.live.get(client);
     if (series === undefined) {
       series = {

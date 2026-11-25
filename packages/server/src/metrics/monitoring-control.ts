@@ -36,6 +36,8 @@ export class MonitoringControl {
     private readonly store: MonitoringSettingsStore | undefined,
     private readonly now: () => number = Date.now,
     private readonly onMeasurementChange: (enabled: boolean) => void = () => undefined,
+    /** A new detail period starts; runs only once the setting is stored. */
+    private readonly onDetailStart: () => void = () => undefined,
   ) {}
 
   /** Loads the stored settings; without a store the defaults apply. */
@@ -85,6 +87,7 @@ export class MonitoringControl {
     const next = this.store
       ? await this.store.setDetailMode(until, startedBy)
       : { ...this.settings, detailUntil: until, detailStartedBy: startedBy };
+    this.onDetailStart();
     this.apply(next);
     return this.state();
   }

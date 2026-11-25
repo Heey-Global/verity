@@ -41,6 +41,10 @@ export function createServerMonitor(options: {
       metrics.reset();
       sampler.setActive(enabled);
     },
+    // Each detail period reports only its own slow requests, whoever starts it.
+    () => {
+      metrics.slowRequests = [];
+    },
   );
   sampler.setActive(control.measuring);
   return {
@@ -99,7 +103,6 @@ export function installServerMonitoring(app: FastifyInstance, monitor: ServerMon
     if ('measurementEnabled' in patch)
       return monitor.control.setMeasurementEnabled(patch.measurementEnabled);
     if (patch.detailMode === null) return monitor.control.stopDetailMode();
-    monitor.metrics.slowRequests = [];
     return monitor.control.startDetailMode(patch.detailMode.minutes, 'app');
   });
 

@@ -29,7 +29,10 @@ export function clientIdentity(
  */
 export function withClientIdentity(base: typeof fetch, identity: string): typeof fetch {
   return ((input: RequestInfo | URL, init?: RequestInit) => {
-    const headers = new Headers(init?.headers);
+    // A Request carries its own headers; replacing them would drop the bearer.
+    const headers = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined),
+    );
     if (!headers.has(CLIENT_HEADER)) headers.set(CLIENT_HEADER, identity);
     return base(input, { ...init, headers });
   }) as typeof fetch;

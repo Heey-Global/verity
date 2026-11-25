@@ -28,6 +28,18 @@ describe('client identity', () => {
     expect(headers.get(CLIENT_HEADER)).toBe('ios/1.95.4');
   });
 
+  it('keeps the headers of a Request passed without options', async () => {
+    const base = jest.fn(async () => new Response('{}'));
+    await withClientIdentity(
+      base as unknown as typeof fetch,
+      'ios/1.95.4',
+    )(new Request('https://x', { headers: { authorization: 'Bearer t' } }));
+    const init = (base.mock.calls[0] as unknown as [Request, RequestInit])[1];
+    const headers = new Headers(init.headers);
+    expect(headers.get('authorization')).toBe('Bearer t');
+    expect(headers.get(CLIENT_HEADER)).toBe('ios/1.95.4');
+  });
+
   it('keeps a header the caller set itself', async () => {
     const base = jest.fn(async () => new Response('{}'));
     await withClientIdentity(base as unknown as typeof fetch, 'ios/1.95.4')('https://x', {

@@ -7,8 +7,8 @@
 //
 // Results vary with the machine; compare the modes within one run, not across runs.
 import Fastify from 'fastify';
-import { request } from 'node:http';
-import { Agent } from 'node:http';
+import { Buffer } from 'node:buffer';
+import { Agent, request } from 'node:http';
 
 import {
   createServerMonitor,
@@ -20,18 +20,25 @@ const ROUNDS = Number(process.env.ROUNDS ?? 6);
 const PER_ROUND = Number(process.env.PER_ROUND ?? 3000);
 const BODY = JSON.stringify({ items: 'x'.repeat(2_000) });
 
+/** @typedef {'off' | 'on' | 'detail'} Mode */
+/** @typedef {{ meanUs: number, p50Us: number, p99Us: number }} Timing */
+
+/** @param {number[]} sorted @param {number} q @returns {number} */
 function quantile(sorted, q) {
-  return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+  return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
 }
 
+/** @returns {Promise<Record<Mode, Timing>>} */
 async function latency() {
   const monitor = createServerMonitor({ store: undefined, version: 'bench' });
   const app = Fastify({ logger: false });
   installServerMonitoring(app, monitor);
-  app.get('/sessions/:id/events', async () => BODY);
+  app.get('/sessions/:id/events', () => Promise.resolve(BODY));
   await app.listen({ port: 0, host: '127.0.0.1' });
-  const { port } = app.server.address();
+  const address = app.server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
   const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  /** @returns {Promise<number>} */
   const once = () =>
     new Promise((resolve, reject) => {
       const started = process.hrtime.bigint();
@@ -51,8 +58,11 @@ async function latency() {
       req.on('error', reject);
       req.end();
     });
+  /** @type {Record<Mode, () => Promise<void>>} */
   const modes = {
-    off: async () => monitor.control.setMeasurementEnabled(false),
+    off: async () => {
+      await monitor.control.setMeasurementEnabled(false);
+    },
     on: async () => {
       await monitor.control.setMeasurementEnabled(true);
       await monitor.control.stopDetailMode();
@@ -62,19 +72,28 @@ async function latency() {
       await monitor.control.startDetailMode(15, 'app');
     },
   };
+  /** @type {Record<Mode, number[]>} */
   const samples = { off: [], on: [], detail: [] };
+  /** @type {Mode[]} */
+  const order = ['off', 'on', 'detail'];
   for (let i = 0; i < 2_000; i++) await once(); // warm-up
   // Interleaved rounds, so drift of the machine affects every mode alike.
   for (let round = 0; round < ROUNDS; round++) {
-    for (const [mode, enter] of Object.entries(modes)) {
-      await enter();
+    for (const mode of order) {
+      await modes[mode]();
       for (let i = 0; i < PER_ROUND; i++) samples[mode].push(await once());
     }
   }
   agent.destroy();
   await app.close();
-  const result = {};
-  for (const [mode, values] of Object.entries(samples)) {
+  /** @type {Record<Mode, Timing>} */
+  const result = {
+    off: { meanUs: 0, p50Us: 0, p99Us: 0 },
+    on: { meanUs: 0, p50Us: 0, p99Us: 0 },
+    detail: { meanUs: 0, p50Us: 0, p99Us: 0 },
+  };
+  for (const mode of order) {
+    const values = samples[mode];
     values.sort((a, b) => a - b);
     const mean = values.reduce((total, value) => total + value, 0) / values.length;
     result[mode] = {
@@ -140,6 +159,7 @@ function memory() {
 }
 
 const lat = await latency();
+/** @param {Mode} mode */
 const overhead = (mode) =>
   `${(((lat[mode].meanUs - lat.off.meanUs) / lat.off.meanUs) * 100).toFixed(1)} %`;
 console.log(

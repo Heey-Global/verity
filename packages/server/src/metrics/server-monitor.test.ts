@@ -155,6 +155,36 @@ describe('server monitoring', () => {
     expect(report(monitor).detail).toBeNull();
   });
 
+  // Old slow requests in a new period would point the reader at a problem that
+  // happened before it; a failed start must not throw the old evidence away.
+  it('starts each detail period empty, whoever starts it, once the start is stored', async () => {
+    let failWrites = false;
+    let stored = { measurementEnabled: true, detailUntil: null, detailStartedBy: null } as never;
+    const store: MonitoringSettingsStore = {
+      get: async () => stored,
+      setMeasurementEnabled: async () => stored,
+      setDetailMode: async (until, startedBy) => {
+        if (failWrites) throw new Error('database unavailable');
+        return (stored = {
+          measurementEnabled: true,
+          detailUntil: until,
+          detailStartedBy: startedBy,
+        } as never);
+      },
+    };
+    const { app, monitor } = await serve({ store });
+    await monitor.control.startDetailMode(15, 'control');
+    await app.inject({ url: '/sessions/s-1/events' });
+    const before = monitor.metrics.slowRequests.length;
+    expect(before).toBeGreaterThan(0);
+    failWrites = true;
+    await expect(monitor.control.startDetailMode(60, 'control')).rejects.toThrow();
+    expect(monitor.metrics.slowRequests).toHaveLength(before);
+    failWrites = false;
+    await monitor.control.startDetailMode(60, 'control');
+    expect(monitor.metrics.slowRequests).toHaveLength(0);
+  });
+
   it('accepts only the offered detail durations', async () => {
     const { app } = await serve();
     const response = await app.inject({
