@@ -236,6 +236,21 @@ export {
 
 export { liveResourceInterval } from './live-resources.js';
 export {
+  DOMAIN_TOPIC_KINDS,
+  LIVE_MAX_TOPIC_SUBSCRIPTIONS,
+  TOPIC_ENDED_REASONS,
+  domainEventSchema,
+  domainTopic,
+  domainTopicSchema,
+  parseDomainTopic,
+  topicSubscriptionSchema,
+  type DomainEvent,
+  type DomainTopic,
+  type DomainTopicKind,
+  type TopicEndedReason,
+  type TopicSubscription,
+} from './domain-events.js';
+export {
   socketEvidenceRecordSchema,
   socketEvidenceMetadataSchema,
   socketEvidenceHashSchema,

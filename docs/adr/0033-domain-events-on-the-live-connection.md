@@ -1,4 +1,4 @@
-# ADR 0032: Domain events on the live connection
+# ADR 0033: Domain events on the live connection
 
 - Status: accepted
 - Date: 2026-11-25

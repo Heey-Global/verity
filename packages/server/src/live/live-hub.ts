@@ -5,7 +5,9 @@ import {
   LIVE_PROTOCOL_VERSION,
   SESSION_PROJECTION_EVENT_TYPES,
   decodeLiveClientFrame,
+  parseDomainTopic,
   type AgentEvent,
+  type DomainTopic,
   type LiveAlert,
   type LiveEndedReason,
   type LiveHint,
@@ -14,6 +16,8 @@ import {
   type LiveServerFrame,
 } from '@verity/events';
 import type { SequencedEvent } from '@verity/store';
+import type { DomainEventBus } from './domain-events.js';
+import { TopicSubscriptions } from './topic-subscriptions.js';
 
 /** Session changes that no event records (a turn starting or stopping, an
  * automatic name), from the conductor to the live hub. The two are built in
@@ -101,6 +105,9 @@ export interface LiveHubDeps {
   now?: () => number;
   /** Observes each frame written to a socket, for outbound traffic accounting. */
   onFrameSent?: (kind: LiveServerFrame['k'], bytes: number) => void;
+  /** Domain-event topics (protocol 2, ADR 0033); absent, `ready` does not
+   * offer them and topic frames are refused. */
+  domainEvents?: DomainEventBus | undefined;
 }
 
 const WS_OPEN = 1;
@@ -141,6 +148,7 @@ class LiveConnection {
   overview = false;
   readonly subscriptions = new Map<string, SessionSubscription>();
   private readonly resources = new Map<string, () => void>();
+  private readonly topics: TopicSubscriptions | undefined;
   private lastPongAt: number;
   private readonly timers: ReturnType<typeof setInterval>[] = [];
   private closed = false;
@@ -151,6 +159,36 @@ class LiveConnection {
     readonly identity: LiveIdentity,
   ) {
     this.lastPongAt = hub.now();
+    const bus = hub.deps.domainEvents;
+    this.topics =
+      bus === undefined
+        ? undefined
+        : new TopicSubscriptions({
+            bus,
+            canRead: (topic) => this.canReadTopic(topic),
+            send: (frame) => this.send(frame),
+            overBudget: () => this.socket.bufferedAmount > hub.maxBufferedBytes,
+            logger: hub.deps.logger,
+          });
+  }
+
+  /** The policy of the HTTP read that serves the topic's state. */
+  private async canReadTopic(topic: DomainTopic): Promise<boolean> {
+    const parsed = parseDomainTopic(topic);
+    if (parsed === undefined) return false;
+    const { userId } = this.identity;
+    const { access, store } = this.hub.deps;
+    switch (parsed.kind) {
+      case 'user':
+        // Without the auth gate there is one operator and no identity to scope by.
+        return userId === undefined || parsed.id === userId;
+      case 'project':
+        return scopeAllows(await access.overviewScope(userId), parsed.id);
+      case 'session': {
+        const session = await store.getSession(parsed.id);
+        return session !== undefined && (await access.canReadSession(userId, session));
+      }
+    }
   }
 
   get userKey(): string {
@@ -191,6 +229,7 @@ class LiveConnection {
       v: LIVE_PROTOCOL_VERSION,
       maxSessions: LIVE_MAX_SESSION_SUBSCRIPTIONS,
       ...(this.hub.deps.watchResource ? { resources: true } : {}),
+      ...(this.topics ? { topics: true } : {}),
     });
   }
 
@@ -215,6 +254,7 @@ class LiveConnection {
     this.subscriptions.clear();
     for (const detach of this.resources.values()) detach();
     this.resources.clear();
+    this.topics?.dispose();
     this.hub.detach(this);
   }
 
@@ -246,6 +286,13 @@ class LiveConnection {
         this.resources.delete(key);
         return;
       }
+      case 'topics.sub':
+        if (this.topics === undefined) this.send({ k: 'error', message: 'topics unavailable' });
+        else await this.topics.subscribe(frame.topics);
+        return;
+      case 'topics.unsub':
+        this.topics?.unsubscribe(frame.topics);
+        return;
       case 'ping':
         this.lastPongAt = this.hub.now();
         this.send({ k: 'pong', n: frame.n });
@@ -399,6 +446,7 @@ class LiveConnection {
           return;
         }
       }
+      await this.topics?.recheck();
       for (const sub of [...this.subscriptions.values()]) {
         if (scope.projectId !== undefined && sub.projectId !== scope.projectId) continue;
         if (scope.sessionId !== undefined && sub.sessionId !== scope.sessionId) continue;

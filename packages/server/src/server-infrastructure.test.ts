@@ -1783,7 +1783,7 @@ describe('GET /live (WebSocket)', () => {
     options: { sinceSeq?: number; protocol?: string } = {},
   ): Promise<Conn> {
     const conn = await connect(atPort, '/live', options.protocol);
-    expect(await conn.next()).toMatchObject({ k: 'ready', v: 1 });
+    expect(await conn.next()).toMatchObject({ k: 'ready', topics: true });
     conn.ws.send(
       JSON.stringify({
         k: 'sub',

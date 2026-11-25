@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { topicClientFrameSchemas, topicServerFrameSchemas } from './domain-events.js';
 import { agentEventSchema } from './events.js';
 
 /**
@@ -13,7 +14,10 @@ import { agentEventSchema } from './events.js';
  * {@link LIVE_TICKET_PROTOCOL_PREFIX} subprotocol — never in the URL, where proxies
  * and logs would keep it.
  */
-export const LIVE_PROTOCOL_VERSION = 1;
+/** Version 2 adds domain-event topics (`topics.sub`, `domain`, `resync`;
+ * ADR 0033). A version 1 client never sends a topic frame and keeps hints and
+ * resource watches, so a newer server serves both. */
+export const LIVE_PROTOCOL_VERSION = 2;
 export const LIVE_TICKET_PROTOCOL_PREFIX = 'verity-live-ticket.';
 
 /** Concurrent session subscriptions per connection. The app subscribes to the
@@ -62,6 +66,7 @@ export const liveClientFrameSchema = z.union([
   z.object({ k: z.literal('unsub'), ch: z.literal('overview') }),
   z.object({ k: z.literal('unsub'), ch: z.literal('session'), id: sessionId }),
   z.object({ k: z.literal('ping'), n: z.number().int().nonnegative() }),
+  ...topicClientFrameSchemas,
 ]);
 export type LiveClientFrame = z.infer<typeof liveClientFrameSchema>;
 
@@ -112,6 +117,8 @@ export const liveServerFrameSchema = z.discriminatedUnion('k', [
     v: z.number().int().positive(),
     maxSessions: z.number().int().positive(),
     resources: z.boolean().optional(),
+    /** The server accepts domain-event topic subscriptions (protocol 2). */
+    topics: z.boolean().optional(),
   }),
   z.object({
     k: z.literal('event'),
@@ -127,6 +134,7 @@ export const liveServerFrameSchema = z.discriminatedUnion('k', [
   z.object({ k: z.literal('invalidate'), path: z.string() }),
   z.object({ k: z.literal('pong'), n: z.number().int().nonnegative() }),
   z.object({ k: z.literal('error'), message: z.string() }),
+  ...topicServerFrameSchemas,
 ]);
 export type LiveServerFrame = z.infer<typeof liveServerFrameSchema>;
 

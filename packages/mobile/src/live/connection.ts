@@ -7,8 +7,10 @@ import {
   type LiveEndedReason,
   type LiveHint,
   type LiveResource,
+  type DomainTopic,
 } from '@verity/events';
 import { VerityApiError } from '../api.js';
+import { LiveTopics, type LiveTopicSink } from './topics.js';
 
 /** The WebSocket surface the live connection uses. The platform `WebSocket`
  * (React Native, browser, Node) satisfies it; tests inject a fake. */
@@ -167,6 +169,7 @@ export class LiveConnection implements LiveSessionTransport {
   private readonly alertListeners = new Set<(alert: LiveAlert) => void>();
   private readonly stateListeners = new Set<(state: LiveConnectionState) => void>();
   private readonly now: () => number;
+  private readonly topics = new LiveTopics((frame) => this.sendFrame(frame));
 
   constructor(private readonly opts: LiveConnectionOptions) {
     this.wsUrl = `${opts.baseUrl.replace(/\/$/, '').replace(/^http/, 'ws')}/live`;
@@ -255,6 +258,18 @@ export class LiveConnection implements LiveSessionTransport {
         if (this.resourceWatching) this.sendFrame({ k: 'unwatch', resource });
       }
     };
+  }
+
+  /** Whether the connected server delivers domain-event topics (ADR 0033).
+   * Views keep their hint or resource-watch refresh while it is false. */
+  get topicsSupported(): boolean {
+    return this.topics.supported;
+  }
+
+  /** Domain events of one topic, kept across reconnects from the last cursor.
+   * Subscribe before reading the snapshot the events apply to. */
+  subscribeTopic(topic: DomainTopic, sink: LiveTopicSink): () => void {
+    return this.topics.subscribe(topic, sink);
   }
 
   onAlert(listener: (alert: LiveAlert) => void): () => void {
@@ -377,6 +392,8 @@ export class LiveConnection implements LiveSessionTransport {
     switch (frame.k) {
       case 'ready':
         this.resourceWatching = frame.resources === true;
+        // Known before `connected` is announced, so state listeners see it.
+        this.topics.supported = frame.topics === true;
         this.ready = true;
         this.attempt = 0;
         this.unauthorizedCloses = 0;
@@ -387,6 +404,16 @@ export class LiveConnection implements LiveSessionTransport {
           for (const entry of this.resources.values())
             this.sendFrame({ k: 'watch', resource: entry.resource });
         for (const sessionId of this.sessions.keys()) this.sendSubscription(sessionId);
+        this.topics.ready(frame.topics === true);
+        return;
+      case 'domain':
+        this.topics.domain(frame.topic, frame.cursor, frame.event);
+        return;
+      case 'resync':
+        this.topics.resync(frame.topic, frame.cursor);
+        return;
+      case 'topic_ended':
+        this.topics.ended(frame.topic, frame.reason);
         return;
       case 'invalidate':
         for (const entry of this.resources.values()) {
@@ -517,6 +544,7 @@ export class LiveConnection implements LiveSessionTransport {
     const socket = this.socket;
     this.socket = null;
     this.ready = false;
+    this.topics.disconnected();
     if (this.keepalive !== undefined) {
       const clear =
         this.opts.clearInterval ??
