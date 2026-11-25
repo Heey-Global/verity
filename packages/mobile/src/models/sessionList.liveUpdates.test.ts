@@ -157,3 +157,69 @@ describe('SessionListModel.applyHints', () => {
     expect(listSessions).toHaveBeenCalledTimes(calls);
   });
 });
+
+describe('SessionListModel.applyDomainEvent', () => {
+  const waiting = () =>
+    summary('s1', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['tool-a'],
+      pendingPermissionRequests: [
+        { toolUseId: 'tool-a', tool: 'Bash', riskClass: 'secret', detached: true },
+      ],
+    });
+  const decided = {
+    t: 'permission.decided',
+    sessionId: 's1',
+    toolUseId: 'tool-a',
+    rev: 2,
+    outcome: 'allowed',
+  } as const;
+
+  it('drops an answered card even while Home is not running', async () => {
+    const model = new SessionListModel({
+      client: clientFor(() => Promise.resolve([waiting()])),
+    });
+    await model.refresh();
+    model.applyDomainEvent(decided);
+    expect(model.state.sessions[0]?.pendingPermissionRequests).toEqual([]);
+  });
+
+  it('keeps the card gone when a read that started before the answer returns', async () => {
+    // The read was already on its way when another device answered; its
+    // response still lists the request and must not bring the card back.
+    let release: (sessions: SessionSummary[]) => void = () => undefined;
+    const listSessions = vi
+      .fn<() => Promise<SessionSummary[]>>()
+      .mockResolvedValueOnce([waiting()])
+      .mockImplementationOnce(() => new Promise((resolve) => (release = resolve)))
+      .mockResolvedValue([summary('s1')]);
+    const model = new SessionListModel({ client: clientFor(listSessions) });
+    await model.refresh();
+    const stale = model.refresh();
+    model.applyDomainEvent(decided);
+    release([waiting()]);
+    await stale;
+    expect(model.state.sessions[0]?.pendingPermissionRequests).toEqual([]);
+    // A read started after the answer is the server's word again.
+    await model.refresh();
+    expect(model.state.sessions[0]?.pendingPermissionRequests).toBeUndefined();
+  });
+
+  it('reads the list when a new request opens', async () => {
+    vi.useFakeTimers();
+    const listSessions = vi.fn(() => Promise.resolve([summary('s1')]));
+    const model = new SessionListModel({ client: clientFor(listSessions), pollIntervalMs: 0 });
+    model.start();
+    await vi.advanceTimersByTimeAsync(0);
+    model.applyDomainEvent({
+      t: 'permission.requested',
+      sessionId: 's1',
+      toolUseId: 'tool-b',
+      rev: 3,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    model.stop();
+  });
+});

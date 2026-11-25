@@ -1,4 +1,5 @@
 import { subscribeLiveRefresh } from './liveConnection';
+import { useOverviewTopics } from './overviewTopics';
 // One project's live record for the project screen and each of its settings
 // routes.
 //
@@ -10,6 +11,7 @@ import { subscribeLiveRefresh } from './liveConnection';
 // through a stale copy each screen fetched for itself.
 import {
   VerityApiError,
+  applyOverviewEvent,
   publishProjectStatusMutation,
   subscribeProjectStatusMutations,
   type ProjectDetail,
@@ -194,6 +196,34 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
         (path) => path.split('?')[0] === `/projects/${encodeURIComponent(projectId)}`,
       ),
     [client, projectId, detailLoaded, load],
+  );
+
+  // Requests and questions answered anywhere leave this page at once (ADR 0033).
+  const detailRef = useRef(detail);
+  detailRef.current = detail;
+  useOverviewTopics(
+    typeof client.liveBaseUrl === 'function' ? client.liveBaseUrl() : null,
+    [projectId],
+    (event) => {
+      const current = detailRef.current;
+      const effect =
+        current === undefined
+          ? { kind: 'none' as const }
+          : applyOverviewEvent(current.sessions, event);
+      if (effect.kind === 'none') return;
+      if (effect.kind === 'local') {
+        setDetail((latest) => {
+          if (latest === undefined) return latest;
+          const applied = applyOverviewEvent(latest.sessions, event);
+          return applied.kind === 'local' ? { ...latest, sessions: applied.sessions } : latest;
+        });
+      }
+      // A read in flight may predate the event; a newer one supersedes it.
+      if (focusedRef.current) void load(true);
+    },
+    () => {
+      if (focusedRef.current && detailRef.current !== undefined) void load(true);
+    },
   );
 
   return {
