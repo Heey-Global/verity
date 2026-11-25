@@ -91,4 +91,21 @@ describe('RevisionGate', () => {
     gate.reset();
     expect(gate.accept(answered(4))).toBe(true);
   });
+
+  it('keeps an entity that keeps changing when the gate is full', () => {
+    // Evicting by first insertion would let a stale replay of the busiest
+    // session through.
+    const gate = new RevisionGate();
+    const answered = (sessionId: string, rev: number): DomainEvent => ({
+      t: 'choices.answered',
+      sessionId,
+      rev,
+    });
+    gate.accept(answered('busy', 1));
+    for (let i = 0; i < 2_048; i += 1) {
+      gate.accept(answered(`other-${i}`, 1));
+      if (i === 1_000) gate.accept(answered('busy', 2));
+    }
+    expect(gate.accept(answered('busy', 2))).toBe(false);
+  });
 });

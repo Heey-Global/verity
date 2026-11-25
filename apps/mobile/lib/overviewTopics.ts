@@ -9,7 +9,8 @@ const MAX_PROJECT_TOPICS = 48;
 
 /**
  * Overview events (ADR 0033) of the given projects while the component is
- * mounted. Events arrive in order and at most once per revision; `onResync`
+ * mounted. Events arrive in order and at most once per revision between
+ * resyncs (one gate serves all topics, and any resync resets it); `onResync`
  * asks the view to read its snapshot, which the server requests once each
  * subscription is live and whenever it cannot replay what was missed.
  *

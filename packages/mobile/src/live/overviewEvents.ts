@@ -80,6 +80,8 @@ export class RevisionGate {
     const key = entityKey(event);
     const previous = this.seen.get(key);
     if (previous !== undefined && event.rev <= previous) return false;
+    // Re-inserted, so eviction drops the entity unchanged for longest.
+    this.seen.delete(key);
     this.seen.set(key, event.rev);
     if (this.seen.size > 2_048) this.seen.delete(this.seen.keys().next().value!);
     return true;
