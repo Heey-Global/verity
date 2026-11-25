@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { clientLabel, identifyClient } from './client-identity.js';
+import { createCause, runInCause, type ExternalCause } from './external-calls.js';
 import type { MonitoringControl } from './monitoring-control.js';
 import type { ServerMetrics } from './server-metrics.js';
 
@@ -9,6 +10,7 @@ const UNMATCHED_ROUTE = '(unmatched)';
 interface PendingRequest {
   startedAt: bigint;
   bytesOut: number;
+  external?: ExternalCause;
 }
 
 type Writer = (this: unknown, ...args: unknown[]) => unknown;
@@ -71,7 +73,12 @@ export function observeHttp(
         ending = false;
       }
     };
-    done();
+    // Outbound calls made while handling this request name its route as cause.
+    const external = createCause(
+      `${request.method} ${request.routeOptions.url ?? UNMATCHED_ROUTE}`,
+    );
+    state.external = external;
+    runInCause(external, done);
   });
   app.addHook('onResponse', (request, reply, done) => {
     const state = pending.get(request);
@@ -101,6 +108,7 @@ export function observeHttp(
         // caller's text, not a session, and must not fill the session list.
         sessionId: reply.statusCode < 400 ? sessionIdOf(request, route) : null,
         requestId: request.id,
+        external: state.external,
       },
       control.detailActive,
     );

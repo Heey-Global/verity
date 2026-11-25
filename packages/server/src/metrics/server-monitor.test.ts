@@ -221,6 +221,43 @@ describe('server monitoring', () => {
     ).toEqual([expect.objectContaining({ client: 'ios', requests: 20 })]);
   });
 
+  // Without the request's own context, every outbound call would read as
+  // `background` and the route that causes it could not be found.
+  it('attributes outbound calls to the route whose request made them', async () => {
+    const upstream = Fastify();
+    upstream.get('/data', async () => 'ok');
+    await upstream.listen({ port: 0, host: '127.0.0.1' });
+    try {
+      const { port } = upstream.server.address() as { port: number };
+      const instance = Fastify();
+      const monitor = createServerMonitor({ store: undefined, version: '9.9.9' });
+      installServerMonitoring(instance, monitor);
+      instance.get('/projects/:id/status', async () => {
+        await (await fetch(`http://127.0.0.1:${port}/data`)).text();
+        await (await fetch(`http://127.0.0.1:${port}/data`)).text();
+        return 'done';
+      });
+      await instance.ready();
+      app = instance;
+      await monitor.control.startDetailMode(15, 'app');
+      await instance.inject({ url: '/projects/p-1/status' });
+      const { externalCalls, detail } = monitor.report('hashed');
+      expect(externalCalls.topCauses).toEqual([
+        expect.objectContaining({
+          target: 'internal',
+          cause: 'GET /projects/:id/status',
+          calls: 2,
+          duplicates: 1,
+        }),
+      ]);
+      expect(detail?.slowRequests).toEqual([
+        expect.objectContaining({ route: '/projects/:id/status', externalCalls: 2 }),
+      ]);
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it('accepts only the offered detail durations', async () => {
     const { app } = await serve();
     const response = await app.inject({

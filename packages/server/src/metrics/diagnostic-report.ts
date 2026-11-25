@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { LatencyHistogram } from './latency-histogram.js';
 import type { MonitoringState } from './monitoring-control.js';
 import type { ProcessResources } from './process-sampler.js';
-import type { LiveSeries, ServerMetrics, SlowRequest } from './server-metrics.js';
+import type { ExternalSeries, LiveSeries, ServerMetrics, SlowRequest } from './server-metrics.js';
 
 const DIAGNOSTIC_REPORT_FORMAT = 'verity.diagnostic-report/1';
 const TOP = 20;
@@ -19,13 +19,7 @@ const REPORT_EXCLUSIONS = [
 ] as const;
 
 /** Areas of the observability plan that later versions add to the report. */
-const NOT_YET_MEASURED = [
-  'external_calls',
-  'database',
-  'error_groups',
-  'cost',
-  'sandbox_lifecycle',
-] as const;
+const NOT_YET_MEASURED = ['database', 'error_groups', 'cost', 'sandbox_lifecycle'] as const;
 
 export interface ReportInput {
   metrics: ServerMetrics;
@@ -35,6 +29,73 @@ export interface ReportInput {
   now: Date;
   /** `hashed` for anything that leaves the server; `raw` only for Verity Control. */
   sessionIds: 'hashed' | 'raw';
+}
+
+/**
+ * Outbound calls per target, and the causes that make the most of them. A
+ * duplicate is the same read repeated within two seconds.
+ */
+function externalCalls(metrics: ServerMetrics) {
+  const byTarget = new Map<
+    string,
+    { target: string; calls: number; failed: number; duplicates: number; latency: LatencyHistogram }
+  >();
+  const byCause = new Map<
+    string,
+    {
+      target: string;
+      cause: string;
+      method: string;
+      calls: number;
+      failed: number;
+      duplicates: number;
+      latency: LatencyHistogram;
+    }
+  >();
+  for (const series of metrics.external.values() as Iterable<ExternalSeries>) {
+    const target = byTarget.get(series.target) ?? {
+      target: series.target,
+      calls: 0,
+      failed: 0,
+      duplicates: 0,
+      latency: new LatencyHistogram(),
+    };
+    const causeKey = `${series.target} ${series.cause} ${series.method}`;
+    const cause = byCause.get(causeKey) ?? {
+      target: series.target,
+      cause: series.cause,
+      method: series.method,
+      calls: 0,
+      failed: 0,
+      duplicates: 0,
+      latency: new LatencyHistogram(),
+    };
+    for (const entry of [target, cause]) {
+      entry.calls += series.calls;
+      entry.failed += series.failed;
+      entry.duplicates += series.duplicates;
+      entry.latency.merge(series.latency);
+    }
+    byTarget.set(series.target, target);
+    byCause.set(causeKey, cause);
+  }
+  const summary = <T extends { latency: LatencyHistogram }>({ latency, ...rest }: T) => ({
+    ...rest,
+    p95Ms: rounded(latency.quantile(0.95)),
+  });
+  return {
+    calls: [...byTarget.values()].reduce((total, entry) => total + entry.calls, 0),
+    byTarget: [...byTarget.values()]
+      .map((entry) => {
+        const seen = metrics.rateLimits.get(entry.target as never);
+        return { ...summary(entry), rateLimit: seen === undefined ? null : { ...seen } };
+      })
+      .sort((a, b) => b.calls - a.calls),
+    topCauses: [...byCause.values()]
+      .map(summary)
+      .sort((a, b) => b.calls - a.calls)
+      .slice(0, TOP),
+  };
 }
 
 function rounded(value: number | null): number | null {
@@ -170,6 +231,7 @@ export function buildDiagnosticReport(input: ReportInput) {
       live: live.map((entry: LiveSeries) => ({ ...entry })).sort((a, b) => b.bytesOut - a.bytesOut),
     },
     resources,
+    externalCalls: externalCalls(metrics),
     // The last detail period stays in reports until the next one starts, so a
     // report taken after detail mode ended still carries what it recorded.
     detail:

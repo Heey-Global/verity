@@ -55,6 +55,40 @@ export function detailStarterName(startedBy: string | null): string {
   return startedBy ?? 'Unknown';
 }
 
+const TARGET_NAMES: Record<string, string> = {
+  github: 'GitHub',
+  google: 'Google',
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  doppler: 'Doppler',
+  apple: 'Apple',
+  expo: 'Expo',
+  registry: 'Registries',
+  verity: 'Verity',
+  internal: 'Local services',
+  other: 'Other services',
+};
+
+/** `GitHub 18,420 · 3 % duplicates · 4,812 of 5,000 left` for the busiest target. */
+function externalSummary(external: NonNullable<DiagnosticReport['externalCalls']>): string {
+  const top = external.byTarget[0];
+  if (top === undefined) return 'No outbound calls';
+  const parts = [`${TARGET_NAMES[top.target] ?? top.target} ${top.calls.toLocaleString('en-US')}`];
+  if (external.byTarget.length > 1)
+    parts[0] = `${external.calls.toLocaleString('en-US')} calls · top: ${parts[0]}`;
+  const duplicates = external.byTarget.reduce((total, entry) => total + entry.duplicates, 0);
+  if (external.calls > 0)
+    parts.push(`${Math.round((duplicates / external.calls) * 100)} % duplicates`);
+  const limit = top.rateLimit;
+  if (limit != null)
+    parts.push(
+      limit.limit === null
+        ? `${limit.remaining.toLocaleString('en-US')} left`
+        : `${limit.remaining.toLocaleString('en-US')} of ${limit.limit.toLocaleString('en-US')} left`,
+    );
+  return parts.join(' · ');
+}
+
 export interface ReportArea {
   title: string;
   summary: string;
@@ -93,6 +127,8 @@ export function summarizeReport(report: DiagnosticReport): ReportArea[] {
       )} of ${formatBytes(resources.heapLimitBytes)}`,
     },
   ];
+  if (report.externalCalls !== undefined)
+    areas.push({ title: 'External calls', summary: externalSummary(report.externalCalls) });
   const later: Record<string, string> = {
     external_calls: 'External calls',
     database: 'Database',
