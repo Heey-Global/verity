@@ -120,7 +120,7 @@ describe('server monitoring', () => {
     });
     expect(off.json()).toMatchObject({ measurementEnabled: false });
     await app.inject({ url: '/sessions/s-1/events' });
-    // The PATCH itself was counted while measuring; afterwards nothing.
+    // Switching off discards what was counted, the PATCH included; afterwards nothing is added.
     expect(report(monitor).availability.requests).toBe(0);
     await app.inject({
       method: 'PATCH',
@@ -192,7 +192,7 @@ describe('server monitoring', () => {
       url: '/diagnostics/monitoring',
       payload: { detailMode: { minutes: 600 } },
     });
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    expect(response.statusCode).toBe(400);
   });
 
   it('keeps stored settings: measurement off survives a restart', async () => {

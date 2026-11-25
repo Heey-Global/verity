@@ -97,9 +97,11 @@ export function installServerMonitoring(app: FastifyInstance, monitor: ServerMon
     return monitor.control.state();
   });
 
-  app.patch('/diagnostics/monitoring', async (request, reply): Promise<MonitoringState> => {
+  app.patch('/diagnostics/monitoring', async (request, reply) => {
     void reply.header('cache-control', 'no-store');
-    const patch = monitoringPatch.parse(request.body);
+    const parsed = monitoringPatch.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid request' });
+    const patch = parsed.data;
     if ('measurementEnabled' in patch)
       return monitor.control.setMeasurementEnabled(patch.measurementEnabled);
     if (patch.detailMode === null) return monitor.control.stopDetailMode();

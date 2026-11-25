@@ -25,14 +25,20 @@ export function observeLiveSocket(
   if (!control.measuring) return;
   const client = clientLabel(identifyClient(headers));
   const openedAt = Date.now();
+  // Counters reset when measurement is switched off; a socket opened before
+  // that must not write its frames or duration into the next period.
+  const period = metrics.since;
+  const current = () => control.measuring && metrics.since === period;
   metrics.liveOpened(client);
-  const send = socket.send;
-  socket.send = function (this: WebSocket, ...args: Parameters<WebSocket['send']>) {
-    if (control.measuring) metrics.liveFrame(client, 'out', frameBytes(args[0]));
-    return send.apply(this, args);
+  const send = socket.send.bind(socket);
+  socket.send = function (...args: Parameters<WebSocket['send']>) {
+    if (current()) metrics.liveFrame(client, 'out', frameBytes(args[0]));
+    return send(...args);
   } as WebSocket['send'];
   socket.on('message', (data) => {
-    if (control.measuring) metrics.liveFrame(client, 'in', frameBytes(data));
+    if (current()) metrics.liveFrame(client, 'in', frameBytes(data));
   });
-  socket.once('close', () => metrics.liveClosed(client, Date.now() - openedAt));
+  socket.once('close', () => {
+    if (current()) metrics.liveClosed(client, Date.now() - openedAt);
+  });
 }
