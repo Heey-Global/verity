@@ -69,11 +69,12 @@ export async function computeOnboardingStatus(
   // effectively always unlocked). `sealed` only reflects a real sealable cipher.
   const sealed = cipher?.isSealed() ?? false;
 
-  const [keyMeta, settings, projects, starterProjectId] = await Promise.all([
+  const [keyMeta, settings, projects, starterProjectId, dopplerConnections] = await Promise.all([
     store.getSecretKeyMeta(),
     store.getVeritySettingsRaw(),
     store.listProjects({ includeHidden: true }),
     store.getStarterProjectId(),
+    store.dopplerConnections.list(),
   ]);
 
   const masterPasswordSet = keyMeta !== undefined;
@@ -92,9 +93,8 @@ export async function computeOnboardingStatus(
       project.state !== 'absent' &&
       project.id !== starterProjectId,
   );
-  // INFORMATIONAL only (Doppler is optional): presence of the raw (non-decrypted)
-  // account token column. Deliberately NOT part of `complete`/`nextStep`.
-  const dopplerConfigured = present(settings?.dopplerServiceToken);
+  // Doppler is optional and never gates onboarding. Connection metadata stays readable while sealed.
+  const dopplerConfigured = dopplerConnections.some((connection) => connection.hasToken);
   const claudeConfigured = present(settings?.claudeCodeOauthCredentialsJson);
   const codexConfigured = present(settings?.codexAuthJson);
 

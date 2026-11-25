@@ -317,11 +317,10 @@ describe('GET /onboarding/status', () => {
       const nextStepBefore = status.nextStep;
       const completeBefore = status.complete;
 
-      // Save an account Doppler token (neutral fixture — not a real token).
-      await app.inject({
-        method: 'PATCH',
-        url: '/settings',
-        payload: { dopplerServiceToken: 'doppler-service-token-fixture-value' },
+      await new EventStore(ctx.db, cipher).dopplerConnections.add({
+        label: 'Platform',
+        token: 'doppler-service-token-fixture-value',
+        workplace: { slug: null, name: null },
       });
       status = await getStatus(app, token);
       // Presence flips the informational flag...

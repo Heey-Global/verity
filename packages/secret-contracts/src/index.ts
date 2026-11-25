@@ -48,6 +48,8 @@ export {
   trustedCliRequestSchema,
   trustedCliEntryScriptSchema,
   trustedCliSecretSchema,
+  BROKERED_SECRET_REFERENCE,
+  brokeredSecretReferenceSchema,
   restrictedSecretRunRequestSchema,
   secretCatalogToolRequestSchema,
   secretRunRequestSchema,

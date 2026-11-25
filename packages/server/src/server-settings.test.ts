@@ -675,6 +675,35 @@ describe('PATCH /projects/:id/settings', () => {
     });
   });
 
+  it('leaves the personal model unchanged when the Doppler settings patch is ambiguous', async () => {
+    const projectId = 'p-ambiguous-doppler';
+    await ctx.store.upsertProject({
+      id: projectId,
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'absent',
+    });
+    const url = `/projects/${projectId}/settings`;
+    const update = (payload: object) => app.inject({ method: 'PATCH', url, payload });
+    expect((await update({ defaultModel: 'claude-sonnet-4-6' })).statusCode).toBe(200);
+    for (const label of ['First', 'Second']) {
+      await ctx.store.dopplerConnections.add({
+        label,
+        token: 'synthetic-token-fixture',
+        workplace: { slug: null, name: null },
+      });
+    }
+    const rejected = await update({
+      defaultModel: 'codex/gpt-5.5',
+      dopplerProject: 'portal',
+      dopplerConfig: 'prd',
+    });
+    expect(rejected.statusCode).toBe(409);
+    const current = await app.inject({ method: 'GET', url: `/projects/${projectId}` });
+    expect(current.json()).toMatchObject({ settings: { defaultModel: 'claude-sonnet-4-6' } });
+  });
+
   it.each(['dopplerToken', 'dopplerTokenRef', 'dopplerMintedToken'])(
     'rejects the removed per-project credential field %s',
     async (field) => {

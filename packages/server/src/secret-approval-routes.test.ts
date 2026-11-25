@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { expect, it, vi } from 'vitest';
 import { registerSecretApprovalRoutes } from './secret-approval-routes.js';
 import type { BrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
+import { tryParseBrokeredDopplerBinding } from './brokered-doppler-binding.js';
 
 const id = 'b7aa84e6-ab38-4f5e-b26e-d5509ba90798';
 const record = {
@@ -14,23 +15,29 @@ const record = {
   decidedAt: '2026-11-20T00:01:00Z',
   canonicalInput: 'sensitive request input',
   requestMac: 'private MAC',
+  authorizationSnapshot:
+    '{"bindings":[{"bindingId":"b","connectionId":"c","dopplerProject":"p","dopplerConfig":"s"}]}',
 };
-function harness(allowed = true, unrecorded = false) {
+function harness(allowed = true, unrecorded = false, approval = record) {
   const app = Fastify();
   const reopen = vi.fn(async () => ({ ...record, status: 'pending' }));
   const refresh = vi.fn(async () => {});
+  const isCurrent = vi.fn(
+    async () => tryParseBrokeredDopplerBinding(approval.authorizationSnapshot) !== undefined,
+  );
   registerSecretApprovalRoutes(app, {
     approvals: {
-      listReopenable: async () => [record],
+      listReopenable: async () => [approval],
       listUnrecordedDecisions: async () => (unrecorded ? [record] : []),
-      get: async () => record,
+      get: async () => approval,
       reopen,
     } as unknown as BrokeredToolApprovalStore,
-    store: { getSession: async () => ({ sessionId: 's' }) } as never,
+    store: { getSession: async () => ({ sessionId: 's', projectId: 'p' }) } as never,
     permitted: async () => allowed,
     refresh,
+    isCurrent,
   });
-  return { app, reopen, refresh };
+  return { app, reopen, refresh, isCurrent };
 }
 
 it('lists only safe history metadata, without the saved input or MAC', async () => {
@@ -83,6 +90,47 @@ it('preserves the previous receipt if recovery cannot record its decision before
     });
     expect(response.statusCode).toBe(503);
     expect(refresh).toHaveBeenCalledWith('s');
+    expect(reopen).not.toHaveBeenCalled();
+  } finally {
+    await app.close();
+  }
+});
+
+it('offers only usable receipts and asks for a new request when a snapshot is obsolete', async () => {
+  const { app, reopen, refresh } = harness(true, false, { ...record, authorizationSnapshot: '{}' });
+  try {
+    const listed = await app.inject({ method: 'GET', url: '/sessions/s/secret-approvals' });
+    expect(listed.json()).toEqual({ requests: [] });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/sessions/s/secret-approvals/${id}/reopen`,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: 'This approval is obsolete. Submit the secret request again.',
+    });
+    expect(reopen).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  } finally {
+    await app.close();
+  }
+});
+
+it('does not reopen an otherwise valid receipt if its binding no longer matches', async () => {
+  const { app, reopen, isCurrent } = harness();
+  isCurrent.mockResolvedValue(false);
+  try {
+    const listed = await app.inject({ method: 'GET', url: '/sessions/s/secret-approvals' });
+    expect(listed.json()).toEqual({ requests: [] });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/sessions/s/secret-approvals/${id}/reopen`,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: 'Doppler access changed. Submit the secret request again.',
+    });
+    expect(isCurrent).toHaveBeenCalledTimes(2);
     expect(reopen).not.toHaveBeenCalled();
   } finally {
     await app.close();

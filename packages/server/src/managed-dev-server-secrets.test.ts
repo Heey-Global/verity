@@ -1,10 +1,25 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
+import {
+  createManagedDevServerSecretResolver,
+  managedDevServerProviderSnapshot,
+} from './managed-dev-server-secrets.js';
 
 const bindings = [
   { secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' },
   { secretAlias: 'EXPO_TOKEN', env: 'OTHER_KEY' },
 ];
+
+const projectBindings = (config = 'dev') => [
+  {
+    id: 'default',
+    connectionId: 'conn',
+    isDefault: true,
+    dopplerProject: 'demo',
+    dopplerConfig: config,
+  },
+];
+const authority = (config = 'dev') =>
+  managedDevServerProviderSnapshot(projectBindings(config), bindings).authority;
 
 describe('managed dev server secret resolution', () => {
   it('resolves fresh project-scoped values for every start and zeroizes consumed buffers', async () => {
@@ -16,14 +31,14 @@ describe('managed dev server secret resolution', () => {
       return value;
     });
     const resolve = createManagedDevServerSecretResolver({
-      getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: 'dev' }),
+      getProjectBindings: async () => projectBindings(),
       resolveSecret,
     });
-    expect(await resolve('p1', bindings, undefined, 'lena')).toEqual([
+    expect(await resolve('p1', bindings, authority(), 'lena')).toEqual([
       { env: 'API_KEY', value: 'synthetic-key-0' },
       { env: 'OTHER_KEY', value: 'synthetic-key-1' },
     ]);
-    expect(await resolve('p1', bindings, undefined, 'lena')).toEqual([
+    expect(await resolve('p1', bindings, authority(), 'lena')).toEqual([
       { env: 'API_KEY', value: 'synthetic-key-2' },
       { env: 'OTHER_KEY', value: 'synthetic-key-3' },
     ]);
@@ -34,6 +49,7 @@ describe('managed dev server secret resolution', () => {
     );
     expect(resolveSecret).toHaveBeenCalledWith({
       projectId: 'p1',
+      connectionId: 'conn',
       dopplerProject: 'demo',
       dopplerConfig: 'dev',
       secretName: 'ATTENDEE_API_KEY',
@@ -46,13 +62,13 @@ describe('managed dev server secret resolution', () => {
     const first = new TextEncoder().encode('synthetic-sensitive-value');
     let count = 0;
     const resolve = createManagedDevServerSecretResolver({
-      getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: 'dev' }),
+      getProjectBindings: async () => projectBindings(),
       resolveSecret: async () => {
         if (count++ === 0) return first;
         throw new Error('synthetic-sensitive-value');
       },
     });
-    await expect(resolve('p1', bindings, undefined, 'lena')).rejects.toThrow(
+    await expect(resolve('p1', bindings, authority(), 'lena')).rejects.toThrow(
       'Could not resolve managed server secrets',
     );
     expect(first.every((byte) => byte === 0)).toBe(true);
@@ -62,10 +78,10 @@ describe('managed dev server secret resolution', () => {
     'refuses values unsuitable for environment delivery',
     async (raw) => {
       const resolve = createManagedDevServerSecretResolver({
-        getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: 'dev' }),
+        getProjectBindings: async () => projectBindings(),
         resolveSecret: async () => raw,
       });
-      await expect(resolve('p1', bindings.slice(0, 1), undefined, 'lena')).rejects.toThrow(
+      await expect(resolve('p1', bindings.slice(0, 1), authority(), 'lena')).rejects.toThrow(
         'Could not resolve',
       );
       expect(raw.every((byte) => byte === 0)).toBe(true);
@@ -76,12 +92,20 @@ describe('managed dev server secret resolution', () => {
 it('rejects a changed provider before retrieving any secret', async () => {
   const resolveSecret = vi.fn(async () => new Uint8Array([65]));
   const resolve = createManagedDevServerSecretResolver({
-    getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: 'production' }),
+    getProjectBindings: async () => [
+      {
+        id: 'default',
+        connectionId: 'conn',
+        isDefault: true,
+        dopplerProject: 'demo',
+        dopplerConfig: 'production',
+      },
+    ],
     resolveSecret,
   });
-  await expect(
-    resolve('p1', bindings, JSON.stringify(['demo', 'staging']), 'lena'),
-  ).rejects.toThrow('Could not resolve');
+  await expect(resolve('p1', bindings, authority('staging'), 'lena')).rejects.toThrow(
+    'Could not resolve',
+  );
   expect(resolveSecret).not.toHaveBeenCalled();
 });
 
@@ -89,14 +113,22 @@ it('discards and zeroizes values when the provider changes during resolution', a
   const raw = Buffer.from('synthetic');
   let config = 'staging';
   const resolve = createManagedDevServerSecretResolver({
-    getProjectBinding: async () => ({ dopplerProject: 'demo', dopplerConfig: config }),
+    getProjectBindings: async () => [
+      {
+        id: 'default',
+        connectionId: 'conn',
+        isDefault: true,
+        dopplerProject: 'demo',
+        dopplerConfig: config,
+      },
+    ],
     resolveSecret: async () => {
       config = 'production';
       return raw;
     },
   });
-  await expect(
-    resolve('p1', bindings.slice(0, 1), JSON.stringify(['demo', 'staging']), 'lena'),
-  ).rejects.toThrow('Could not resolve');
+  await expect(resolve('p1', bindings.slice(0, 1), authority('staging'), 'lena')).rejects.toThrow(
+    'Could not resolve',
+  );
   expect(raw.every((byte) => byte === 0)).toBe(true);
 });

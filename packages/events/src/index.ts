@@ -315,3 +315,7 @@ export {
   type WikiProposalDecision,
   type WikiProposalSummary,
 } from './wiki-proposals.js';
+export {
+  managedServerProviderSnapshotSchema,
+  type ManagedServerProviderSnapshot,
+} from './managed-server-provider.js';

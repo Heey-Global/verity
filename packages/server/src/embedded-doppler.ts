@@ -1,13 +1,25 @@
 import type { EventStore } from '@verity/store';
 import { createStoreDopplerCredentials, type DopplerPerson } from './doppler-credential.js';
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
-import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from './doppler-token.js';
+import {
+  validateDopplerToken,
+  listDopplerProjects,
+  listDopplerConfigs,
+  readDopplerWorkplace,
+} from './doppler-token.js';
 
 export function createEmbeddedDoppler(eventStore: EventStore) {
-  // The administrator's instance token; only the instance-level Doppler routes and
-  // the per-person rule below read it.
-  const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
-    eventStore.getDopplerServiceTokenBytes();
+  // A connection's instance token, the administrator's (ADR 0031); only the
+  // instance-level Doppler routes and the per-person rule below read it. Without
+  // an id, the first connection holding a token answers.
+  const readBrokerDopplerCredential = async (
+    connectionId?: string,
+  ): Promise<Buffer | undefined> => {
+    const id =
+      connectionId ??
+      (await eventStore.dopplerConnections.list()).find((connection) => connection.hasToken)?.id;
+    return id === undefined ? undefined : eventStore.dopplerConnections.tokenBytes(id);
+  };
   // ADR 0023 §3: a project's secrets resolve through the Doppler connection of the
   // person the work is for; see doppler-credential.ts.
   const dopplerCredentialFor = createStoreDopplerCredentials(eventStore);
@@ -37,6 +49,7 @@ export function createEmbeddedDoppler(eventStore: EventStore) {
     // list-projects check against Doppler.
     dopplerValidate: (token: string) => validateDopplerToken(token),
     dopplerCredentialReader: readBrokerDopplerCredential,
+    dopplerWorkplace: (token: string) => readDopplerWorkplace(token),
     // Live Doppler project/config listing for the binding picker (#320). Both read
     // the account token from the decrypting route (unsealed-only) and list from
     // that TRUSTED token — NOT repo content (closes the confused-deputy). Both are

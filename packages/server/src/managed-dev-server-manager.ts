@@ -1,4 +1,18 @@
-import { verifyRecoveryInstances } from './managed-dev-server-recovery.js';
+import type { ManagedServerProviderSnapshot } from '@verity/events';
+import {
+  managedSiblingEnvironment,
+  stopOrphanManagedProcesses,
+  stopPreviousManagedRun,
+  verifyRecoveryInstances,
+} from './managed-dev-server-recovery.js';
+import {
+  currentManagedProviderSnapshot,
+  managedProviderApproved,
+  managedRunApproved,
+  approvedManagedRunAuthority,
+  priorManagedSandbox,
+  managedRunProviderCurrent,
+} from './managed-dev-server-secrets.js';
 import { ManagedDevServerLiveness } from './managed-dev-server-liveness.js';
 import type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
 export type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
@@ -86,7 +100,10 @@ export interface ManagedLocalShares {
 export interface ManagedDevServerManagerOptions {
   store: EventStore;
   runtime: ManagedDevServerRuntime;
-  providerAuthority?: (projectId: string) => Promise<string | undefined>;
+  providerSnapshot?: (
+    projectId: string,
+    bindings: readonly ManagedDevServerSecretBinding[],
+  ) => Promise<ManagedServerProviderSnapshot | undefined>;
   resolveSecrets?: (
     projectId: string,
     bindings: readonly ManagedDevServerSecretBinding[],
@@ -110,6 +127,7 @@ export interface ManagedDevServerManagerOptions {
     | undefined;
   /** Defer supervision until durable preview ownership is loaded and the store is unlocked. */
   canSupervise?: () => boolean;
+  sandboxRunning?: (containerName: string) => Promise<boolean>;
   /** Absent when local previews are unavailable; entries then run without an address. */
   localShares?: ManagedLocalShares | undefined;
   /** The local preview range, the only ports anyone sees. */
@@ -124,12 +142,6 @@ export interface ManagedDevServerManagerOptions {
   wakeSandbox?: (projectId: string, sessionId: string) => Promise<unknown>;
   now?: () => number;
   log?: (message: string, detail?: Record<string, unknown>) => void;
-}
-
-export interface ManagedServerProviderSnapshot {
-  provider: 'doppler';
-  project: string;
-  config: string;
 }
 
 export class ManagedDevServerError extends Error {
@@ -344,81 +356,57 @@ export class ManagedDevServerManager {
       this.servers.listInstances({ projectId: project.id }),
       this.options.store.listSessions(),
     ]);
-    const providerSnapshot = entries.some((entry) => entry.secretBindings.length > 0)
-      ? await this.currentProviderSnapshot(project.id)
-      : null;
-    // Expose stale provider approvals to the existing approval UI, including legacy rows.
-    for (const entry of entries) {
-      if (!(await this.providerApproved(entry))) entry.approved = false;
-    }
     const names = new Map(sessions.map((session) => [session.sessionId, session.name ?? null]));
-    return entries.map((entry) => {
-      const own = instances.find(
-        (instance) => instance.serverId === entry.id && instance.sessionId === sessionId,
-      );
-      return {
-        id: entry.id,
-        name: entry.name,
-        command: entry.command,
-        secretBindings: entry.secretBindings,
-        providerSnapshot: entry.secretBindings.length > 0 ? providerSnapshot : null,
-        workdir: entry.workdir,
-        approved: entry.approved,
-        accessSwitches: true as const,
-        instance: own ? this.instanceView(entry, own) : null,
-        elsewhere: instances
-          .filter(
-            (instance) =>
-              instance.serverId === entry.id &&
-              instance.sessionId !== sessionId &&
-              (instance.state === 'running' || instance.state === 'starting'),
-          )
-          .map((instance) => ({
-            instanceId: instance.id,
-            sessionId: instance.sessionId,
-            sessionName: names.get(instance.sessionId) ?? null,
-          })),
-      };
-    });
-  }
-
-  private async currentProviderSnapshot(
-    projectId: string,
-  ): Promise<ManagedServerProviderSnapshot | null> {
-    try {
-      const authority = await this.options.providerAuthority?.(projectId);
-      if (authority === undefined) return null;
-      const value: unknown = JSON.parse(authority);
-      if (
-        !Array.isArray(value) ||
-        value.length !== 2 ||
-        !value.every((item) => typeof item === 'string' && item.length > 0)
-      )
-        return null;
-      return { provider: 'doppler', project: value[0] as string, config: value[1] as string };
-    } catch {
-      return null;
-    }
-  }
-
-  private async providerApproved(entry: ManagedDevServerRecord): Promise<boolean> {
-    if (entry.secretBindings.length === 0) return true;
-    try {
-      const approved = await this.servers.approvedProviderAuthority(entry.id);
-      return (
-        approved !== undefined &&
-        approved === (await this.options.providerAuthority?.(entry.projectId))
-      );
-    } catch {
-      return false;
-    }
+    return Promise.all(
+      entries.map(async (entry) => {
+        const snapshot = await currentManagedProviderSnapshot(
+          this.options,
+          project.id,
+          entry.secretBindings,
+        );
+        const approved =
+          entry.approved && (await managedProviderApproved(this.options, entry, snapshot));
+        const own = instances.find(
+          (instance) => instance.serverId === entry.id && instance.sessionId === sessionId,
+        );
+        const runCurrent =
+          entry.secretBindings.length === 0 ||
+          own?.lastRunProviderAuthority === snapshot?.authority;
+        return {
+          id: entry.id,
+          name: entry.name,
+          command: entry.command,
+          secretBindings: entry.secretBindings,
+          providerSnapshot: snapshot,
+          workdir: entry.workdir,
+          approved,
+          accessSwitches: true as const,
+          instance: own
+            ? this.instanceView({ ...entry, approved: approved && runCurrent }, own)
+            : null,
+          elsewhere: instances
+            .filter(
+              (instance) =>
+                instance.serverId === entry.id &&
+                instance.sessionId !== sessionId &&
+                (instance.state === 'running' || instance.state === 'starting'),
+            )
+            .map((instance) => ({
+              instanceId: instance.id,
+              sessionId: instance.sessionId,
+              sessionName: names.get(instance.sessionId) ?? null,
+            })),
+        };
+      }),
+    );
   }
 
   private instanceView(
     entry: ManagedDevServerRecord,
     instance: ManagedDevServerInstanceRecord,
   ): ManagedInstanceView {
-    const url = instance.state === 'running' ? this.urlFor(instance) : null;
+    const approved = this.ranApproved(entry, instance);
+    const url = instance.state === 'running' && approved ? this.urlFor(instance) : null;
     return {
       id: instance.id,
       sessionId: instance.sessionId,
@@ -428,11 +416,10 @@ export class ManagedDevServerManager {
       url,
       localShareId: url ? (this.shareFor(instance)?.id ?? null) : null,
       sandboxPort: instance.sandboxPort,
-      awaitingApproval:
-        instance.state === 'running' && url === null && !this.ranApproved(entry, instance),
+      awaitingApproval: instance.state === 'running' && !approved,
       localOn:
         instance.localAccess &&
-        this.ranApproved(entry, instance) &&
+        approved &&
         (instance.desired === 'running' || instance.state === 'crashed'),
       restartToApply:
         (instance.state === 'running' || instance.state === 'starting') &&
@@ -443,7 +430,6 @@ export class ManagedDevServerManager {
     };
   }
 
-  /** Approval for what actually runs, not for the entry's current command. */
   private ranApproved(entry: ManagedDevServerRecord, instance: ManagedDevServerInstanceRecord) {
     return (
       entry.approved &&
@@ -512,11 +498,16 @@ export class ManagedDevServerManager {
     await this.locked(project.id, async () => {
       let providerAuthority: string | undefined;
       if (seen.secretBindings?.length) {
-        const current = await this.currentProviderSnapshot(project.id);
+        const current = await currentManagedProviderSnapshot(
+          this.options,
+          project.id,
+          seen.secretBindings,
+        );
         const snapshot = seen.providerSnapshot;
         if (
-          !current ||
+          !current?.authority ||
           !snapshot ||
+          snapshot.authority !== current.authority ||
           snapshot.provider !== current.provider ||
           snapshot.project !== current.project ||
           snapshot.config !== current.config
@@ -525,7 +516,7 @@ export class ManagedDevServerManager {
             'The secret provider changed or is unavailable. Refresh and review it again before approving.',
             409,
           );
-        providerAuthority = JSON.stringify([snapshot.project, snapshot.config]);
+        providerAuthority = current.authority;
       }
       const approved = await this.servers.approve(entry.id, {
         ...seen,
@@ -546,7 +537,6 @@ export class ManagedDevServerManager {
             localAccess: false,
             accessStartedAt: new Date(this.now()),
           })) ?? instance;
-        // Still published from an earlier approved run: that address goes too.
         try {
           await this.unpublish(instance);
         } catch (error) {
@@ -555,7 +545,7 @@ export class ManagedDevServerManager {
           throw error;
         }
       }
-      if (instance?.state === 'running') await this.publish(project, approved, instance);
+      if (instance?.state === 'running') await this.publish(project, instance);
     });
     return this.view(sessionId);
   }
@@ -615,22 +605,28 @@ export class ManagedDevServerManager {
     const context = await this.context(sessionId);
     const { project } = context;
     const entry = await this.entry(project.id, idOrName);
-    if (on && !entry.approved)
+    if (on && (!entry.approved || !(await managedProviderApproved(this.options, entry))))
       throw new ManagedDevServerError('Review and approve the command first', 409);
     await this.locked(project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
       if (on) {
-        // Only a live process of the approved command gets the flag; anything
-        // else starts, crashed included, and an older command restarts.
-        if (
-          instance &&
-          !this.ranApproved(entry, instance) &&
-          (instance.state === 'running' || instance.state === 'starting')
-        )
-          await this.stopInstance(project, instance, null);
-        else if (instance && (instance.state === 'running' || instance.state === 'starting')) {
+        // Reuse the process only while its command and authority still match.
+        if (instance && (instance.state === 'running' || instance.state === 'starting')) {
+          const authority = await managedRunProviderCurrent(this.options.store, instance);
+          if (authority === undefined) {
+            await this.unpublish(instance);
+            throw new ManagedDevServerError(
+              'Doppler access could not be verified. Try again.',
+              503,
+            );
+          }
+          if (!authority || !this.ranApproved(entry, instance)) {
+            await this.stopInstance(project, instance, null);
+            await this.startEntry(context, entry, 'operator', true, person);
+            return;
+          }
           const updated = await this.servers.updateInstance(instance.id, { localAccess: true });
-          if (updated?.state === 'running') await this.publish(project, entry, updated);
+          if (updated?.state === 'running') await this.publish(project, updated);
           return;
         }
         await this.startEntry(context, entry, 'operator', true, person);
@@ -677,7 +673,7 @@ export class ManagedDevServerManager {
                 return;
             }
             if (await this.hasLivePublicLink(current)) return;
-            await this.stopInstance(project, current, null);
+            await this.stopInstance(project, current, null, true);
           });
       }
       this.pendingLinkEnds.delete(instanceId);
@@ -709,7 +705,7 @@ export class ManagedDevServerManager {
     // Refuse before stopping: a restart that cannot start must not kill what runs.
     if (
       (by === 'operator' || entry.secretBindings.length > 0) &&
-      (!entry.approved || !(await this.providerApproved(entry)))
+      (!entry.approved || !(await managedProviderApproved(this.options, entry)))
     )
       throw new ManagedDevServerError('Review and approve the command first', 409);
     // Also before stopping: someone else's approval must not cost the running server.
@@ -747,7 +743,6 @@ export class ManagedDevServerManager {
     return this.viewOf(sessionId, entry.id);
   }
 
-  /** Stops an instance in another session of the same project, from the list row. */
   async stopElsewhere(sessionId: string, instanceId: string): Promise<ManagedServerView[]> {
     const { project } = await this.context(sessionId);
     const instance = await this.servers.getInstance(instanceId);
@@ -757,7 +752,6 @@ export class ManagedDevServerManager {
     return this.view(sessionId);
   }
 
-  /** One entry, resolved by id or by name the same way start and stop resolve it. */
   async status(sessionId: string, idOrName: string): Promise<ManagedServerView> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
@@ -776,7 +770,6 @@ export class ManagedDevServerManager {
     );
   }
 
-  /** Snapshot IDs; admission is fenced by the durable deletion record. */
   async captureSessionCleanup(sessionId: string): Promise<ManagedSessionCleanupSnapshot> {
     const [session, instances] = await Promise.all([
       this.options.store.getSession(sessionId),
@@ -789,7 +782,6 @@ export class ManagedDevServerManager {
     };
   }
 
-  /** Drain late starts under the same project lock without waking sleeping sandboxes. */
   async cleanupDeletedSession(
     snapshot: ManagedSessionCleanupSnapshot,
   ): Promise<'clean' | 'deferred'> {
@@ -858,7 +850,6 @@ export class ManagedDevServerManager {
     };
   }
 
-  /** Whose Doppler connection a start resolves secrets with; see agentPerson. */
   private async personFor(
     sessionId: string,
     by: StartedBy,
@@ -907,13 +898,17 @@ export class ManagedDevServerManager {
     await this.assertStartAllowed(sessionId);
     this.assertOwnApproval(entry, by, person);
     if ((project.state === 'sleeping' || project.state === 'waking') && this.options.wakeSandbox) {
-      // Record the intent, wake the sandbox, and let supervision start the server
-      // once it is up: an instance that should run but has no process is started.
       const instance = await this.servers.ensureInstance({
         serverId: entry.id,
         sessionId,
         sandboxPorts: MANAGED_SANDBOX_PORTS,
       });
+      const authority =
+        by === 'recovery'
+          ? instance.lastRunProviderAuthority
+          : entry.secretBindings.length === 0
+            ? null
+            : ((await this.servers.approvedProviderAuthority(entry.id)) ?? null);
       const access =
         local ?? (by === 'agent' && !(await this.hasLivePublicLink(instance)) ? true : undefined);
       await this.servers.updateInstance(instance.id, {
@@ -921,6 +916,11 @@ export class ManagedDevServerManager {
         desired: 'running',
         state: 'starting',
         detail: WAKING_DETAIL,
+        lastRunProviderAuthority: authority,
+        previousRunSandboxUserId: priorManagedSandbox(
+          instance,
+          by === 'recovery' ? instance.lastRunUserId : person,
+        ),
         lastRunCommand:
           by === 'recovery' ? (instance.lastRunCommand ?? entry.command) : entry.command,
         lastRunSecretBindings:
@@ -950,8 +950,7 @@ export class ManagedDevServerManager {
     }
     if (project.state !== 'active' || !project.containerName)
       throw new ManagedDevServerError('the project sandbox is not running', 409);
-    // A server runs in the sandbox of the person it is for (ADR 0023 §4): who
-    // starts it, or on recovery who it last ran for.
+    // Recovery keeps the original runner's sandbox (ADR 0023 §4).
     const previous = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
     const runAs = by === 'recovery' ? (previous?.lastRunUserId ?? null) : person;
     const target = await this.inSandbox(project, runAs, true);
@@ -960,7 +959,6 @@ export class ManagedDevServerManager {
       previous.lastRunUserId !== runAs &&
       this.options.sandboxContainer !== undefined
     ) {
-      // Someone else starts it now: end it where it ran, then start it in their sandbox.
       await this.inSandbox(project, previous.lastRunUserId)
         .then((old) => this.options.runtime.stopManagedServer(old, previous.id))
         .catch(() => undefined);
@@ -990,14 +988,19 @@ export class ManagedDevServerManager {
     const status = await this.options.runtime
       .managedServerStatus(target, instance.id)
       .catch(() => ({ alive: false, exitCode: null }));
+    const sameProvider =
+      !status.alive || (await managedRunProviderCurrent(this.options.store, instance));
+    if (sameProvider === undefined) {
+      await this.unpublish(instance);
+      throw new ManagedDevServerError('Doppler access could not be verified. Try again.', 503);
+    }
     if (
       status.alive &&
       (instance.state === 'running' || instance.state === 'starting') &&
-      (by !== 'operator' || this.ranApproved(entry, instance))
+      (by !== 'operator' || this.ranApproved(entry, instance)) &&
+      sameProvider &&
+      instance.detail !== WAKING_DETAIL
     ) {
-      // Already up after a wake: drop the marker so supervision stops relaunching.
-      if (instance.detail === WAKING_DETAIL)
-        await this.servers.updateInstance(instance.id, { detail: null });
       this.markActive(project.id, sessionId, instance.id);
       return;
     }
@@ -1009,6 +1012,7 @@ export class ManagedDevServerManager {
     )
       instance =
         (await this.servers.updateInstance(instance.id, { localAccess: true })) ?? instance;
+    if (!sameProvider) await this.unpublish(instance).catch(() => undefined);
     if (status.alive) await this.options.runtime.stopManagedServer(target, instance.id);
     const holder = processes.find((process) => process.port === instance.sandboxPort);
     if (holder && holder.instanceId !== instance.id) {
@@ -1030,14 +1034,20 @@ export class ManagedDevServerManager {
       });
       return;
     }
-    const siblings = await this.siblingEnv(project, sessionId, entry.id);
+    const siblings = await managedSiblingEnvironment(this.servers, project.id, sessionId, entry.id);
     let secrets: { env: string; value: string }[] = [];
+    let runAuthority: string | null = null;
     try {
       if (secretBindings.length > 0) {
-        const approvedAuthority = await this.servers.approvedProviderAuthority(entry.id);
+        const queued = instance.detail === WAKING_DETAIL;
+        const approval = () =>
+          approvedManagedRunAuthority(this.options.store, instance, queued, runAs);
+        const approvedAuthority = await approval();
         if (
           approvedAuthority === undefined ||
-          approvedAuthority !== (await this.options.providerAuthority?.(project.id))
+          approvedAuthority !==
+            (await currentManagedProviderSnapshot(this.options, project.id, secretBindings))
+              ?.authority
         )
           throw new Error('provider authority changed');
         if (!this.options.resolveSecrets) throw new Error('secret resolver unavailable');
@@ -1048,11 +1058,14 @@ export class ManagedDevServerManager {
           runAs,
         );
         if (
-          approvedAuthority !== (await this.options.providerAuthority?.(project.id)) ||
-          approvedAuthority !== (await this.servers.approvedProviderAuthority(entry.id)) ||
+          approvedAuthority !==
+            (await currentManagedProviderSnapshot(this.options, project.id, secretBindings))
+              ?.authority ||
+          approvedAuthority !== (await approval()) ||
           !(await this.servers.isApproved(entry.id, command, workdir, secretBindings))
         )
           throw new Error('provider authority changed');
+        runAuthority = approvedAuthority;
       }
     } catch (error) {
       await this.servers.updateInstance(instance.id, {
@@ -1094,6 +1107,7 @@ export class ManagedDevServerManager {
             : result.reason,
         lastRunCommand: command,
         lastRunSecretBindings: secretBindings,
+        lastRunProviderAuthority: runAuthority,
         lastRunUserId: runAs,
         lastRunWorkdir: workdir,
       });
@@ -1106,6 +1120,7 @@ export class ManagedDevServerManager {
       detail: null,
       lastRunCommand: command,
       lastRunSecretBindings: secretBindings,
+      lastRunProviderAuthority: runAuthority,
       lastRunUserId: runAs,
       lastRunWorkdir: workdir,
       startedAt: now,
@@ -1121,44 +1136,33 @@ export class ManagedDevServerManager {
     });
   }
 
-  /** `VERITY_SERVER_<NAME>_URL` for each other running entry of the session. */
-  private async siblingEnv(
-    project: ProjectRecord,
-    sessionId: string,
-    exceptServerId: string,
-  ): Promise<Record<string, string>> {
-    const [entries, instances] = await Promise.all([
-      this.servers.list(project.id),
-      this.servers.listInstances({ sessionId }),
-    ]);
-    const env: Record<string, string> = {};
-    for (const instance of instances) {
-      if (instance.serverId === exceptServerId) continue;
-      if (instance.state !== 'running' && instance.state !== 'starting') continue;
-      const entry = entries.find((value) => value.id === instance.serverId);
-      if (entry)
-        env[`VERITY_SERVER_${entry.nameKey}_URL`] =
-          `http://127.0.0.1:${String(instance.sandboxPort)}`;
-    }
-    return env;
+  private async stopPriorRun(project: ProjectRecord, instance: ManagedDevServerInstanceRecord) {
+    return stopPreviousManagedRun(this.options, instance, (userId) =>
+      this.inSandbox(project, userId),
+    );
   }
 
   private async stopInstance(
     project: ProjectRecord,
     instance: ManagedDevServerInstanceRecord,
     detail: string | null,
+    retryOnFailure = false,
   ): Promise<void> {
     this.liveness.remove(instance.id);
-    await this.servers.updateInstance(instance.id, { desired: 'stopped' });
+    const retry = retryOnFailure || instance.previousRunSandboxUserId != null;
+    if (!retry) await this.servers.updateInstance(instance.id, { desired: 'stopped' });
     try {
       await this.unpublish(instance);
     } finally {
-      // Edge cleanup must not prevent the server process from being stopped.
       if (project.state === 'active' && project.containerName)
-        await this.inSandbox(project, instance.lastRunUserId)
+        await this.stopPriorRun(project, instance)
+          .then(() => this.inSandbox(project, instance.lastRunUserId))
           .then((target) => this.options.runtime.stopManagedServer(target, instance.id))
-          .catch(() => undefined);
+          .catch((error: unknown) => {
+            if (retry) throw error;
+          });
       await this.servers.updateInstance(instance.id, {
+        desired: 'stopped',
         state: 'stopped',
         detail,
         ...(instance.state === 'running' ? { lastRanAt: new Date(this.now()) } : {}),
@@ -1168,33 +1172,19 @@ export class ManagedDevServerManager {
     this.refreshQuietly(project);
   }
 
-  // ---- publishing -------------------------------------------------------
-
   private async publish(
     project: ProjectRecord,
-    entry: ManagedDevServerRecord,
     instance: ManagedDevServerInstanceRecord,
   ): Promise<void> {
     const local = this.options.localShares;
     if (!local || !instance.localAccess || (await this.sessionUnavailable(instance.sessionId)))
       return;
-    if (
-      !instance.lastRunCommand ||
-      !instance.lastRunWorkdir ||
-      !(await this.servers.isApproved(
-        entry.id,
-        instance.lastRunCommand,
-        instance.lastRunWorkdir,
-        instance.lastRunSecretBindings,
-      ))
-    )
+    if (!(await managedRunApproved(this.options.store, instance))) {
+      await this.unpublish(instance);
       return;
+    }
     const existing = this.shareFor(instance);
-    // Recovery follows the instance's current sandbox port without replacing
-    // the durable local identity when a sandbox is recreated.
     if (existing && existing.expiresAt.getTime() - this.now() > 86_400_000) return;
-    // A share close to its end is replaced on the same port; the local manager
-    // would otherwise hand the old one back unchanged.
     if (existing) await this.options.localShares?.stop(existing.id).catch(() => false);
     if ((this.publishRetryAt.get(instance.id) ?? 0) > this.now()) return;
     const held = local.heldPorts();
@@ -1231,15 +1221,16 @@ export class ManagedDevServerManager {
         networkPort: reservation.port,
         managedInstanceId: instance.id,
       });
-      if (await this.sessionUnavailable(instance.sessionId)) {
+      if (
+        (await this.sessionUnavailable(instance.sessionId)) ||
+        !(await managedRunProviderCurrent(this.options.store, instance))
+      ) {
         await local.stop(share.id);
         return;
       }
       this.publishRetryAt.delete(instance.id);
       if (instance.detail) await this.servers.updateInstance(instance.id, { detail: null });
     } catch (error) {
-      // Most likely an ad hoc share took the port in the same instant. Release
-      // it so the next attempt reserves a free one, and say why in the meantime.
       await this.servers.releaseNetworkPort(instance.id);
       await this.refreshReserved();
       this.publishRetryAt.set(instance.id, this.now() + 30_000);
@@ -1278,23 +1269,11 @@ export class ManagedDevServerManager {
       processes.flatMap((process) => (process.instanceId ? [process.instanceId] : [])),
     );
     if (tags.size === 0 || this.closed) return Promise.resolve();
-    return this.locked(project.id, async () => {
-      // Anything tagged that should not run: deleted rows, and instances stopped
-      // while the sandbox was paused, whose processes survived the resume.
-      const wanted = new Set(
-        (await this.servers.listInstances({ projectId: project.id, desired: 'running' })).map(
-          (value) => value.id,
-        ),
-      );
-      for (const tag of tags)
-        if (!wanted.has(tag))
-          await this.options.runtime.stopManagedServer(project, tag).catch(() => undefined);
-    }).catch(() => undefined);
+    return this.locked(project.id, () =>
+      stopOrphanManagedProcesses(this.options, project, tags),
+    ).catch(() => undefined);
   }
 
-  // ---- supervision ------------------------------------------------------
-
-  /** One pass over active instances. Exposed for tests and for discovery pushes. */
   tick(): Promise<void> {
     if (this.closed || this.options.canSupervise?.() === false) return Promise.resolve();
     this.ticking ??= this.supervise().finally(() => {
@@ -1344,8 +1323,6 @@ export class ManagedDevServerManager {
   ): Promise<void> {
     const project = await this.options.store.getProject(projectId);
     if (!project || project.state !== 'active' || !project.containerName) return;
-    // Each server is supervised in its own sandbox's container (ADR 0023 §4); a
-    // container is listed once per pass however many servers it runs.
     const listings = new Map<string, Promise<ListeningProcess[]>>();
     const processesIn = (target: ProjectRecord): Promise<ListeningProcess[]> => {
       let listing = listings.get(target.containerName);
@@ -1359,9 +1336,10 @@ export class ManagedDevServerManager {
     };
     let changed = false;
     for (const snapshot of instances) {
-      // Re-read under the project lock: a stop since the pass began wins.
-      const instance = await this.servers.getInstance(snapshot.id);
-      if (!instance || instance.desired !== 'running') continue;
+      const saved = await this.servers.getInstance(snapshot.id);
+      if (!saved || saved.desired !== 'running') continue;
+      const instance = await this.stopPriorRun(project, saved).catch(() => undefined);
+      if (!instance) continue;
       if (!instance.localAccess) {
         await this.unpublish(instance).catch(() => undefined);
         const links = await this.options.store.listPublicPreviewShares(projectId);
@@ -1371,8 +1349,6 @@ export class ManagedDevServerManager {
             (link.state === 'active' || link.state === 'creating') &&
             link.expiresAt.getTime() > this.now(),
         );
-        // Terminal link data survives a Core restart that lost its cleanup queue.
-        // Older links must not cancel a new start waiting for its share creation.
         const ended = links.some(
           (link) =>
             link.managedInstanceId === instance.id &&
@@ -1382,14 +1358,36 @@ export class ManagedDevServerManager {
               (instance.accessStartedAt ?? instance.startedAt)!.getTime(),
         );
         if (!live && ended) {
-          await this.stopInstance(project, instance, null);
+          await this.stopInstance(project, instance, null, true).catch(() => undefined);
           changed = true;
           continue;
         }
       }
       const entry = await this.servers.get(instance.serverId);
       if (!entry) continue;
-      if (instance.state === 'starting' && instance.detail === WAKING_DETAIL) {
+      const waking = instance.state === 'starting' && instance.detail === WAKING_DETAIL;
+      const authority = await managedRunProviderCurrent(this.options.store, instance);
+      if (authority === undefined) {
+        await this.unpublish(instance).catch(() => undefined);
+        continue;
+      }
+      if (
+        !authority ||
+        (waking &&
+          instance.lastRunSecretBindings.length > 0 &&
+          instance.lastRunUserId !== null &&
+          entry.approvedBy !== instance.lastRunUserId)
+      ) {
+        await this.stopInstance(
+          project,
+          instance,
+          'Doppler access changed. Review and approve again.',
+          true,
+        ).catch(() => undefined);
+        changed = true;
+        continue;
+      }
+      if (waking) {
         const session = await this.options.store.getSession(instance.sessionId);
         if (session?.worktree) {
           await this.startEntry(
@@ -1409,7 +1407,6 @@ export class ManagedDevServerManager {
         this.liveness.verify(instance.id);
         this.missingSince.delete(instance.id);
         if (this.now() - (this.checkedAt.get(instance.id) ?? 0) > 60_000) {
-          // The status check also trims an oversized log; once a minute is enough.
           this.checkedAt.set(instance.id, this.now());
           await this.options.runtime
             .managedServerStatus(target, instance.id)
@@ -1420,7 +1417,7 @@ export class ManagedDevServerManager {
           changed = true;
         }
         const current = (await this.servers.getInstance(instance.id)) ?? instance;
-        await this.publish(project, entry, current);
+        await this.publish(project, current);
         continue;
       }
       this.liveness.invalidate(instance.id);

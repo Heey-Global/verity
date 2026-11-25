@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Database, SecretCipher } from '@verity/store';
+import { LEGACY_DOPPLER_CONNECTION_ID, type Database, type SecretCipher } from '@verity/store';
 import type { Kysely } from 'kysely';
 import type { FastifyInstance } from 'fastify';
 import type { AuthTokenRegistry } from './auth.js';
@@ -74,6 +74,8 @@ export function createEmbeddedSecretJobs({
     config.secretJobs?.doppler !== undefined ? createPostgresSecretProviderCatalog(db) : undefined;
   if (config.secretJobs !== undefined) {
     const secretJobsConfig = config.secretJobs;
+    const dopplerConnectionId =
+      secretJobsConfig.doppler?.connectionId ?? LEGACY_DOPPLER_CONNECTION_ID;
     if (runtimeDocker === undefined || config.dockerBaseUrl === undefined) {
       throw new Error('unreachable: missing Secret Job Docker configuration');
     }
@@ -92,8 +94,9 @@ export function createEmbeddedSecretJobs({
           ? createDopplerSecretResolver({
               ...secretJobsConfig.doppler,
               catalog: secretProviderCatalog!,
-              readCredential: (_ref, { projectId, userId }) =>
-                dopplerCredentialFor(userId, projectId),
+              // The catalog retains its instance connection independently of project defaults.
+              readCredential: (_ref, { projectId, userId }, scope) =>
+                dopplerCredentialFor(userId, projectId, dopplerConnectionId, scope),
             })
           : secretJobsConfig.resolveSecrets!,
       sealEnvelope,
@@ -182,12 +185,14 @@ export function installEmbeddedSecretJobs(
   }
   if (secretProviderCatalog !== undefined) {
     const dopplerOptions = config.secretJobs!.doppler!;
+    const dopplerConnectionId = dopplerOptions.connectionId ?? LEGACY_DOPPLER_CONNECTION_ID;
     registerSecretProviderRoutes(
       app,
       secretProviderCatalog,
       createDopplerSecretNameLister({
         ...dopplerOptions,
-        readCredential: (_ref, { projectId, userId }) => dopplerCredentialFor(userId, projectId),
+        readCredential: (_ref, { projectId, userId }, scope) =>
+          dopplerCredentialFor(userId, projectId, dopplerConnectionId, scope),
       }),
       async (header, projectId) => {
         const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];

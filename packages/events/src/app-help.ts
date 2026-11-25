@@ -135,7 +135,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'Project connections',
     summary: 'Choose which connected services a project may use.',
     details:
-      'Project settings, Connectors lists the services this project uses and offers Add connection for the rest. There you pick the GitHub repository, the Doppler project and config, Google Drive folders, Google mail, calendar and contacts access, Matrix rooms and MCP servers. Project defaults apply to every inheriting session; each chat can choose a different account or disable a service.',
+      'Project settings, Connectors lists the services this project uses and offers Add connection for the rest. There you pick the GitHub repository, the Doppler projects and configs, Google Drive folders, Google mail, calendar and contacts access, Matrix rooms and MCP servers. Project defaults apply to every inheriting session; each chat can choose a different account or disable a service.',
     appLink: 'verity://project/settings/services',
     docsPath: 'docs/connections.md',
     keywords: ['project settings', 'scope', 'enable', 'grant'],
@@ -225,7 +225,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'Doppler',
     summary: 'Managed secrets that agents can use without seeing them.',
     details:
-      'Connect Doppler to give projects access to secrets such as API keys. A project selects its Doppler project and config. Agents then use a secret by name for an HTTP request or a CLI command after your approval; the value is never shown to them.',
+      "Connect Doppler to give projects access to secrets such as API keys. Settings, Connectors, Doppler holds one or more connections, typically one token per Doppler workplace. A project binds one or more Doppler projects and configs from them, one as its default. Agents then use a secret by name, `NAME` for the default or `project/config/NAME` for another binding, for an HTTP request or a CLI command after your approval; the value is never shown to them. Each member connects their own token per connection in the project's Doppler settings.",
     appLink: 'verity://settings/services/doppler',
     docsPath: 'docs/connections.md',
     // Not "password": that word mostly means the master password, see secrets-storage.

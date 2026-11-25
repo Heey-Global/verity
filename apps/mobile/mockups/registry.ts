@@ -10,6 +10,7 @@ import { sessionStabilitySpec } from './session-stability';
 import { sessionCollaborationSpec } from './session-collaboration';
 import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
+import { dopplerConnectionsSpec } from './doppler-connections';
 import { homeAnswersSpec } from './home-answers';
 import { homeVerityEntrySpec } from './home-verity-entry';
 import { fileExplorerSpec } from './file-explorer';
@@ -43,6 +44,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   sessionCollaborationSpec,
   sessionGroupsSpec,
   factorySpec,
+  dopplerConnectionsSpec,
   homeAnswersSpec,
   homeVerityEntrySpec,
   mockupReviewSpec,

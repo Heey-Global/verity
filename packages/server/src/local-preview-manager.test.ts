@@ -1,3 +1,4 @@
+import { ManagedPreviewAuthorityError } from './managed-dev-server-secrets.js';
 import { withPreviewProjectMutation } from './preview-project-mutation.js';
 import { DockerError } from './docker.js';
 import { observeProjectActivity } from './project-idle-sleep.js';
@@ -27,12 +28,15 @@ function fixture() {
     labels: { 'verity.container-generation': 'generation-1' },
   };
   const project = { id: 'p1', containerName: 'sandbox', state: 'active' };
-  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockResolvedValue({
+  const prepared: Awaited<ReturnType<PreviewShareManager['prepareLocalTarget']>> = {
     project: project as never,
     session: {} as never,
     generation: containerGenerationOf(sandbox)!,
     staticMount: undefined,
-  });
+  };
+  const prepareTarget = vi
+    .spyOn(PreviewShareManager.prototype, 'prepareLocalTarget')
+    .mockResolvedValue(prepared);
   const docker = {
     createContainer: vi.fn(async () => ({ id: 'c1' })),
     startContainer: vi.fn(async () => {}),
@@ -71,7 +75,7 @@ function fixture() {
   } as unknown as LocalPreviewManagerOptions;
   const manager = new LocalPreviewManager(options);
   managers.push(manager);
-  return { manager, docker, options };
+  return { manager, docker, options, prepared, prepareTarget };
 }
 it('deduplicates simultaneous creation and waits for connector readiness', async () => {
   const { manager, docker } = fixture();
@@ -162,6 +166,19 @@ it('retries Docker cleanup after the edge has already closed', async () => {
   await expect(manager.stop(share.id)).resolves.toBe(true);
   expect(manager.list('s1')).toEqual([]);
   expect(new URL((await manager.create('s1', { targetPort: 3000 })).url).port).toBe('18100');
+});
+
+it('suspends an ad hoc local share when the managed listener cannot be authorized', async () => {
+  const { manager, options, docker } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValue(
+    new ManagedPreviewAuthorityError('Doppler access changed'),
+  );
+  await manager.reconcile();
+  expect(docker.removeContainer).toHaveBeenCalledWith('c1');
+  expect(await options.store.listLocalPreviewShares()).toEqual([
+    expect.objectContaining({ id: share.id, state: 'active' }),
+  ]);
 });
 
 it('revokes immediately when another process takes over the target', async () => {
@@ -341,18 +358,30 @@ it('waits for restoration before removing an explicitly stopped connector', asyn
 });
 
 it('follows a managed instance new target port while keeping local URL and credentials', async () => {
-  const { manager, options, docker } = fixture();
+  const { manager, options, docker, prepared, prepareTarget } = fixture();
+  const preparePort = vi.fn(async (_project: { containerName: string }, port: number) => port);
+  options.prepareTargetPort = preparePort;
+  prepareTarget.mockResolvedValue({
+    ...prepared,
+    project: {
+      ...prepared.project,
+      containerName: 'personal-sandbox',
+      previewNetwork: 'personal-network',
+    },
+  });
   const instance = {
     id: 'managed',
     serverId: 'definition',
     localAccess: true,
     lastRunCommand: 'npm start',
     lastRunWorkdir: '.',
+    lastRunSecretBindings: [],
     sessionId: 's1',
     projectId: 'p1',
     sandboxPort: 3000,
     networkPort: 18100,
     desired: 'running',
+    state: 'running' as 'running' | 'starting',
   };
   Object.assign(options.store, {
     managedDevServers: {
@@ -373,19 +402,28 @@ it('follows a managed instance new target port while keeping local URL and crede
   instance.sandboxPort = 4000;
   const restored = new LocalPreviewManager(options);
   managers.push(restored);
+  instance.state = 'starting';
+  await restored.reconcile();
+  expect(restored.list('s1')).toEqual([share]);
+  instance.state = 'running';
   await restored.reconcile();
   expect(restored.list('s1')).toEqual([{ ...share, targetPort: 4000 }]);
+  await restored.reconcile();
+  expect(preparePort).toHaveBeenLastCalledWith(
+    expect.objectContaining({ containerName: 'personal-sandbox' }),
+    4000,
+  );
   expect(docker.createContainer).toHaveBeenLastCalledWith(
     expect.objectContaining({
       env: expect.arrayContaining([
         credentials,
-        'VERITY_PREVIEW_TARGET_ORIGIN=http://sandbox:4000',
+        'VERITY_PREVIEW_TARGET_ORIGIN=http://personal-sandbox:4000',
       ]),
     }),
   );
 });
 
-it.each(['access', 'approval'] as const)(
+it.each(['access', 'approval', 'legacy provider'] as const)(
   'does not restore managed sharing when %s is revoked',
   async (reason) => {
     const { manager, options, docker } = fixture();
@@ -397,9 +435,12 @@ it.each(['access', 'approval'] as const)(
       sandboxPort: 3000,
       networkPort: 18100,
       desired: 'running',
+      state: 'running',
       localAccess: true,
       lastRunCommand: 'npm start',
       lastRunWorkdir: '.',
+      lastRunSecretBindings:
+        reason === 'legacy provider' ? [{ secretAlias: 'KEY', env: 'KEY' }] : [],
     };
     let approved = true;
     Object.assign(options.store, {
@@ -416,7 +457,7 @@ it.each(['access', 'approval'] as const)(
     });
     await manager.close();
     if (reason === 'access') instance.localAccess = false;
-    else approved = false;
+    else if (reason === 'approval') approved = false;
     docker.createContainer.mockClear();
     const restored = new LocalPreviewManager(options);
     managers.push(restored);
@@ -426,6 +467,7 @@ it.each(['access', 'approval'] as const)(
     if (reason === 'approval') {
       approved = true;
       await restored.reconcile();
+      expect(docker.createContainer).toHaveBeenCalledOnce();
       expect(restored.list('s1')).toEqual([share]);
     }
   },
@@ -444,6 +486,7 @@ it('releases an active managed connector when command approval is removed', asyn
     localAccess: true,
     lastRunCommand: 'npm start',
     lastRunWorkdir: '.',
+    lastRunSecretBindings: [],
   };
   let approved = true;
   Object.assign(options.store, {
@@ -913,10 +956,12 @@ it.each([false, true])(
           projectId: 'p1',
           localAccess: true,
           desired: 'running',
+          state: 'running',
           sandboxPort: 3000,
           networkPort: 18100,
           lastRunCommand: 'npm start',
           lastRunWorkdir: '.',
+          lastRunSecretBindings: [],
         }),
         isApproved: async () => true,
         listInstances: async () => [],

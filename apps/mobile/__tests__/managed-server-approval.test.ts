@@ -72,3 +72,36 @@ it.each(['Allow API locally?', 'Allow API on your network?'])(
     alert.mockRestore();
   },
 );
+
+it('carries both displayed sources and the captured authority into approval', async () => {
+  const current = server();
+  current.providerSnapshot = {
+    ...current.providerSnapshot!,
+    authority: 'approved-sources',
+    sources: [
+      { connectionId: 'platform', connectionLabel: 'Platform', project: 'demo', config: 'staging' },
+      { connectionId: 'payments', workplaceSlug: 'payments', project: 'billing', config: 'dev' },
+    ],
+  };
+  const seen = managedServerApproval(current);
+  current.providerSnapshot.authority = 'changed';
+  current.providerSnapshot.sources![1]!.config = 'prd';
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  try {
+    const confirmed = confirmManagedServerApproval(seen, {
+      title: 'Allow API locally?',
+      action: 'Allow',
+      warning: 'The API will run locally.',
+    });
+    expect(alert.mock.calls[0]?.[1]).toContain('demo / staging · Platform (platform)');
+    expect(alert.mock.calls[0]?.[1]).toContain('billing / dev · Connection (workplace payments)');
+    alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Allow')?.onPress?.();
+    await expect(confirmed).resolves.toBe(true);
+    expect(seen.providerSnapshot).toMatchObject({
+      authority: 'approved-sources',
+      sources: [{ config: 'staging' }, { config: 'dev' }],
+    });
+  } finally {
+    alert.mockRestore();
+  }
+});

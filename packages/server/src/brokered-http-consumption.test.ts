@@ -43,6 +43,24 @@ describe('brokered HTTP consumption store', () => {
       ctx.db.selectFrom('brokered_http_consumptions').select('call_id').execute(),
     ).resolves.toEqual([]);
   });
+  it('does not consume a versioned claim for a request already executed on a legacy binding', async () => {
+    const store = createBrokeredHttpConsumptionStore(ctx.db);
+    const input = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      callId: 'legacy-binding-claim',
+      requestHash: 'a'.repeat(64),
+    };
+    await expect(store.consume(input)).resolves.toBe(true);
+    await expect(store.consume({ ...input, callId: 'doppler-v2:new-binding' })).resolves.toBe(
+      false,
+    );
+    await expect(
+      store.consume({ ...input, callId: 'doppler-v2:other-request', requestHash: 'b'.repeat(64) }),
+    ).resolves.toBe(true);
+  });
+
   it('has one concurrent winner and retains the fence across store recreation', async () => {
     const input = {
       projectId: 'project-1',

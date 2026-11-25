@@ -127,6 +127,7 @@ describe('project settings index — destinations', () => {
         getVeritySettings: jest.fn().mockResolvedValue(null),
         getGoogleDriveConnection: jest.fn().mockResolvedValue({ connected: false }),
         listHttpMcpConnections: jest.fn().mockResolvedValue([]),
+        doppler: { listConnections: jest.fn().mockResolvedValue([]) },
       }),
     );
     render(<ProjectSettingsIndexScreen />);
@@ -758,9 +759,9 @@ describe('project settings — sandbox', () => {
 
 describe('project settings — connected services', () => {
   it.each([
-    ['doppler', 'Credentials', 'Files', 'Tools'],
-    ['drive', 'Files', 'Credentials', 'Tools'],
-    ['mcp', 'Tools', 'Credentials', 'Files'],
+    ['doppler', 'Secrets', 'Files', 'Tools'],
+    ['drive', 'Files', 'Secrets', 'Tools'],
+    ['mcp', 'Tools', 'Secrets', 'Files'],
   ])('shows only the %s project binding', async (section, visible, hiddenA, hiddenB) => {
     setSearchParams({ id: 'p/1', section });
     mockCreateVerityClient.mockReturnValue(makeClient());
@@ -769,64 +770,6 @@ describe('project settings — connected services', () => {
     expect(await screen.findByText(visible)).toBeOnTheScreen();
     expect(screen.queryByText(hiddenA)).toBeNull();
     expect(screen.queryByText(hiddenB)).toBeNull();
-  });
-
-  it('lists projects, then configs, then PATCHes { dopplerProject, dopplerConfig }', async () => {
-    const listDopplerProjects = jest
-      .fn()
-      .mockResolvedValue({ projects: [{ slug: 'acme-app', name: 'Acme App' }] });
-    const listDopplerConfigs = jest
-      .fn()
-      .mockResolvedValue({ configs: [{ name: 'dev', environment: 'dev', root: true }] });
-    const updateProjectSettings = jest.fn().mockResolvedValue({
-      ...makeDetail().settings,
-      dopplerProject: 'acme-app',
-      dopplerConfig: 'dev',
-    });
-    mockCreateVerityClient.mockReturnValue(
-      makeClient({ listDopplerProjects, listDopplerConfigs, updateProjectSettings }),
-    );
-    render(<ProjectServicesScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
-
-    // Open the picker → project list loads.
-    fireEvent.press(await screen.findByLabelText(/^Choose Doppler binding(,|$)/));
-    fireEvent.press(await screen.findByLabelText(/^Doppler project Acme App(,|$)/));
-    await waitFor(() => expect(listDopplerConfigs).toHaveBeenCalledWith('acme-app'));
-
-    // Pick a config → PATCH lands with the binding.
-    fireEvent.press(await screen.findByLabelText(/^Doppler config dev(,|$)/));
-    await waitFor(() => expect(updateProjectSettings).toHaveBeenCalledTimes(1));
-    const [, patch] = updateProjectSettings.mock.calls[0];
-    expect(patch).toEqual({ dopplerProject: 'acme-app', dopplerConfig: 'dev' });
-  });
-
-  it('shows the account-token hint when the list is not configured', async () => {
-    const listDopplerProjects = jest.fn().mockResolvedValue({ error: 'not configured' });
-    mockCreateVerityClient.mockReturnValue(makeClient({ listDopplerProjects }));
-    render(<ProjectServicesScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
-
-    fireEvent.press(await screen.findByLabelText(/^Choose Doppler binding(,|$)/));
-    expect(
-      await screen.findByText(/Set the Doppler account token in Verity settings/),
-    ).toBeOnTheScreen();
-  });
-
-  it('renders the current binding and a "Change" control when already bound', async () => {
-    mockCreateVerityClient.mockReturnValue(
-      makeClient({
-        detail: makeDetail({
-          dopplerProject: 'acme-app',
-          dopplerConfig: 'dev',
-        }),
-      }),
-    );
-    render(<ProjectServicesScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Doppler(,|$)/));
-
-    expect(await screen.findByText('acme-app / dev')).toBeOnTheScreen();
-    expect(screen.getByLabelText(/^Change Doppler binding(,|$)/)).toBeOnTheScreen();
   });
 
   it('enables an MCP connection for the project with a switch', async () => {
@@ -861,7 +804,7 @@ describe('project settings — connected services', () => {
     mockCreateVerityClient.mockReturnValue(makeClient());
     render(<ProjectServicesScreen />);
 
-    expect(await screen.findByText('Credentials')).toBeOnTheScreen();
+    expect(await screen.findByText('Secrets')).toBeOnTheScreen();
     expect(await screen.findByText('Matrix rooms')).toBeOnTheScreen();
     expect(screen.getByLabelText(/^Connect Matrix(,|$)/)).toBeOnTheScreen();
   });

@@ -133,6 +133,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
   });
   const [attendeeConnected, setAttendeeConnected] = useState(false);
   const [mcpCount, setMcpCount] = useState(0);
+  const [dopplerCount, setDopplerCount] = useState(0);
   const [forge, setForge] = useState<ForgeConnectionList | null>(null);
   const [usage, setUsage] = useState<Awaited<
     ReturnType<VerityClient['getConnectionUsage']>
@@ -152,28 +153,40 @@ function ConnectionsView({ client }: { client: VerityClient }) {
         Promise.resolve().then(() => client.getConnectionUsage()),
         Promise.resolve().then(() => client.listConnections()),
         Promise.resolve().then(() => client.getAttendeeSettings()),
-      ]).then(([integrations, mcp, googleAccount, connectionUsage, forgeConnections, attendee]) => {
-        if (!active) return;
-        if (forgeConnections.status === 'fulfilled') setForge(forgeConnections.value);
-        setError(
-          integrations.status === 'rejected' ||
-            mcp.status === 'rejected' ||
-            googleAccount.status === 'rejected' ||
-            attendee.status === 'rejected',
-        );
-        if (attendee.status === 'fulfilled') setAttendeeConnected(attendee.value.configured);
-        if (connectionUsage.status === 'fulfilled') setUsage(connectionUsage.value);
-        if (googleAccount.status === 'fulfilled')
-          setGoogle({
-            connected: googleAccount.value.connected,
-            accountEmail: googleAccount.value.accountEmail,
-          });
-        if (integrations.status === 'fulfilled') {
-          const account = integrations.value.accounts.find((item) => item.provider === 'matrix');
-          setMatrix(account ? { connected: true, status: account.status } : { connected: false });
-        }
-        if (mcp.status === 'fulfilled') setMcpCount(mcp.value.length);
-      });
+        Promise.resolve().then(() => client.doppler.listConnections()),
+      ]).then(
+        ([
+          integrations,
+          mcp,
+          googleAccount,
+          connectionUsage,
+          forgeConnections,
+          attendee,
+          doppler,
+        ]) => {
+          if (!active) return;
+          if (doppler.status === 'fulfilled') setDopplerCount(doppler.value.length);
+          if (forgeConnections.status === 'fulfilled') setForge(forgeConnections.value);
+          setError(
+            integrations.status === 'rejected' ||
+              mcp.status === 'rejected' ||
+              googleAccount.status === 'rejected' ||
+              attendee.status === 'rejected',
+          );
+          if (attendee.status === 'fulfilled') setAttendeeConnected(attendee.value.configured);
+          if (connectionUsage.status === 'fulfilled') setUsage(connectionUsage.value);
+          if (googleAccount.status === 'fulfilled')
+            setGoogle({
+              connected: googleAccount.value.connected,
+              accountEmail: googleAccount.value.accountEmail,
+            });
+          if (integrations.status === 'fulfilled') {
+            const account = integrations.value.accounts.find((item) => item.provider === 'matrix');
+            setMatrix(account ? { connected: true, status: account.status } : { connected: false });
+          }
+          if (mcp.status === 'fulfilled') setMcpCount(mcp.value.length);
+        },
+      );
       return () => {
         active = false;
       };
@@ -207,7 +220,10 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       icon: 'cloud',
       subtitle: 'Managed secrets for your projects',
       route: '/settings/services/doppler' as Href,
-      connected: settings?.dopplerServiceTokenConfigured === true,
+      connected: dopplerCount > 0,
+      ...(dopplerCount > 0
+        ? { status: dopplerCount === 1 ? '1 connection' : `${dopplerCount} connections` }
+        : {}),
     },
     {
       title: 'MCP servers',

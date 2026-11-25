@@ -1,5 +1,4 @@
 import { assertBrokeredDopplerBinding } from './brokered-doppler-binding.js';
-import type { DopplerPerson } from './doppler-credential.js';
 import { createHash } from 'node:crypto';
 import type { TrustedCliOutputStore } from './trusted-cli-output.js';
 import {
@@ -13,7 +12,13 @@ import {
   trustedCliRequestSchema,
   type TrustedCliEntryScript,
 } from '@verity/secret-contracts';
-import type { BrokeredHttpProjectBinding, BrokeredToolCall } from './brokered-http-tool.js';
+import {
+  referencedSnapshot,
+  resolveReferencedSecret,
+  type BrokeredHttpProjectBinding,
+  type BrokeredSecretResolver,
+  type BrokeredToolCall,
+} from './brokered-http-tool.js';
 
 export type TrustedCliToolResult = {
   exitCode: number;
@@ -43,15 +48,8 @@ const fatalUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
 export function createTrustedCliTool(options: {
   requireApprovalBinding?: boolean;
   outputStore?: TrustedCliOutputStore;
-  getProjectBinding: (projectId: string) => Promise<BrokeredHttpProjectBinding | undefined>;
-  resolveSecret: (input: {
-    projectId: string;
-    dopplerProject: string;
-    dopplerConfig: string;
-    secretName: string;
-    /** The calling turn; its person's Doppler connection resolves the secret. */
-    person: DopplerPerson;
-  }) => Promise<Uint8Array>;
+  getProjectBindings: (projectId: string) => Promise<readonly BrokeredHttpProjectBinding[]>;
+  resolveSecret: BrokeredSecretResolver;
   consumeApproval: (input: {
     projectId: string;
     sessionId: string;
@@ -88,7 +86,11 @@ export function createTrustedCliTool(options: {
     const request = trustedCliRequestSchema.parse(call.input);
     if (options.requireApprovalBinding && call.approvedBinding === undefined)
       throw new Error('approved Doppler binding is required');
-    const binding = await options.getProjectBinding(projectId);
+    const references = request.secrets.map((entry) => entry.secretAlias);
+    const current = async () =>
+      referencedSnapshot(await options.getProjectBindings(projectId), references);
+    const bindings = await options.getProjectBindings(projectId);
+    const binding = referencedSnapshot(bindings, references);
     assertBrokeredDopplerBinding(binding, call.approvedBinding);
     const requestHash = createHash('sha256')
       .update(canonicalJson({ tool: call.name, request }))
@@ -104,7 +106,7 @@ export function createTrustedCliTool(options: {
     ) {
       throw new Error('trusted CLI approval was already consumed');
     }
-    assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);
+    assertBrokeredDopplerBinding(await current(), binding);
     const resolved: Uint8Array[] = [];
     try {
       const secrets: {
@@ -117,11 +119,9 @@ export function createTrustedCliTool(options: {
       // third secret must not have already started the command with the first two
       // in its environment.
       for (const entry of request.secrets) {
-        const raw = await options.resolveSecret({
+        const raw = await resolveReferencedSecret(options.resolveSecret, bindings, {
           projectId,
-          dopplerProject: binding.dopplerProject,
-          dopplerConfig: binding.dopplerConfig,
-          secretName: entry.secretAlias,
+          reference: entry.secretAlias,
           person: { sessionId, turnId },
         });
         resolved.push(raw);
@@ -158,7 +158,7 @@ export function createTrustedCliTool(options: {
         ...(request.entryScript === undefined ? {} : { entryScript: request.entryScript }),
       };
       const dispatch: typeof execute = async (execution, streamOptions) => {
-        assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);
+        assertBrokeredDopplerBinding(await current(), binding);
         return execute(execution, streamOptions);
       };
       const redactors =

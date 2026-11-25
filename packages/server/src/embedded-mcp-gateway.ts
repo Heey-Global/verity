@@ -1,4 +1,5 @@
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
+import { brokeredSecretReferences, referencedSnapshot } from './brokered-http-tool.js';
 import { join } from 'node:path';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import type { createEmbeddedBrokeredHttp } from './embedded-brokered-http.js';
@@ -16,7 +17,7 @@ import { CONTROL_PLANE_RUNNER_PROJECT_ID } from './embedded-support.js';
 
 type EmbeddedMcpGatewayContext = Pick<
   ReturnType<typeof createEmbeddedBrokeredHttp>,
-  'getBrokeredProjectBinding' | 'brokeredHttpTool'
+  'getBrokeredProjectBindings' | 'brokeredHttpTool'
 > &
   ReturnType<typeof createEmbeddedTrustedCli> &
   Pick<
@@ -40,7 +41,7 @@ export function createEmbeddedMcpGateway(
   {
     secretAuditLog,
     gatewayRequestMacKeys,
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
     brokeredHttpTool,
     trustedCliTool,
     trustedCliOutput,
@@ -144,11 +145,15 @@ export function createEmbeddedMcpGateway(
             'verity_assistant',
           ]
         : [],
-    authorizationSnapshot: async ({ projectId, toolName }) => {
+    // An approval is bound to the Doppler bindings the call reads from (ADR 0031).
+    authorizationSnapshot: async ({ projectId, toolName, request }) => {
       if (toolName !== 'verity_http_request' && toolName !== 'verity_secret_run') return undefined;
-      const binding = await getBrokeredProjectBinding(projectId);
-      if (binding === undefined) throw new Error('project Doppler binding is unavailable');
-      return JSON.stringify(binding);
+      return JSON.stringify(
+        referencedSnapshot(
+          await getBrokeredProjectBindings(projectId),
+          brokeredSecretReferences(toolName, request),
+        ),
+      );
     },
     resolveCaller: (input) => Promise.resolve(mcpGatewayTokens.resolve(input)),
     ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined

@@ -1164,9 +1164,15 @@ describe('managed dev servers', () => {
   });
 
   it('keeps the displayed provider fixed and requires a new confirmation after a conflict', async () => {
-    const providerSnapshot = { provider: 'doppler' as const, project: 'demo', config: 'staging' };
+    const snapshot = { provider: 'doppler' as const, project: 'p', config: 'c', authority: 'a' };
     const secretBindings = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }];
-    let server = demo({ approved: false, instance: null, secretBindings, providerSnapshot });
+    const instance = {
+      ...demo().instance!,
+      state: 'crashed',
+      desired: 'stopped',
+      url: null,
+    } as const;
+    let server = demo({ approved: false, instance, secretBindings, providerSnapshot: snapshot });
     const listManagedDevServers = jest.fn(async () => [server]);
     const approveManagedDevServer = jest
       .fn<
@@ -1176,46 +1182,40 @@ describe('managed dev servers', () => {
       .mockRejectedValueOnce(
         new Error('The secret provider changed. Refresh and review it again.'),
       );
-    const setManagedDevServerLocal = jest.fn(async () => demo());
+    const controlManagedDevServer = jest.fn(async () => demo());
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
     renderSheet(
       managedClient([server], {
         listManagedDevServers,
         approveManagedDevServer,
-        setManagedDevServerLocal,
+        controlManagedDevServer,
       }),
     );
-    fireEvent.press(await screen.findByRole('switch', { name: 'Local for Curtis Demo' }));
+    fireEvent.press(await screen.findByRole('button', { name: /Curtis Demo, Crashed/u }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Start again' }));
     await waitFor(() => expect(alert).toHaveBeenCalledTimes(1));
-    expect(alert.mock.calls[0]?.[1]).toContain('demo / staging');
-    server = demo({
-      approved: false,
-      instance: null,
-      secretBindings,
-      providerSnapshot: { ...providerSnapshot, config: 'production' },
-    });
+    expect(alert.mock.calls[0]?.[1]).toContain('p / c');
+    // The visible project and config can stay the same after a connection changes.
+    server = { ...server, providerSnapshot: { ...snapshot, authority: 'b' } };
     await act(async () =>
-      alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Allow')?.onPress?.(),
+      alert.mock.calls[0]?.[2]?.find((button) => button.text === 'Allow and start')?.onPress?.(),
     );
     expect(
       await screen.findByText('The secret provider changed. Refresh and review it again.'),
     ).toBeTruthy();
-    expect(approveManagedDevServer.mock.calls[0]).toEqual([
-      'session-one',
-      'srv-1',
-      { command: server.command, workdir: server.workdir, secretBindings, providerSnapshot },
-      {},
-    ]);
-    expect(setManagedDevServerLocal).not.toHaveBeenCalled();
+    expect(approveManagedDevServer.mock.calls[0]?.[2]).toMatchObject({
+      providerSnapshot: snapshot,
+    });
+    expect(controlManagedDevServer).not.toHaveBeenCalled();
     await waitFor(() => expect(listManagedDevServers.mock.calls.length).toBeGreaterThan(1));
     expect(approveManagedDevServer).toHaveBeenCalledTimes(1);
-    fireEvent.press(screen.getByRole('switch', { name: 'Local for Curtis Demo' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Start again' }));
     await waitFor(() => expect(alert).toHaveBeenCalledTimes(2));
-    expect(alert.mock.calls[1]?.[1]).toContain('demo / production');
+    expect(alert.mock.calls[1]?.[1]).toContain('p / c');
     await act(async () =>
-      alert.mock.calls[1]?.[2]?.find((button) => button.text === 'Allow')?.onPress?.(),
+      alert.mock.calls[1]?.[2]?.find((button) => button.text === 'Allow and start')?.onPress?.(),
     );
-    await waitFor(() => expect(setManagedDevServerLocal).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(controlManagedDevServer).toHaveBeenCalledTimes(1));
     expect(approveManagedDevServer.mock.calls[1]?.[2]).toEqual(
       expect.objectContaining({ providerSnapshot: server.providerSnapshot }),
     );

@@ -198,27 +198,50 @@ export interface ExternalPermissionAnswer {
   decidedBy: PermissionDecisionSource;
 }
 
-export function formatBrokeredSecretAliases(secretAliases?: readonly string[]): string {
-  if (secretAliases === undefined || secretAliases.length === 0) return '';
+/** Rotate between bindings when the prompt cannot carry every name. */
+function selectPromptSecretAliases(aliases: readonly string[]): readonly string[] {
+  if (
+    aliases.length <= MAX_PROMPT_SECRET_ALIASES &&
+    Buffer.byteLength(aliases.join(', '), 'utf8') <= MAX_PROMPT_SECRET_ALIAS_BYTES
+  )
+    return aliases;
+  const groups = new Map<string, string[]>();
+  for (const alias of aliases) {
+    const binding = alias.slice(0, alias.lastIndexOf('/') + 1);
+    const group = groups.get(binding);
+    if (group) group.push(alias);
+    else groups.set(binding, [alias]);
+  }
   const included: string[] = [];
   let bytes = 0;
-  for (const alias of secretAliases) {
-    const addedBytes = Buffer.byteLength(`${included.length === 0 ? '' : ', '}${alias}`, 'utf8');
-    if (
-      included.length >= MAX_PROMPT_SECRET_ALIASES ||
-      bytes + addedBytes > MAX_PROMPT_SECRET_ALIAS_BYTES
-    ) {
-      break;
+  for (let round = 0; groups.size > 0; round++) {
+    for (const [binding, group] of groups) {
+      const alias = group[round]!;
+      if (round + 1 === group.length) groups.delete(binding);
+      const addedBytes = Buffer.byteLength(alias, 'utf8') + (included.length === 0 ? 0 : 2);
+      if (bytes + addedBytes > MAX_PROMPT_SECRET_ALIAS_BYTES) continue;
+      included.push(alias);
+      bytes += addedBytes;
+      if (included.length === MAX_PROMPT_SECRET_ALIASES) return included;
     }
-    included.push(alias);
-    bytes += addedBytes;
   }
+  return included;
+}
+
+export function formatBrokeredSecretAliases(secretAliases?: readonly string[]): string {
+  if (secretAliases === undefined || secretAliases.length === 0) return '';
+  const included = selectPromptSecretAliases(secretAliases);
   const omitted = secretAliases.length - included.length;
   // "Only these names", not "only one name": a trusted CLI run carries up to
   // MAX_TRUSTED_CLI_SECRETS of them and a JWT request resolves a claim source
   // per alias, so a one-alias reading would send the agent back to packing
   // several credentials into a single Doppler value.
-  return `\n\nSecret names available in this project: ${included.join(', ')}${omitted > 0 ? ` (${omitted} more omitted)` : ''}. Every \`secretAlias\` must be one of the listed names; a call may reference more than one of them, but never guess a name that is not listed.`;
+  // Several Doppler bindings (ADR 0031): bare names are the default config's, the
+  // others carry their binding in front and must be written exactly so.
+  const bindings = included.some((alias) => alias.includes('/'))
+    ? ' Bare names come from the default Doppler config; `project/config/NAME` names come from that other Doppler project and config and must be written in full.'
+    : '';
+  return `\n\nSecret names available in this project: ${included.join(', ')}${omitted > 0 ? ` (${omitted} more omitted)` : ''}. Every \`secretAlias\` must be one of the listed names; a call may reference more than one of them, but never guess a name that is not listed.${bindings}`;
 }
 
 /**

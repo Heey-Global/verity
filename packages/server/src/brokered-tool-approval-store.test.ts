@@ -334,3 +334,21 @@ it('recovers a saved decision with no transcript card and deduplicates concurren
   ).toHaveLength(1);
   await ctx.store.waitForMessageProjectionIdle();
 });
+
+it('lets a decision on the current snapshot supersede a legacy denial', async () => {
+  const legacySnapshot = '{"binding":"legacy"}';
+  const legacy = await store.createOrFindPending({
+    ...input,
+    authorizationSnapshot: legacySnapshot,
+  });
+  await store.decide(legacy.id, 'session', false, 'manager');
+  const current = await store.createOrFindPending({ ...input, invocationId: 'current' });
+  await store.decide(current.id, 'session', true, 'manager');
+  // Returning the legacy denial here hid the approval the person just gave.
+  expect(
+    await store.createOrFindPending({ ...input, invocationId: 'retry' }, undefined, legacySnapshot),
+  ).toMatchObject({ id: current.id, status: 'approved' });
+  expect(
+    await store.findStandingAuthorizationBlock(input, 'retry', undefined, legacySnapshot),
+  ).toBeUndefined();
+});

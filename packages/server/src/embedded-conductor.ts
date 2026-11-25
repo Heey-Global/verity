@@ -20,6 +20,13 @@ import { readOrMigrateProjectOverview } from './project-overview-file.js';
 import { projectDecisionDirectory } from './knowledge-decisions.js';
 import { branchRenameAppliesToSession } from './embedded-support.js';
 import { personForCredential } from './personless-credential.js';
+import { brokeredGrantReferences } from './brokered-grant-references.js';
+import {
+  brokeredDopplerBindingId,
+  brokeredDopplerSnapshotApplies,
+  brokeredGrantBindingApplies,
+  tryParseBrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
 import { resolveTurnSandbox } from './turn-sandbox.js';
 import { sandboxPersonTag } from './sandbox-identity.js';
 
@@ -31,7 +38,8 @@ export function createEmbeddedConductorBindings(ctx: {
   sessionStorage: Pick<SessionStorage, 'ensureWorkspace'> | undefined;
   transcriptStore: ConductorDeps['transcript'];
   brokeredSecretAliases: ConductorDeps['brokeredSecretAliases'];
-  brokeredGrantBindingId: RunnerContext['brokeredGrantBindingId'];
+  brokeredGrantBindingIds: (projectId: string) => Promise<ReadonlySet<string>>;
+  brokeredGrantBindingIdFor: RunnerContext['brokeredGrantBindingIdFor'];
   brokeredHttpGrants: Pick<ReturnType<typeof createBrokeredHttpGrantStore>, 'check' | 'grant'>;
   branches: ReturnType<typeof createEmbeddedBranches>;
   purgeRunnerArtifacts: ReturnType<typeof createRunnerArtifactPurge> | undefined;
@@ -57,7 +65,8 @@ export function createEmbeddedConductorBindings(ctx: {
     sessionStorage,
     transcriptStore,
     brokeredSecretAliases,
-    brokeredGrantBindingId,
+    brokeredGrantBindingIds,
+    brokeredGrantBindingIdFor,
     brokeredHttpGrants,
     branches,
     purgeRunnerArtifacts,
@@ -116,27 +125,47 @@ export function createEmbeddedConductorBindings(ctx: {
     brokeredSecretAliases,
     // ADR 0011 D2: scoped operator grants auto-approve matching brokered-secret prompts.
     checkBrokeredHttpGrant: async (input) => {
-      const bindingId = await brokeredGrantBindingId(input.projectId);
-      return bindingId === undefined ||
-        (input.bindingId !== undefined && input.bindingId !== bindingId)
+      const fallbackGrantBindingId = async (call: typeof input) => {
+        const references = brokeredGrantReferences(call.toolName, call.request, call.secretAlias);
+        return references && brokeredGrantBindingIdFor(call.projectId, references);
+      };
+      // A grant is per Doppler binding (ADR 0031): the call's own binding id when the
+      // gateway supplied it, else the one its references read from now.
+      const approved =
+        input.bindingId === undefined ? undefined : tryParseBrokeredDopplerBinding(input.bindingId);
+      const bindingId =
+        approved !== undefined
+          ? brokeredDopplerBindingId(approved)
+          : (input.bindingId ?? (await fallbackGrantBindingId(input)));
+      const applies =
+        approved === undefined
+          ? bindingId !== undefined &&
+            brokeredGrantBindingApplies(bindingId, await brokeredGrantBindingIds(input.projectId))
+          : brokeredDopplerSnapshotApplies(
+              approved,
+              await eventStore.projectDopplerBindings.list(input.projectId),
+            );
+      return bindingId === undefined || !applies
         ? false
         : brokeredHttpGrants.check({
             ...input,
             // Work without a person holds the original sandbox's person's grants,
             // only where personless-credential.ts allows it at all.
             userId: await personForCredential(eventStore, input.projectId, input.userId),
-            bindingId: input.bindingId ?? bindingId,
+            bindingId,
           });
     },
     persistBrokeredHttpGrant: async (input) => {
-      const bindingId = await brokeredGrantBindingId(input.projectId);
-      if (
-        bindingId === undefined ||
-        (input.bindingId !== undefined && input.bindingId !== bindingId)
-      ) {
+      // The approval snapshot identifies the exact binding rows before the card waits.
+      const approvedBinding =
+        input.bindingId === undefined ? undefined : tryParseBrokeredDopplerBinding(input.bindingId);
+      if (approvedBinding === undefined)
         throw new Error('Doppler access changed before saving approval');
-      }
-      await brokeredHttpGrants.grant({ ...input, bindingId: input.bindingId ?? bindingId });
+      await brokeredHttpGrants.grant({
+        ...input,
+        bindingId: brokeredDopplerBindingId(approvedBinding),
+        approvedBinding,
+      });
     },
     // Auto-name an unnamed session from its opening turn: the conductor derives a
     // 2–3 word title from the first chat using the session's OWN model (routed via

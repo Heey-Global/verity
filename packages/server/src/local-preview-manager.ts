@@ -1,3 +1,4 @@
+import { ManagedPreviewAuthorityError, managedRunApproved } from './managed-dev-server-secrets.js';
 import { localTargetConfirmedMissing } from './local-preview-activity.js';
 import {
   PreviewNetworkProtectionError,
@@ -653,13 +654,7 @@ export class LocalPreviewManager {
         }
         if (
           instance.desired !== 'running' ||
-          !instance.lastRunCommand ||
-          !instance.lastRunWorkdir ||
-          !(await this.options.store.managedDevServers.isApproved(
-            instance.serverId,
-            instance.lastRunCommand,
-            instance.lastRunWorkdir,
-          ))
+          !(await managedRunApproved(this.options.store, instance))
         ) {
           this.unverifiedTargets.delete(saved.id);
           continue;
@@ -679,6 +674,7 @@ export class LocalPreviewManager {
             ...(saved.targetPort === null ? {} : { targetPort: saved.targetPort }),
             ...(saved.staticPath === null ? {} : { staticPath: saved.staticPath }),
             networkPort: saved.networkPort,
+            ...(saved.managedInstanceId ? { managedInstanceId: saved.managedInstanceId } : {}),
           },
           saved,
         );
@@ -748,13 +744,7 @@ export class LocalPreviewManager {
         if (
           instance.desired !== 'running' ||
           instance.sandboxPort !== state.share.targetPort ||
-          !instance.lastRunCommand ||
-          !instance.lastRunWorkdir ||
-          !(await this.options.store.managedDevServers.isApproved(
-            instance.serverId,
-            instance.lastRunCommand,
-            instance.lastRunWorkdir,
-          ))
+          !(await managedRunApproved(this.options.store, instance))
         ) {
           this.unverifiedTargets.delete(state.share.id);
           await this.release(state.share.id);
@@ -778,14 +768,14 @@ export class LocalPreviewManager {
           this.reserved.add(state.port);
           continue;
         }
-        await this.targets.prepareLocalTarget(state.share.sessionId, {
+        const target = await this.targets.prepareLocalTarget(state.share.sessionId, {
           ...(state.share.targetPort === null ? {} : { targetPort: state.share.targetPort }),
           ...(state.share.staticPath === null ? {} : { staticPath: state.share.staticPath }),
           ...(saved?.managedInstanceId ? { managedInstanceId: saved?.managedInstanceId } : {}),
         });
         if (state.share.targetPort !== null) {
           const preparedPort =
-            (await this.options.prepareTargetPort?.(project, state.share.targetPort)) ??
+            (await this.options.prepareTargetPort?.(target.project, state.share.targetPort)) ??
             state.share.targetPort;
           if (preparedPort !== state.preparedPort) {
             await this.release(state.share.id);
@@ -796,6 +786,12 @@ export class LocalPreviewManager {
         delete state.missingSince;
         this.unverifiedTargets.delete(state.share.id);
       } catch (error) {
+        if (error instanceof ManagedPreviewAuthorityError) {
+          this.unverifiedTargets.delete(state.share.id);
+          await this.release(state.share.id);
+          this.reserved.add(state.port);
+          continue;
+        }
         if (error instanceof PreviewNetworkProtectionError) {
           await this.stop(state.share.id);
           continue;
