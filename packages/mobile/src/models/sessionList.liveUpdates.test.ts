@@ -94,12 +94,19 @@ describe('SessionListModel.applyHints', () => {
       now += 250;
       await vi.advanceTimersByTimeAsync(250);
     }
-    // 5 s of streaming: the first hint reloads at once, the rest wait for the
+    // 5 s of streaming right after the initial read: the hints wait for the
     // spacing to elapse instead of re-reading the list 20 times.
-    expect(listSessions).toHaveBeenCalledTimes(2);
+    expect(listSessions).toHaveBeenCalledTimes(1);
 
     now += 5_000;
     await vi.advanceTimersByTimeAsync(5_000);
+    expect(listSessions).toHaveBeenCalledTimes(2);
+
+    // Once the spacing has passed since the last read, growth reloads at once.
+    now += 10_000;
+    await vi.advanceTimersByTimeAsync(10_000);
+    model.applyHints([{ sessionId: 's1', topics: ['events'] }]);
+    await vi.advanceTimersByTimeAsync(0);
     expect(listSessions).toHaveBeenCalledTimes(3);
     model.stop();
   });
@@ -116,8 +123,10 @@ describe('SessionListModel.applyHints', () => {
     await vi.advanceTimersByTimeAsync(0);
     model.applyHints([{ sessionId: 's1', topics: ['events'] }]);
     await vi.advanceTimersByTimeAsync(0);
-    expect(listSessions).toHaveBeenCalledTimes(2);
+    // Transcript growth right after a read waits for the spacing…
+    expect(listSessions).toHaveBeenCalledTimes(1);
 
+    // …but anything else reloads at once.
     for (const topic of ['status', 'permission', 'session'] as const) {
       const before = listSessions.mock.calls.length;
       model.applyHints([{ sessionId: 's1', topics: ['events', topic] }]);

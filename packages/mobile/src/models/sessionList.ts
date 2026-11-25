@@ -566,8 +566,6 @@ export class SessionListModel {
       hints.some((hint) => hint.deleted === true || hint.topics.some((t) => t !== 'events'));
     if (urgent) {
       this.cancelEventsRefresh();
-      // This read also carries the transcript growth seen so far.
-      this.lastEventsRefreshAt = (this.opts.now ?? Date.now)();
       this.poll?.();
       return;
     }
@@ -580,7 +578,6 @@ export class SessionListModel {
     const wait = this.lastEventsRefreshAt + spacing - (this.opts.now ?? Date.now)();
     const run = (): void => {
       this.eventsRefreshTimer = undefined;
-      this.lastEventsRefreshAt = (this.opts.now ?? Date.now)();
       this.poll?.();
     };
     if (wait <= 0) run();
@@ -609,6 +606,9 @@ export class SessionListModel {
         return;
       }
       inFlight = true;
+      // Every list read carries the transcript growth seen so far, so it also
+      // restarts the spacing of reloads that only report such growth.
+      this.lastEventsRefreshAt = (this.opts.now ?? Date.now)();
       void this.refresh({ silent: true }).finally(() => {
         inFlight = false;
         if (again && this.poll === poll) {

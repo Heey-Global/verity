@@ -116,10 +116,13 @@ export function registerTrafficLedger(app: FastifyInstance, ledger: TrafficLedge
     const route = request.routeOptions.url;
     if (entry !== undefined && route !== undefined) {
       const socketBytes = request.raw.socket?.bytesWritten;
+      const notModified = reply.statusCode === 304;
       ledger.record(`${request.method} ${route}`, {
-        bodyBytes: entry.bodyBytes,
+        // A route-level hook can still turn the serialized body into a bodiless
+        // 304 after the global onSend saw it; those bytes were never sent.
+        bodyBytes: notModified ? 0 : entry.bodyBytes,
         wireBytes: socketBytes === undefined ? 0 : Math.max(0, socketBytes - entry.socketBytes),
-        notModified: reply.statusCode === 304,
+        notModified,
       });
     }
     done();

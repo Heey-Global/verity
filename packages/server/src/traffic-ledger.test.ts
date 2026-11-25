@@ -9,10 +9,17 @@ describe('TrafficLedger', () => {
     const app = Fastify();
     registerTrafficLedger(app, ledger);
     app.get('/sessions/:id/branches', async () => ({ branches: ['main'] }));
-    app.get('/cached', async (_request, reply) => {
-      reply.code(304);
-      return '';
-    });
+    // Like conditionalJsonOnSend: a route-level hook empties a serialized body.
+    app.get(
+      '/cached',
+      {
+        onSend: (_request, reply, _payload, done) => {
+          reply.code(304);
+          done(null, '');
+        },
+      },
+      async () => ({ large: 'x'.repeat(1_000) }),
+    );
     await app.ready();
     await app.inject({ method: 'GET', url: '/sessions/secret-id/branches' });
     await app.inject({ method: 'GET', url: '/sessions/other/branches' });
@@ -25,7 +32,10 @@ describe('TrafficLedger', () => {
       bodyBytes: 2 * Buffer.byteLength('{"branches":["main"]}'),
       notModified: 0,
     });
-    expect(entries.find((entry) => entry.key === 'GET /cached')?.tally.notModified).toBe(1);
+    expect(entries.find((entry) => entry.key === 'GET /cached')?.tally).toMatchObject({
+      notModified: 1,
+      bodyBytes: 0,
+    });
     expect(JSON.stringify(entries)).not.toContain('secret-id');
     // Draining starts a new window.
     expect(ledger.drain()).toEqual([]);

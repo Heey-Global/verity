@@ -29,7 +29,8 @@ export function isConditionalReadPath(path: string): boolean {
   return CONDITIONAL_PATH.test(path);
 }
 
-/** Forget every remembered body, e.g. after signing out. */
+/** Forget every remembered body. Entries are keyed by credential, so this is
+ * hygiene (tests, memory), not a correctness requirement. */
 export function clearConditionalReads(): void {
   remembered.clear();
 }
