@@ -714,6 +714,14 @@ migrations['0243_managed_dev_server_run_authority'] = {
     );
   },
   async down(db: Kysely<unknown>): Promise<void> {
+    // During a sandbox handoff only this column names the sandbox whose process
+    // still holds injected secrets; the previous version would never stop it.
+    const pending = await sql<{ id: string }>`select id from managed_dev_server_instances
+      where previous_run_sandbox_user_id is not null limit 1`.execute(db);
+    if (pending.rows.length > 0)
+      throw new Error(
+        'Cannot downgrade while a managed dev server still has to stop its previous run. Stop the managed dev servers first.',
+      );
     await sql`alter table managed_dev_server_instances drop column last_run_provider_authority, drop column previous_run_sandbox_user_id`.execute(
       db,
     );

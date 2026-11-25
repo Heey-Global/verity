@@ -80,6 +80,19 @@ export async function isManagedSandboxRunning(
   }
 }
 
+/** Stops a managed process unless its sandbox is confirmed gone. A deleted
+ * sandbox has no process left to stop, so retrying it could never succeed and
+ * would keep the instance marked running. */
+export async function stopManagedServerUnlessGone(
+  options: Pick<ManagedDevServerManagerOptions, 'runtime' | 'sandboxRunning'>,
+  target: ProjectRecord,
+  instanceId: string,
+): Promise<void> {
+  await options.runtime.stopManagedServer(target, instanceId).catch(async (error: unknown) => {
+    if ((await options.sandboxRunning?.(target.containerName)) !== false) throw error;
+  });
+}
+
 export async function stopPreviousManagedRun(
   options: Pick<ManagedDevServerManagerOptions, 'store' | 'runtime' | 'sandboxRunning'>,
   instance: ManagedDevServerInstanceRecord,
@@ -87,9 +100,7 @@ export async function stopPreviousManagedRun(
 ): Promise<ManagedDevServerInstanceRecord> {
   if (instance.previousRunSandboxUserId == null) return instance;
   const target = await inSandbox(instance.previousRunSandboxUserId || null);
-  await options.runtime.stopManagedServer(target, instance.id).catch(async (error: unknown) => {
-    if ((await options.sandboxRunning?.(target.containerName)) !== false) throw error;
-  });
+  await stopManagedServerUnlessGone(options, target, instance.id);
   return (
     (await options.store.managedDevServers.updateInstance(instance.id, {
       previousRunSandboxUserId: null,
