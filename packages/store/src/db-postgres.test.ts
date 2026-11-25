@@ -717,7 +717,9 @@ describe('isPostgresConnectionClassError', () => {
   // saturated, not that the database went away. Read as an outage, one burst of contention
   // would put callers into the wait-for-the-database paths instead of failing one request.
   it('does not excuse a checkout that timed out in a saturated pool', () => {
-    const poolSource = readFileSync(createRequire(import.meta.url).resolve('pg-pool'), 'utf8');
+    // pg-pool is pg's dependency, not ours: resolve it the way pg does.
+    const fromPg = createRequire(createRequire(import.meta.url).resolve('pg'));
+    const poolSource = readFileSync(fromPg.resolve('pg-pool'), 'utf8');
     const message = /new Error\('(timeout exceeded[^']*)'\)/.exec(poolSource)?.[1];
     expect(message).toBeDefined();
     expect(isPostgresConnectionClassError(new Error(message))).toBe(false);
