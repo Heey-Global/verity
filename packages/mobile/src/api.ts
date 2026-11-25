@@ -149,9 +149,9 @@ export interface TransportRequestInit extends RequestInit {
 }
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
-  // Conversation reads and model picking must not queue behind slow background reads.
+  // Conversation, model picking and the project page must not queue behind slow reads.
   return pathname === '/assistant/conversation' ||
-    /^\/(?:sessions|projects|models)$/u.test(pathname) ||
+    /^\/(?:sessions|projects(?:\/[^/]+)?|models)$/u.test(pathname) ||
     /^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/u.test(pathname)
     ? 'interactive'
     : 'background';
