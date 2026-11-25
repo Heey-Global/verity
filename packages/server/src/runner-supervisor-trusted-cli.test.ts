@@ -18,6 +18,7 @@ import {
   runSupervisor,
   supervisorRequest,
 } from './runner-supervisor-feature.test-helper.js';
+import { createTrustedCliTool } from './trusted-cli-tool.js';
 
 let runtimeDir: string;
 beforeEach(async () => {
@@ -557,13 +558,30 @@ describe('verity-runner supervisor runtime', () => {
           protocolVersion: 1,
           kind: 'run-trusted-cli',
           turnId,
-          secrets: [{ secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'never-forwarded' }],
+          secrets: [
+            { secretAlias: 'API_KEY', env: 'CLI_SECRET', secret: 'never-forwarded' },
+            {
+              secretAlias: 'billing-service/stg_restore/TOKEN',
+              env: 'TOKEN_FILE',
+              secret: 'synthetic',
+              injection: 'file',
+            },
+          ],
           command: ['/bin/true'],
         }),
       ).resolves.toMatchObject({
         ok: false,
         error: 'trusted CLI turn capability is no longer active',
       });
+      await expect(
+        supervisorRequest(supervisor.socketPath, {
+          protocolVersion: 1,
+          kind: 'run-trusted-cli',
+          turnId,
+          secrets: [{ secretAlias: 'billing-service//TOKEN', env: 'TOKEN', secret: 'synthetic' }],
+          command: ['/bin/true'],
+        }),
+      ).resolves.toMatchObject({ ok: false, error: 'invalid trusted CLI request' });
     } finally {
       await supervisor.close();
     }
@@ -614,6 +632,69 @@ describe('verity-runner supervisor runtime', () => {
       await expect(
         readFile(join(runtimeDir, 'turns', turnId, 'request.json'), 'utf8'),
       ).rejects.toMatchObject({ code: 'ENOENT' });
+      const defaultSecret = 'token: plötzlich/größer\n';
+      const qualifiedSecret = 'token from the secondary binding';
+      const resolveSecret = vi.fn(async ({ connectionId }: { connectionId: string }) =>
+        Buffer.from(connectionId === 'platform' ? defaultSecret : qualifiedSecret),
+      );
+      const tool = createTrustedCliTool({
+        getProjectBindings: async () => [
+          {
+            id: 'default-binding',
+            connectionId: 'platform',
+            dopplerProject: 'platform',
+            dopplerConfig: 'prod',
+            isDefault: true,
+          },
+          {
+            id: 'secondary-binding',
+            connectionId: 'billing',
+            dopplerProject: 'billing-service',
+            dopplerConfig: 'stg_restore',
+            isDefault: false,
+          },
+        ],
+        resolveSecret,
+        consumeApproval: async () => true,
+      });
+      const defaultHash = createHash('sha256').update(defaultSecret).digest('hex');
+      const qualifiedHash = createHash('sha256').update(qualifiedSecret).digest('hex');
+      await expect(
+        tool(
+          'project-1',
+          'session-trusted-cli-live-acp-turn',
+          turnId,
+          {
+            id: 'mixed-bindings',
+            name: 'verity_secret_run',
+            input: {
+              secrets: [
+                { secretAlias: 'KUBECONFIG', env: 'KUBECONFIG', injection: 'file' },
+                {
+                  secretAlias: 'billing-service/stg_restore/TOKEN',
+                  env: 'TOKEN_FILE',
+                  injection: 'file',
+                },
+              ],
+              command: [
+                '/bin/sh',
+                '-c',
+                `test "$(sha256sum "$KUBECONFIG" | cut -d ' ' -f 1)" = "${defaultHash}" || exit 23; test "$(sha256sum "$TOKEN_FILE" | cut -d ' ' -f 1)" = "${qualifiedHash}" || exit 24; cat "$KUBECONFIG"; cat "$TOKEN_FILE" >&2`,
+              ],
+            },
+          },
+          (input, options) => runSupervisorTrustedCli(runtimeDir, input, options),
+        ),
+      ).resolves.toMatchObject({
+        exitCode: 0,
+        stdout: '[REDACTED]',
+        stderr: '[REDACTED]',
+      });
+      expect(resolveSecret.mock.calls.map(([request]) => request.connectionId)).toEqual([
+        'platform',
+        'billing',
+      ]);
+
       await expect(
         supervisorRequest(supervisor.socketPath, {
           protocolVersion: 1,
@@ -627,32 +708,6 @@ describe('verity-runner supervisor runtime', () => {
         exitCode: 0,
         stdout: expect.stringMatching(/^uid=/u),
         stderr: '',
-      });
-      // Exercise the production client too: a lost encoding marker at that
-      // boundary can leave the broker-only tests green.
-      const fileSecret = 'token: plötzlich/größer\n';
-      await expect(
-        runSupervisorTrustedCli(runtimeDir, {
-          turnId,
-          secrets: [
-            {
-              secretAlias: 'KUBECONFIG',
-              env: 'KUBECONFIG',
-              injection: 'file',
-              encoding: 'base64',
-              secret: Buffer.from(fileSecret).toString('base64'),
-            },
-          ],
-          command: [
-            '/bin/sh',
-            '-c',
-            `test "$(sha256sum "$KUBECONFIG" | cut -d ' ' -f 1)" = "${createHash('sha256').update(fileSecret).digest('hex')}" || exit 23; cat "$KUBECONFIG"; cat "$KUBECONFIG" >&2`,
-          ],
-        }),
-      ).resolves.toMatchObject({
-        exitCode: 0,
-        stdout: '[REDACTED]',
-        stderr: '[REDACTED]',
       });
       const output: Buffer[] = [];
       const streamed = await runSupervisorTrustedCli(
