@@ -404,7 +404,11 @@ export class SessionListModel {
         ...session,
         ...(session.pendingPermissions === undefined ? {} : { pendingPermissions }),
         ...(requestsChanged ? { pendingPermissionRequests: requests } : {}),
-        ...(session.permissionAwaitingInput === true && pendingPermissions.length === 0
+        // Detached requests may be listed only as descriptors; the session waits
+        // until neither list holds anything.
+        ...(session.permissionAwaitingInput === true &&
+        pendingPermissions.length === 0 &&
+        (requests ?? session.pendingPermissionRequests ?? []).length === 0
           ? { status: 'running' as const, permissionAwaitingInput: undefined }
           : {}),
       };
@@ -562,6 +566,8 @@ export class SessionListModel {
       hints.some((hint) => hint.deleted === true || hint.topics.some((t) => t !== 'events'));
     if (urgent) {
       this.cancelEventsRefresh();
+      // This read also carries the transcript growth seen so far.
+      this.lastEventsRefreshAt = (this.opts.now ?? Date.now)();
       this.poll?.();
       return;
     }

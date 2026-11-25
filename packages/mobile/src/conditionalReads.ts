@@ -18,8 +18,10 @@ interface Remembered {
 
 const remembered = new Map<string, Remembered>();
 
+/** Normalize any HeadersInit to a lower-case record, so the credential is
+ * found and forwarded whatever shape the caller passed. */
 function headerRecord(init: RequestInit | undefined): Record<string, string> {
-  return { ...(init?.headers as Record<string, string> | undefined) };
+  return Object.fromEntries(new Headers(init?.headers).entries());
 }
 
 /** Whether a request path takes part in conditional reads. Exported for tests. */
