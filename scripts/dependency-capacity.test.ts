@@ -118,9 +118,42 @@ describe('dependency copy capacity admission', () => {
         statSync(join(tree, 'file')).blocks * 512 +
         lstatSync(join(tree, 'outside')).blocks * 512,
     );
+    const withinBudget = JSON.parse(
+      probe(
+        `console.log(JSON.stringify(s.measureTrees([process.argv[1]], {
+        recoveryBudget: {remaining: ${result.allocatedBytes}, added: 0, budget: ${result.allocatedBytes}}
+      })));`,
+        [tree],
+      ),
+    ) as typeof result;
+    expect(withinBudget).toEqual(result);
     expect(() => probe(`await s.measureTrees([process.argv[1]],{entries:2});`, [tree])).toThrow(
       /inventory is incomplete/u,
     );
+  });
+
+  it('refuses a proven recovery overflow before reaching the traversal cap', () => {
+    const f = fixture();
+    const tree = join(f.worktree, 'over-budget');
+    const content = Buffer.alloc(8192, 1);
+    writeFileSync(tree, content);
+    const tail = join(f.worktree, 'beyond-cap');
+    writeFileSync(tail, 'preserved tail');
+    const allocated = statSync(tree).blocks * 512;
+    expect(allocated).toBeGreaterThan(0);
+    expect(() =>
+      probe(
+        `s.measureTrees([process.argv[1], process.argv[2]], {
+        entries: 1, phase: 'retained recovery trees',
+        recoveryBudget: {remaining: 0, added: 4096, budget: 4096}
+      });`,
+        [tree, tail],
+      ),
+    ).toThrow(
+      `Dependency recovery budget exceeded: at least ${allocated} retained bytes plus 4096 newly preserved bytes exceed the 4096-byte measured installation allowance.`,
+    );
+    expect(readFileSync(tree)).toEqual(content);
+    expect(readFileSync(tail, 'utf8')).toBe('preserved tail');
   });
 
   it('finishes metadata traversal when per-file Node calls would exhaust the deadline', () => {
@@ -378,6 +411,9 @@ describe('dependency copy capacity admission', () => {
     const preserved = join(f.root, '.git/worktrees/test/verity-dependencies-preserved');
     mkdirSync(join(preserved, 'existing'), { recursive: true });
     writeFileSync(join(preserved, 'existing', 'patch'), Buffer.alloc(64 * 1024, 2));
+    // Large recovery histories must still activate a larger prepared replacement.
+    for (let index = 0; index < 10_000; index++)
+      writeFileSync(join(preserved, 'existing', `empty-${index}`), '');
     // This identity has not been prepared: its larger allowance is only known after npm.
     const packages = Object.fromEntries(
       Array.from({ length: 100 }, (_, index) => [
@@ -398,7 +434,8 @@ describe('dependency copy capacity admission', () => {
     expect(recovery).toHaveLength(1);
     expect(readFileSync(join(preserved, recovery[0]!, 'patch')).length).toBe(64 * 1024);
     expect(readFileSync(join(preserved, 'existing', 'patch')).length).toBe(64 * 1024);
-  });
+    expect(readdirSync(join(preserved, 'existing'))).toHaveLength(10_001);
+  }, 60_000);
 
   it('pauses additional replacement when recovery consumes its measured allowance', () => {
     const f = fixture();
@@ -413,7 +450,7 @@ describe('dependency copy capacity admission', () => {
     writeFileSync(join(f.worktree, 'package-lock.json'), lock('3.0.0'));
     const result = f.run('install');
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('Dependency recovery budget exceeded');
+    expect(result.stderr).toContain('Dependency recovery budget exceeded: at least ');
     // An unknown replacement must be prepared before its recovery allowance is known.
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(2);
     expect(readFileSync(join(active, 'patch'), 'utf8')).toBe('unique active edit');

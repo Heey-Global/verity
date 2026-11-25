@@ -260,6 +260,10 @@ async function scanTrees(trees, limits, started) {
             seen.add(key);
             if (!Number.isSafeInteger(bytes) || !Number.isSafeInteger(allocatedBytes))
               throw new Error('Dependency capacity inventory exceeds safe accounting limits.');
+            // A lower bound suffices to refuse recovery growth. Successful
+            // admission still requires every entry to be measured and validated.
+            if (limits.recoveryBudget && allocatedBytes > limits.recoveryBudget.remaining)
+              throw recoveryBudgetError(allocatedBytes, limits.recoveryBudget, true);
           }
           if (pending.length > 128) throw incomplete('metadata record exceeds 128 bytes');
         } catch (error) {
@@ -348,6 +352,12 @@ export function admitCopyDestinations(
   };
 }
 
+function recoveryBudgetError(held, { added, budget }, lowerBound = false) {
+  return new Error(
+    `Dependency recovery budget exceeded: ${lowerBound ? 'at least ' : ''}${held} retained bytes plus ${added} newly preserved bytes exceed the ${budget}-byte measured installation allowance. Resolve the existing recovery copies before replacing dependencies; no recovery data was deleted.`,
+  );
+}
+
 /** At most one measured full installation may accumulate in recovery before replacement pauses. */
 export function recoveryBudget(gitDir, replacementTrees, newlyPreservedTrees) {
   if (newlyPreservedTrees.length === 0) return;
@@ -355,20 +365,20 @@ export function recoveryBudget(gitDir, replacementTrees, newlyPreservedTrees) {
   const exists = lstatSync(preserved, { throwIfNoEntry: false });
   if (exists && (!exists.isDirectory() || realpathSync(preserved) !== preserved))
     throw new Error('Dependency recovery directory is unsafe; no replacement admitted.');
+  const added = measureTrees(newlyPreservedTrees, { phase: 'new recovery trees' }).allocatedBytes;
+  const replacement = measureTrees(replacementTrees, { phase: 'replacement trees' }).bytes;
+  const budget = Math.max(replacement, added);
+  // Determine the allowance before traversing recovery: a history larger than
+  // one installation can exceed the traversal limits before its final size is known.
+  const recovery = { added, budget, remaining: budget - added };
   // The container directory is bookkeeping, not retained installation content.
   const held = exists
     ? measureTrees(
         readdirSync(preserved).map((name) => join(preserved, name)),
-        { phase: 'retained recovery trees' },
+        { phase: 'retained recovery trees', recoveryBudget: recovery },
       ).allocatedBytes
     : 0;
-  const added = measureTrees(newlyPreservedTrees, { phase: 'new recovery trees' }).allocatedBytes;
-  const replacement = measureTrees(replacementTrees, { phase: 'replacement trees' }).bytes;
-  const budget = Math.max(replacement, added);
-  if (held + added > budget)
-    throw new Error(
-      `Dependency recovery budget exceeded: ${held} retained bytes plus ${added} newly preserved bytes exceed the ${budget}-byte measured installation allowance. Resolve the existing recovery copies before replacing dependencies; no recovery data was deleted.`,
-    );
+  if (held > recovery.remaining) throw recoveryBudgetError(held, recovery);
 }
 
 const LEASE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
