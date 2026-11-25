@@ -192,11 +192,13 @@ describe('project state writers', () => {
     const silent: string[] = [];
     for (const { file, text } of sources) {
       for (const method of methodsOf(text)) {
-        if (!/updateTable\('projects'\)[\s\S]*?\.set\(\{[^}]*\bstate\b[,:]/u.test(method.body)) {
+        if (!/updateTable\('projects'\)\s*\.set\(\{[\s\S]*?\bstate\b\s*[,:}]/u.test(method.body)) {
           continue;
         }
         if (`${file} ${method.name}` in exempt || file in exempt) continue;
-        if (!method.body.includes('changes?.announce(')) silent.push(`${file} ${method.name}`);
+        if (!/\b(?:changes|projectChanges)\??\.announce\(/u.test(method.body)) {
+          silent.push(`${file} ${method.name}`);
+        }
       }
     }
     expect(silent).toEqual([]);
@@ -225,10 +227,13 @@ function listSources(dir: string): string[] {
   });
 }
 
-/** Class methods and functions, split at their declarations. */
+/** Top-level functions and class members, split at their declarations; calls
+ * inside a body never start a new part. */
 function methodsOf(text: string): { name: string; body: string }[] {
   const starts = [
-    ...text.matchAll(/^\s*(?:export\s+)?(?:async\s+)?(?:function\s+)?(\w+)(?:<[^>]*>)?\(/gmu),
+    ...text.matchAll(
+      /^(?:(?:export\s+)?(?:async\s+)?function\s+|\s{2}(?:(?:private|protected|public|static|async)\s+)*)(\w+)(?:<[^>]*>)?\(/gmu,
+    ),
   ];
   return starts.map((match, index) => ({
     name: match[1]!,
