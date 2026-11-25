@@ -79,13 +79,19 @@ export interface ExternalCause {
   durationMs: number;
   /** The enclosing cause: a GitHub reader inside a request counts for both. */
   readonly parent?: ExternalCause | undefined;
+  /** Set when the request has been answered; later calls no longer count for it. */
+  ended?: boolean;
 }
 
 const causes = new AsyncLocalStorage<ExternalCause>();
 
 /** Runs `fn` with `cause` as the reason for every outbound call it makes. */
 export function withExternalCause<T>(cause: string, fn: () => T): T {
-  return causes.run({ cause, calls: 0, durationMs: 0, parent: causes.getStore() }, fn);
+  const enclosing = causes.getStore();
+  // A reader that outlives the request that started it (a poller, a shared
+  // promise) stops crediting that request once it has been answered.
+  const parent = enclosing?.ended === true ? undefined : enclosing;
+  return causes.run({ cause, calls: 0, durationMs: 0, parent }, fn);
 }
 
 /** A cause whose calls are collected in the object itself (one HTTP request). */
@@ -224,6 +230,7 @@ export class ExternalCallObserver {
     this.pending.delete(request);
     const durationMs = Number(process.hrtime.bigint() - pending.startedAt) / 1e6;
     for (let cause = pending.cause; cause !== undefined; cause = cause.parent) {
+      if (cause.ended === true) continue;
       cause.calls += 1;
       cause.durationMs += durationMs;
     }

@@ -80,6 +80,14 @@ export function observeHttp(
     state.external = external;
     runInCause(external, done);
   });
+  // Fastify keeps this context through body parsing today, which the
+  // POST-with-body test guards; entering it again right before the handler
+  // keeps that true should a parser continue from stream events instead.
+  app.addHook('preHandler', (request, _reply, done) => {
+    const external = pending.get(request)?.external;
+    if (external === undefined) done();
+    else runInCause(external, done);
+  });
   app.addHook('onResponse', (request, reply, done) => {
     const state = pending.get(request);
     if (state === undefined || !control.measuring) {
@@ -87,6 +95,7 @@ export function observeHttp(
       return;
     }
     pending.delete(request);
+    if (state.external !== undefined) state.external.ended = true;
     const route = request.routeOptions.url ?? UNMATCHED_ROUTE;
     const length = Number(request.headers['content-length']);
     metrics.recordHttp(

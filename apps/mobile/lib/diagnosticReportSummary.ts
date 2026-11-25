@@ -69,7 +69,8 @@ const TARGET_NAMES: Record<string, string> = {
   other: 'Other services',
 };
 
-/** `GitHub 18,420 · 3 % duplicates · 4,812 of 5,000 left` for the busiest target. */
+/** `GitHub 18,420 · 3 % duplicates · last seen 4,812 of 5,000 left` for the busiest target.
+ *  Quotas are per token, so the remaining count is what the last answer said. */
 function externalSummary(external: NonNullable<DiagnosticReport['externalCalls']>): string {
   const top = external.byTarget[0];
   if (top === undefined) return 'No outbound calls';
@@ -83,8 +84,8 @@ function externalSummary(external: NonNullable<DiagnosticReport['externalCalls']
   if (limit != null)
     parts.push(
       limit.limit === null
-        ? `${limit.remaining.toLocaleString('en-US')} left`
-        : `${limit.remaining.toLocaleString('en-US')} of ${limit.limit.toLocaleString('en-US')} left`,
+        ? `last seen ${limit.remaining.toLocaleString('en-US')} left`
+        : `last seen ${limit.remaining.toLocaleString('en-US')} of ${limit.limit.toLocaleString('en-US')} left`,
     );
   return parts.join(' · ');
 }

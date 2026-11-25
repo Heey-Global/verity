@@ -56,7 +56,7 @@ it('summarises outbound calls by their busiest target', () => {
   });
   expect(summarizeReport(withCalls).find((area) => area.title === 'External calls')).toEqual({
     title: 'External calls',
-    summary: '20,000 calls · top: GitHub 18,420 · 3 % duplicates · 4,812 of 5,000 left',
+    summary: '20,000 calls · top: GitHub 18,420 · 3 % duplicates · last seen 4,812 of 5,000 left',
   });
 });
 

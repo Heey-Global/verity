@@ -3,7 +3,9 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   classifyTarget,
+  createCause,
   ExternalCallObserver,
+  runInCause,
   withExternalCause,
   type ExternalObservation,
 } from './external-calls.js';
@@ -83,6 +85,31 @@ describe('ExternalCallObserver', () => {
   it('takes the rate limit only from the shared core bucket', async () => {
     await (await fetch(`${base}/search`)).text();
     expect(observed[0]?.rateLimit).toBeNull();
+  });
+
+  // A poller started by a request keeps its async context forever; after the
+  // answer it must not keep crediting (and holding on to) that request.
+  it('stops crediting a request once it has been answered', async () => {
+    const request = createCause('GET /projects/:id');
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    let poll: Promise<void> | undefined;
+    await runInCause(request, async () => {
+      await withExternalCause('github:discovery', async () => {
+        await (await fetch(`${base}/a`)).text();
+        // A continuation keeps the context it was created in, like a timer.
+        poll = gate.then(async () => {
+          await (await fetch(`${base}/b`)).text();
+        });
+      });
+    });
+    request.ended = true;
+    openGate();
+    await poll;
+    expect(request.calls).toBe(1);
+    expect(observed.map((call) => call.cause)).toEqual(['github:discovery', 'github:discovery']);
   });
 
   it('counts node:http requests too', async () => {
