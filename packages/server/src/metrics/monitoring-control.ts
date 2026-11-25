@@ -71,7 +71,30 @@ export class MonitoringControl {
     };
   }
 
-  async setMeasurementEnabled(enabled: boolean): Promise<MonitoringState> {
+  /** Runs changes one after another, so memory ends with the row stored last. */
+  private queue: Promise<unknown> = Promise.resolve();
+  private serial<T>(change: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(change, change);
+    this.queue = result.catch(() => undefined);
+    return result;
+  }
+
+  setMeasurementEnabled(enabled: boolean): Promise<MonitoringState> {
+    return this.serial(() => this.writeMeasurement(enabled));
+  }
+
+  startDetailMode(
+    minutes: DetailModeMinutes,
+    startedBy: DetailModeStarter,
+  ): Promise<MonitoringState> {
+    return this.serial(() => this.writeDetailStart(minutes, startedBy));
+  }
+
+  stopDetailMode(): Promise<MonitoringState> {
+    return this.serial(() => this.writeDetailStop());
+  }
+
+  private async writeMeasurement(enabled: boolean): Promise<MonitoringState> {
     const next = this.store
       ? await this.store.setMeasurementEnabled(enabled)
       : { ...this.settings, measurementEnabled: enabled };
@@ -79,7 +102,7 @@ export class MonitoringControl {
     return this.state();
   }
 
-  async startDetailMode(
+  private async writeDetailStart(
     minutes: DetailModeMinutes,
     startedBy: DetailModeStarter,
   ): Promise<MonitoringState> {
@@ -92,7 +115,7 @@ export class MonitoringControl {
     return this.state();
   }
 
-  async stopDetailMode(): Promise<MonitoringState> {
+  private async writeDetailStop(): Promise<MonitoringState> {
     const next = this.store
       ? await this.store.setDetailMode(null, null)
       : { ...this.settings, detailUntil: null, detailStartedBy: null };

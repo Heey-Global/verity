@@ -206,7 +206,10 @@ export function createVerityClient(device: ClientDevice = 'phone'): VerityClient
     // through expo/fetch so large picked files stream without a JS copy.
     ...(pinnedFetch
       ? { fetch: pinnedFetch, uploadFetch: pinnedFetch, allowBackgroundUpload: false }
-      : { fetch: identify(fetch), uploadFetch: identify(expoFetch as typeof fetch) }),
+      : {
+          fetch: identify((...args: Parameters<typeof fetch>) => fetch(...args)),
+          uploadFetch: identify(expoFetch as typeof fetch),
+        }),
     getToken: () => getAuthToken(serverUrl),
     onUnauthorized: () => {
       void clearAuthToken(serverUrl);
