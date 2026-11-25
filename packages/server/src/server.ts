@@ -126,7 +126,7 @@ export {
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const liveTickets = createLiveTickets(deps);
   startServerMessageProjection(deps);
-  const { app, lifecycle, preAuthKeys } = createServerApp(deps);
+  const { app, lifecycle, preAuthKeys, trafficLedger } = createServerApp(deps);
   const conductor = createServerConductor(app, deps);
   const publishSessionEvent = createServerEventPublisher(deps);
   const sessionDesign = createServerSessionDesign(deps, {
@@ -148,7 +148,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   const { pushSender, describePushSession, describePushSessionById } = createServerPush(app, deps);
   const resources = createLiveResources(app, deps, lifecycle);
-  const liveHub = createServerLiveHub(app, deps, { resources, lifecycle });
+  const liveHub = createServerLiveHub(app, deps, { resources, lifecycle, trafficLedger });
   const ctx: ServerContext = {
     app,
     deps,

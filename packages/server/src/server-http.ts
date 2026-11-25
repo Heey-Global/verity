@@ -17,6 +17,7 @@ import {
 } from './auth.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import { registerRequestLatencyDiagnostics } from './request-latency.js';
+import { registerTrafficLedger, TrafficLedger } from './traffic-ledger.js';
 import {
   declaredNonOperatorKeys,
   missingLockoutKeys,
@@ -46,6 +47,7 @@ export function createServerApp(deps: ServerDeps): {
   app: FastifyInstance;
   lifecycle: ServerLifecycle;
   preAuthKeys: ReadonlySet<string>;
+  trafficLedger: TrafficLedger | undefined;
 } {
   // What a route gets when it declares no `bodyLimit` of its own: enough for the
   // metadata-shaped JSON that is all every route here takes, and nothing like
@@ -83,6 +85,10 @@ export function createServerApp(deps: ServerDeps): {
           https: deps.https,
         } satisfies FastifyHttpsOptions<HttpsServer>);
   if (deps.logger) registerRequestLatencyDiagnostics(app);
+  const trafficLedger = deps.logger
+    ? new TrafficLedger((summary, message) => app.log.info(summary, message))
+    : undefined;
+  if (trafficLedger) registerTrafficLedger(app, trafficLedger);
   app.decorateRequest('localUserId', null);
   const lifecycle = createServerLifecycle(app);
   // Derives the auth gate's pre-auth exception set from the routes this instance
@@ -155,7 +161,7 @@ export function createServerApp(deps: ServerDeps): {
     }
     done();
   });
-  return { app, lifecycle, preAuthKeys };
+  return { app, lifecycle, preAuthKeys, trafficLedger };
 }
 
 /**

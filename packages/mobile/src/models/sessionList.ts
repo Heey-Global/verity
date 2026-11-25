@@ -82,6 +82,12 @@ export interface SessionListModelOptions {
   /** Schedule recurring polls; returns a canceller. Default wraps setInterval —
    * injected in tests to drive polling deterministically. */
   schedule?: (poll: () => void, intervalMs: number) => CancelPoll;
+  /** Minimum spacing of list reloads caused only by transcript growth
+   * (`events` hints); default 10s. Status, permission and session hints still
+   * reload at once. */
+  eventsRefreshMs?: number;
+  /** Clock for {@link eventsRefreshMs}; injected in tests. */
+  now?: () => number;
 }
 
 /**
@@ -132,6 +138,9 @@ export class SessionListModel {
     string,
     { active: number; removed: SessionSummary | undefined; succeeded: boolean }
   >();
+
+  private lastEventsRefreshAt = Number.NEGATIVE_INFINITY;
+  private eventsRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly opts: SessionListModelOptions) {}
 
@@ -377,14 +386,24 @@ export class SessionListModel {
    * the gap before that poll arrives. */
   settlePermission(sessionId: string, toolUseId: string): void {
     this._sessions = this._sessions.map((session) => {
-      if (session.sessionId !== sessionId || session.pendingPermissions === undefined) {
-        return session;
-      }
-      const pendingPermissions = session.pendingPermissions.filter((id) => id !== toolUseId);
-      if (pendingPermissions.length === session.pendingPermissions.length) return session;
+      if (session.sessionId !== sessionId) return session;
+      // Home builds its permission cards from the request descriptors, so the
+      // settled request must leave both lists; dropping only the id left the
+      // card on screen until the next full list read.
+      const requests = session.pendingPermissionRequests?.filter(
+        (request) => request.toolUseId !== toolUseId,
+      );
+      const requestsChanged =
+        requests !== undefined && requests.length !== session.pendingPermissionRequests?.length;
+      const pendingPermissions = (session.pendingPermissions ?? []).filter(
+        (id) => id !== toolUseId,
+      );
+      const idsChanged = pendingPermissions.length !== (session.pendingPermissions?.length ?? 0);
+      if (!idsChanged && !requestsChanged) return session;
       return {
         ...session,
-        pendingPermissions,
+        ...(session.pendingPermissions === undefined ? {} : { pendingPermissions }),
+        ...(requestsChanged ? { pendingPermissionRequests: requests } : {}),
         ...(session.permissionAwaitingInput === true && pendingPermissions.length === 0
           ? { status: 'running' as const, permissionAwaitingInput: undefined }
           : {}),
@@ -538,7 +557,33 @@ export class SessionListModel {
       }
     }
     if (hints.some((hint) => hint.deleted === true)) this.emit();
-    this.poll?.();
+    const urgent =
+      hints.length === 0 ||
+      hints.some((hint) => hint.deleted === true || hint.topics.some((t) => t !== 'events'));
+    if (urgent) {
+      this.cancelEventsRefresh();
+      this.poll?.();
+      return;
+    }
+    // Every streamed chunk of every readable session hints `events`. Reloading
+    // the whole list for each of them re-sent the full overview several times a
+    // second while any agent was writing; transcript growth only moves unread
+    // marks and previews, which may trail by a few seconds.
+    if (this.poll === undefined || this.eventsRefreshTimer !== undefined) return;
+    const spacing = this.opts.eventsRefreshMs ?? 10_000;
+    const wait = this.lastEventsRefreshAt + spacing - (this.opts.now ?? Date.now)();
+    const run = (): void => {
+      this.eventsRefreshTimer = undefined;
+      this.lastEventsRefreshAt = (this.opts.now ?? Date.now)();
+      this.poll?.();
+    };
+    if (wait <= 0) run();
+    else this.eventsRefreshTimer = setTimeout(run, wait);
+  }
+
+  private cancelEventsRefresh(): void {
+    clearTimeout(this.eventsRefreshTimer);
+    this.eventsRefreshTimer = undefined;
   }
 
   /** Initial load + start polling. Idempotent: cancels any existing poll first
@@ -584,6 +629,7 @@ export class SessionListModel {
   /** Stop polling. Idempotent. */
   stop(): void {
     this.poll = undefined;
+    this.cancelEventsRefresh();
     this.cancelPoll?.();
     this.cancelTimeTick?.();
     this.cancelPoll = undefined;

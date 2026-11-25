@@ -1,3 +1,4 @@
+import { conditionalJsonRoute } from './conditional-json.js';
 import { measureLatencyPhase, type EventStore, type SessionRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import type { AttentionSignal } from './attention.js';
@@ -112,94 +113,98 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
       .catch(() => undefined);
     return read;
   };
-  app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
-    const viewer = viewerId(request);
-    const [{ summaries: all, addressing, submissions }, views, scope] = await Promise.all([
-      sharedLoad(),
-      deps.store.viewState.sessionViews(viewer),
-      deps.visibleTo?.(viewer) ?? Promise.resolve({ all: true as const }),
-    ]);
-    // A session of a project this person cannot read is not theirs to list.
-    const shared = scope.all
-      ? all
-      : all.filter((summary) =>
-          summary.projectId == null ? scope.unassigned : scope.projectIds.has(summary.projectId),
-        );
-    // The shared load may serve several people at once, so each answer gets its
-    // own copies carrying the requester's read mark and dismissed Home items.
-    // A session this person never touched is unread-neutral and hides nothing.
-    // Without accounts every request is the one operator's, so nothing is addressed.
-    const personal =
-      deps.requestAddressing !== undefined && request.localUserId != null
-        ? { holdsCode: viewerCodeRights(deps.requestAddressing, viewer) }
-        : undefined;
-    const reviewers = new Map<string | null, Promise<boolean>>();
-    const reviewerRights = (store: ChangeSubmissionStore, projectId: string | null) => {
-      let held = reviewers.get(projectId);
-      if (held === undefined) {
-        held = holdsCode(store, viewer, projectId).catch(() => false);
-        reviewers.set(projectId, held);
-      }
-      return held;
-    };
-    const submissionFor = async (
-      summary: SessionSummary,
-    ): Promise<Pick<SessionSummary, 'changeSubmission'>> => {
-      const view = submissions.get(summary.sessionId);
-      if (view === undefined) return {};
-      if (personal === undefined || deps.changeSubmissions === undefined)
-        return { changeSubmission: view };
-      // Unlike a permission prompt, a review is only offered on confirmed Code.
-      const holds = await reviewerRights(deps.changeSubmissions.store, summary.projectId);
-      return {
-        changeSubmission: {
-          ...view,
-          addressedToViewer: submissionAddressedTo(viewer, view, holds),
-        },
+  app.get(
+    '/sessions',
+    conditionalJsonRoute,
+    async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
+      const viewer = viewerId(request);
+      const [{ summaries: all, addressing, submissions }, views, scope] = await Promise.all([
+        sharedLoad(),
+        deps.store.viewState.sessionViews(viewer),
+        deps.visibleTo?.(viewer) ?? Promise.resolve({ all: true as const }),
+      ]);
+      // A session of a project this person cannot read is not theirs to list.
+      const shared = scope.all
+        ? all
+        : all.filter((summary) =>
+            summary.projectId == null ? scope.unassigned : scope.projectIds.has(summary.projectId),
+          );
+      // The shared load may serve several people at once, so each answer gets its
+      // own copies carrying the requester's read mark and dismissed Home items.
+      // A session this person never touched is unread-neutral and hides nothing.
+      // Without accounts every request is the one operator's, so nothing is addressed.
+      const personal =
+        deps.requestAddressing !== undefined && request.localUserId != null
+          ? { holdsCode: viewerCodeRights(deps.requestAddressing, viewer) }
+          : undefined;
+      const reviewers = new Map<string | null, Promise<boolean>>();
+      const reviewerRights = (store: ChangeSubmissionStore, projectId: string | null) => {
+        let held = reviewers.get(projectId);
+        if (held === undefined) {
+          held = holdsCode(store, viewer, projectId).catch(() => false);
+          reviewers.set(projectId, held);
+        }
+        return held;
       };
-    };
-    const summaries = await Promise.all(
-      shared.map(
-        async ({
-          planningPlan,
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure-omit
-          requestInitiator,
-          ...summary
-        }): Promise<SessionSummary> => {
-          const view = views.get(summary.sessionId);
-          return {
-            ...summary,
-            // The plan text can run to pages and this route is polled by every
-            // device; an overview only needs to know that a plan waits for approval.
-            ...(summary.planning === 'active' && planningPlan != null
-              ? { planningPresented: true as const }
-              : {}),
-            lastSeenEventCount: view?.lastSeenEventCount ?? null,
-            inboxDismissed: view?.inboxDismissed ?? [],
-            ...(await submissionFor(summary)),
-            ...(personal === undefined
-              ? {}
-              : await addressedTo(
-                  viewer,
-                  summary,
-                  addressing.get(summary.sessionId),
-                  personal.holdsCode,
-                )),
-          };
-        },
-      ),
-    );
-    if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
-    // Server attention signals are the administrator's to act on.
-    const attention =
-      scope.all || scope.unassigned
-        ? await measureLatencyPhase('session_attention', deps.collectAttention)
-        : [];
-    // Absent when healthy, so the envelope stays quiet in the steady state.
-    return {
-      sessions: summaries,
-      sessionReordering: true,
-      ...(attention.length > 0 ? { attention } : {}),
-    };
-  });
+      const submissionFor = async (
+        summary: SessionSummary,
+      ): Promise<Pick<SessionSummary, 'changeSubmission'>> => {
+        const view = submissions.get(summary.sessionId);
+        if (view === undefined) return {};
+        if (personal === undefined || deps.changeSubmissions === undefined)
+          return { changeSubmission: view };
+        // Unlike a permission prompt, a review is only offered on confirmed Code.
+        const holds = await reviewerRights(deps.changeSubmissions.store, summary.projectId);
+        return {
+          changeSubmission: {
+            ...view,
+            addressedToViewer: submissionAddressedTo(viewer, view, holds),
+          },
+        };
+      };
+      const summaries = await Promise.all(
+        shared.map(
+          async ({
+            planningPlan,
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure-omit
+            requestInitiator,
+            ...summary
+          }): Promise<SessionSummary> => {
+            const view = views.get(summary.sessionId);
+            return {
+              ...summary,
+              // The plan text can run to pages and this route is polled by every
+              // device; an overview only needs to know that a plan waits for approval.
+              ...(summary.planning === 'active' && planningPlan != null
+                ? { planningPresented: true as const }
+                : {}),
+              lastSeenEventCount: view?.lastSeenEventCount ?? null,
+              inboxDismissed: view?.inboxDismissed ?? [],
+              ...(await submissionFor(summary)),
+              ...(personal === undefined
+                ? {}
+                : await addressedTo(
+                    viewer,
+                    summary,
+                    addressing.get(summary.sessionId),
+                    personal.holdsCode,
+                  )),
+            };
+          },
+        ),
+      );
+      if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
+      // Server attention signals are the administrator's to act on.
+      const attention =
+        scope.all || scope.unassigned
+          ? await measureLatencyPhase('session_attention', deps.collectAttention)
+          : [];
+      // Absent when healthy, so the envelope stays quiet in the steady state.
+      return {
+        sessions: summaries,
+        sessionReordering: true,
+        ...(attention.length > 0 ? { attention } : {}),
+      };
+    },
+  );
 }

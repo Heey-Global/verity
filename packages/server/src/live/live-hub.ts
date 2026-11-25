@@ -99,6 +99,8 @@ export interface LiveHubDeps {
     changed: () => void,
   ) => (() => void) | undefined;
   now?: () => number;
+  /** Observes each frame written to a socket, for outbound traffic accounting. */
+  onFrameSent?: (kind: LiveServerFrame['k'], bytes: number) => void;
 }
 
 const WS_OPEN = 1;
@@ -194,7 +196,9 @@ class LiveConnection {
 
   send(frame: LiveServerFrame): boolean {
     if (this.closed || this.socket.readyState !== WS_OPEN) return false;
-    this.socket.send(JSON.stringify(frame));
+    const data = JSON.stringify(frame);
+    this.socket.send(data);
+    this.hub.deps.onFrameSent?.(frame.k, Buffer.byteLength(data));
     return true;
   }
 

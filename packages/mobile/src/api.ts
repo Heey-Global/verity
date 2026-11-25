@@ -36,6 +36,7 @@ import { sessionWorkspaceClient } from './session-workspace-api.js';
 export * from './knowledge-files-api.js';
 import { knowledgeFilesClient, projectGoogleDriveFilesClient } from './knowledge-files-api.js';
 import { uploadBodyWithMimeType } from './upload-body.js';
+import { withConditionalReads } from './conditionalReads.js';
 export * from './backup-api.js';
 import {
   backupProbeJobSchema,
@@ -3114,7 +3115,7 @@ export class VerityClient {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.localPreviewBaseUrl =
       opts.localPreviewBaseUrl === undefined ? this.baseUrl : opts.localPreviewBaseUrl;
-    this.fetchImpl = opts.fetch ?? fetch;
+    this.fetchImpl = withConditionalReads(opts.fetch ?? fetch);
     this.uploadFetchImpl = opts.uploadFetch ?? this.fetchImpl;
     this.recordingFetchImpl = opts.recordingFetch ?? this.fetchImpl;
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
@@ -6955,9 +6956,8 @@ export class VerityClient {
   ): Promise<Response> {
     if ((init.method ?? 'GET') === 'GET')
       init = { ...init, transportLane: readTransportLane(path) };
-    // Attach the per-device bearer token (audit C1) when we have one. Callers
-    // pass plain-object headers, so a record spread is safe; an explicit
-    // Authorization in `init` (none today) would win by being spread last.
+    // Attach the per-device bearer token (audit C1) when we have one. Callers pass plain-object
+    // headers, so a record spread is safe; an explicit Authorization in `init` wins (spread last).
     if (this.appVariant !== undefined)
       init = {
         ...init,

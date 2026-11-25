@@ -111,7 +111,12 @@ export function useSession(client: VerityClient, sessionId: string, baseUrl: str
       activityPollMs: 0,
       onChange: publish,
       onPermissionSettled: (toolUseId, accepted) => {
-        if (accepted) publishSessionStatusMutation(sessionId, 'running');
+        // A refused decision (404) does not prove the request is gone: the
+        // server may still hold it pending, e.g. for a viewer who cannot execute
+        // it. Only an accepted decision may hide it elsewhere before the next
+        // overview read; otherwise Home would drop a card the server still shows.
+        if (!accepted) return;
+        publishSessionStatusMutation(sessionId, 'running');
         publishSettledPermission(sessionId, toolUseId);
       },
       onTurnCancelled: () => publishSessionStatusMutation(sessionId, 'idle'),

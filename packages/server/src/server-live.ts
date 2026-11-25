@@ -14,6 +14,7 @@ import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import type { ServerContext, ServerLifecycle } from './server-context.js';
 import type { ServerDeps } from './server-deps.js';
+import type { TrafficLedger } from './traffic-ledger.js';
 
 /**
  * One-time tickets that authorize opening the live WebSocket. A ticket is
@@ -72,9 +73,23 @@ export function createLiveTickets(deps: Pick<ServerDeps, 'authRegistry'>) {
 export function createServerLiveHub(
   app: FastifyInstance,
   deps: ServerDeps,
-  { resources, lifecycle }: { resources: ResourceObserver; lifecycle: ServerLifecycle },
+  {
+    resources,
+    lifecycle,
+    trafficLedger,
+  }: {
+    resources: ResourceObserver;
+    lifecycle: ServerLifecycle;
+    trafficLedger?: TrafficLedger | undefined;
+  },
 ): LiveHub {
   const liveHub = new LiveHub({
+    ...(trafficLedger
+      ? {
+          onFrameSent: (kind: string, bytes: number) =>
+            trafficLedger.record(`WS live ${kind}`, { bodyBytes: bytes }),
+        }
+      : {}),
     watchResource: (identity, resource, changed) =>
       resources.watch(
         identity.userId ?? '',
