@@ -2,10 +2,11 @@ import { connectionFailureKind, type InquiryDecision, type VerityClient } from '
 import { router } from 'expo-router';
 import { useState } from 'react';
 import { View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { useProjectInquiries } from '../../hooks/useProjectInquiries';
 import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/useServerConnection';
-import { Button, Card, CardHead, StatusTag, Text } from '../ui';
+import { Button, Card, CardHead, Sheet, StatusTag, Text } from '../ui';
+import { SessionBar, SessionBarContent, SessionBarTarget } from '../ui/SessionBar';
 
 /**
  * A request from a session to another project. The same durable approval is
@@ -29,6 +30,15 @@ export function ProjectInquiryCards({
     if (connectionFailureKind(resource.error) !== undefined) resource.reload();
   });
   const [busy, setBusy] = useState<string>();
+  const [openSession, setOpenSession] = useState<string>();
+  const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(new Set());
+  const toggleUnfolded = (id: string) =>
+    setUnfolded((current) => {
+      const next = new Set(current);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  const { theme } = useUnistyles();
   const decide = async (targetProjectId: string, id: string, decision: InquiryDecision) => {
     setBusy(id);
     try {
@@ -46,7 +56,7 @@ export function ProjectInquiryCards({
   // A failed permissions query must remain visible: otherwise a pending request
   // looks absent. While the header's bar shows an outage, it says so quietly,
   // without the raw error or a retry the bar already offers.
-  return (
+  const cards = (
     <>
       {resource.error && hidesError ? (
         <Card stacked>
@@ -68,6 +78,9 @@ export function ProjectInquiryCards({
           sessionId === item.sourceSessionId
             ? 'From this session'
             : `From session „${item.sourceSessionName ?? item.sourceSessionId}“`;
+        // A long request would push its decision buttons out of view.
+        const long = [item.body, item.answer ?? ''].some(isLong);
+        const full = unfolded.has(item.id);
         return (
           <Card stacked key={item.id}>
             <CardHead
@@ -82,9 +95,21 @@ export function ProjectInquiryCards({
             />
             <View style={styles.quote}>
               <Text variant="subtitle">{item.title}</Text>
-              <Text variant="bodySmall">{item.body}</Text>
+              <Text variant="bodySmall" numberOfLines={full ? undefined : CLAMPED_LINES}>
+                {item.body}
+              </Text>
             </View>
-            {item.answer ? <Text>{item.answer}</Text> : null}
+            {item.answer ? (
+              <Text numberOfLines={full ? undefined : CLAMPED_LINES}>{item.answer}</Text>
+            ) : null}
+            {long ? (
+              <Button
+                label={full ? 'Show less' : 'Show full request'}
+                variant="text"
+                size="small"
+                onPress={() => toggleUnfolded(item.id)}
+              />
+            ) : null}
             {pending ? (
               <View style={styles.actions}>
                 <Button
@@ -119,9 +144,10 @@ export function ProjectInquiryCards({
               <Button
                 label="Open target session"
                 variant="text"
-                onPress={() =>
-                  router.push({ pathname: '/session/[id]', params: { id: item.targetSessionId } })
-                }
+                onPress={() => {
+                  setOpenSession(undefined);
+                  router.push({ pathname: '/session/[id]', params: { id: item.targetSessionId } });
+                }}
               />
             ) : null}
           </Card>
@@ -129,7 +155,51 @@ export function ProjectInquiryCards({
       })}
     </>
   );
+  if (sessionId === undefined) return cards;
+
+  const visible = openSession === sessionId;
+  const hasRequests = items.length > 0 || Boolean(resource.error);
+  const pendingCount = items.filter((item) => item.status === 'pending').length;
+  const subtitle = resource.error
+    ? 'Could not load project requests'
+    : pendingCount > 0
+      ? `${pendingCount} awaiting approval`
+      : items.length === 1
+        ? items[0]?.title
+        : `${items.length} requests`;
+  // The chat pins this area outside the transcript. Keep even multiple long
+  // requests in a single row and let the sheet scroll their full details.
+  return (
+    <>
+      {hasRequests ? (
+        <SessionBar>
+          <SessionBarTarget
+            accessibilityLabel="Project requests"
+            accessibilityHint={subtitle}
+            expanded={visible}
+            onPress={() => setOpenSession(sessionId)}
+          >
+            <SessionBarContent
+              color={
+                pendingCount > 0 || resource.error ? theme.colors.attention : theme.colors.textMuted
+              }
+              title="Project requests"
+              subtitle={subtitle}
+            />
+          </SessionBarTarget>
+        </SessionBar>
+      ) : null}
+      {visible ? (
+        <Sheet visible title="Project requests" onClose={() => setOpenSession(undefined)}>
+          {hasRequests ? cards : <Text variant="subtitle">No project requests.</Text>}
+        </Sheet>
+      ) : null}
+    </>
+  );
 }
+
+const CLAMPED_LINES = 6;
+const isLong = (text: string) => text.length > 320 || text.split('\n').length > CLAMPED_LINES;
 
 const styles = StyleSheet.create((theme) => ({
   quote: {

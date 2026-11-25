@@ -1,5 +1,5 @@
 import { AppState } from 'react-native';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import type { VerityClient } from '@verity/mobile';
 import { SessionRepositories } from '../components/project/SessionRepositories';
 import { ProjectInquiryCards } from '../components/project/ProjectInquiryCards';
@@ -78,7 +78,8 @@ it('offers the decision in the asking session and says who asks whom', async () 
     decideProjectInquiry,
   } as unknown as VerityClient;
   const asking = render(<ProjectInquiryCards client={client} sessionId="source" />);
-  await waitFor(() => expect(asking.getByText('Verity → Deep-OCR')).toBeTruthy());
+  fireEvent.press(await asking.findByRole('button', { name: 'Project requests' }));
+  expect(asking.getByText('Verity → Deep-OCR')).toBeTruthy();
   expect(asking.getByText('From this session · read-only')).toBeTruthy();
   fireEvent.press(asking.getByText('Always allow'));
   await waitFor(() =>
@@ -92,6 +93,41 @@ it('offers the decision in the asking session and says who asks whom', async () 
   // No target session exists before the request is allowed.
   expect(home.queryByText('Open target session')).toBeNull();
 });
+
+it.each(['source', 'target'])(
+  'keeps long requests behind one row in the %s session and closes their details',
+  async (sessionId) => {
+    const body = 'Review the staging service.\n'.repeat(100);
+    const answer = 'The staging service is ready.\n'.repeat(100);
+    const client = {
+      listProjectInquiries: jest.fn().mockResolvedValue([
+        { ...inquiry, body, status: 'queued' },
+        { ...inquiry, id: 'answered', title: 'Inspect staging', answer, status: 'answered' },
+      ]),
+    } as unknown as VerityClient;
+    const view = render(<ProjectInquiryCards client={client} sessionId={sessionId} />);
+
+    const row = await view.findByRole('button', { name: 'Project requests', expanded: false });
+    expect(view.getByText('2 requests')).toBeTruthy();
+    expect(view.queryByText(body.trim())).toBeNull();
+    expect(view.queryByText(answer.trim())).toBeNull();
+
+    fireEvent.press(row);
+    // Unclamped, a long request pushes its decision buttons below the sheet's fold.
+    expect(view.getByText(body.trim()).props.numberOfLines).toBe(6);
+    expect(view.getByText(answer.trim()).props.numberOfLines).toBe(6);
+    fireEvent.press(view.getAllByRole('button', { name: 'Show full request' })[0]!);
+    expect(view.getByText(body.trim()).props.numberOfLines).toBeUndefined();
+    expect(view.getByText(answer.trim()).props.numberOfLines).toBe(6);
+    fireEvent.press(view.getByRole('button', { name: 'Show less' }));
+    expect(view.getByText(body.trim()).props.numberOfLines).toBe(6);
+
+    fireEvent.press(view.getByTestId('sheet-scrim'));
+    expect(view.queryByText(body.trim())).toBeNull();
+    expect(view.queryByText(answer.trim())).toBeNull();
+    expect(view.getByRole('button', { name: 'Project requests', expanded: false })).toBeTruthy();
+  },
+);
 
 it('shows persisted PR dependencies beside the repository workspace', async () => {
   const client = {
@@ -148,11 +184,10 @@ it('still says requests are missing while the server is away', async () => {
         .mockRejectedValue(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE)),
     } as unknown as VerityClient;
     const view = render(<ProjectInquiryCards client={client} sessionId="target" />);
-    await waitFor(() =>
-      expect(view.getByText('Project requests load once the server is back.')).toBeTruthy(),
-    );
+    fireEvent.press(await view.findByRole('button', { name: 'Project requests' }));
+    expect(view.getByText('Project requests load once the server is back.')).toBeTruthy();
     expect(view.queryByText(SERVER_MAINTENANCE_MESSAGE)).toBeNull();
   } finally {
-    serverConnection.reset();
+    act(() => serverConnection.reset());
   }
 });
