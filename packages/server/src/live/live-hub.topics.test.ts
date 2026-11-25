@@ -66,10 +66,14 @@ function world({ topics = true }: { topics?: boolean } = {}) {
     ['alice', new Set(['p1'])],
     ['bob', new Set(['p1', 'p2'])],
   ]);
+  let sessionReadsFail = false;
   const hub = new LiveHub({
     bus: noBus,
     store: {
-      getSession: async (id) => sessions.get(id),
+      getSession: async (id) => {
+        if (sessionReadsFail) throw new Error('store unavailable');
+        return sessions.get(id);
+      },
       getEventsAfter: async (): Promise<SequencedEvent[]> => [],
     },
     access: {
@@ -88,7 +92,15 @@ function world({ topics = true }: { topics?: boolean } = {}) {
     hub.attach(socket, { userId, deviceId: `${userId ?? 'op'}-device` });
     return socket;
   };
-  return { hub, bus: domainEvents, readable, connect };
+  return {
+    hub,
+    bus: domainEvents,
+    readable,
+    connect,
+    failSessionReads: () => {
+      sessionReadsFail = true;
+    },
+  };
 }
 
 describe('LiveHub domain-event topics', () => {
@@ -169,6 +181,22 @@ describe('LiveHub domain-event topics', () => {
     ]);
     const record = w.bus!.publish('project:p1', lifecycle('p1', 1));
     expect(socket.of('domain').map(({ cursor }) => cursor)).toEqual([record.cursor]);
+    w.hub.close();
+  });
+
+  it('rechecks topics even when rechecking session streams fails', async () => {
+    const w = world();
+    const socket = w.connect('bob');
+    await socket.client({ k: 'sub', ch: 'session', id: 's2' });
+    await socket.client({ k: 'topics.sub', topics: [{ topic: 'project:p2' }] });
+    w.failSessionReads();
+    w.readable.set('bob', new Set(['p1']));
+    w.hub.authorizationChanged({ userId: 'bob' });
+    await vi.waitFor(() =>
+      expect(socket.of('topic_ended')).toEqual([
+        { k: 'topic_ended', topic: 'project:p2', reason: 'forbidden' },
+      ]),
+    );
     w.hub.close();
   });
 

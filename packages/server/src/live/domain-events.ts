@@ -1,4 +1,5 @@
 import type { DomainEvent, DomainTopic } from '@verity/events';
+import { randomUUID } from 'node:crypto';
 
 /** One published event and its position. */
 export interface DomainRecord {
@@ -40,12 +41,16 @@ export interface DomainEventBusOptions {
  * they happen; live connections subscribe per topic and replay what a client
  * missed while it was away.
  *
- * Cursors are positions in one sequence shared by every topic. The sequence
- * starts from the wall clock in microseconds, so a cursor a client kept from an
- * earlier server process is below this process's origin and answers `gap`
- * rather than a silently incomplete replay.
+ * Cursors are positions in one sequence shared by every topic, valid within
+ * one {@link epoch}. A client that kept cursors from an earlier server process
+ * sees a different epoch in `ready` and drops them. As a second line, the
+ * sequence starts from the wall clock in microseconds, so an old cursor that
+ * still arrives is below this process's origin and answers `gap` rather than
+ * a silently incomplete replay — unless the clock stepped back.
  */
 export class DomainEventBus {
+  /** Identifies this bus's cursor sequence; announced in `ready`. */
+  readonly epoch = randomUUID();
   private readonly topics = new Map<DomainTopic, TopicLog>();
   private readonly perTopic: number;
   private readonly retentionMs: number;

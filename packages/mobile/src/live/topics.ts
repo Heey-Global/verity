@@ -21,12 +21,17 @@ export interface LiveTopicSink {
   ended?(reason: Exclude<TopicEndedReason, 'error'>): void;
 }
 
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 60_000;
+
 interface TopicEntry {
   /** Newest position received; replay after a reconnect resumes after it.
    * Undefined until the first event: the topic then starts live, and the
    * subscriber's own snapshot read covers what came before. */
   cursor: number | undefined;
   readonly sinks: Set<LiveTopicSink>;
+  /** Consecutive transient endings, for retry backoff. */
+  failures: number;
 }
 
 /**
@@ -41,6 +46,7 @@ interface TopicEntry {
  */
 export class LiveTopics {
   private readonly topics = new Map<DomainTopic, TopicEntry>();
+  private epoch: string | undefined;
   /** Whether the connected server accepts topics (protocol 2). */
   supported = false;
 
@@ -49,7 +55,7 @@ export class LiveTopics {
   subscribe(topic: DomainTopic, sink: LiveTopicSink): () => void {
     let entry = this.topics.get(topic);
     if (entry === undefined) {
-      entry = { cursor: undefined, sinks: new Set() };
+      entry = { cursor: undefined, sinks: new Set(), failures: 0 };
       this.topics.set(topic, entry);
       if (this.supported) this.send({ k: 'topics.sub', topics: [{ topic }] });
     }
@@ -64,8 +70,14 @@ export class LiveTopics {
   }
 
   /** The connection is ready; resubscribe everything from its cursor. */
-  ready(supported: boolean): void {
+  ready(supported: boolean, epoch?: string): void {
     this.supported = supported;
+    if (epoch !== this.epoch) {
+      // Cursors of another server process (or one whose clock stepped back)
+      // name positions this one never handed out; the views read snapshots.
+      for (const entry of this.topics.values()) entry.cursor = undefined;
+      this.epoch = epoch;
+    }
     if (!supported || this.topics.size === 0) return;
     const requests: TopicSubscription[] = [...this.topics].map(([topic, { cursor }]) =>
       cursor === undefined ? { topic } : { topic, cursor },
@@ -86,6 +98,7 @@ export class LiveTopics {
     // A replay overlapping what was already applied must not apply twice.
     if (entry.cursor !== undefined && cursor <= entry.cursor) return;
     entry.cursor = cursor;
+    entry.failures = 0;
     for (const sink of [...entry.sinks]) sink.event(event);
   }
 
@@ -93,18 +106,24 @@ export class LiveTopics {
     const entry = this.topics.get(topic);
     if (entry === undefined) return;
     entry.cursor = cursor;
+    entry.failures = 0;
     for (const sink of [...entry.sinks]) sink.resync();
   }
 
-  /** The server ended a topic. Returns true when the caller should retry the
-   * subscription later (a transient `error`); the views keep listening. */
-  ended(topic: DomainTopic, reason: TopicEndedReason): boolean {
+  /** The server ended a topic. Returns the delay after which the caller
+   * should retry a transient `error` (backing off while it repeats); the views
+   * keep listening. Undefined when the ending is final. */
+  ended(topic: DomainTopic, reason: TopicEndedReason): number | undefined {
     const entry = this.topics.get(topic);
-    if (entry === undefined) return false;
-    if (reason === 'error') return true;
+    if (entry === undefined) return undefined;
+    if (reason === 'error') {
+      const delay = Math.min(RETRY_BASE_MS * 2 ** entry.failures, RETRY_MAX_MS);
+      entry.failures += 1;
+      return delay;
+    }
     this.topics.delete(topic);
     for (const sink of [...entry.sinks]) sink.ended?.(reason);
-    return false;
+    return undefined;
   }
 
   /** Subscribe a still-wanted topic again after a transient failure. */

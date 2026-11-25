@@ -267,7 +267,9 @@ export class LiveConnection implements LiveSessionTransport {
   }
 
   /** Domain events of one topic, kept across reconnects from the last cursor.
-   * Subscribe before reading the snapshot the events apply to. */
+   * The server answers a new subscription with `resync` once it is live; read
+   * the snapshot then. While {@link topicsSupported} is false no `resync`
+   * comes, and the view keeps its own refresh. */
   subscribeTopic(topic: DomainTopic, sink: LiveTopicSink): () => void {
     return this.topics.subscribe(topic, sink);
   }
@@ -397,7 +399,7 @@ export class LiveConnection implements LiveSessionTransport {
         this.unauthorizedCloses = 0;
         // Before `connected` is announced, so state listeners see the support
         // and a topic they subscribe is not requested twice.
-        this.topics.ready(frame.topics === true);
+        this.topics.ready(frame.topics === true, frame.topicEpoch);
         this.setState('connected');
         this.sendFrame({ k: 'state', foreground: this.foreground });
         if (this.overviewListeners.size > 0) this.sendFrame({ k: 'sub', ch: 'overview' });
@@ -413,11 +415,12 @@ export class LiveConnection implements LiveSessionTransport {
         this.topics.resync(frame.topic, frame.cursor);
         return;
       case 'topic_ended': {
-        if (!this.topics.ended(frame.topic, frame.reason)) return;
+        const retryMs = this.topics.ended(frame.topic, frame.reason);
+        if (retryMs === undefined) return;
         const generation = this.generation;
         this.schedule(() => {
           if (generation === this.generation) this.topics.retry(frame.topic);
-        }, SUBSCRIPTION_RETRY_MS);
+        }, retryMs);
         return;
       }
       case 'invalidate':

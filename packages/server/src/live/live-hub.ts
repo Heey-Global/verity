@@ -229,7 +229,9 @@ class LiveConnection {
       v: LIVE_PROTOCOL_VERSION,
       maxSessions: LIVE_MAX_SESSION_SUBSCRIPTIONS,
       ...(this.hub.deps.watchResource ? { resources: true } : {}),
-      ...(this.topics ? { topics: true } : {}),
+      ...(this.hub.deps.domainEvents
+        ? { topics: true, topicEpoch: this.hub.deps.domainEvents.epoch }
+        : {}),
     });
   }
 
@@ -466,8 +468,6 @@ class LiveConnection {
           reason: session === undefined ? 'not_found' : 'forbidden',
         });
       }
-      // After the session streams, whose revocation is the older contract.
-      await this.topics?.recheck();
     } catch (error) {
       if (
         scope.sessionId !== undefined &&
@@ -479,6 +479,9 @@ class LiveConnection {
       }
       this.hub.deps.logger?.warn({ err: error }, 'verity: live access recheck failed');
     }
+    // After the session streams, and whatever happened to them: topics decide
+    // (and fail closed) on their own.
+    if (!this.closed) await this.topics?.recheck();
   }
 }
 

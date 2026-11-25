@@ -119,6 +119,9 @@ export const liveServerFrameSchema = z.discriminatedUnion('k', [
     resources: z.boolean().optional(),
     /** The server accepts domain-event topic subscriptions (protocol 2). */
     topics: z.boolean().optional(),
+    /** Topic cursors are only valid within this epoch; a client holding
+     * cursors from another one drops them and reads snapshots instead. */
+    topicEpoch: z.string().min(1).max(64).optional(),
   }),
   z.object({
     k: z.literal('event'),

@@ -93,8 +93,10 @@ snapshots through the existing HTTP routes. A subscription without a cursor
 is also answered with `resync`, sent once the subscription is live: a view
 reads its snapshot then, so a change published while the subscription was
 still being authorized is in either the snapshot or the stream. Cursors share
-one server-wide sequence seeded from the wall clock, so a cursor from an
-earlier server process answers `resync` rather than an incomplete replay.
+one server-wide sequence that is valid within an epoch announced in `ready`; a
+client holding cursors of another epoch (a restarted server) drops them and
+reads snapshots. The sequence also starts from the wall clock, so an old
+cursor that still arrives answers `resync` rather than an incomplete replay.
 
 A topic ends with `topic_ended`: `forbidden` and `limit` are final, while
 `error` (an authorization check that could not decide) is retried by the

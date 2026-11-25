@@ -19,8 +19,13 @@ class FakeSocket implements LiveSocket {
     for (const listener of this.listeners.get('message') ?? [])
       listener({ data: JSON.stringify(frame) });
   }
-  ready(topics: boolean): void {
-    this.serve({ k: 'ready', v: 2, maxSessions: 8, ...(topics ? { topics: true } : {}) });
+  ready(topics: boolean, topicEpoch = 'epoch-1'): void {
+    this.serve({
+      k: 'ready',
+      v: 2,
+      maxSessions: 8,
+      ...(topics ? { topics: true, topicEpoch } : {}),
+    });
   }
   drop(): void {
     for (const listener of this.listeners.get('close') ?? []) listener({ code: 1006 });
@@ -126,6 +131,42 @@ describe('LiveConnection topics', () => {
     expect(h.socket().topicFrames()).toEqual([
       { k: 'topics.sub', topics: [{ topic: 'project:p1' }] },
     ]);
+  });
+
+  it('drops cursors of another server epoch instead of resuming from them', async () => {
+    // A restarted server (or one whose clock stepped back) never handed out
+    // these positions; resuming from them could skip changes silently.
+    const h = await harness();
+    h.socket().ready(true, 'epoch-1');
+    const view = recorder();
+    h.connection.subscribeTopic('project:p1', view.sink);
+    h.socket().serve({ k: 'domain', topic: 'project:p1', cursor: 7, event: change(1) });
+    h.socket().drop();
+    await h.reconnect();
+    h.socket().ready(true, 'epoch-2');
+    expect(h.socket().topicFrames()).toEqual([
+      { k: 'topics.sub', topics: [{ topic: 'project:p1' }] },
+    ]);
+  });
+
+  it('backs off retries while a topic keeps failing', async () => {
+    const delays: number[] = [];
+    const connection = new LiveConnection({
+      baseUrl: 'https://core.example/',
+      connect: () => socket,
+      getTicket: async () => 'ticket',
+      scheduleReconnect: (_run, delayMs) => delays.push(delayMs),
+      setInterval: () => 1,
+      clearInterval: () => undefined,
+    });
+    const socket = new FakeSocket();
+    connection.start();
+    await flush();
+    socket.ready(true);
+    connection.subscribeTopic('project:p1', recorder().sink);
+    for (let i = 0; i < 6; i += 1)
+      socket.serve({ k: 'topic_ended', topic: 'project:p1', reason: 'error' });
+    expect(delays).toEqual([5_000, 10_000, 20_000, 40_000, 60_000, 60_000]);
   });
 
   it('retries a topic the server ended with a transient error', async () => {
