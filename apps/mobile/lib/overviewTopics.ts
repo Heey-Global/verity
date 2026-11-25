@@ -2,8 +2,9 @@ import { RevisionGate, type DomainEvent, type LiveTopicSink } from '@verity/mobi
 import { useEffect, useRef } from 'react';
 import { liveConnectionFor } from './liveConnection';
 
-/** Project topics one view subscribes at most; the live connection allows 64
- * topics in total. */
+/** Project topics one view subscribes at most, leaving room for the project
+ * page and session topics within the connection's 64. A project past the cap,
+ * or one the server ends with `limit`, keeps following live hints and reads. */
 const MAX_PROJECT_TOPICS = 48;
 
 /**
@@ -37,6 +38,8 @@ export function useOverviewTopics(
       resync: () => {
         gate.reset();
         // Several topics answer a new subscription at once; one read serves all.
+        // Resyncs in separate frames are bounded by the view's own read
+        // coalescing (at most one read in flight and one after it).
         if (resyncQueued) return;
         resyncQueued = true;
         queueMicrotask(() => {

@@ -404,11 +404,14 @@ export class SessionListModel {
    * whether or not the list is on screen: an answered request must not come
    * back when Home is shown again. A list read that started before the event
    * may still carry the answered card, so the answer is reapplied to such
-   * reads; reads started after it are the server's word.
+   * reads; reads started after it are the server's word. A question opened
+   * after an answer may be stripped from such an older read; its own
+   * `choices.opened` reload brings it back.
    */
   applyDomainEvent(event: DomainEvent): void {
     const effect = applyOverviewEvent(this._sessions, event);
     if (effect.kind === 'reload') {
+      // `poll` coalesces: a burst of requests is one read in flight plus one.
       this.poll?.();
       return;
     }

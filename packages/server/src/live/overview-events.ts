@@ -132,6 +132,8 @@ function observeDecisions(
   };
   conductor.decidePermission = observed;
   // Undone on close, so a conductor that outlives this server reports nothing.
+  // Wrappers unwind in reverse order of installation; one server per conductor
+  // is the supported case.
   return () => {
     if (conductor.decidePermission !== observed) return;
     if (own === undefined) delete (conductor as Partial<Conductor>).decidePermission;
