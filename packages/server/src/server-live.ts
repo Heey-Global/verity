@@ -8,6 +8,7 @@ import {
   requestCredential,
   wsOriginAllowed,
 } from './auth.js';
+import type { DomainEventBus } from './live/domain-events.js';
 import { LiveHub } from './live/live-hub.js';
 import { ResourceObserver } from './live/resource-observer.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
@@ -77,13 +78,16 @@ export function createServerLiveHub(
     resources,
     lifecycle,
     trafficLedger,
+    domainEvents,
   }: {
     resources: ResourceObserver;
     lifecycle: ServerLifecycle;
     trafficLedger?: TrafficLedger | undefined;
+    domainEvents?: DomainEventBus | undefined;
   },
 ): LiveHub {
   const liveHub = new LiveHub({
+    domainEvents,
     ...(trafficLedger
       ? {
           onFrameSent: (kind: string, bytes: number) =>
