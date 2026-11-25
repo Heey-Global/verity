@@ -1,5 +1,6 @@
 import { type VerityClient, VerityApiError } from '@verity/mobile';
-import { useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
 import { Button, Card, Text } from './ui';
@@ -26,44 +27,53 @@ export function SecretApprovalHistory({
   const refresh = useRef<(() => Promise<void>) | undefined>(undefined);
 
   useEffect(() => {
-    const current = ++generation.current;
-    let stopped = false;
-    let loading = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    ++generation.current;
     busy.current = false;
     setWorking(false);
     setIndex(0);
     setError(undefined);
     setSnapshot(undefined);
-    const load = async (): Promise<void> => {
-      if (stopped || loading || busy.current || AppState.currentState === 'background') return;
-      loading = true;
-      try {
-        const requests = await client.secretApprovals.list(sessionId);
-        if (!stopped) setSnapshot({ sessionId, requests });
-      } catch {
-        // Older servers have no history endpoint. Never offer an unverified reopen action.
-        if (!stopped) setSnapshot(undefined);
-      } finally {
-        loading = false;
-      }
-    };
-    refresh.current = load;
-    const poll = async (): Promise<void> => {
-      await load();
-      if (!stopped) timer = setTimeout(() => void poll(), 10000);
-    };
-    void poll();
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void load();
-    });
-    return () => {
-      stopped = true;
-      if (generation.current === current) refresh.current = undefined;
-      clearTimeout(timer);
-      subscription.remove();
-    };
   }, [client, sessionId, refreshKey]);
+
+  // Polls only while this session's screen is focused. Session screens stay
+  // mounted beneath the ones pushed over them, so an unscoped timer keeps one
+  // poll per screen ever opened running for as long as the app does.
+  useFocusEffect(
+    useCallback(() => {
+      const current = generation.current;
+      let stopped = false;
+      let loading = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const load = async (): Promise<void> => {
+        if (stopped || loading || busy.current || AppState.currentState === 'background') return;
+        loading = true;
+        try {
+          const requests = await client.secretApprovals.list(sessionId);
+          if (!stopped) setSnapshot({ sessionId, requests });
+        } catch {
+          // Older servers have no history endpoint. Never offer an unverified reopen action.
+          if (!stopped) setSnapshot(undefined);
+        } finally {
+          loading = false;
+        }
+      };
+      refresh.current = load;
+      const poll = async (): Promise<void> => {
+        await load();
+        if (!stopped) timer = setTimeout(() => void poll(), 10000);
+      };
+      void poll();
+      const subscription = AppState.addEventListener('change', (state) => {
+        if (state === 'active') void load();
+      });
+      return () => {
+        stopped = true;
+        if (generation.current === current) refresh.current = undefined;
+        clearTimeout(timer);
+        subscription.remove();
+      };
+    }, [client, sessionId, refreshKey]),
+  );
 
   const reopen = async (id: string): Promise<void> => {
     if (busy.current) return;
