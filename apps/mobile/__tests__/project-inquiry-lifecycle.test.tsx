@@ -275,6 +275,7 @@ it('refreshes an approved inquiry when an older pending poll fails', async () =>
   await act(async () => {
     jest.advanceTimersByTime(60_000);
   });
+  fireEvent.press(view.getByRole('button', { name: 'Project requests' }));
   fireEvent.press(view.getByText('Allow once'));
   await flush();
   expect(read).toHaveBeenCalledTimes(2);

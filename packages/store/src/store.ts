@@ -1,3 +1,5 @@
+import { SecretKeyMetadataStore, type SecretKeyMetaRecord } from './secret-key-metadata.js';
+export type { SecretKeyMetaRecord } from './secret-key-metadata.js';
 import { AuthTokenStore, type AuthTokenRecord } from './auth-tokens.js';
 export type { AuthTokenRecord } from './auth-tokens.js';
 import {
@@ -345,14 +347,6 @@ export {
   type SessionAutomationInput,
 } from './session-automations.js';
 
-/** Master-password key-derivation metadata (non-secret): the scrypt salt and a
- *  verifier (a fixed marker encrypted under the derived key). The raw key is
- *  never stored — only re-derived in memory on unlock. */
-export interface SecretKeyMetaRecord {
-  salt: string;
-  verifier: string;
-}
-
 /** A persisted event tagged with its monotonic sequence (the bigserial id) and
  * its real persist time. `seq` orders + keys the event; `ts` is the row's
  * `created_at` as epoch milliseconds — store/transport metadata alongside `seq`,
@@ -650,6 +644,7 @@ export class EventStore implements EventSink {
     );
   }
 
+  private readonly secretKeyMetadata = new SecretKeyMetadataStore(() => this.db);
   private readonly authTokens = new AuthTokenStore(
     () => this.db,
     () => this.notifyBackupRevocations(),
@@ -1183,7 +1178,10 @@ export class EventStore implements EventSink {
   }
 
   private get projectLifecycle(): ProjectLifecycleStore {
-    return new ProjectLifecycleStore(() => this.db);
+    return new ProjectLifecycleStore(
+      () => this.db,
+      (id) => this.getProject(id),
+    );
   }
 
   get calendarWatch(): CalendarWatchStore {
@@ -4529,32 +4527,7 @@ export class EventStore implements EventSink {
     provisionError: string | null = null,
     provisionWarning: string | null = null,
   ): Promise<ProjectRecord | undefined> {
-    const leavesSleepLifecycle =
-      state !== 'sleeping_starting' && state !== 'sleeping' && state !== 'waking';
-    await this.db.transaction().execute(async (trx) => {
-      await trx
-        .updateTable('projects')
-        .set({
-          state,
-          ...(leavesSleepLifecycle
-            ? {
-                sleep_compatibility_fingerprint: null,
-                sleeping_since: null,
-                wake_started_at: null,
-              }
-            : {}),
-          provision_error: provisionError,
-          provision_warning: provisionWarning,
-          state_changed_at: sql`now()`,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .execute();
-      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
-        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
-      }
-    });
-    return this.getProject(id);
+    return this.projectLifecycle.updateProjectState(id, state, provisionError, provisionWarning);
   }
 
   /** Persist a sleep/wake lifecycle transition and its recovery metadata in one
@@ -4570,26 +4543,7 @@ export class EventStore implements EventSink {
       wakeStartedAt: Date | null;
     },
   ): Promise<ProjectRecord | undefined> {
-    await this.db.transaction().execute(async (trx) => {
-      await trx
-        .updateTable('projects')
-        .set({
-          state,
-          sleep_compatibility_fingerprint: metadata.sleepCompatibilityFingerprint,
-          sleeping_since: metadata.sleepingSince,
-          wake_started_at: metadata.wakeStartedAt,
-          provision_error: null,
-          provision_warning: null,
-          state_changed_at: sql`now()`,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .execute();
-      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
-        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
-      }
-    });
-    return this.getProject(id);
+    return this.projectLifecycle.updateProjectSleepState(id, state, metadata);
   }
 
   /** Record the effective image selected by provisioning without changing the
@@ -4607,27 +4561,14 @@ export class EventStore implements EventSink {
     imageRef: string,
     toolkitIdentity: string | null,
   ): Promise<void> {
-    await this.db
-      .updateTable('projects')
-      .set({
-        image_ref: imageRef,
-        toolkit_identity: toolkitIdentity,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    return this.projectLifecycle.recordProjectImageRef(id, imageRef, toolkitIdentity);
   }
 
   async setProjectSetupStatus(
     id: string,
     status: ProjectSetupState,
   ): Promise<ProjectRecord | undefined> {
-    await this.db
-      .updateTable('projects')
-      .set({ setup_status: status, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .execute();
-    return this.getProject(id);
+    return this.projectLifecycle.setProjectSetupStatus(id, status);
   }
 
   /**
@@ -4639,17 +4580,7 @@ export class EventStore implements EventSink {
    * GitHub's ISO string (display-only, never queried).
    */
   async updateProjectReleaseStatus(id: string, status: ProjectReleaseStatus): Promise<void> {
-    await this.db
-      .updateTable('projects')
-      .set({
-        latest_release_tag: status.tag,
-        latest_release_name: status.name,
-        latest_release_url: status.url,
-        latest_release_published_at: status.publishedAt,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    return this.projectLifecycle.updateProjectReleaseStatus(id, status);
   }
 
   async setSessionAutomation(
@@ -4950,48 +4881,19 @@ export class EventStore implements EventSink {
     return this.projectSettings.appendProjectMemory(projectId, text);
   }
 
-  /**
-   * Read the master-password key-derivation metadata (salt + verifier). Reads
-   * NO encrypted column, so it works while the store is sealed — that's the
-   * whole point: the unlock flow reads this to derive + verify the key.
-   */
+  /** Read the master-password key-derivation metadata. */
   async getSecretKeyMeta(): Promise<SecretKeyMetaRecord | undefined> {
-    const row = await this.db
-      .selectFrom('secret_key_meta')
-      .select(['salt', 'verifier'])
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    return row ? { salt: row.salt, verifier: row.verifier } : undefined;
+    return this.secretKeyMetadata.getSecretKeyMeta();
   }
 
-  /** Persist the salt + verifier when a master password is set (or changed). */
+  /** Persist the salt and verifier when a master password is set or changed. */
   async setSecretKeyMeta(meta: SecretKeyMetaRecord): Promise<void> {
-    await this.db
-      .insertInto('secret_key_meta')
-      .values({ id: 'global', salt: meta.salt, verifier: meta.verifier })
-      .onConflict((oc) =>
-        oc.column('id').doUpdateSet({
-          salt: meta.salt,
-          verifier: meta.verifier,
-          updated_at: sql`now()`,
-        }),
-      )
-      .execute();
+    return this.secretKeyMetadata.setSecretKeyMeta(meta);
   }
 
-  /**
-   * Atomically persist the meta ONLY if none exists yet. Returns true when this
-   * call inserted (won the first-run race), false when a row was already present.
-   * Closes the TOCTOU in first-run `/secret/init`: concurrent inits derive under
-   * different salts, but only the winner's meta lands and only it should unlock.
-   */
+  /** Return true only when this call initializes the key metadata. */
   async insertSecretKeyMetaIfAbsent(meta: SecretKeyMetaRecord): Promise<boolean> {
-    const res = await this.db
-      .insertInto('secret_key_meta')
-      .values({ id: 'global', salt: meta.salt, verifier: meta.verifier })
-      .onConflict((oc) => oc.column('id').doNothing())
-      .executeTakeFirst();
-    return (res?.numInsertedOrUpdatedRows ?? 0n) > 0n;
+    return this.secretKeyMetadata.insertSecretKeyMetaIfAbsent(meta);
   }
 
   // ── Per-device API auth tokens (C1 auth gate) ─────────────────────────────

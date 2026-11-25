@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { LatencyHistogram } from './latency-histogram.js';
 import {
+  MAX_EXTERNAL_SERIES,
   MAX_HTTP_SERIES,
   MAX_LIVE_CLIENTS,
   MAX_SESSIONS,
@@ -77,6 +78,23 @@ describe('ServerMetrics', () => {
         false,
       );
     expect(metrics.http.size).toBe(MAX_HTTP_SERIES + 1);
+  });
+
+  // Causes are route templates and reader names, but a cap keeps an unforeseen
+  // source of causes from growing the map without bound.
+  it('folds outbound series past the cap into one per target and status', () => {
+    const metrics = new ServerMetrics();
+    for (let index = 0; index < MAX_EXTERNAL_SERIES + 40; index += 1)
+      metrics.recordExternal({
+        target: 'github',
+        cause: `GET /r${index}`,
+        method: index % 2 === 0 ? 'GET' : 'POST',
+        status: 200,
+        durationMs: 5,
+        duplicate: false,
+        rateLimit: null,
+      });
+    expect(metrics.external.size).toBe(MAX_EXTERNAL_SERIES + 1);
   });
 
   it('caps live connections per client label', () => {
