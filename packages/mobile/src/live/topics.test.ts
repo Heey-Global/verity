@@ -167,6 +167,10 @@ describe('LiveConnection topics', () => {
     for (let i = 0; i < 6; i += 1)
       socket.serve({ k: 'topic_ended', topic: 'project:p1', reason: 'error' });
     expect(delays).toEqual([5_000, 10_000, 20_000, 40_000, 60_000, 60_000]);
+    // A new connection starts the backoff over.
+    socket.ready(true);
+    socket.serve({ k: 'topic_ended', topic: 'project:p1', reason: 'error' });
+    expect(delays.at(-1)).toBe(5_000);
   });
 
   it('retries a topic the server ended with a transient error', async () => {

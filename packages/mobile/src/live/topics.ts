@@ -78,6 +78,9 @@ export class LiveTopics {
       for (const entry of this.topics.values()) entry.cursor = undefined;
       this.epoch = epoch;
     }
+    // A fresh connection starts every backoff over: the earlier failures may
+    // have been cured by whatever made this connection possible.
+    for (const entry of this.topics.values()) entry.failures = 0;
     if (!supported || this.topics.size === 0) return;
     const requests: TopicSubscription[] = [...this.topics].map(([topic, { cursor }]) =>
       cursor === undefined ? { topic } : { topic, cursor },
