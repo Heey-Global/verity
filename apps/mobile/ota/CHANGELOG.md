@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.95.4](https://github.com/Heey-Global/verity/compare/mobile-v1.95.3...mobile-v1.95.4) (2026-11-25)
+
+
+### Features
+
+* **doppler:** support multiple connections and project bindings ([#2885](https://github.com/Heey-Global/verity/issues/2885)) ([cf7bf80](https://github.com/Heey-Global/verity/commit/cf7bf805b056761854ec0ec148b61e747ff39b4d))
+* **mockups:** support interactive HTML reviews ([#2865](https://github.com/Heey-Global/verity/issues/2865)) ([127c0be](https://github.com/Heey-Global/verity/commit/127c0be76807ca510ce1b55142344a6ae979ae23))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @devcontainers/cli to v0.91.0 ([#2873](https://github.com/Heey-Global/verity/issues/2873)) ([17a7bfc](https://github.com/Heey-Global/verity/commit/17a7bfc8537249d566d503198df9d4cf5db545f2))
+* **deps:** update dependency @fastify/rate-limit to v11.3.0 ([#2874](https://github.com/Heey-Global/verity/issues/2874)) ([7b818db](https://github.com/Heey-Global/verity/commit/7b818dbde9fa95a36961af6ba5da335e0e8c529f))
+* **deps:** update dependency @napi-rs/canvas to v1.2.0 ([#2875](https://github.com/Heey-Global/verity/issues/2875)) ([68690fa](https://github.com/Heey-Global/verity/commit/68690fac44030f7af6df259e87c2234c33ca1d01))
+
 ## [1.95.3](https://github.com/Heey-Global/verity/compare/mobile-v1.95.2...mobile-v1.95.3) (2026-11-23)
 
 

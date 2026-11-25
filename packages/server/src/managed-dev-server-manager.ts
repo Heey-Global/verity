@@ -2,6 +2,7 @@ import type { ManagedServerProviderSnapshot } from '@verity/events';
 import {
   managedSiblingEnvironment,
   stopOrphanManagedProcesses,
+  stopManagedServerUnlessGone,
   stopPreviousManagedRun,
   verifyRecoveryInstances,
 } from './managed-dev-server-recovery.js';
@@ -14,6 +15,8 @@ import {
   managedRunProviderCurrent,
 } from './managed-dev-server-secrets.js';
 import { ManagedDevServerLiveness } from './managed-dev-server-liveness.js';
+import { ManagedDevServerError } from './managed-dev-server-error.js';
+export { ManagedDevServerError };
 import type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
 export type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
 import { PreviewNetworkProtectionError } from './preview-network-policy.js';
@@ -142,16 +145,6 @@ export interface ManagedDevServerManagerOptions {
   wakeSandbox?: (projectId: string, sessionId: string) => Promise<unknown>;
   now?: () => number;
   log?: (message: string, detail?: Record<string, unknown>) => void;
-}
-
-export class ManagedDevServerError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode: number,
-  ) {
-    super(message);
-    this.name = 'ManagedDevServerError';
-  }
 }
 
 interface SessionContext {
@@ -951,7 +944,13 @@ export class ManagedDevServerManager {
     if (project.state !== 'active' || !project.containerName)
       throw new ManagedDevServerError('the project sandbox is not running', 409);
     // Recovery keeps the original runner's sandbox (ADR 0023 §4).
-    const previous = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+    let previous = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
+    // A start queued during wake already names the new runner, so only the
+    // persisted handoff still points at the sandbox whose process may survive.
+    if (previous?.previousRunSandboxUserId != null)
+      previous = await this.stopPriorRun(project, previous).catch(() => {
+        throw new ManagedDevServerError('The previous run could not be stopped. Try again.', 503);
+      });
     const runAs = by === 'recovery' ? (previous?.lastRunUserId ?? null) : person;
     const target = await this.inSandbox(project, runAs, true);
     if (
@@ -1157,7 +1156,7 @@ export class ManagedDevServerManager {
       if (project.state === 'active' && project.containerName)
         await this.stopPriorRun(project, instance)
           .then(() => this.inSandbox(project, instance.lastRunUserId))
-          .then((target) => this.options.runtime.stopManagedServer(target, instance.id))
+          .then((target) => stopManagedServerUnlessGone(this.options, target, instance.id))
           .catch((error: unknown) => {
             if (retry) throw error;
           });

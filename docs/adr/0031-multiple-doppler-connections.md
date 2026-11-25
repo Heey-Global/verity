@@ -32,8 +32,10 @@ old settings fields can replace the binding when there is at most one connection
 and one binding. Ambiguous writes direct the user to the current connection picker. Bindings live in
 `project_doppler_bindings`; the versioned secret-job catalog in
 `secret_provider_bindings` keeps its own semantics and is not reused. Embedded
-Secret Job catalogs use `secretJobs.doppler.connectionId` on new installations.
-Existing catalogs default to the migrated legacy connection. Project default
+Secret Job catalogs use `secretJobs.doppler.connectionId` when it is set.
+Otherwise they use the migrated legacy connection; on an installation without
+one, the first connection added while the catalog has no bindings takes the
+legacy ID and becomes the catalog connection. Project default
 changes do not change the catalog connection. Members can use their personal
 credential for a catalog config only when they have validated it for that
 config in the project.

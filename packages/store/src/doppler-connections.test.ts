@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { createSecretCipher } from './crypto.js';
 import { dopplerBindingGrantId, legacyDopplerBindingGrantId } from './doppler-binding-identity.js';
+import { LEGACY_DOPPLER_CONNECTION_ID } from './doppler-connections-migration.js';
 import {
   AmbiguousDopplerConnectionError,
   DopplerConnectionStore,
@@ -218,6 +219,62 @@ describe('Doppler connections', () => {
     expect((await connections.tokenBytes(id))?.toString()).toBe('dp.sa.rotated');
     expect((await connections.get(id))?.label).toBe('Core');
     expect(await connections.update('missing', { label: 'x' })).toBe(false);
+  });
+
+  // A fresh installation has no migrated connection, while an unconfigured Secret Job
+  // catalog reads through the legacy ID. Unless the first connection takes that ID,
+  // every catalog lookup fails until an administrator finds the config option.
+  it('lets the first connection of a fresh installation become the Secret Job catalog connection', async () => {
+    const workplace = { slug: 'northstar', name: 'Northstar' };
+    const first = await connections.addRecord({
+      label: 'Platform',
+      token: 'dp.sa.first',
+      workplace,
+      initializeLegacyCatalog: true,
+    });
+    expect(first.id).toBe(LEGACY_DOPPLER_CONNECTION_ID);
+    // The legacy settings mirror keeps an older Core able to read the catalog token.
+    const global = await ctx.db
+      .selectFrom('verity_settings')
+      .select('doppler_service_token')
+      .where('id', '=', 'global')
+      .executeTakeFirstOrThrow();
+    expect(cipher.decrypt(global.doppler_service_token!)).toBe('dp.sa.first');
+
+    const second = await connections.addRecord({
+      label: 'Second',
+      token: 'dp.sa.second',
+      workplace,
+      initializeLegacyCatalog: true,
+    });
+    expect(second.id).not.toBe(LEGACY_DOPPLER_CONNECTION_ID);
+    const unpinned = await connections.addRecord({
+      label: 'Third',
+      token: 'dp.sa.third',
+      workplace,
+    });
+    expect(unpinned.id).not.toBe(LEGACY_DOPPLER_CONNECTION_ID);
+  });
+
+  it('adds an ordinary connection when the catalog already has bindings', async () => {
+    await sql`insert into secret_provider_credentials (credential_ref, project_id, ciphertext)
+      values ('secretref:projects/p1/doppler/main/1', 'p1', 'encrypted')`.execute(ctx.db);
+    await sql`insert into secret_provider_bindings (
+        id, project_id, version, provider, credential_ref, doppler_project, doppler_config, state
+      ) values ('main', 'p1', 1, 'doppler', 'secretref:projects/p1/doppler/main/1',
+        'cluster', 'production', 'active')`.execute(ctx.db);
+    // Refusing would leave no way to create the connection the catalog must be
+    // reconfigured to; adopting would hand the reviewed grants to a new token.
+    const added = await connections.addRecord({
+      label: 'Platform',
+      token: 'dp.sa.first',
+      workplace: { slug: 'northstar', name: 'Northstar' },
+      initializeLegacyCatalog: true,
+    });
+    expect(added.id).not.toBe(LEGACY_DOPPLER_CONNECTION_ID);
+    expect(
+      await ctx.db.selectFrom('verity_settings').select('id').where('id', '=', 'global').execute(),
+    ).toEqual([]);
   });
 
   it('requires the confirmed bindings to match a connection’s current usage', async () => {

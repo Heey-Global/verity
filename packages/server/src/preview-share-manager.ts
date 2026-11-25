@@ -3,6 +3,7 @@ export type { CreatePreviewShareInput, PublicPreviewShare } from './preview-shar
 import { phaseTimer, type PhaseTimer } from './preview-share-diagnostics.js';
 import {
   authorizedPreviewPort,
+  assertManagedConnectorTarget,
   authorizedManagedPreviewPort,
   previewSandboxFor,
   previewTargetIsLive,
@@ -1407,15 +1408,14 @@ export class PreviewShareManager {
       created = await this.options.docker.createContainer(spec);
     }
     try {
-      if (!offline) await managedPreviewInstance(this.options.store, share);
+      if (!offline) await assertManagedConnectorTarget(this.options, share, targetContainerName);
       await this.options.docker.startContainer(created.id);
       timer?.mark('connectorStart');
       await this.waitConnectorReady(created.id);
       timer?.mark('connectorReady');
       return created.id;
     } catch (error) {
-      // A failed removal propagates as itself: the connector it leaves behind
-      // would collide with the next one by name, so nothing may skip past it.
+      // A failed removal propagates: a leftover connector would collide by name.
       await removeContainer(this.options.docker, created.id);
       if (typeof error === 'object' && error !== null) removedUnreadyConnectorFailures.add(error);
       throw error;

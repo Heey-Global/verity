@@ -614,6 +614,45 @@ describe('managed dev servers', () => {
     },
   );
 
+  // The queued start already names the new runner, so a direct start that only
+  // compared runners would launch beside the old process and its injected secrets.
+  it('fences the previous sandbox before a direct start after wake', async () => {
+    await manager.close();
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: (_project, worktree) => worktree,
+      sandboxContainer: async (_project, userId) => `sandbox-${userId ?? 'shared'}`,
+      wakeSandbox: async () => {},
+      sandboxRunning: async () => true,
+      now: () => now,
+    });
+    const entry = await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.approve('s1', 'Demo', { command: entry.command, workdir: '.' });
+    await manager.start('s1', 'Demo', 'operator', { person: 'first' });
+    const id = sandbox.started[0]!.instanceId;
+    await ctx.store.updateProjectState('p1', 'sleeping');
+    await manager.start('s1', 'Demo', 'operator', { person: 'second' });
+    await ctx.store.updateProjectState('p1', 'active');
+
+    sandbox.stop.mockRejectedValueOnce(new Error('docker unavailable'));
+    await expect(
+      manager.start('s1', 'Demo', 'operator', { person: 'second' }),
+    ).rejects.toMatchObject({ statusCode: 503 });
+    expect(sandbox.started).toHaveLength(1);
+
+    await manager.start('s1', 'Demo', 'operator', { person: 'second' });
+    expect(sandbox.stop).toHaveBeenCalledWith(
+      expect.objectContaining({ containerName: 'sandbox-first' }),
+      id,
+    );
+    expect(sandbox.started).toHaveLength(2);
+    expect(
+      (await ctx.store.managedDevServers.getInstance(id))?.previousRunSandboxUserId,
+    ).toBeNull();
+  });
+
   // A parent process (npm, a watcher) can outlive its crashed server; the
   // address must not keep pointing at nothing.
   it('crashes a running server that stays off its port while processes live', async () => {
@@ -777,6 +816,31 @@ describe('managed dev servers', () => {
         expect((await instanceOf()).state).toBe('running');
         await manager.tick();
       }
+      expect((await instanceOf()).state).toBe('stopped');
+    });
+
+    // Docker cannot stop a process in a deleted personal sandbox. Retrying would
+    // keep the instance marked running, and supervision retrying, forever.
+    it('stops after the last public link ends in a deleted sandbox', async () => {
+      await manager.close();
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        canSupervise: () => supervisionReady,
+        localShares: shares.local,
+        networkPorts: [8100, 8101],
+        sandboxWorktree: (_project: ProjectRecord, worktree: string) =>
+          worktree.replace('/clone', '/work'),
+        sandboxRunning: async () => false,
+        now: () => now,
+      });
+      await approvedDemo();
+      await manager.start('s1', 'Demo', 'operator', { local: false });
+      const instanceId = await listen();
+      const share = await publicLink(instanceId);
+      await ctx.store.transitionPublicPreviewShare(share.id, ['active', 'creating'], 'expired', {});
+      sandbox.stop.mockRejectedValueOnce(new Error('No such container'));
+      await manager.publicLinkEnded(instanceId);
       expect((await instanceOf()).state).toBe('stopped');
     });
 
