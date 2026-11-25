@@ -1,3 +1,5 @@
+import { SecretKeyMetadataStore, type SecretKeyMetaRecord } from './secret-key-metadata.js';
+export type { SecretKeyMetaRecord } from './secret-key-metadata.js';
 import { AuthTokenStore, type AuthTokenRecord } from './auth-tokens.js';
 export type { AuthTokenRecord } from './auth-tokens.js';
 import {
@@ -345,14 +347,6 @@ export {
   type SessionAutomationInput,
 } from './session-automations.js';
 
-/** Master-password key-derivation metadata (non-secret): the scrypt salt and a
- *  verifier (a fixed marker encrypted under the derived key). The raw key is
- *  never stored — only re-derived in memory on unlock. */
-export interface SecretKeyMetaRecord {
-  salt: string;
-  verifier: string;
-}
-
 /** A persisted event tagged with its monotonic sequence (the bigserial id) and
  * its real persist time. `seq` orders + keys the event; `ts` is the row's
  * `created_at` as epoch milliseconds — store/transport metadata alongside `seq`,
@@ -650,6 +644,7 @@ export class EventStore implements EventSink {
     );
   }
 
+  private readonly secretKeyMetadata = new SecretKeyMetadataStore(() => this.db);
   private readonly authTokens = new AuthTokenStore(
     () => this.db,
     () => this.notifyBackupRevocations(),
@@ -4886,48 +4881,19 @@ export class EventStore implements EventSink {
     return this.projectSettings.appendProjectMemory(projectId, text);
   }
 
-  /**
-   * Read the master-password key-derivation metadata (salt + verifier). Reads
-   * NO encrypted column, so it works while the store is sealed — that's the
-   * whole point: the unlock flow reads this to derive + verify the key.
-   */
+  /** Read the master-password key-derivation metadata. */
   async getSecretKeyMeta(): Promise<SecretKeyMetaRecord | undefined> {
-    const row = await this.db
-      .selectFrom('secret_key_meta')
-      .select(['salt', 'verifier'])
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    return row ? { salt: row.salt, verifier: row.verifier } : undefined;
+    return this.secretKeyMetadata.getSecretKeyMeta();
   }
 
-  /** Persist the salt + verifier when a master password is set (or changed). */
+  /** Persist the salt and verifier when a master password is set or changed. */
   async setSecretKeyMeta(meta: SecretKeyMetaRecord): Promise<void> {
-    await this.db
-      .insertInto('secret_key_meta')
-      .values({ id: 'global', salt: meta.salt, verifier: meta.verifier })
-      .onConflict((oc) =>
-        oc.column('id').doUpdateSet({
-          salt: meta.salt,
-          verifier: meta.verifier,
-          updated_at: sql`now()`,
-        }),
-      )
-      .execute();
+    return this.secretKeyMetadata.setSecretKeyMeta(meta);
   }
 
-  /**
-   * Atomically persist the meta ONLY if none exists yet. Returns true when this
-   * call inserted (won the first-run race), false when a row was already present.
-   * Closes the TOCTOU in first-run `/secret/init`: concurrent inits derive under
-   * different salts, but only the winner's meta lands and only it should unlock.
-   */
+  /** Return true only when this call initializes the key metadata. */
   async insertSecretKeyMetaIfAbsent(meta: SecretKeyMetaRecord): Promise<boolean> {
-    const res = await this.db
-      .insertInto('secret_key_meta')
-      .values({ id: 'global', salt: meta.salt, verifier: meta.verifier })
-      .onConflict((oc) => oc.column('id').doNothing())
-      .executeTakeFirst();
-    return (res?.numInsertedOrUpdatedRows ?? 0n) > 0n;
+    return this.secretKeyMetadata.insertSecretKeyMetaIfAbsent(meta);
   }
 
   // ── Per-device API auth tokens (C1 auth gate) ─────────────────────────────
