@@ -6,6 +6,25 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.104.0](https://github.com/Heey-Global/verity/compare/v4.103.1...v4.104.0) (2026-11-25)
+
+
+### Features
+
+* **server:** count outbound calls per target and cause ([#2910](https://github.com/Heey-Global/verity/issues/2910)) ([7d8c7ca](https://github.com/Heey-Global/verity/commit/7d8c7ca1df5531fb6dcf609b4d5e299e7e5b7837))
+* **server:** in-memory server monitoring and diagnostic report ([#2905](https://github.com/Heey-Global/verity/issues/2905)) ([f2febee](https://github.com/Heey-Global/verity/commit/f2febee15153fd1c1561e87971252460acfd3164))
+
+
+### Bug Fixes
+
+* **dependencies:** report recovery overflow before inventory limits ([#2898](https://github.com/Heey-Global/verity/issues/2898)) ([befd2ab](https://github.com/Heey-Global/verity/commit/befd2ab53d1ee3c473d729669901d9e207b08902))
+* **runner:** accept qualified Doppler secret references ([#2913](https://github.com/Heey-Global/verity/issues/2913)) ([b12fd2a](https://github.com/Heey-Global/verity/commit/b12fd2aaf72b7223bec13d83ca077c29a36d8a20))
+
+
+### Performance Improvements
+
+* **live:** compress and revalidate overview reads, settle Home cards ([#2909](https://github.com/Heey-Global/verity/issues/2909)) ([a8dd0ff](https://github.com/Heey-Global/verity/commit/a8dd0ffec4d3fa8b9cb5f799457780ff2ba954a5))
+
 ## [4.103.1](https://github.com/Heey-Global/verity/compare/v4.103.0...v4.103.1) (2026-11-25)
 
 
