@@ -126,7 +126,9 @@ function isStoreWiring(initializer) {
         argument.parameters.length === 0 &&
         ts.isPropertyAccessExpression(argument.body) &&
         argument.body.expression.kind === ts.SyntaxKind.ThisKeyword &&
-        argument.body.name.text === 'db',
+        (argument.body.name.text === 'db' ||
+          (initializer.expression.text === 'GoogleWorkspaceStore' &&
+            argument.body.name.text === 'googleAccounts')),
     )
   );
 }
