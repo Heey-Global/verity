@@ -160,6 +160,10 @@ export class SessionListModel {
   /** Names being saved, shown over the store's copy until the answer. */
   private pendingNames = new Map<string, { name: string | null; mutation: number }>();
   private nameMutations = 0;
+  /** Favorites and orders the server stored while a newer write was out,
+   * which the store has not taken. */
+  private favoritesStored = new Set<string>();
+  private ordersStored = new Set<string | null>();
   /** The newest rename of each session; older answers stay out of the store. */
   private latestRenames = new Map<string, number>();
   /** Names the server stored while a later rename of the session was out. */
@@ -178,18 +182,23 @@ export class SessionListModel {
   private publishedSessions: SessionSummary[] = [];
   private orderedSource: SessionSummary[] | undefined;
   private orderedVersion = -1;
+  private orderedOwnChanges = -1;
+  /** Counts the model's own changes, each announced by `emit`. */
+  private ownChanges = 0;
+  /** Set while the model writes into the store; it announces that itself. */
+  private writingStore = false;
   private shownSessions: SessionSummary[] = [];
 
   get state(): SessionListState {
     const store = this.currentStore();
     const version = store === undefined ? -1 : store.getVersion();
-    // From the store, Home's pending changes are laid on at each read of the
-    // state, since they change without a new `_sessions`; row identities
-    // still hold through `reuseSnapshotRecords`.
+    // From the store, Home's pending changes are laid on too; they can change
+    // without a new `_sessions`, but never without an `emit`.
+    const own = store === undefined ? -1 : this.ownChanges;
     if (
-      store !== undefined ||
       this.orderedSource !== this._sessions ||
-      this.orderedVersion !== version
+      this.orderedVersion !== version ||
+      this.orderedOwnChanges !== own
     ) {
       this.shownSessions = store === undefined ? this._sessions : this.shownFrom(store);
       this.publishedSessions = reuseSnapshotRecords(
@@ -199,6 +208,7 @@ export class SessionListModel {
       );
       this.orderedSource = this._sessions;
       this.orderedVersion = version;
+      this.orderedOwnChanges = own;
     }
     const shown = this.shownSessions;
     return {
@@ -270,7 +280,12 @@ export class SessionListModel {
     const store = this.opts.store?.();
     const held = store?.sessions().filter(covers) ?? [];
     if (store === undefined || held.length === 0) return;
-    store.applySessions(store.beginRead(), held.map(change), { covers });
+    this.writingStore = true;
+    try {
+      store.applySessions(store.beginRead(), held.map(change), { covers });
+    } finally {
+      this.writingStore = false;
+    }
   }
 
   /** A confirmed or restored order, as {@link applyOrder} shows it. */
@@ -294,15 +309,20 @@ export class SessionListModel {
   private forget(sessionId: string): void {
     const store = this.opts.store?.();
     if (store?.session(sessionId) === undefined) return;
-    store.applySessions(store.beginRead(), [], {
-      covers: (session) => session.sessionId === sessionId,
-    });
+    this.writingStore = true;
+    try {
+      store.applySessions(store.beginRead(), [], {
+        covers: (session) => session.sessionId === sessionId,
+      });
+    } finally {
+      this.writingStore = false;
+    }
   }
 
   /** The store changed (an event, another view's read). Shown only while the
    * list runs; {@link start} catches up. */
   storeChanged(): void {
-    if (this.poll !== undefined) this.emit();
+    if (this.poll !== undefined && !this.writingStore) this.opts.onChange?.(this.state);
   }
 
   /** Reload the session list now. Safe to call concurrently with polling — a
@@ -472,7 +492,11 @@ export class SessionListModel {
         const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
         this.confirmedFavorites.set(sessionId, stored);
         // A newer choice is on its way; the store takes its answer instead.
-        if (this.favoriteMutations.get(sessionId) !== mutation) return;
+        if (this.favoriteMutations.get(sessionId) !== mutation) {
+          this.favoritesStored.add(sessionId);
+          return;
+        }
+        this.favoritesStored.delete(sessionId);
         this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
         this.applyFavorite(sessionId, stored);
         this.adoptFavorite(sessionId, stored);
@@ -482,7 +506,9 @@ export class SessionListModel {
         const confirmed = this.confirmedFavorites.get(sessionId) ?? previous;
         this.pendingFavorites.set(sessionId, { favorite: confirmed, maxRequest: this.reqSeq });
         this.applyFavorite(sessionId, confirmed);
-        this.adoptFavorite(sessionId, confirmed);
+        // The store never took the choice that failed; it lacks only an
+        // earlier one the server stored meanwhile.
+        if (this.favoritesStored.delete(sessionId)) this.adoptFavorite(sessionId, confirmed);
         this._error = error instanceof VerityApiError ? error.message : 'failed to update favorite';
       }
       this.emit();
@@ -516,7 +542,11 @@ export class SessionListModel {
       try {
         const stored = await this.opts.client.reorderSessions!(projectId, ids);
         this.confirmedOrders.set(projectId, new Map(stored.map((id, index) => [id, index])));
-        if (this.orderMutations.get(projectId) !== mutation) return;
+        if (this.orderMutations.get(projectId) !== mutation) {
+          this.ordersStored.add(projectId);
+          return;
+        }
+        this.ordersStored.delete(projectId);
         this.pendingOrders.set(projectId, { ids: stored, maxRequest: this.reqSeq });
         this.applyOrder(projectId, stored);
         this.adoptOrder(projectId, stored);
@@ -529,11 +559,12 @@ export class SessionListModel {
             ? { ...s, sortOrder: confirmed.get(s.sessionId) ?? null }
             : s,
         );
-        // An earlier write may have been confirmed while this one was pending.
-        this.adoptWhere(
-          (s) => (s.projectId ?? null) === projectId,
-          (s) => ({ ...s, sortOrder: confirmed.get(s.sessionId) ?? null }),
-        );
+        // As for favorites: only an earlier order the server stored meanwhile.
+        if (this.ordersStored.delete(projectId))
+          this.adoptWhere(
+            (s) => (s.projectId ?? null) === projectId,
+            (s) => ({ ...s, sortOrder: confirmed.get(s.sessionId) ?? null }),
+          );
         // Preserve rollback against refreshes that began before the failed write.
         this.pendingOrders.delete(projectId);
         this.confirmedOrders.delete(projectId);
@@ -841,6 +872,7 @@ export class SessionListModel {
   }
 
   private emit(): void {
+    this.ownChanges += 1;
     this.opts.onChange?.(this.state);
   }
 }

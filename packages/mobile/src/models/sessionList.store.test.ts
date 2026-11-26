@@ -267,4 +267,33 @@ describe('SessionListModel with the shared overview store', () => {
     expect(shown('s1')?.name).toBe('First');
     model.stop();
   });
+
+  // The store never took the choice that failed; writing Home's earlier value
+  // back would undo what it took from elsewhere meanwhile.
+  it('leaves the store alone when a favorite fails', async () => {
+    let fail: () => void = () => undefined;
+    const { model, store } = harness(() => Promise.resolve([summary('s1')]), {
+      setSessionFavorite: vi.fn(
+        () => new Promise<never>((_resolve, reject) => (fail = () => reject(new Error('no')))),
+      ),
+    });
+    await model.refresh();
+    const write = model.setFavorite('s1', true);
+    projectPageRead(store, [summary('s1', { favorite: true })]);
+    fail();
+    await write;
+    expect(store.session('s1')?.favorite).toBe(true);
+  });
+
+  it('renders an action once, though it also changes the store', async () => {
+    const onChange = vi.fn();
+    const { model } = harness(() => Promise.resolve([summary('s1')]), {}, onChange);
+    await model.refresh();
+    model.start();
+    onChange.mockClear();
+    model.applySessionStatus('s1', 'idle');
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0]![0].sessions[0].status).toBe('idle');
+    model.stop();
+  });
 });

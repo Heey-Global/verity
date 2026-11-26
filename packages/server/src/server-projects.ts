@@ -1,4 +1,3 @@
-import { hiddenSessionIds } from './hidden-sessions.js';
 import {
   isLocalProject,
   LOCAL_PROJECT_OWNER,
@@ -44,7 +43,6 @@ import {
   type PublicProjectRecord,
   type SandboxRepairVerdicts,
   type SessionArtifactPurgeBudget,
-  type SessionSummary,
 } from './server-types.js';
 import { isDriftReportable, toolkitDriftEntryOf } from './toolkit-drift.js';
 import {
@@ -62,7 +60,7 @@ import {
   publicProjectSettings,
   SESSION_ARTIFACT_PURGE_TIMEOUT_MS,
 } from './server-support.js';
-import type { createServerSessionOverview } from './server-session-overview.js';
+import type { SessionListReader } from './session-list-route.js';
 
 /**
  * Closures `buildServer` still owns that the project routes depend on. Each one
@@ -76,7 +74,8 @@ export interface ProjectsWiring {
     exceptSessionIds?: ReadonlySet<string>,
   ) => Promise<ProjectActivitySnapshot>;
   hasMeetingJob: (sessionId: string) => boolean;
-  summarizeSessions: ReturnType<typeof createServerSessionOverview>['summarizeSessions'];
+  /** The project page lists its sessions exactly as `/sessions` does. */
+  listSessionsAs: SessionListReader;
   /** The teardown sets `ServerContext` exposes read-only; only the delete writes them. */
   projectsBeingDeleted: Set<string>;
   sessionsBeingReaped: Set<string>;
@@ -88,8 +87,6 @@ export interface ProjectsWiring {
     provision: Promise<unknown>,
     onError: (error: unknown) => void,
   ) => void;
-  /** Wiki maintenance sessions started by this process and not yet recorded. */
-  wikiMaintenanceSessions: Set<string>;
 }
 
 /** What other areas use from the project routes. */
@@ -109,18 +106,16 @@ export function installProjects(
     presentProject,
     projectActivity,
     hasMeetingJob,
-    summarizeSessions,
+    listSessionsAs,
     projectsBeingDeleted,
     sessionsBeingReaped,
     projectDeletesInFlight,
     settleProjectSpawns,
     afterProjectProvision,
     settleBackgroundProvision,
-    wikiMaintenanceSessions,
   }: ProjectsWiring,
 ): InstalledProjects {
   const { deps, conductor } = ctx;
-  const hiddenSessions = hiddenSessionIds(deps.eventStore, wikiMaintenanceSessions);
   // A link keeps its original local identity reserved while the DB row
   // temporarily carries the GitHub target. This closes the only interval in
   // which a concurrent local create could steal the slug and block rollback.
@@ -332,22 +327,6 @@ export function installProjects(
       : {}),
   });
 
-  // Read marks and dismissed Home items of the person asking; a session they
-  // never touched is unread-neutral and hides nothing.
-  const sessionsAsSeenBy = async (
-    viewer: string,
-    summaries: SessionSummary[],
-  ): Promise<SessionSummary[]> => {
-    const views = await deps.eventStore.viewState.sessionViews(viewer);
-    return summaries.map((summary) => {
-      const view = views.get(summary.sessionId);
-      return {
-        ...summary,
-        lastSeenEventCount: view?.lastSeenEventCount ?? null,
-        inboxDismissed: view?.inboxDismissed ?? [],
-      };
-    });
-  };
   // What this person may do in a project, so the app offers only that. The
   // routes check again; this only spares an action the server would refuse.
   // Without accounts the one operator may do everything, and the route policy
@@ -497,7 +476,7 @@ export function installProjects(
     isUniqueViolation,
   });
   registerProjectDetailRoutes(app, {
-    getDetail: async (id, viewer) => {
+    getDetail: async (id, viewer, localUserId) => {
       const cached = await deps.eventStore.getProject(id);
       if (cached === undefined) return undefined;
       const project = deps.reconcileProjectState
@@ -505,12 +484,6 @@ export function installProjects(
         : cached;
       const settings =
         (await projectSettingsStore(deps.eventStore).getProjectSettingsRaw(id)) ?? null;
-      // Hidden from this page as from `/sessions`: the app keeps one copy of
-      // the sessions both list.
-      const [all, hidden] = await Promise.all([deps.eventStore.listSessions(), hiddenSessions()]);
-      const sessions = all.filter(
-        (session) => session.projectId === id && !hidden.has(session.sessionId),
-      );
       const resolved = await resolveProjectRelease(project);
       const sandboxUpdate = withSelfRepair(
         resolved.project,
@@ -541,7 +514,7 @@ export function installProjects(
                 // The viewer's own default, not anyone else's.
                 defaultModel: await ownDefaultModel(deps.eventStore, viewer, id, settings),
               },
-        sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
+        sessions: await listSessionsAs(localUserId, id),
         // What this person may change here, so the app offers only that. The
         // routes check again; this only spares an edit the server would refuse.
         viewer: await viewerRights(viewer, id),

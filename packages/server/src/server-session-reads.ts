@@ -1,5 +1,4 @@
 import { registerAttachmentRoute } from './attachment-route.js';
-import { hiddenSessionIds } from './hidden-sessions.js';
 import type { FastifyInstance } from 'fastify';
 import {
   attentionSignals,
@@ -25,7 +24,7 @@ import type { SessionDetail } from './server-types.js';
 import type { ServerUpdateController } from './server-update-routes.js';
 import { sessionGoogleStatus } from './session-google-status.js';
 import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
-import { registerSessionListRoute } from './session-list-route.js';
+import { registerSessionListRoute, type SessionListReader } from './session-list-route.js';
 import { recentSessionDiagnostics } from './session-observation.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
@@ -54,7 +53,7 @@ export function installSessionList(
   app: FastifyInstance,
   ctx: ServerContext,
   { codexUsage, wikiMaintenanceSessions, sessionOverview }: SessionListWiring,
-): { readSecretStatus: () => Promise<SecretStatus> } {
+): { readSecretStatus: () => Promise<SecretStatus>; listSessionsAs: SessionListReader } {
   const { deps } = ctx;
   const { prunePrSummaryCache, pruneBranchCache, summarizeSessions } = sessionOverview;
   // Project list / status badges + token totals — a read-time projection over
@@ -161,7 +160,7 @@ export function installSessionList(
   };
 
   registerSessionOrderRoute(app, { store: deps.eventStore });
-  registerSessionListRoute(app, {
+  const listSessionsAs = registerSessionListRoute(app, {
     store: deps.eventStore,
     visibleTo: async (viewer) => {
       if (await deps.eventStore.isActiveAdministrator(viewer)) return { all: true };
@@ -180,11 +179,18 @@ export function installSessionList(
     pruneBranchCache,
     summarizeSessions,
     collectAttention,
-    hiddenSessionIds: hiddenSessionIds(deps.eventStore, wikiMaintenanceSessions),
+    // From the store, so a session another server generation created is hidden
+    // too; the local set covers one created moments ago and not yet recorded.
+    hiddenSessionIds: async () => {
+      const recorded = await deps.eventStore.wikiMaintenance.sessionIds();
+      for (const id of recorded) wikiMaintenanceSessions.add(id);
+      for (const id of wikiMaintenanceSessions) recorded.add(id);
+      return recorded;
+    },
   });
 
   registerMessageSearchRoute(app, { eventStore: deps.eventStore });
-  return { readSecretStatus };
+  return { readSecretStatus, listSessionsAs };
 }
 
 /** Closures `buildServer` still owns that the session reads depend on. */

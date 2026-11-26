@@ -5,7 +5,7 @@ describe('GET /projects/:id sessions', () => {
   // The app keeps one copy of the sessions its lists read, and Home's read
   // speaks for every session. A session only the project page listed would be
   // dropped by each Home read and brought back by each page read.
-  it('lists the sessions of the project that /sessions lists, maintenance ones left out', async () => {
+  it('lists the sessions of the project exactly as /sessions does, maintenance ones left out', async () => {
     await ctx.store.upsertProject({
       id: 'p-hidden',
       owner: 'heey-global',
@@ -24,14 +24,17 @@ describe('GET /projects/:id sessions', () => {
 
     const home = (await app.inject({ method: 'GET', url: '/sessions' }))
       .json<Array<{ sessionId: string; projectId?: string | null }>>()
-      .filter((session) => session.projectId === 'p-hidden')
-      .map((session) => session.sessionId);
-    const page = (await app.inject({ method: 'GET', url: '/projects/p-hidden' }))
-      .json<{ sessions: Array<{ sessionId: string }> }>()
-      .sessions.map((session) => session.sessionId);
+      .filter((session) => session.projectId === 'p-hidden');
+    const page = (await app.inject({ method: 'GET', url: '/projects/p-hidden' })).json<{
+      sessions: Array<{ sessionId: string }>;
+    }>().sessions;
 
-    expect(page.sort()).toEqual(home.sort());
+    // Field for field: a row the page read with fewer fields would replace
+    // Home's row in the app's shared copy and drop them there.
+    const byId = (rows: Array<{ sessionId: string }>) =>
+      [...rows].sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+    expect(byId(page)).toEqual(byId(home));
     // Not vacuous: the visible session is on both.
-    expect(page).toEqual(['s-visible']);
+    expect(page.map((session) => session.sessionId)).toEqual(['s-visible']);
   });
 });
