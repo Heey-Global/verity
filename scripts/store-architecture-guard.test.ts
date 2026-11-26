@@ -60,6 +60,12 @@ it('detects query closures in fields and top-level helpers', () => {
   expect(Object.keys(result)).toEqual(['query', 'module: query']);
 });
 
+it('detects line breaks that change return semantics', () => {
+  const original = facadeImplementations('class EventStore { read() { return 1; } }');
+  const changed = facadeImplementations('class EventStore { read() { return\n1; } }');
+  expect(compareImplementations(changed, original)).toHaveLength(1);
+});
+
 it('rejects changes to retained implementations and requires retired exceptions to disappear', () => {
   const old = facadeImplementations('class EventStore { read() { return 1; } }');
   const changed = facadeImplementations('class EventStore { read() { return 2; } }');
@@ -75,6 +81,7 @@ it.each([
   "export * from './store.js';",
   "const target = './store.js'; import(target);",
   "import './index.js';",
+  "import './index.js'; import './store.js';",
 ])('rejects a store domain back-import through %s', (statement) => {
   const root = mkdtempSync(join(tmpdir(), 'store-imports-'));
   roots.push(root);
@@ -93,9 +100,8 @@ it.each([
     mkdirSync(join(root, file, '..'), { recursive: true });
     writeFileSync(join(root, file), text);
   }
-  expect(
-    storeImportViolations(root, Object.keys(files)).some((path) =>
-      path.startsWith('packages/store/src/domain.ts -> '),
-    ),
-  ).toBe(true);
+  const targets = ['index', 'store'].filter((name) => statement.includes('./' + name + '.js'));
+  expect(storeImportViolations(root, Object.keys(files))).toEqual(
+    targets.map((name) => 'packages/store/src/domain.ts -> packages/store/src/' + name + '.ts'),
+  );
 });

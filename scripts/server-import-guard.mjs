@@ -136,7 +136,7 @@ function specifiers(file, text) {
 }
 
 /** @param {string} root @param {string[]} files
- * @param {{ source?: string, roots?: string[], entries?: Set<string> }} options */
+ * @param {{ source?: string, roots?: string[], entries?: Set<string>, reportEdges?: boolean }} options */
 export function serverImportViolations(root, files, options = {}) {
   const sourcePrefix = options.source ?? SOURCE;
   const roots = options.roots ?? ROOTS;
@@ -257,6 +257,19 @@ export function serverImportViolations(root, files, options = {}) {
           paths.set(file, [file, ...(paths.get(target) ?? [])]);
           pending.push(file);
         }
+      }
+      if (options.reportEdges) {
+        return [...paths.keys()].flatMap((target) =>
+          [...(reverse.get(target) ?? [])]
+            .filter(
+              (file) =>
+                file.startsWith(sourcePrefix) &&
+                file !== targetRoot &&
+                !entries.has(file.slice(sourcePrefix.length)) &&
+                !testConsumer(file),
+            )
+            .map((file) => file + ' -> ' + target),
+        );
       }
       return [...paths.entries()]
         .filter(

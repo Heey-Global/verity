@@ -70,23 +70,13 @@ export function facadeImplementations(text) {
     if (forwarded || (member.parent === facade && isStoreWiring(initializer))) continue;
     const key = member.parent === facade ? name : 'module: ' + name;
     if (Object.hasOwn(debt, key)) throw new Error('Duplicate facade exception: ' + key);
-    // Token hashing ignores formatting and comments but detects edits to retained implementations.
-    const scanner = ts.createScanner(
-      ts.ScriptTarget.Latest,
-      true,
-      ts.LanguageVariant.Standard,
-      member.getText(source),
-    );
-    const tokens = [];
-    while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken) tokens.push(scanner.getTokenText());
+    // Print the parsed node so line breaks that change the syntax also change the hash.
+    const syntax = ts
+      .createPrinter({ removeComments: true })
+      .printNode(ts.EmitHint.Unspecified, member, source);
     Object.defineProperty(debt, key, {
       enumerable: true,
-      value:
-        createHash('sha256')
-          .update(JSON.stringify(tokens))
-          .digest('hex')
-          .match(/.{8}/g)
-          ?.join(' ') ?? '',
+      value: createHash('sha256').update(syntax).digest('hex').match(/.{8}/g)?.join(' ') ?? '',
     });
   }
   return debt;
@@ -135,6 +125,7 @@ export function storeImportViolations(root, files) {
     source: 'packages/store/src/',
     roots: [FACADE],
     entries: new Set(['index.ts', 'testing.ts']),
+    reportEdges: true,
   });
 }
 
