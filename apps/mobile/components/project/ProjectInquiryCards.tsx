@@ -23,8 +23,10 @@ export function useInquiryDecisions(client: VerityClient, resource: InquiryResou
     setBusy(id);
     void client
       .decideProjectInquiry(targetProjectId, id, decision)
-      .then(resource.reload, (error: unknown) =>
-        resource.setError(error instanceof Error ? error.message : 'Could not save decision.'),
+      .then(
+        () => resource.reload(),
+        (error: unknown) =>
+          resource.setError(error instanceof Error ? error.message : 'Could not save decision.'),
       )
       .finally(() => setBusy(undefined));
   };

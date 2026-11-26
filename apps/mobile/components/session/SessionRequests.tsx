@@ -195,7 +195,7 @@ export function TranscriptSecretApproval({ request }: { request: SecretRequest }
 /**
  * The turn that carries a project's answer into the asking session, drawn as
  * a card. Only a request the server lists for this session, under the same
- * title, becomes a card, and the card shows the server's answer; any other
+ * title and with the same answer, becomes a card; any other
  * prompt, including one that only quotes the format, stays the bubble given.
  */
 export function InquiryAnswerTurn({ text, children }: { text: string; children: ReactNode }) {
@@ -208,6 +208,8 @@ export function InquiryAnswerTurn({ text, children }: { text: string; children: 
           (item) =>
             item.id === turn.inquiryId &&
             item.title === turn.title &&
+            // What the agent read must be what the card shows.
+            (item.answer ?? '') === turn.answer &&
             item.sourceSessionId === requests.sessionId &&
             item.status === 'answered',
         );
