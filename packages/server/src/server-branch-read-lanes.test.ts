@@ -106,4 +106,36 @@ describe('session branch reads', () => {
       clock.mockRestore();
     }
   });
+
+  it('keeps active list branches on the short TTL while a known idle one waits', async () => {
+    const current = vi.fn(async () => 'feat/one');
+    const server = serve(current);
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      for (const id of ['idle', 'active']) {
+        await session(id);
+        await ctx.store.appendEvent(id, {
+          t: 'status',
+          state: id === 'active' ? 'running' : 'completed',
+        });
+      }
+      const poll = async () => {
+        await server.inject({ method: 'GET', url: '/sessions' });
+        await new Promise((resolve) => setImmediate(resolve));
+      };
+      await poll();
+      expect(current).toHaveBeenCalledTimes(2);
+      current.mockClear();
+      now = 10_001;
+      await poll();
+      expect(current.mock.calls).toEqual([[join(worktreeRoot, 'active')]]);
+      current.mockClear();
+      now = 120_001;
+      await poll();
+      expect(current.mock.calls).toEqual([[join(worktreeRoot, 'active')]]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });
