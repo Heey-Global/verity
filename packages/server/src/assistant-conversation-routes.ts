@@ -149,8 +149,14 @@ export function registerAssistantConversationRoutes(
     const changed = wait > 0 && query.after !== undefined ? watch(reply, found.sessionId) : null;
     try {
       let current = await conversation(found.sessionId);
-      if (changed !== null && current.revision === query.after && (await changed.next(wait)))
-        current = await conversation(found.sessionId);
+      let waitMs = 0;
+      if (changed !== null && current.revision === query.after) {
+        const waitingSince = performance.now();
+        const didChange = await changed.next(wait);
+        waitMs = performance.now() - waitingSince;
+        if (didChange) current = await conversation(found.sessionId);
+      }
+      reply.header('Server-Timing', `assistant-wait;dur=${waitMs.toFixed(2)}`);
       return {
         availability: 'ready',
         sessionId: found.sessionId,

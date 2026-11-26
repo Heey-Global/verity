@@ -66,8 +66,7 @@ function interval(entry: Entry, background: boolean): number {
   return entry.status.phase === 'open' ? 120_000 : 300_000;
 }
 
-function unavailable(status: PullRequestStatus | null): PullRequestStatus | null {
-  if (status === null) return null;
+export function unavailablePullRequestStatus(status: PullRequestStatus): PullRequestStatus {
   const result = {
     ...status,
     pipeline: 'unknown' as const,
@@ -153,11 +152,11 @@ export function createSessionPrCache(options: {
       try {
         status = await (readOptions.load?.() ?? options.load(session));
         if (status?.observationFailed === true) {
-          status = unavailable(status);
+          status = unavailablePullRequestStatus(status);
           failures = Math.min(5, (previous?.failures ?? 0) + 1);
         }
       } catch {
-        status = unavailable(previous?.status ?? null);
+        status = previous?.status ? unavailablePullRequestStatus(previous.status) : null;
         failures = Math.min(5, (previous?.failures ?? 0) + 1);
       }
       if (!token.disowned) {

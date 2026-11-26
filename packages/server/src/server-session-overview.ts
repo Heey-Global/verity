@@ -519,7 +519,10 @@ export function createServerSessionOverview({
     );
     if (observedPullRequests.get(session.worktree) !== snapshot) {
       observedPullRequests.set(session.worktree, snapshot);
-      resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(session.sessionId)}/branches`,
+        'pr-status',
+      );
     }
     return rows;
   };
@@ -590,7 +593,10 @@ export function createServerSessionOverview({
         );
       // Cache completion is not an HTTP mutation; without this the overview waits
       // for a later observation even though the opened session already knows the PR.
-      resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(session.sessionId)}/branches`,
+        'pr-status',
+      );
     },
   });
   const backgroundPr = createPrBackgroundPolicy({

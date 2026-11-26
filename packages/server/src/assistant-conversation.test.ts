@@ -522,9 +522,14 @@ describe('assistant conversation routes', () => {
       emit({ t: 'prompt', text: 'What is open?' });
       const started = Date.now();
       const behind = await app.inject({ url: '/assistant/conversation?after=0&waitMs=20000' });
+      expect(behind.headers['server-timing']).toBe('assistant-wait;dur=0.00');
       expect(behind.json<AssistantConversation>().revision).toBe(1);
       expect(Date.now() - started).toBeLessThan(5_000);
       const unchanged = await app.inject({ url: '/assistant/conversation?after=1&waitMs=50' });
+      const wait = String(unchanged.headers['server-timing']).match(
+        /^assistant-wait;dur=(\d+\.\d+)$/u,
+      );
+      expect(Number(wait?.[1])).toBeGreaterThanOrEqual(40);
       expect(unchanged.json<AssistantConversation>().revision).toBe(1);
     } finally {
       await app.close();
