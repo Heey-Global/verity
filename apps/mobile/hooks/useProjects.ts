@@ -14,6 +14,7 @@ import {
 } from '@verity/mobile';
 import { liveConnectionFor, subscribeLiveRefresh } from '../lib/liveConnection';
 import { getVerityBaseUrl } from '../lib/client';
+import { listedInOverview } from '../lib/overviewProjects';
 import { useOverviewStore, useOverviewTopics } from '../lib/overviewTopics';
 import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import {
@@ -24,12 +25,6 @@ import {
   publicPreviewSessionIds,
   type ProjectPreviewLinks,
 } from '../lib/sessionPreviewLinks';
-
-/** The projects a `/projects` read lists, as the server filters its overview:
- * any other project the store holds is not spoken for by that read. */
-function listedOnHome(project: ProjectRecord): boolean {
-  return project.state !== 'absent' || project.overviewVisible === true;
-}
 
 // Project and preview changes arrive over the shared live connection.
 export function useProjects(client: VerityClient) {
@@ -159,7 +154,7 @@ export function useProjects(client: VerityClient) {
           publishPreviews();
           // `/projects` is not filtered by the client: it speaks for every
           // project the server lists on the overview, and only for those.
-          const applied = target.applyProjects(read, nextProjects, { covers: listedOnHome });
+          const applied = target.applyProjects(read, nextProjects, { covers: listedInOverview });
           setListed(nextProjects);
           // A store replaced while the read was out is not the one shown.
           setListedInStore(applied && target === storeRef.current);
@@ -210,7 +205,7 @@ export function useProjects(client: VerityClient) {
       return copy;
     });
     const read = new Set(listed.map((project) => project.id));
-    const learned = held.filter((project) => !read.has(project.id) && listedOnHome(project));
+    const learned = held.filter((project) => !read.has(project.id) && listedInOverview(project));
     if (learned.length > 0) return [...shown, ...learned];
     return changed ? shown : listed;
     // `held` changes whenever a project in the store does.

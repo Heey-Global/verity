@@ -283,6 +283,7 @@ import { TranscriptRow } from '../../components/TranscriptRow';
 import { isProjectSessionModel } from '../../lib/projectSessionModels';
 import { isSameAutomation } from '../../lib/automationText';
 import { useSession } from '../../hooks/useSession';
+import { useOverviewProjects } from '../../lib/overviewProjects';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import type { AttachAnchor } from '../../lib/attachMenu';
 import { AttachMenu } from '../../components/AttachMenu';
@@ -2332,22 +2333,7 @@ export const SessionChat = memo(function SessionChat({
   // sheet, which jumps back to the message.
   const [bookmarksOpen, setBookmarksOpen] = useState(false);
   const [sessionSettingsOpen, setSessionSettingsOpen] = useState(false);
-  const [settingsProjects, setSettingsProjects] = useState<
-    Awaited<ReturnType<VerityClient['listProjects']>>
-  >([]);
-  useEffect(() => {
-    if (!sessionSettingsOpen) return;
-    let active = true;
-    void client
-      .listProjects()
-      .then((projects) => {
-        if (active) setSettingsProjects(projects);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [client, sessionSettingsOpen]);
+  const settingsProjects = useOverviewProjects(client, sessionSettingsOpen);
   const askHelp = (question: string) => {
     voice.abort();
     setDraft((current) => appendHelpQuestion(current, question));
