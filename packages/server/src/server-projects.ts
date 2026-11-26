@@ -44,7 +44,7 @@ import {
   type SandboxRepairVerdicts,
   type SessionArtifactPurgeBudget,
 } from './server-types.js';
-import { isDriftReportable, toolkitDriftEntryOf } from './toolkit-drift.js';
+import { reportedToolkitDrift } from './toolkit-drift.js';
 import {
   UNKNOWN_SANDBOX_UPDATE,
   NO_UNREPAIRED_SANDBOXES,
@@ -54,6 +54,7 @@ import {
   publicProject,
   isUniqueViolation,
   isControlPlaneProject,
+  projectHasReleases,
   recordReleaseSummary,
   releaseDiffers,
   projectWithRelease,
@@ -127,11 +128,7 @@ export function installProjects(
     project: ProjectRecord,
     opts?: { awaitRefresh?: boolean },
   ): Promise<{ project: ProjectRecord; release: ReleaseSummary | null }> => {
-    // Neither the control-plane workspace nor a project without a GitHub
-    // repository has releases to look up; both would just mint tokens and 404.
-    if (isControlPlaneProject(project) || isLocalProject(project) || project.kind === 'forgejo') {
-      return { project, release: null };
-    }
+    if (!projectHasReleases(project)) return { project, release: null };
     // Trigger the in-memory release refresh + read its freshest SETTLED value.
     // Tristate (see GitHubReleaseService): `undefined` = unknown (cold cache /
     // no token) → keep the persisted value and don't write; `null` = confirmed
@@ -227,15 +224,7 @@ export function installProjects(
   const projectToolkitDrift = (
     project: ProjectRecord,
     current: string | undefined,
-  ): ProjectToolkitDrift | null => {
-    if (!isDriftReportable(project)) return null;
-    const { verdict, carrier } = toolkitDriftEntryOf(current, project);
-    // Base-image projects are never attested, so `unknown` is their permanent
-    // state, and a failed attestation already surfaces as a provision warning.
-    // Shown, it would be a banner that is always on and nothing clears.
-    if (verdict === 'unknown') return null;
-    return { verdict, carrier };
-  };
+  ): ProjectToolkitDrift | null => reportedToolkitDrift(project, current);
 
   /**
    * Qualify an update status with whether Verity's own repair is still working on it.
