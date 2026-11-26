@@ -2,7 +2,7 @@ import type { DomainEvent } from '@verity/events';
 import { describe, expect, it } from 'vitest';
 import type { SessionSummary } from '../api.js';
 import { inboxItems } from '../ui/inbox.js';
-import { applyOverviewEvent, RevisionGate } from './overviewEvents.js';
+import { applyOverviewEvent, keptWithout, RevisionGate } from './overviewEvents.js';
 
 const usage = {
   inputTokens: 0,
@@ -72,6 +72,99 @@ describe('applyOverviewEvent', () => {
     expect(
       applyOverviewEvent(sessions, { t: 'choices.answered', sessionId: 'other', rev: 1 }),
     ).toEqual({ kind: 'none' });
+  });
+});
+
+describe('applyOverviewEvent pr.status', () => {
+  const merged = {
+    number: 7,
+    title: 'Add live status',
+    url: 'https://example.test/pr/7',
+    phase: 'merged',
+    pipeline: 'success',
+    mergeable: null,
+    mergeState: 'clean',
+    checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+  };
+
+  it('replaces the full and the compact status, dropping fields the new one lacks', () => {
+    const before: SessionSummary = {
+      ...waiting(),
+      pr: { phase: 'open', pipeline: 'running', mergeable: null, mergeState: 'blocked' },
+    };
+    const effect = applyOverviewEvent([before], {
+      t: 'pr.status',
+      sessionId: 's1',
+      rev: 1,
+      pr: { ...merged, mergeState: undefined },
+    });
+    expect(effect.kind).toBe('local');
+    if (effect.kind !== 'local') return;
+    expect(effect.sessions[0]!.pr).toEqual({
+      phase: 'merged',
+      pipeline: 'success',
+      mergeable: null,
+    });
+    expect(effect.sessions[0]!.pullRequest).toMatchObject({ number: 7, phase: 'merged' });
+  });
+
+  it('clears both when the session has no pull request any more', () => {
+    const effect = applyOverviewEvent([waiting()], {
+      t: 'pr.status',
+      sessionId: 's1',
+      rev: 1,
+      pr: null,
+    });
+    expect(effect.kind === 'local' && effect.sessions[0]).toMatchObject({
+      pr: null,
+      pullRequest: null,
+    });
+  });
+
+  it('leaves a status this app cannot read to the overview read', () => {
+    expect(
+      applyOverviewEvent([waiting()], {
+        t: 'pr.status',
+        sessionId: 's1',
+        rev: 1,
+        pr: { number: 'seven' },
+      }).kind,
+    ).toBe('reload');
+  });
+
+  it('does not read for an unreadable status of a session this view does not hold', () => {
+    expect(
+      applyOverviewEvent([waiting()], {
+        t: 'pr.status',
+        sessionId: 's9',
+        rev: 1,
+        pr: { number: 'seven' },
+      }).kind,
+    ).toBe('none');
+  });
+
+  it('ignores sessions this view does not hold', () => {
+    expect(
+      applyOverviewEvent([waiting()], { t: 'pr.status', sessionId: 's9', rev: 1, pr: merged }).kind,
+    ).toBe('none');
+  });
+});
+
+describe('keptWithout', () => {
+  it('keeps one pull request status per session and every answer', () => {
+    const status = (sessionId: string, rev: number): DomainEvent => ({
+      t: 'pr.status',
+      sessionId,
+      rev,
+      pr: null,
+    });
+    const answered: DomainEvent = { t: 'choices.answered', sessionId: 's1', rev: 1 };
+    let kept: { event: DomainEvent }[] = [{ event: answered }];
+    for (let rev = 2; rev < 10; rev += 1) {
+      kept = [...keptWithout(kept, status('s1', rev)), { event: status('s1', rev) }];
+    }
+    kept = [...keptWithout(kept, status('s2', 10)), { event: status('s2', 10) }];
+    expect(kept.map(({ event }) => event)).toEqual([answered, status('s1', 9), status('s2', 10)]);
   });
 });
 
