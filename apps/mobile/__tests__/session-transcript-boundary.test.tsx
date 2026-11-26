@@ -8,7 +8,9 @@ import ts from 'typescript';
 // live session. Fresh list props silently defeat FlashList's own memo boundary.
 const source = readFileSync(join(__dirname, '../app/session/[id].tsx'), 'utf8');
 const start = source.indexOf('  const transcriptList =');
-const expression = source.slice(start, source.indexOf('  finishChatWork();', start));
+const end = source.indexOf('  const waiting = session.pendingPermission;', start);
+if (start < 0 || end < 0) throw new Error('session transcript moved; update the markers');
+const expression = source.slice(start, end);
 const compiled = ts.transpileModule(expression, {
   compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
 }).outputText;
@@ -47,6 +49,7 @@ const build = new Function(
   'View',
   'ActivityIndicator',
   'styles',
+  'Requests',
   'props',
   `const {${Object.keys(inputs).join(',')}} = props; ${compiled}; return transcriptList;`,
 );
@@ -60,6 +63,7 @@ function useList(props: typeof inputs, platform: string) {
     'View',
     'ActivityIndicator',
     {},
+    { TranscriptRequestTail: 'TranscriptRequestTail' },
     props,
   ) as React.ReactElement<Record<string, unknown>>;
 }
