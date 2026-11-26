@@ -126,7 +126,9 @@ it('routes hosted bot audio through its own Uplink share and finalizes the resul
       { timeout: 12_000 },
     );
     ended = true;
-    await service.stop('session', meetingId);
+    const stopping = service.stop('session', meetingId);
+    socket.close(1000);
+    await stopping;
     expect(ingest).toHaveBeenLastCalledWith(
       expect.objectContaining({
         state: 'ended',

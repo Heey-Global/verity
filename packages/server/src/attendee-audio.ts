@@ -325,6 +325,21 @@ export class AttendeeAudioReceiver {
   }
 
   private async drain(): Promise<void> {
+    const socket = this.socket;
+    if (socket) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timeout);
+          socket.off('close', done);
+          resolve();
+        };
+        const timeout = setTimeout(() => {
+          this.gap('interrupted');
+          done();
+        }, 2_000);
+        socket.once('close', done);
+      });
+    }
     this.stopping = true;
     const expected = this.options.botId();
     if (expected) this.flushPending(expected);

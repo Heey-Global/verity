@@ -133,6 +133,7 @@ describe('Attendee audio receiver', () => {
     const second = await connect(url);
     second.send(frame());
     await vi.waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1), { timeout: 2_000 });
+    second.close(1000);
     await receiver.finish();
     expect(onGap).toHaveBeenCalledTimes(1);
   });

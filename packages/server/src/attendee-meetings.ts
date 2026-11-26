@@ -1052,6 +1052,7 @@ export class AttendeeMeetings {
     }
     if (state.phase !== 'ended') await this.reconcileOne(state, true);
     if (state.phase !== 'ended') return;
+    if (state.audio) await this.clearParticipants(state.meeting.id);
     await this.options.store.deleteAttendeeState(`meeting:${state.meeting.id}`);
     if (state.botId) await this.options.store.deleteAttendeeState(`event:${state.botId}`);
   }
@@ -1331,17 +1332,21 @@ export class AttendeeMeetings {
       }
     }
     if (final) {
+      if (state.audio) {
+        state.audio.segments = snapshot;
+        await this.save(state);
+      }
       await this.releaseAudio(state);
       if (state.binding) await this.revokeShare(state.binding.shareId);
       this.connectors.get(state.meeting.id)?.close();
       this.connectors.delete(state.meeting.id);
+      if (state.audio) await this.clearParticipants(state.meeting.id);
       state.phase = 'ended';
       // Erase per-meeting credentials after final durable reconciliation.
       state.credentials = { apiKey: '', webhookSecret: '' };
       state.pin = '';
       delete state.binding;
       await this.save(state);
-      if (state.audio) await this.clearParticipants(state.meeting.id);
     } else if (state.binding && new Date(state.binding.expiresAt).getTime() > Date.now()) {
       try {
         await this.connect(state);
