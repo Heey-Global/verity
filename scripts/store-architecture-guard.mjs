@@ -136,7 +136,7 @@ export function compareImplementations(actual, allowed) {
       .filter((name) => actual[name] !== allowed[name])
       .map((name) => 'Unapproved facade implementation: ' + name),
     ...Object.keys(allowed)
-      .filter((name) => !(name in actual))
+      .filter((name) => !Object.hasOwn(actual, name))
       .map((name) => 'Remove retired facade exception: ' + name),
   ];
 }

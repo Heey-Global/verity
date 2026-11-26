@@ -147,3 +147,9 @@ it.each([
     targets.map((name) => 'packages/store/src/domain.ts -> packages/store/src/' + name + '.ts'),
   );
 });
+
+it('requires removal of a retired constructor exception', () => {
+  expect(compareImplementations({}, { constructor: 'previous fingerprint' })).toEqual([
+    'Remove retired facade exception: constructor',
+  ]);
+});
