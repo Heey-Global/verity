@@ -163,7 +163,12 @@ export class TaskStore {
     const { doneSince } = filter;
     if (doneSince !== undefined)
       query = query.where((eb) =>
-        eb.or([eb('status', '<>', 'done'), eb('completed_at', '>=', doneSince)]),
+        eb.or([
+          eb('status', '<>', 'done'),
+          eb('completed_at', '>=', doneSince),
+          // A done row without a completion time cannot be placed outside the window.
+          eb('completed_at', 'is', null),
+        ]),
       );
     const rows = await query.orderBy('sort', 'asc').orderBy('created_at', 'asc').execute();
     return rows.map((row) => this.record(row));

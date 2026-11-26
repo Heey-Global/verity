@@ -1084,12 +1084,16 @@ it('lists only what clients show by default, and full history on an explicit sta
     .where('id', '=', T4)
     .execute();
 
+  const T5 = '55555555-5555-4555-8555-555555555555';
+  await task(T5, 'done');
+  await ctx.db.updateTable('tasks').set({ completed_at: null }).where('id', '=', T5).execute();
+
   const list = async (url: string) => ids((await app.inject({ method: 'GET', url })).json()).sort();
-  expect(await list('/tasks')).toEqual([T1, T3]);
-  expect(await list('/tasks?status=done')).toEqual([T3, T4]);
-  expect(await list('/tasks?status=open,in_progress,done,dropped')).toEqual([T1, T2, T3, T4]);
+  expect(await list('/tasks')).toEqual([T1, T3, T5]);
+  expect(await list('/tasks?status=done')).toEqual([T3, T4, T5]);
+  expect(await list('/tasks?status=open,in_progress,done,dropped')).toEqual([T1, T2, T3, T4, T5]);
   const since = encodeURIComponent(new Date(Date.now() - DONE_TASK_LIST_WINDOW_MS).toISOString());
-  expect(await list(`/tasks?status=done,dropped&doneSince=${since}`)).toEqual([T2, T3]);
+  expect(await list(`/tasks?status=done,dropped&doneSince=${since}`)).toEqual([T2, T3, T5]);
   expect((await app.inject({ method: 'GET', url: '/tasks?doneSince=yesterday' })).statusCode).toBe(
     400,
   );
