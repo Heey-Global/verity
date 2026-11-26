@@ -196,4 +196,49 @@ describe('SessionListModel with the shared overview store', () => {
     await model.delete('s2');
     expect(store.session('s2')).toBeUndefined();
   });
+
+  it('leaves the newer name in the store when an older rename answers late', async () => {
+    const answers: Array<(name: string) => void> = [];
+    const { model, store } = harness(() => Promise.resolve([summary('s1')]), {
+      renameSession: vi.fn(
+        () =>
+          new Promise<{ sessionId: string; name: string }>((resolve) =>
+            answers.push((name) => resolve({ sessionId: 's1', name })),
+          ),
+      ),
+    });
+    await model.refresh();
+    const first = model.rename('s1', 'First');
+    const second = model.rename('s1', 'Second');
+    answers[1]!('Second');
+    await second;
+    answers[0]!('First');
+    await first;
+    expect(store.session('s1')?.name).toBe('Second');
+  });
+
+  it('drops a session from Home once another view read it gone', async () => {
+    const { model, store, shown } = harness(() => Promise.resolve([summary('s1')]));
+    await model.refresh();
+    model.start();
+    projectPageRead(store, []);
+    expect(shown('s1')).toBeUndefined();
+    expect(model.state.attentionCount).toBe(0);
+    model.stop();
+  });
+
+  it('writes a confirmed order to the store in one change, unlisted sessions unordered', async () => {
+    const sessions = [summary('s1'), summary('s2'), summary('s3', { sortOrder: 2 })];
+    const { model, store } = harness(() => Promise.resolve(sessions), {
+      listSessionOverview: () =>
+        Promise.resolve({ sessions, attention: [], sessionReordering: true }),
+      reorderSessions: vi.fn(() => Promise.resolve(['s2', 's1'])),
+    });
+    await model.refresh();
+    const changes = vi.fn();
+    store.subscribe(changes);
+    await model.reorder('p1', ['s2', 's1']);
+    expect(changes).toHaveBeenCalledTimes(1);
+    expect(['s1', 's2', 's3'].map((id) => store.session(id)?.sortOrder)).toEqual([1, 0, null]);
+  });
 });

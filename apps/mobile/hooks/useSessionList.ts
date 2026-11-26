@@ -78,11 +78,15 @@ export function useSessionList(client: VerityClient): UseSessionList {
 
   // Set while Home is focused; it gates reads nobody asked for.
   const focused = useRef(false);
-  const firstStore = useRef(store);
+  const previousStore = useRef(store);
   useEffect(() => {
-    // A replaced store (another account) holds none of the list's sessions:
-    // the list shows its own last read until it has read into the new one.
-    if (store !== firstStore.current && focused.current) void model.refresh({ silent: true });
+    // A replaced store (another account, or back to an earlier one) does not
+    // hold the list's last read: the list shows that read until it has read
+    // into this store.
+    if (store !== previousStore.current) {
+      previousStore.current = store;
+      if (focused.current) void model.refresh({ silent: true });
+    }
     model.storeChanged();
     return store.subscribe(() => model.storeChanged());
   }, [model, store]);
