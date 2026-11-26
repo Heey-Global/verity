@@ -85,6 +85,11 @@ export const assistantConversationItemSchema = z.discriminatedUnion('kind', [
     state: z.enum(['pending', 'sent', 'failed']),
     /** The session the work went to, once the handoff answered. */
     sessionId: z.string().optional(),
+    /** The {@link AssistantApproval.id} this handoff waits on while it is `pending`;
+     *  the card is decided in place. Absent from older servers and once decided. */
+    approvalId: z.string().optional(),
+    /** The user chose not to hand it over (state `failed`); nothing was sent. */
+    declined: z.literal(true).optional(),
     /** The result that session published for this handoff, written by that session. */
     result: z
       .object({
@@ -131,8 +136,15 @@ export const assistantQuestionSchema = z.object({
 });
 export type AssistantQuestion = z.infer<typeof assistantQuestionSchema>;
 
-/** An approval Verity waits for; decided in the session, never by a Watch tap. */
-export const assistantApprovalSchema = z.object({ id, tool: z.string() });
+/** An approval Verity waits for; decided in the panel or the session, never by a Watch tap. */
+export const assistantApprovalSchema = z.object({
+  id,
+  tool: z.string(),
+  /** The request as the tool received it, absent when it is larger than
+   *  {@link ASSISTANT_APPROVAL_INPUT_MAX_BYTES} or from an older server; the
+   *  device then sends the user to the session instead of deciding blind. */
+  input: z.unknown().optional(),
+});
 export type AssistantApproval = z.infer<typeof assistantApprovalSchema>;
 
 export const assistantConversationSchema = z.object({
@@ -147,6 +159,23 @@ export const assistantConversationSchema = z.object({
   approvals: z.array(assistantApprovalSchema),
 });
 export type AssistantConversation = z.infer<typeof assistantConversationSchema>;
+
+/**
+ * Upper bound for an approval input carried on the conversation.
+ *
+ * Larger than the session list's bound because a handoff briefing may run to
+ * 20,000 characters and is the thing the panel exists to show; it rides along
+ * only while the approval waits, and only on this one conversation.
+ */
+export const ASSISTANT_APPROVAL_INPUT_MAX_BYTES = 96 * 1_024;
+
+/**
+ * The denial message a device sends when the user declines a handoff on its card.
+ * The tool result carries it back, which is how the projection tells a declined
+ * handoff (`declined`) from one that failed.
+ */
+export const ASSISTANT_HANDOFF_DECLINED =
+  'The user chose not to hand this over. Nothing was sent; do not retry without a new instruction.';
 
 /**
  * Opens the line that tells Verity where the user was. The projection strips it

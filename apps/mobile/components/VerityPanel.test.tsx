@@ -6,6 +6,7 @@ jest.mock('../lib/verityConversation', () => ({
   retryOutgoing: jest.fn(),
   discardOutgoing: jest.fn(),
   dismissVerityNotice: jest.fn(),
+  decideVerityApproval: jest.fn(async () => undefined),
 }));
 const mockVoice = {
   state: 'idle',
@@ -94,18 +95,20 @@ it('answers her question with the question’s id, so a stale tap is caught', ()
   expect(answerVerity).toHaveBeenCalledWith('q-4', ['Müller']);
 });
 
-it('sends approvals to the conversation instead of deciding them here', () => {
+it('sends an approval it cannot show in full to the conversation instead of deciding it', () => {
   const onClose = jest.fn();
   jest.mocked(useVerity).mockReturnValue({
     ...ready,
     conversation: {
       ...ready.conversation!,
       state: 'needs_you',
+      // No input: too large to carry, or from an older server.
       approvals: [{ id: 'perm-1', tool: 'verity_gmail' }],
     },
   });
   const screen = render(<VerityPanel mode="text" projectId={null} onClose={onClose} />);
-  fireEvent.press(screen.getByText('Review'));
+  expect(screen.queryByText('Allow')).toBeNull();
+  fireEvent.press(screen.getByText('Review in session'));
   expect(onClose).toHaveBeenCalled();
   expect(router.push).toHaveBeenCalledWith('/session/assistant');
 });

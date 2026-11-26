@@ -37,4 +37,27 @@ describe('GET /projects/:id sessions', () => {
     // Not vacuous: the visible session is on both.
     expect(page.map((session) => session.sessionId)).toEqual(['s-visible']);
   });
+
+  // Verity's approvals wait in the V panel. Listed here as well, the assistant session put
+  // each one on Home and in Control a second time, as a session to open and approve in.
+  it('leaves the enabled assistant session out of every list, and lists it once switched off', async () => {
+    await ctx.store.createSession({
+      sessionId: 's-assistant',
+      worktree: '/wt/s-assistant',
+      model: 'm',
+    });
+    const listed = async () =>
+      (await app.inject({ method: 'GET', url: '/sessions' }))
+        .json<Array<{ sessionId: string }>>()
+        .some((session) => session.sessionId === 's-assistant');
+    await ctx.store.assistant.configure(true, 'admin');
+    await ctx.store.assistant.session('s-assistant');
+    try {
+      expect(await listed()).toBe(false);
+      await ctx.store.assistant.configure(false, 'admin');
+      expect(await listed()).toBe(true);
+    } finally {
+      await ctx.store.assistant.configure(false, 'admin');
+    }
+  });
 });

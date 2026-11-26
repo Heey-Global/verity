@@ -1,8 +1,11 @@
 import {
+  ASSISTANT_APPROVAL_INPUT_MAX_BYTES,
+  ASSISTANT_HANDOFF_DECLINED,
   ASSISTANT_TOOL,
   assistantMessageText,
   parseChoicesBlock,
   type AgentEvent,
+  type AssistantApproval,
   type AssistantConversation,
   type AssistantConversationItem,
   type AssistantQuestion,
@@ -45,6 +48,8 @@ export function projectAssistantConversation(
   const tools = new Map<string, number>();
   let reply: { id: string; at: number; text: string } | undefined;
   let choices: { seq: number; event: Extract<AgentEvent, { t: 'choices' }> } | undefined;
+  /** Each approval's request, from its `permission` event, by approval id. */
+  const requested = new Map<string, unknown>();
   let failed = false;
   /** The user's latest message, timed until the turn it started ends. */
   let timed: Extract<AssistantConversationItem, { kind: 'message' }> | undefined;
@@ -99,10 +104,14 @@ export function projectAssistantConversation(
           item.state = event.isError ? 'failed' : 'sent';
           const target = event.isError ? undefined : handoffTarget(event.output);
           if (target !== undefined) item.sessionId = target;
+          if (event.isError && declinedOnCard(event.output)) item.declined = true;
         }
         if (item?.kind === 'meeting') item.state = event.isError ? 'failed' : 'ready';
         break;
       }
+      case 'permission':
+        requested.set(event.id, event.input);
+        break;
       case 'choices':
         choices = { seq, event };
         break;
@@ -135,10 +144,15 @@ export function projectAssistantConversation(
           multiSelect: choices.event.multiSelect === true,
         }
       : null;
-  const approvals = facts.approvals.map((approval) => ({
-    id: approval.toolUseId,
-    tool: approval.tool,
-  }));
+  const approvals = facts.approvals.map((approval): AssistantApproval => {
+    const input = requested.get(approval.toolUseId);
+    return {
+      id: approval.toolUseId,
+      tool: approval.tool,
+      ...(fits(input) ? { input } : {}),
+    };
+  });
+  linkHandoffApprovals(items, approvals);
   const working = facts.busy || facts.status === 'running';
   return {
     revision: events.at(-1)?.seq ?? 0,
@@ -181,6 +195,65 @@ export function attachHandoffResults(
       ...(result.blocker === null ? {} : { blocker: result.blocker }),
       at: result.at.getTime(),
     };
+  }
+}
+
+/**
+ * Hands each waiting handoff approval to its card, so the card is decided in place.
+ *
+ * The gateway mints its own approval id, so the tool call's id cannot name it. The
+ * card is the newest still-pending handoff with the approval's title: a handoff
+ * waits on its approval before it can answer, and one turn rarely holds two
+ * pending handoffs, let alone two with one title. Without a title match the
+ * approval stays a card of its own rather than land on the wrong handoff.
+ */
+function linkHandoffApprovals(
+  items: AssistantConversationItem[],
+  approvals: readonly AssistantApproval[],
+): void {
+  for (const approval of approvals) {
+    if (!isTool(approval.tool, 'verity_session_handoff')) continue;
+    const title =
+      typeof approval.input === 'object' && approval.input !== null
+        ? (approval.input as { title?: unknown }).title
+        : undefined;
+    if (typeof title !== 'string') continue;
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const item = items[i];
+      if (
+        item?.kind !== 'assignment' ||
+        item.state !== 'pending' ||
+        item.approvalId !== undefined ||
+        item.title.trim() !== title.trim()
+      )
+        continue;
+      item.approvalId = approval.id;
+      break;
+    }
+  }
+}
+
+function fits(input: unknown): boolean {
+  if (input === undefined) return false;
+  try {
+    const serialized = JSON.stringify(input);
+    return (
+      serialized !== undefined &&
+      Buffer.byteLength(serialized, 'utf8') <= ASSISTANT_APPROVAL_INPUT_MAX_BYTES
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a handoff's error result is the denial a device sends from the card. */
+function declinedOnCard(output: unknown): boolean {
+  try {
+    return ((typeof output === 'string' ? output : JSON.stringify(output)) ?? '').includes(
+      ASSISTANT_HANDOFF_DECLINED,
+    );
+  } catch {
+    return false;
   }
 }
 

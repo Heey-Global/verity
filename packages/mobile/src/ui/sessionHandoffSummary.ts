@@ -27,6 +27,12 @@ export type SessionHandoffSummary = {
    * card cannot name the destination, and the one the card has to say that about.
    */
   targetKind: 'session' | 'project' | 'new-session';
+  /**
+   * Where the briefing goes, split for a card that draws it as a route: the project, when
+   * the request names one, and the session within it. Same headline-safe values as
+   * {@link target}, which stays the one sentence that says it in full.
+   */
+  destination: { project: string | null; session: string };
   title: string;
   /**
    * Unclamped — rendering it in full is this module's reason to exist — and verbatim except
@@ -100,7 +106,9 @@ function onlyKnownKeys(value: Record<string, unknown>, known: readonly string[])
  * card exists so it cannot misname where the briefing is going, so an ambiguous target drops
  * to raw JSON like any other input this module cannot read.
  */
-function targetLabel(raw: unknown): Pick<SessionHandoffSummary, 'target' | 'targetKind'> | null {
+function targetLabel(
+  raw: unknown,
+): Pick<SessionHandoffSummary, 'target' | 'targetKind' | 'destination'> | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
   const target = raw as Record<string, unknown>;
   if (
@@ -143,9 +151,14 @@ function targetLabel(raw: unknown): Pick<SessionHandoffSummary, 'target' | 'targ
       return {
         target: `session “${name}” in project ${project} (${lastActive})`,
         targetKind: 'session',
+        destination: { project, session: `Session “${name}”` },
       };
     }
-    return { target: `session ${sessionId}`, targetKind: 'session' };
+    return {
+      target: `session ${sessionId}`,
+      targetKind: 'session',
+      destination: { project: null, session: `Session ${sessionId}` },
+    };
   }
   if (named[0] === 'newSession') {
     const value = target['newSession'];
@@ -155,10 +168,21 @@ function targetLabel(raw: unknown): Pick<SessionHandoffSummary, 'target' | 'targ
     const project = headlineText(nested['project']);
     return project === null
       ? null
-      : { target: `a new session in project ${project}`, targetKind: 'new-session' };
+      : {
+          target: `a new session in project ${project}`,
+          targetKind: 'new-session',
+          destination: { project, session: 'New session' },
+        };
   }
   const project = headlineText(target['project']);
-  return project === null ? null : { target: `project ${project}`, targetKind: 'project' };
+  return project === null
+    ? null
+    : {
+        target: `project ${project}`,
+        targetKind: 'project',
+        // Resolved after the approval; see sessionHandoffCaveats.
+        destination: { project, session: 'Its one open session' },
+      };
 }
 
 export function sessionHandoffSummary(input: unknown): SessionHandoffSummary | null {
