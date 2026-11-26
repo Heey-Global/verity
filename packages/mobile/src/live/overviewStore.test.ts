@@ -58,12 +58,11 @@ const decided = (rev: number): DomainEvent => ({
   outcome: 'allowed',
 });
 
-const allSessions: OverviewReadScope<SessionSummary> = { key: 'sessions', covers: () => true };
+const allSessions: OverviewReadScope<SessionSummary> = { covers: () => true };
 const projectSessions = (projectId: string): OverviewReadScope<SessionSummary> => ({
-  key: `project-sessions:${projectId}`,
   covers: (s) => s.projectId === projectId,
 });
-const allProjects: OverviewReadScope<ProjectRecord> = { key: 'projects', covers: () => true };
+const allProjects: OverviewReadScope<ProjectRecord> = { covers: () => true };
 
 function readSessions(store: OverviewStore, sessions: SessionSummary[], scope = allSessions) {
   store.applySessions(store.beginRead(), sessions, scope);
@@ -99,11 +98,26 @@ describe('OverviewStore', () => {
     const store = new OverviewStore();
     const older = store.beginRead();
     const newer = store.beginRead();
-    expect(store.applySessions(newer, [session('s1', { status: 'running' })], allSessions)).toBe(
-      true,
-    );
-    expect(store.applySessions(older, [session('s1')], allSessions)).toBe(false);
+    store.applySessions(newer, [session('s1', { status: 'running' })], allSessions);
+    store.applySessions(older, [session('s1')], allSessions);
     expect(store.session('s1')?.status).toBe('running');
+  });
+
+  // Home reads every session, the project page one project's sessions; an
+  // older Home read answering late must not undo the page's newer read.
+  it('keeps what a newer overlapping read said about a session', () => {
+    const store = new OverviewStore();
+    const home = store.beginRead();
+    const page = store.beginRead();
+    store.applySessions(page, [session('new', { status: 'running' })], projectSessions('p1'));
+    store.applySessions(home, [session('gone')], allSessions);
+    expect(store.session('new')?.status).toBe('running');
+    // The page read also spoke for sessions it did not return.
+    const before = store.beginRead();
+    const after = store.beginRead();
+    store.applySessions(after, [], projectSessions('p1'));
+    store.applySessions(before, [session('new')], allSessions);
+    expect(store.session('new')).toBeUndefined();
   });
 
   it('removes only the sessions a read covers and did not return', () => {
@@ -140,6 +154,15 @@ describe('OverviewStore', () => {
     });
     expect(store.project('p1')?.state).toBe('active');
     expect(outcome).toEqual({ applied: true, reload: { projectId: 'p1' } });
+  });
+
+  it('does not count an event that leaves the session as it is as a change', () => {
+    const store = new OverviewStore();
+    readSessions(store, [session('s1', { pr: null, pullRequest: null })]);
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.applyEvent({ t: 'pr.status', sessionId: 's1', rev: 1, pr: null });
+    expect(listener).not.toHaveBeenCalled();
   });
 
   it('asks for a read when a request opens, even for a session not held yet', () => {

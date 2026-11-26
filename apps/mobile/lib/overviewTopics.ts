@@ -3,10 +3,10 @@ import { useEffect, useRef } from 'react';
 import { liveConnectionFor } from './liveConnection';
 import { taskAccountScope } from './tasksStore';
 
-/** Project topics the app subscribes at most, leaving room for session topics
- * within the connection's 64. A project past the cap, or one the server ends
- * with `limit`, keeps following live hints and reads. */
-const MAX_PROJECT_TOPICS = 48;
+/** Project topics the app subscribes at most, within the connection's 64. A
+ * project past the cap waits for a free topic, and one the server ends with
+ * `limit` keeps following live hints and reads. */
+const MAX_PROJECT_TOPICS = 60;
 
 interface OverviewListener {
   readonly projects: ReadonlySet<string>;
@@ -31,7 +31,14 @@ class OverviewHub {
 
   attach(listener: OverviewListener): () => void {
     this.listeners.add(listener);
-    for (const projectId of listener.projects) this.want(projectId);
+    let joinedLive = false;
+    for (const projectId of listener.projects) {
+      if (this.want(projectId)) joinedLive = true;
+    }
+    // The server answers a new subscription with `resync`, which makes a view
+    // read its snapshot once the stream is live. A view joining a topic that is
+    // already live gets no such answer, so it is asked here.
+    if (joinedLive) this.queueResync(listener);
     return () => {
       listener.disposed = true;
       this.listeners.delete(listener);
@@ -39,20 +46,17 @@ class OverviewHub {
     };
   }
 
-  private want(projectId: string): void {
+  /** Count one more view of the project; true when its topic was already live. */
+  private want(projectId: string): boolean {
     const held = this.topics.get(projectId);
     if (held !== undefined) {
       held.count += 1;
-      return;
+      return held.detach !== undefined;
     }
-    const subscribed = [...this.topics.values()].filter((topic) => topic.detach).length;
     const entry: { count: number; detach?: () => void } = { count: 1 };
     this.topics.set(projectId, entry);
-    if (subscribed >= MAX_PROJECT_TOPICS) return;
-    entry.detach = liveConnectionFor(this.baseUrl).subscribeTopic(
-      `project:${projectId}`,
-      this.sinkFor(projectId),
-    );
+    this.subscribeIfRoom(projectId, entry);
+    return false;
   }
 
   private release(projectId: string): void {
@@ -61,7 +65,23 @@ class OverviewHub {
     held.count -= 1;
     if (held.count > 0) return;
     this.topics.delete(projectId);
-    held.detach?.();
+    if (held.detach === undefined) return;
+    held.detach();
+    // A freed topic goes to the longest waiting project.
+    for (const [waiting, entry] of this.topics) {
+      if (entry.detach !== undefined) continue;
+      this.subscribeIfRoom(waiting, entry);
+      break;
+    }
+  }
+
+  private subscribeIfRoom(projectId: string, entry: { detach?: () => void }): void {
+    const live = [...this.topics.values()].filter((topic) => topic.detach).length;
+    if (live >= MAX_PROJECT_TOPICS) return;
+    entry.detach = liveConnectionFor(this.baseUrl).subscribeTopic(
+      `project:${projectId}`,
+      this.sinkFor(projectId),
+    );
   }
 
   private sinkFor(projectId: string): LiveTopicSink {
@@ -73,19 +93,21 @@ class OverviewHub {
       },
       resync: () => {
         this.store.resync();
-        for (const listener of this.interestedIn(projectId)) {
-          // Several topics answer a new subscription at once; one read serves
-          // all. Resyncs in separate frames are bounded by the view's own read
-          // coalescing (at most one read in flight and one after it).
-          if (listener.resyncQueued) continue;
-          listener.resyncQueued = true;
-          queueMicrotask(() => {
-            listener.resyncQueued = false;
-            if (!listener.disposed) listener.handlers.current.onResync();
-          });
-        }
+        for (const listener of this.interestedIn(projectId)) this.queueResync(listener);
       },
     };
+  }
+
+  /** Several topics answer a new subscription at once; one read serves all.
+   * Resyncs in separate frames are bounded by the view's own read coalescing
+   * (at most one read in flight and one after it). */
+  private queueResync(listener: OverviewListener): void {
+    if (listener.resyncQueued) return;
+    listener.resyncQueued = true;
+    queueMicrotask(() => {
+      listener.resyncQueued = false;
+      if (!listener.disposed) listener.handlers.current.onResync();
+    });
   }
 
   private interestedIn(projectId: string): OverviewListener[] {
@@ -121,7 +143,9 @@ export function useOverviewTopics(
 ): void {
   const handlers = useRef({ onEvent, onResync });
   handlers.current = { onEvent, onResync };
-  const key = [...new Set(projectIds)].sort().slice(0, MAX_PROJECT_TOPICS).join('\n');
+  const key = [...new Set(projectIds)].sort().join('\n');
+  // A view that stays mounted across a sign-in moves to the new account's store.
+  const account = baseUrl === null ? null : taskAccountScope();
   useEffect(() => {
     if (baseUrl === null || key === '') return undefined;
     return hubFor(baseUrl).attach({
@@ -130,5 +154,5 @@ export function useOverviewTopics(
       resyncQueued: false,
       disposed: false,
     });
-  }, [baseUrl, key]);
+  }, [baseUrl, key, account]);
 }

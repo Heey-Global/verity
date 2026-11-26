@@ -10,12 +10,11 @@ export interface OverviewRead {
 }
 
 /**
- * Which entities a list read speaks for. Entities it covers and does not
- * return are gone; `key` names reads that supersede each other (a newer read
- * of the same key wins over an older one that answers late).
+ * Which entities a list read speaks for: entities it covers and does not
+ * return are gone. Reads may overlap (all sessions, one project's sessions);
+ * for every entity the newest read that spoke for it wins.
  */
 export interface OverviewReadScope<T> {
-  readonly key: string;
   covers(entity: T): boolean;
 }
 
@@ -52,7 +51,8 @@ export class OverviewStore {
   private clock = 0;
   private readonly openReads = new Set<number>();
   private kept: { event: DomainEvent; at: number }[] = [];
-  private readonly applied = new Map<string, number>();
+  /** The newest read that spoke for each entity, gone ones included. */
+  private readonly readAt = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
   private version = 0;
   private sessionList: SessionSummary[] | undefined;
@@ -71,15 +71,15 @@ export class OverviewStore {
     this.prune();
   }
 
-  /** Apply a session list read. False when a newer read of the same scope
-   * already answered, so this one changed nothing. */
+  /** Apply a session list read. Entities a newer read already spoke for keep
+   * that read's state. */
   applySessions(
     read: OverviewRead,
     sessions: readonly SessionSummary[],
     scope: OverviewReadScope<SessionSummary>,
-  ): boolean {
-    return this.applySnapshot(read, scope, () =>
-      replaceCovered(this.sessionMap, sessions, (s) => s.sessionId, scope),
+  ): void {
+    this.applySnapshot(read, () =>
+      this.replaceCovered(read, 's', this.sessionMap, sessions, (s) => s.sessionId, scope),
     );
   }
 
@@ -88,9 +88,9 @@ export class OverviewStore {
     read: OverviewRead,
     projects: readonly ProjectRecord[],
     scope: OverviewReadScope<ProjectRecord>,
-  ): boolean {
-    return this.applySnapshot(read, scope, () =>
-      replaceCovered(this.projectMap, projects, (p) => p.id, scope),
+  ): void {
+    this.applySnapshot(read, () =>
+      this.replaceCovered(read, 'p', this.projectMap, projects, (p) => p.id, scope),
     );
   }
 
@@ -145,24 +145,47 @@ export class OverviewStore {
     };
   }
 
-  private applySnapshot<T>(
-    read: OverviewRead,
-    scope: OverviewReadScope<T>,
-    replace: () => boolean,
-  ): boolean {
+  private applySnapshot(read: OverviewRead, replace: () => boolean): void {
     this.openReads.delete(read.seq);
-    if (read.seq < (this.applied.get(scope.key) ?? 0)) {
-      this.prune();
-      return false;
-    }
-    this.applied.set(scope.key, read.seq);
     let changed = replace();
     for (const { event, at } of this.kept) {
       if (at > read.seq && this.applyToEntities(event).changed) changed = true;
     }
     this.prune();
     if (changed) this.changed();
-    return true;
+  }
+
+  /** Replace what `scope` covers with `next`, keeping unchanged entities and
+   * those a newer read already spoke for. */
+  private replaceCovered<T>(
+    read: OverviewRead,
+    kind: 's' | 'p',
+    map: Map<string, T>,
+    next: readonly T[],
+    id: (entity: T) => string,
+    scope: OverviewReadScope<T>,
+  ): boolean {
+    const newer = (key: string) => (this.readAt.get(`${kind}:${key}`) ?? 0) > read.seq;
+    const spokeFor = (key: string) => this.readAt.set(`${kind}:${key}`, read.seq);
+    let changed = false;
+    const returned = new Set<string>();
+    for (const entity of next) {
+      const key = id(entity);
+      returned.add(key);
+      if (newer(key)) continue;
+      spokeFor(key);
+      const held = map.get(key);
+      if (held !== undefined && sameSnapshotValue(held, entity)) continue;
+      map.set(key, entity);
+      changed = true;
+    }
+    for (const [key, held] of map) {
+      if (returned.has(key) || !scope.covers(held) || newer(key)) continue;
+      spokeFor(key);
+      map.delete(key);
+      changed = true;
+    }
+    return changed;
   }
 
   private applyToEntities(event: DomainEvent): {
@@ -181,7 +204,9 @@ export class OverviewStore {
     const session = this.sessionMap.get(event.sessionId);
     const effect = applyOverviewEvent(session === undefined ? [] : [session], event);
     if (effect.kind === 'local') {
-      this.sessionMap.set(event.sessionId, effect.sessions[0]!);
+      const next = effect.sessions[0]!;
+      if (session !== undefined && sameSnapshotValue(session, next)) return { changed: false };
+      this.sessionMap.set(event.sessionId, next);
       return { changed: true };
     }
     // A new request or question is announced for any session, held or not:
@@ -203,30 +228,4 @@ export class OverviewStore {
     this.projectList = undefined;
     for (const listener of [...this.listeners]) listener();
   }
-}
-
-/** Replace what `scope` covers with `next`, keeping unchanged entities. */
-function replaceCovered<T>(
-  map: Map<string, T>,
-  next: readonly T[],
-  id: (entity: T) => string,
-  scope: OverviewReadScope<T>,
-): boolean {
-  let changed = false;
-  const returned = new Set<string>();
-  for (const entity of next) {
-    const key = id(entity);
-    returned.add(key);
-    const held = map.get(key);
-    if (held !== undefined && sameSnapshotValue(held, entity)) continue;
-    map.set(key, entity);
-    changed = true;
-  }
-  for (const [key, held] of map) {
-    if (!returned.has(key) && scope.covers(held)) {
-      map.delete(key);
-      changed = true;
-    }
-  }
-  return changed;
 }

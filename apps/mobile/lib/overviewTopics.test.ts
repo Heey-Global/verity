@@ -89,6 +89,27 @@ describe('useOverviewTopics', () => {
     expect(mockUnsubscribed.sort()).toEqual(['project:p1', 'project:p2']);
   });
 
+  it('asks a view joining a live topic to read, since the server answers only new subscriptions', async () => {
+    renderHook(() => useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()));
+    const joined = jest.fn();
+    renderHook(() => useOverviewTopics('https://core.example', ['p1'], jest.fn(), joined));
+    await Promise.resolve();
+    expect(joined).toHaveBeenCalledTimes(1);
+    expect(mockSubscribed).toEqual(['project:p1']);
+  });
+
+  it('gives a freed topic to a project that waited past the cap', () => {
+    const many = Array.from({ length: 60 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    const home = renderHook(() =>
+      useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()),
+    );
+    renderHook(() => useOverviewTopics('https://core.example', ['zz'], jest.fn(), jest.fn()));
+    expect(mockSubscribed).toHaveLength(60);
+    expect(mockSubscribed).not.toContain('project:zz');
+    home.unmount();
+    expect(mockSubscribed).toContain('project:zz');
+  });
+
   it('starts from an empty store for another account', () => {
     const events: DomainEvent[] = [];
     const first = renderHook(() =>
