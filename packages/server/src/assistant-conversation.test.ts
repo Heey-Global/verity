@@ -705,6 +705,40 @@ describe('assistant handoff approvals in the conversation', () => {
     );
   });
 
+  it('keeps two waiting handoffs with one title on their own cards', () => {
+    const first = handoff('Same', 'first');
+    const second = handoff('Same', 'second');
+    const events = sequenced([
+      { t: 'prompt', text: 'two', initiatedBy: { userId: 'u1' } },
+      { t: 'tool_call', id: 'c-1', name: 'verity_session_handoff', input: first },
+      { t: 'tool_call', id: 'c-2', name: 'verity_session_handoff', input: second },
+      {
+        t: 'permission',
+        id: 'gw-1',
+        tool: 'verity_session_handoff',
+        input: first,
+        riskClass: 'ask',
+      },
+      {
+        t: 'permission',
+        id: 'gw-2',
+        tool: 'verity_session_handoff',
+        input: second,
+        riskClass: 'ask',
+      },
+    ]);
+    const projection = projectAssistantConversation(events, {
+      ...idle,
+      approvals: [
+        { toolUseId: 'gw-1', tool: 'verity_session_handoff' },
+        { toolUseId: 'gw-2', tool: 'verity_session_handoff' },
+      ],
+    });
+    expect(
+      projection.items.flatMap((item) => (item.kind === 'assignment' ? [item.approvalId] : [])),
+    ).toEqual(['gw-1', 'gw-2']);
+  });
+
   it('drops a request too large to carry, so the device opens the session instead', () => {
     const input = handoff('Long', 'x'.repeat(100 * 1_024));
     const projection = projectAssistantConversation(sequenced(waiting(input)), pendingOn('gw-1'));

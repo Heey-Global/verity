@@ -209,7 +209,7 @@ export function attachHandoffResults(
  * Hands each waiting handoff approval to its card, so the card is decided in place.
  *
  * The gateway mints its own approval id, so the tool call's id cannot name it. The
- * card is the newest still-pending handoff with the approval's title: a handoff
+ * card is the oldest unlinked still-pending handoff with the approval's title: a handoff
  * waits on its approval before it can answer, and one turn rarely holds two
  * pending handoffs, let alone two with one title. Without a title match the
  * approval stays a card of its own rather than land on the wrong handoff.
@@ -225,8 +225,9 @@ function linkHandoffApprovals(
         ? (approval.input as { title?: unknown }).title
         : undefined;
     if (typeof title !== 'string') continue;
-    for (let i = items.length - 1; i >= 0; i -= 1) {
-      const item = items[i];
+    // Oldest card first, as the approvals come oldest first: two handoffs with one title
+    // then keep their order instead of trading cards.
+    for (const item of items) {
       if (
         item?.kind !== 'assignment' ||
         item.state !== 'pending' ||
