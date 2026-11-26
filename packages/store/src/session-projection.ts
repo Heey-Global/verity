@@ -8,7 +8,6 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import { sequencedEvent, type SequencedEvent } from './event-history.js';
 import { idChunks } from './message-projection.js';
 import type { Database } from './schema.js';
-import type { SessionEventStats } from './store.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 
 /**
@@ -34,6 +33,16 @@ function emptyUsageTotals(): UsageTotals {
     cacheCreationTokens: 0,
     turns: 0,
   };
+}
+
+/** A session log's constant-size marker, kept current by the `session_event_stats` trigger. */
+export interface SessionEventStats {
+  /** Nonempty agent-text events; used for unread state. */
+  eventCount: number;
+  lastEventSeq: number;
+  lastActivityAt: number | null;
+  /** Changes on every log mutation, including deletions below the latest seq. */
+  revision: string;
 }
 
 export interface SessionProjectionFacts {

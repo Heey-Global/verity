@@ -108,8 +108,12 @@ export type { PlanningConsent } from './plan-implementation.js';
 import { SessionPlanningStore, type SessionPlanning } from './session-planning.js';
 import { SESSION_COLUMNS, sessionFromRow } from './session-rows.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
-import { SessionProjectionStore, type SessionProjectionFacts } from './session-projection.js';
-export type { SessionProjectionFacts } from './session-projection.js';
+import {
+  SessionProjectionStore,
+  type SessionEventStats,
+  type SessionProjectionFacts,
+} from './session-projection.js';
+export type { SessionEventStats, SessionProjectionFacts } from './session-projection.js';
 import {
   SessionLinkStore,
   type SessionLinkRecord,
@@ -322,19 +326,6 @@ export {
   type SessionAutomationRecord,
   type SessionAutomationInput,
 } from './session-automations.js';
-
-/**
- * What the overview projections need from one session's log — see
- * {@link EventStore.listSessionProjectionFacts}.
- */
-export interface SessionEventStats {
-  /** Nonempty agent-text events; used for unread state. */
-  eventCount: number;
-  lastEventSeq: number;
-  lastActivityAt: number | null;
-  /** Changes on every log mutation, including deletions below the latest seq. */
-  revision: string;
-}
 
 /**
  * The narrow persistence seam the Runner's ingest path drives (ADR 0006 D2). It
