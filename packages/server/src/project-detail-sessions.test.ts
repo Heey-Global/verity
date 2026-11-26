@@ -54,6 +54,10 @@ describe('GET /projects/:id sessions', () => {
     await ctx.store.assistant.session('s-assistant');
     try {
       expect(await listed()).toBe(false);
+      // Hidden from lists only: the panel's expand button and Review in session open it.
+      expect((await app.inject({ method: 'GET', url: '/sessions/s-assistant' })).statusCode).toBe(
+        200,
+      );
       await ctx.store.assistant.configure(false, 'admin');
       expect(await listed()).toBe(true);
     } finally {

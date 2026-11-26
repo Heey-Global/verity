@@ -389,7 +389,7 @@ export function handOverSentence(summary: SessionHandoffSummary): string {
       ? `starts a new session in ${where} and gives it the briefing as its first message`
       : summary.targetKind === 'project'
         ? `gives the briefing to the one open session of ${where}; with none or several, nothing is sent`
-        : `sends the briefing to ${summary.destination.session} as its next message`;
+        : `sends the briefing to ${summary.target} as its next message`;
   return `Hand over ${action}. Verity wrote it, and the session sees that.`;
 }
 
