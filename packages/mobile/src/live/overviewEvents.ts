@@ -1,5 +1,6 @@
 import type { DomainEvent } from '@verity/events';
 import type { SessionSummary } from '../api.js';
+import { pullRequestSchema } from '../branch-api.js';
 
 /**
  * How an overview event changes a list of session summaries (ADR 0033). Home
@@ -23,6 +24,18 @@ export function applyOverviewEvent(
   if (event.t === 'permission.requested' || event.t === 'choices.opened') {
     return { kind: 'reload' };
   }
+  if (event.t === 'pr.status') {
+    const parsed = pullRequestSchema.safeParse(event.pr);
+    // A status this app cannot read is left to the overview read.
+    if (!parsed.success) return { kind: 'reload' };
+    let found = false;
+    const next = sessions.map((session) => {
+      if (session.sessionId !== event.sessionId) return session;
+      found = true;
+      return withPullRequest(session, parsed.data);
+    });
+    return found ? { kind: 'local', sessions: next } : { kind: 'none' };
+  }
   if (event.t !== 'permission.decided' && event.t !== 'choices.answered') return { kind: 'none' };
   let changed = false;
   const next = sessions.map((session) => {
@@ -35,6 +48,39 @@ export function applyOverviewEvent(
     return updated;
   });
   return changed ? { kind: 'local', sessions: next } : { kind: 'none' };
+}
+
+/**
+ * Events a view keeps and applies again to an overview read that was already
+ * on its way when the event arrived; reads started after it are the server's
+ * word.
+ */
+export function appliesToEarlierReads(event: DomainEvent): boolean {
+  return (
+    event.t === 'permission.decided' || event.t === 'choices.answered' || event.t === 'pr.status'
+  );
+}
+
+/** The session with the pull request status the overview routes would now
+ * show: the full status, and the compact one Home's markers read. */
+function withPullRequest(
+  session: SessionSummary,
+  pullRequest: NonNullable<SessionSummary['pullRequest']> | null,
+): SessionSummary {
+  if (pullRequest === null) return { ...session, pullRequest: null, pr: null };
+  return {
+    ...session,
+    pullRequest,
+    pr: {
+      phase: pullRequest.phase,
+      pipeline: pullRequest.pipeline,
+      mergeable: pullRequest.mergeable,
+      ...(pullRequest.viewerCanMerge === undefined
+        ? {}
+        : { viewerCanMerge: pullRequest.viewerCanMerge }),
+      ...(pullRequest.mergeState === undefined ? {} : { mergeState: pullRequest.mergeState }),
+    },
+  };
 }
 
 /** The session without one settled permission request — both its id and the

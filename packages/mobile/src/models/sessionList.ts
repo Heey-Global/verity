@@ -1,6 +1,10 @@
 import { reuseSnapshotRecords } from '../snapshotIdentity.js';
 import type { DomainEvent, LiveHint } from '@verity/events';
-import { applyOverviewEvent, withoutPermission } from '../live/overviewEvents.js';
+import {
+  applyOverviewEvent,
+  appliesToEarlierReads,
+  withoutPermission,
+} from '../live/overviewEvents.js';
 import {
   VerityApiError,
   type AttentionSignal,
@@ -415,7 +419,7 @@ export class SessionListModel {
       this.poll?.();
       return;
     }
-    if (event.t === 'permission.decided' || event.t === 'choices.answered') {
+    if (appliesToEarlierReads(event)) {
       this.answered.push({ event, maxRequest: this.reqSeq });
       if (this.answered.length > 256) this.answered.shift();
     }

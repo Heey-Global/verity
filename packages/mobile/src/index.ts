@@ -12,6 +12,7 @@ export { publishSettledPermission, subscribeSettledPermissions } from './permiss
 export { clearConditionalReads } from './conditionalReads.js';
 export {
   applyOverviewEvent,
+  appliesToEarlierReads,
   RevisionGate,
   type OverviewEventEffect,
 } from './live/overviewEvents.js';

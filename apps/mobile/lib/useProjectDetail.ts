@@ -13,6 +13,7 @@ import { useOverviewTopics } from './overviewTopics';
 import {
   VerityApiError,
   applyOverviewEvent,
+  appliesToEarlierReads,
   projectEventUpdate,
   publishProjectStatusMutation,
   type DomainEvent,
@@ -228,9 +229,9 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
         if (update.reload && focusedRef.current) void load(true);
         return;
       }
-      if (event.t === 'permission.decided' || event.t === 'choices.answered') {
+      if (appliesToEarlierReads(event)) {
         // Kept even before the first read lands, which would otherwise bring
-        // the answered card back.
+        // the answered card back or an older pull request status.
         answeredRef.current = [
           ...answeredRef.current.slice(-63),
           { event, generation: loadGeneration.current },
