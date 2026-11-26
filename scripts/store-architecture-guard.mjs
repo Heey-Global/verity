@@ -61,8 +61,10 @@ export function facadeImplementations(text) {
       ) &&
       expression &&
       ts.isCallExpression(expression) &&
-      /^this\.[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/.test(expression.expression.getText(source)) &&
-      !expression.expression.getText(source).startsWith('this.db.') &&
+      ts.isPropertyAccessExpression(expression.expression) &&
+      ts.isPropertyAccessExpression(expression.expression.expression) &&
+      expression.expression.expression.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      expression.expression.expression.name.text !== 'db' &&
       expression.arguments.length === parameters.length &&
       expression.arguments.every(
         (arg, index) => ts.isIdentifier(arg) && arg.text === parameters[index],

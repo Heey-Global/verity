@@ -985,7 +985,9 @@ jobs:
           fetch-depth: 2
       - name: Select Store architecture baseline
         if: github.event_name == 'pull_request'
-        run: echo "STORE_ARCHITECTURE_BASE=$(git rev-parse HEAD^1)" >> "$GITHUB_ENV"
+        run: |
+          base=$(git rev-parse HEAD^1)
+          echo "STORE_ARCHITECTURE_BASE=$base" >> "$GITHUB_ENV"
       - name: Ensure GNU inventory tools
         run: |
           if [[ ! -x /usr/bin/gnutimeout ]]; then
@@ -1085,7 +1087,9 @@ jobs:
           fetch-depth: 2
       - name: Select Store architecture baseline
         if: github.event_name == 'pull_request'
-        run: echo "STORE_ARCHITECTURE_BASE=$(git rev-parse HEAD^1)" >> "$GITHUB_ENV"
+        run: |
+          base=$(git rev-parse HEAD^1)
+          echo "STORE_ARCHITECTURE_BASE=$base" >> "$GITHUB_ENV"
       - name: Ensure GNU inventory tools
         run: |
           if [[ ! -x /usr/bin/gnutimeout ]]; then

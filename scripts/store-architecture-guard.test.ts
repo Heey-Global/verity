@@ -23,6 +23,11 @@ it('accepts parameter forwarding and detects logic hidden in a return expression
   expect(
     facadeImplementations('class EventStore { read(id: string) { return this.events.read(id); } }'),
   ).toEqual({});
+  expect(
+    facadeImplementations(
+      'class EventStore { read(id: string) { return this\n.events.read(id); } }',
+    ),
+  ).toEqual({});
   for (const body of [
     'return this.db.selectFrom("events");',
     'if (id) return this.events.read(id);',
