@@ -5,6 +5,7 @@ export { Card, CardHead, CardInset, Group, Row, ToggleRow } from './Card';
 export type { Leading } from './Card';
 export { FilterChips } from './FilterChips';
 export { OptionList } from './OptionList';
+export { PinnedScroll, pinnedCardLayout } from './PinnedScroll';
 export { SearchField } from './SearchField';
 export { SectionHeader } from './SectionHeader';
 export { ConfirmSheet, Sheet, SheetHeaderButton, useConfirm, type ConfirmRequest } from './Sheet';
