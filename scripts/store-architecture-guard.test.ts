@@ -82,6 +82,7 @@ it.each([
   'class EventStore { @register field = new EventSnapshotStore(() => this.db); }',
   '@register class EventStore {}',
   'class EventStore extends register() {}',
+  'class EventStore extends BaseStore {}',
 ])('detects executable wiring in %s', (source) => {
   expect(Object.keys(facadeImplementations(source))).toHaveLength(1);
 });

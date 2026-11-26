@@ -21,11 +21,7 @@ export function facadeImplementations(text) {
   const debt = {};
   const executableHeader =
     ts.getDecorators(facade)?.length ||
-    facade.heritageClauses?.some(
-      (clause) =>
-        clause.token === ts.SyntaxKind.ExtendsKeyword &&
-        clause.types.some((base) => !ts.isIdentifier(base.expression)),
-    );
+    facade.heritageClauses?.some((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword);
   const members = [
     ...(executableHeader ? [facade] : []),
     ...facade.members,
