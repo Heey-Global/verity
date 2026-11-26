@@ -1,4 +1,11 @@
-import type { LiveTopicSink, ProjectDetail, SessionSummary, VerityClient } from '@verity/mobile';
+import {
+  publishProjectStatusMutation,
+  type LiveTopicSink,
+  type ProjectDetail,
+  type ProjectRecord,
+  type SessionSummary,
+  type VerityClient,
+} from '@verity/mobile';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { useProjectDetail } from './useProjectDetail';
 
@@ -99,5 +106,113 @@ describe('useProjectDetail overview events', () => {
       state: 'active',
       lifecycleState: 'sleeping',
     });
+  });
+
+  // Settings routes stack on the project screen and each mounts the hook; a
+  // rename on one must show on the others without a read of their own.
+  it('shows a change made on one screen on every screen of the project', async () => {
+    const client = {
+      getProject: jest.fn().mockResolvedValue({
+        ...detailWith([]),
+        project: { id: 'p3', name: 'Before' },
+      }),
+      setProjectSetupStatus: jest.fn(),
+    } as unknown as VerityClient;
+    const page = renderHook(() => useProjectDetail(client, 'p3'));
+    const settings = renderHook(() => useProjectDetail(client, 'p3'));
+    await waitFor(() => expect(settings.result.current.detail).toBeDefined());
+    await waitFor(() => expect(page.result.current.detail).toBeDefined());
+    act(() => settings.result.current.onProfileSaved({ name: 'After' }));
+    expect(page.result.current.detail?.project.name).toBe('After');
+  });
+
+  it('keeps a project another screen saved while this read was on its way', async () => {
+    let release: (detail: ProjectDetail) => void = () => undefined;
+    const client = {
+      getProject: jest.fn(() => new Promise<ProjectDetail>((resolve) => (release = resolve))),
+      setProjectSetupStatus: jest.fn(),
+    } as unknown as VerityClient;
+    const { result } = renderHook(() => useProjectDetail(client, 'p4'));
+    act(() =>
+      publishProjectStatusMutation({ id: 'p4', name: 'P4', state: 'active' } as ProjectRecord),
+    );
+    await act(async () =>
+      release({
+        ...detailWith([]),
+        project: { id: 'p4', name: 'P4', state: 'cloning' },
+      } as ProjectDetail),
+    );
+    await waitFor(() => expect(result.current.detail).toBeDefined());
+    expect(result.current.detail?.project.state).toBe('active');
+  });
+
+  it('shows a pull request status from an event without reading', async () => {
+    const getProject = jest.fn().mockResolvedValue({
+      ...detailWith([{ ...waiting, sessionId: 's5', projectId: 'p5' }]),
+      project: { id: 'p5', name: 'P5' },
+    });
+    const client = { getProject, setProjectSetupStatus: jest.fn() } as unknown as VerityClient;
+    const { result } = renderHook(() => useProjectDetail(client, 'p5'));
+    await waitFor(() => expect(result.current.detail?.sessions).toHaveLength(1));
+    act(() =>
+      mockSinks.get('project:p5')!.event({
+        t: 'pr.status',
+        sessionId: 's5',
+        rev: 1,
+        pr: {
+          number: 7,
+          title: 'Add live status',
+          url: 'https://example.test/pr/7',
+          phase: 'merged',
+          pipeline: 'success',
+          mergeable: null,
+          checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+        },
+      }),
+    );
+    expect(result.current.detail?.sessions[0]?.pr).toMatchObject({ phase: 'merged' });
+    expect(getProject).toHaveBeenCalledTimes(1);
+  });
+
+  // Past the replay bound the store refuses the read; the page must still
+  // list what the server sent rather than show an empty project.
+  it("shows the read's sessions when the store could not take it", async () => {
+    let release: (detail: ProjectDetail) => void = () => undefined;
+    const client = {
+      getProject: jest.fn(() => new Promise<ProjectDetail>((resolve) => (release = resolve))),
+      setProjectSetupStatus: jest.fn(),
+    } as unknown as VerityClient;
+    const { result } = renderHook(() => useProjectDetail(client, 'p6'));
+    // An older record of the project, as another screen saved it earlier.
+    act(() =>
+      publishProjectStatusMutation({ id: 'p6', name: 'Old', state: 'active' } as ProjectRecord),
+    );
+    const sink = mockSinks.get('project:p6')!;
+    act(() => {
+      for (let i = 0; i < 257; i += 1)
+        sink.event({ t: 'choices.answered', sessionId: `other-${i}`, rev: 1 });
+    });
+    await act(async () =>
+      release({
+        ...detailWith([{ ...waiting, sessionId: 's6', projectId: 'p6' }]),
+        project: { id: 'p6', name: 'P6' },
+      } as ProjectDetail),
+    );
+    await waitFor(() => expect(result.current.detail).toBeDefined());
+    expect(result.current.detail?.sessions.map((s) => s.sessionId)).toEqual(['s6']);
+    // The store applies every event at once, so its copy is never older than
+    // a refused read; a screen's save during the read stays.
+    expect(result.current.detail?.project.name).toBe('Old');
+    // Answers still leave the listed copy while the store does not speak for it.
+    act(() =>
+      sink.event({
+        t: 'permission.decided',
+        sessionId: 's6',
+        toolUseId: 'tool-1',
+        rev: 2,
+        outcome: 'allowed',
+      }),
+    );
+    expect(result.current.detail?.sessions[0]?.pendingPermissionRequests).toEqual([]);
   });
 });

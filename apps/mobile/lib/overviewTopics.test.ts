@@ -1,6 +1,7 @@
-import type { DomainEvent, LiveTopicSink } from '@verity/mobile';
-import { act, renderHook } from '@testing-library/react-native';
-import { useOverviewTopics } from './overviewTopics';
+import type { DomainEvent, LiveTopicSink, ProjectRecord } from '@verity/mobile';
+import { act, render, renderHook } from '@testing-library/react-native';
+import { createElement } from 'react';
+import { useOverviewStore, useOverviewTopics } from './overviewTopics';
 
 const mockSinks = new Map<string, LiveTopicSink>();
 const mockUnsubscribed: string[] = [];
@@ -222,6 +223,111 @@ describe('useOverviewTopics', () => {
     expect(mockSinks.get('project:p1')).not.toBe(before);
     mockSinks.get('project:p1')!.event(answered(5));
     expect(events).toEqual([answered(5), answered(5)]);
+  });
+
+  const switchAccount = (to: number) =>
+    act(() => {
+      mockAccount = to;
+      for (const listener of mockAccountListeners) listener();
+    });
+
+  it('shares one store per server and account, and starts empty after a switch', () => {
+    const account = mockAccount;
+    const topics = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()),
+    );
+    const store = renderHook(() => useOverviewStore('https://core.example')).result.current;
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(store);
+    const mounted = renderHook(() => useOverviewStore('https://core.example'));
+    switchAccount(account + 1);
+    // Another account never sees the previous one's sessions.
+    expect(mounted.result.current).not.toBe(store);
+    // The view moved to the other account, so nothing kept following the
+    // first one's events: coming back starts empty.
+    switchAccount(account);
+    expect(mounted.result.current).not.toBe(store);
+    topics.unmount();
+  });
+
+  // A store nothing holds stopped following events; a page opened later
+  // would show a copy that missed them.
+  it('drops the store once nothing holds it', () => {
+    const topics = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()),
+    );
+    const view = renderHook(() => useOverviewStore('https://core.example'));
+    const store = view.result.current;
+    topics.unmount();
+    // The page still shows it; its next subscription brings it up to date.
+    const again = renderHook(() => useOverviewStore('https://core.example'));
+    expect(again.result.current).toBe(store);
+    again.unmount();
+    view.unmount();
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).not.toBe(
+      store,
+    );
+  });
+
+  // One screen replaces another in a single commit, each the only holder: the
+  // old one's release must not send the new one chasing dropped stores.
+  it('keeps the store when the only view holding it is replaced', () => {
+    const seen: unknown[] = [];
+    const Screen = () => {
+      seen.push(useOverviewStore('https://core.example'));
+      return null;
+    };
+    const ScreenX = () => createElement(Screen);
+    const ScreenY = () => createElement(Screen);
+    const view = render(createElement(ScreenX));
+    const first = seen.at(-1);
+    view.rerender(createElement(ScreenY));
+    expect(seen.at(-1)).toBe(first);
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(first);
+    view.unmount();
+  });
+
+  // A page whose project changes re-attaches; the store it renders must be
+  // the one the live topics still apply events to.
+  it('moves a view to the store its hub feeds when its projects change', () => {
+    const { result, rerender } = renderHook(
+      ({ ids }: { ids: string[] }) => {
+        useOverviewTopics('https://core.example', ids, jest.fn(), jest.fn());
+        return useOverviewStore('https://core.example');
+      },
+      { initialProps: { ids: ['p1'] } },
+    );
+    rerender({ ids: ['p2'] });
+    const store = result.current;
+    act(() =>
+      store.applyProjects(store.beginRead(), [{ id: 'p2', state: 'cloning' } as ProjectRecord], {
+        covers: (p) => p.id === 'p2',
+      }),
+    );
+    act(() =>
+      mockSinks.get('project:p2')!.event({
+        t: 'sandbox.lifecycle',
+        projectId: 'p2',
+        rev: 1,
+        state: 'active',
+      }),
+    );
+    expect(result.current.project('p2')?.state).toBe('active');
+  });
+
+  it("drops a signed-out account's store once no view holds it", () => {
+    const account = mockAccount;
+    const view = renderHook(() => useOverviewStore('https://core.example'));
+    const store = view.result.current;
+    view.unmount();
+    act(() => {
+      mockAccount += 1;
+      for (const listener of mockAccountListeners) listener();
+    });
+    mockAccount = account;
+    // Signing back in must not show the sessions kept from before.
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).not.toBe(
+      store,
+    );
   });
 
   it('subscribes nothing without a server or projects', () => {
