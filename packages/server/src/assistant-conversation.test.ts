@@ -711,6 +711,29 @@ describe('assistant handoff approvals in the conversation', () => {
     expect(projection.approvals).toEqual([{ id: 'gw-1', tool: 'verity_session_handoff' }]);
   });
 
+  it('holds all approval inputs to one budget, so several cannot multiply the read', () => {
+    const big = handoff('Big', 'x'.repeat(60 * 1_024));
+    const second = handoff('Second', 'y'.repeat(60 * 1_024));
+    const events = sequenced([
+      ...waiting(big),
+      {
+        t: 'permission',
+        id: 'gw-2',
+        tool: 'verity_session_handoff',
+        input: second,
+        riskClass: 'ask',
+      },
+    ]);
+    const projection = projectAssistantConversation(events, {
+      ...idle,
+      approvals: [
+        { toolUseId: 'gw-1', tool: 'verity_session_handoff' },
+        { toolUseId: 'gw-2', tool: 'verity_session_handoff' },
+      ],
+    });
+    expect(projection.approvals.map((approval) => 'input' in approval)).toEqual([true, false]);
+  });
+
   it('tells a handoff declined on its card from one that failed', () => {
     const result = (text: string): AgentEvent => ({
       t: 'tool_result',

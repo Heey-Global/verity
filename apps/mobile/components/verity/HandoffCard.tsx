@@ -36,7 +36,7 @@ export function HandoffCard({
   /** Opens the session the work went to. */
   onOpenSession: (sessionId: string) => void;
   /** Opens Verity's own session, where a request too large for this card is read. */
-  onReview: () => void;
+  onReview: (() => void) | null;
 }) {
   if (approval !== undefined)
     return <WaitingHandoff item={item} approval={approval} onReview={onReview} />;
@@ -60,12 +60,14 @@ function WaitingHandoff({
 }: {
   item: Assignment;
   approval: AssistantApproval;
-  onReview: () => void;
+  onReview: (() => void) | null;
 }) {
   // The request as the tool received it; null when it was too large to carry or did not
   // parse, and then the session's own card is the place to read it.
   const summary = approval.input === undefined ? null : sessionHandoffSummary(approval.input);
-  const project = summary?.destination.project ?? item.project;
+  // Once the request parsed, only it names the destination: the card it was linked to by
+  // title could belong to another handoff, and a bare session target has no project.
+  const project = summary !== null ? summary.destination.project : item.project;
   return (
     <View testID="handoff-card">
       <Card stacked selected>
@@ -83,7 +85,7 @@ function WaitingHandoff({
         ) : null}
         <Decision
           approval={approval}
-          allowLabel={`Hand over to ${shortProject(project)}`}
+          allowLabel={project === null ? 'Hand over' : `Hand over to ${shortProject(project)}`}
           denyLabel="Don't hand over"
           decidable={summary !== null}
           onReview={onReview}
@@ -102,7 +104,7 @@ export function VerityApprovalCard({
   onReview,
 }: {
   approval: AssistantApproval;
-  onReview: () => void;
+  onReview: (() => void) | null;
 }) {
   const overview =
     approval.input === undefined ? null : permissionOverview(approval.tool, approval.input);
@@ -154,7 +156,7 @@ function Decision({
   allowLabel: string;
   denyLabel: string;
   decidable: boolean;
-  onReview: () => void;
+  onReview: (() => void) | null;
 }) {
   const [deciding, setDeciding] = useState<'allow' | 'deny' | null>(null);
   const decide = (allow: boolean) => {
@@ -167,7 +169,7 @@ function Decision({
       .finally(() => setDeciding(null));
   };
   if (!decidable)
-    return (
+    return onReview === null ? null : (
       <View style={styles.actions}>
         <Text variant="footnote" style={styles.flex}>
           Too much to show here; the full request is in Verity&apos;s session.
@@ -229,7 +231,9 @@ function Route({
   return (
     <View
       style={[styles.route, compact ? styles.routeCompact : null]}
-      accessibilityLabel={`From Verity to ${project ?? 'a project'}${session ? `, ${session}` : ''}`}
+      accessibilityLabel={`From Verity to ${project ?? session ?? 'a project'}${
+        project !== null && session ? `, ${session}` : ''
+      }`}
       testID="handoff-route"
     >
       <View style={styles.node}>
@@ -250,7 +254,7 @@ function Route({
       <View style={[styles.node, styles.shrink]}>
         <View style={[styles.target, { width: tile, height: tile }]}>
           <Text variant="row" tone="action">
-            {shortProject(project).slice(0, 1).toUpperCase()}
+            {(project === null ? 'S' : shortProject(project).slice(0, 1)).toUpperCase()}
           </Text>
         </View>
         <View style={styles.shrink}>
@@ -258,9 +262,9 @@ function Route({
             To
           </Text>
           <Text variant="bodySmall" style={styles.nodeName} numberOfLines={1}>
-            {project ?? 'Project'}
+            {project ?? session ?? 'Project'}
           </Text>
-          {session !== null && !compact ? (
+          {session !== null && project !== null && !compact ? (
             <Text variant="footnote" tone="muted" numberOfLines={1}>
               {session}
             </Text>

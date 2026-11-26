@@ -140,8 +140,8 @@ export type AssistantQuestion = z.infer<typeof assistantQuestionSchema>;
 export const assistantApprovalSchema = z.object({
   id,
   tool: z.string(),
-  /** The request as the tool received it, absent when it is larger than
-   *  {@link ASSISTANT_APPROVAL_INPUT_MAX_BYTES} or from an older server; the
+  /** The request as the tool received it, absent once the conversation's approvals
+   *  together pass {@link ASSISTANT_APPROVAL_INPUT_MAX_BYTES} or from an older server; the
    *  device then sends the user to the session instead of deciding blind. */
   input: z.unknown().optional(),
 });
@@ -161,7 +161,7 @@ export const assistantConversationSchema = z.object({
 export type AssistantConversation = z.infer<typeof assistantConversationSchema>;
 
 /**
- * Upper bound for an approval input carried on the conversation.
+ * Upper bound for the approval inputs carried on the conversation, all together.
  *
  * Larger than the session list's bound because a handoff briefing may run to
  * 20,000 characters and is the thing the panel exists to show; it rides along

@@ -144,12 +144,19 @@ export function projectAssistantConversation(
           multiSelect: choices.event.multiSelect === true,
         }
       : null;
+  // One budget for all of them: the conversation is read on every change, and several
+  // waiting approvals must not multiply it. One that no longer fits goes without its input,
+  // and the device sends the user to the session for it.
+  let budget = ASSISTANT_APPROVAL_INPUT_MAX_BYTES;
   const approvals = facts.approvals.map((approval): AssistantApproval => {
     const input = requested.get(approval.toolUseId);
+    const size = inputBytes(input);
+    const carried = size !== undefined && size <= budget;
+    if (carried) budget -= size;
     return {
       id: approval.toolUseId,
       tool: approval.tool,
-      ...(fits(input) ? { input } : {}),
+      ...(carried ? { input } : {}),
     };
   });
   linkHandoffApprovals(items, approvals);
@@ -233,16 +240,14 @@ function linkHandoffApprovals(
   }
 }
 
-function fits(input: unknown): boolean {
-  if (input === undefined) return false;
+/** The serialized size of an approval's input, or undefined when there is none to carry. */
+function inputBytes(input: unknown): number | undefined {
+  if (input === undefined) return undefined;
   try {
     const serialized = JSON.stringify(input);
-    return (
-      serialized !== undefined &&
-      Buffer.byteLength(serialized, 'utf8') <= ASSISTANT_APPROVAL_INPUT_MAX_BYTES
-    );
+    return serialized === undefined ? undefined : Buffer.byteLength(serialized, 'utf8');
   } catch {
-    return false;
+    return undefined;
   }
 }
 

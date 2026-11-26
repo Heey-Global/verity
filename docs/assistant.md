@@ -163,7 +163,7 @@ meeting, its transcript and its notes belong to the assistant session.
 ## Approvals in the panel
 
 The conversation carries each waiting approval with its request (up to
-96 KiB, `ASSISTANT_APPROVAL_INPUT_MAX_BYTES`), read from the approval's own
+96 KiB for all of them together, `ASSISTANT_APPROVAL_INPUT_MAX_BYTES`), read from the approval's own
 event in the assistant session, so the panel decides it in place through the
 session's permission route; nothing jumps to the session.
 

@@ -165,3 +165,28 @@ it('decides another approval inline when its summary carries the whole request',
     true,
   );
 });
+
+// The approval is linked to its card by title, so the card's own project may belong to
+// another handoff; a request naming only a session must not borrow it.
+it('names only the destination the request itself names', () => {
+  const bare = { target: { sessionId: 's-9' }, title: input.title, briefing: BRIEFING };
+  const screen = show({
+    state: 'needs_you',
+    items: [card({ approvalId: 'gw-1', project: 'acme/elsewhere' })],
+    approvals: [{ id: 'gw-1', tool: 'verity_session_handoff', input: bare }],
+  });
+  expect(screen.getByTestId('handoff-route').props.accessibilityLabel).toBe(
+    'From Verity to Session s-9',
+  );
+  expect(screen.queryByText(/elsewhere/)).toBeNull();
+  expect(screen.getByText('Hand over')).toBeTruthy();
+});
+
+it('offers no way to the session when there is none to open', () => {
+  const screen = show({
+    sessionId: null,
+    state: 'needs_you',
+    approvals: [{ id: 'p-1', tool: 'verity_gmail' }],
+  });
+  expect(screen.queryByText('Review in session')).toBeNull();
+});

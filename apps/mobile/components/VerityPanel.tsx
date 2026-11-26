@@ -154,9 +154,8 @@ export function VerityPanel({
     onClose();
     router.push(`/session/${id}`);
   };
-  const review = () => {
-    if (sessionId) openSession(sessionId);
-  };
+  // Without a session there is nowhere to review; the card then offers no way there.
+  const review = sessionId ? () => openSession(sessionId) : null;
   // A handoff's approval is decided on its own card; the rest wait at the end.
   const approvals = conversation?.approvals ?? [];
   const onCards = new Set(
@@ -371,7 +370,7 @@ function ItemView({
   approvals: readonly AssistantApproval[];
   onOpenMeeting: ((item: MeetingItem) => void) | null;
   onOpenSession: (sessionId: string) => void;
-  onReview: () => void;
+  onReview: (() => void) | null;
 }) {
   switch (item.kind) {
     case 'message':
