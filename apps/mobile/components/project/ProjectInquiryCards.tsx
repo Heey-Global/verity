@@ -17,7 +17,7 @@ type InquiryResource = ReturnType<typeof useProjectInquiries>;
 type Decide = (targetProjectId: string, id: string, decision: InquiryDecision) => void;
 
 /** Saves a decision and reloads the shared list; one decision at a time. */
-export function useInquiryDecisions(client: VerityClient, resource: InquiryResource) {
+function useInquiryDecisions(client: VerityClient, resource: InquiryResource) {
   const [busy, setBusy] = useState<string>();
   const decide: Decide = (targetProjectId, id, decision) => {
     setBusy(id);

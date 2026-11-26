@@ -217,7 +217,7 @@ export function InquiryAnswerTurn({ text, children }: { text: string; children: 
   return <InquiryAnswerCard inquiry={inquiry} />;
 }
 
-export function InquiryAnswerCard({ inquiry }: { inquiry: ProjectInquiry }) {
+function InquiryAnswerCard({ inquiry }: { inquiry: ProjectInquiry }) {
   const target = inquiry.targetProjectName ?? inquiry.targetProjectId;
   return (
     <Card stacked>

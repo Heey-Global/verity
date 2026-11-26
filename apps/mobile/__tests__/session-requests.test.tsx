@@ -181,7 +181,7 @@ describe('reopenable secret approvals', () => {
       }),
     );
     const { result, rerender } = renderHook(
-      ({ sessionId }) =>
+      ({ sessionId }: { sessionId: string }) =>
         useReopenableSecretApprovals(client as unknown as VerityClient, sessionId, true),
       { initialProps: { sessionId: 's1' } },
     );
@@ -202,7 +202,8 @@ describe('reopenable secret approvals', () => {
     const client = clientMock();
     const props = { client: client as unknown as VerityClient };
     const { rerender } = renderHook(
-      ({ client: current }) => useReopenableSecretApprovals(current, 's1', true),
+      ({ client: current }: { client: VerityClient }) =>
+        useReopenableSecretApprovals(current, 's1', true),
       { initialProps: props },
     );
     await elapse(30_000);

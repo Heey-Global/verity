@@ -39,7 +39,7 @@ const BUBBLE = 52;
 const INSET = 12;
 /** The highest it rests or is dragged: below a screen's header row and the bars
  *  under it, such as a linked session or an error, so it never covers them. */
-export const TOP_CLEARANCE = 56 + 44 + 40;
+const TOP_CLEARANCE = 56 + 44 + 40;
 
 /**
  * The V: the one way to reach Verity from any screen (docs/assistant.md). A tap
