@@ -2,7 +2,7 @@ import type { DomainEvent } from '@verity/events';
 import { describe, expect, it } from 'vitest';
 import type { SessionSummary } from '../api.js';
 import { inboxItems } from '../ui/inbox.js';
-import { applyOverviewEvent, RevisionGate } from './overviewEvents.js';
+import { applyOverviewEvent, keptWithout, RevisionGate } from './overviewEvents.js';
 
 const usage = {
   inputTokens: 0,
@@ -136,6 +136,24 @@ describe('applyOverviewEvent pr.status', () => {
     expect(
       applyOverviewEvent([waiting()], { t: 'pr.status', sessionId: 's9', rev: 1, pr: merged }).kind,
     ).toBe('none');
+  });
+});
+
+describe('keptWithout', () => {
+  it('keeps one pull request status per session and every answer', () => {
+    const status = (sessionId: string, rev: number): DomainEvent => ({
+      t: 'pr.status',
+      sessionId,
+      rev,
+      pr: null,
+    });
+    const answered: DomainEvent = { t: 'choices.answered', sessionId: 's1', rev: 1 };
+    let kept: { event: DomainEvent }[] = [{ event: answered }];
+    for (let rev = 2; rev < 10; rev += 1) {
+      kept = [...keptWithout(kept, status('s1', rev)), { event: status('s1', rev) }];
+    }
+    kept = [...keptWithout(kept, status('s2', 10)), { event: status('s2', 10) }];
+    expect(kept.map(({ event }) => event)).toEqual([answered, status('s1', 9), status('s2', 10)]);
   });
 });
 

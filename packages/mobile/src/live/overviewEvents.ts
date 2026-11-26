@@ -61,6 +61,22 @@ export function appliesToEarlierReads(event: DomainEvent): boolean {
   );
 }
 
+/**
+ * Kept events without those `event` replaces: a session's newer pull request
+ * status makes its older one moot. Keeping one per session stops a burst of
+ * statuses, such as the first sweep after a server restart, from pushing kept
+ * answers out of a bounded buffer.
+ */
+export function keptWithout<T extends { event: DomainEvent }>(
+  kept: readonly T[],
+  event: DomainEvent,
+): T[] {
+  if (event.t !== 'pr.status') return [...kept];
+  return kept.filter(
+    (entry) => entry.event.t !== 'pr.status' || entry.event.sessionId !== event.sessionId,
+  );
+}
+
 /** The session with the pull request status the overview routes would now
  * show: the full status, and the compact one Home's markers read. */
 function withPullRequest(

@@ -13,6 +13,7 @@ export { clearConditionalReads } from './conditionalReads.js';
 export {
   applyOverviewEvent,
   appliesToEarlierReads,
+  keptWithout,
   RevisionGate,
   type OverviewEventEffect,
 } from './live/overviewEvents.js';

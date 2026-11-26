@@ -3,6 +3,7 @@ import type { DomainEvent, LiveHint } from '@verity/events';
 import {
   applyOverviewEvent,
   appliesToEarlierReads,
+  keptWithout,
   withoutPermission,
 } from '../live/overviewEvents.js';
 import {
@@ -420,6 +421,7 @@ export class SessionListModel {
       return;
     }
     if (appliesToEarlierReads(event)) {
+      this.answered = keptWithout(this.answered, event);
       this.answered.push({ event, maxRequest: this.reqSeq });
       if (this.answered.length > 256) this.answered.shift();
     }

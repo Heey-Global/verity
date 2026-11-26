@@ -14,6 +14,7 @@ import {
   VerityApiError,
   applyOverviewEvent,
   appliesToEarlierReads,
+  keptWithout,
   projectEventUpdate,
   publishProjectStatusMutation,
   type DomainEvent,
@@ -233,7 +234,7 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
         // Kept even before the first read lands, which would otherwise bring
         // the answered card back or an older pull request status.
         answeredRef.current = [
-          ...answeredRef.current.slice(-63),
+          ...keptWithout(answeredRef.current, event).slice(-63),
           { event, generation: loadGeneration.current },
         ];
       }
