@@ -32,7 +32,7 @@ const audioMessage = z.object({
 export type AttendeeAudioGap =
   'interrupted' | 'overloaded' | 'transcription_failed' | 'invalid_audio';
 
-export interface AttendeeAudioInput {
+interface AttendeeAudioInput {
   wav: Buffer;
   timestampMs: number;
   participantId?: string;

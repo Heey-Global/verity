@@ -174,7 +174,7 @@ function assigned(meeting: OwnedMeeting): LiveMeetingSyncRecord | undefined {
 interface AudioConnection {
   receiver: AttendeeAudioReceiver;
   connector: PreviewConnector;
-  botId?: string;
+  botId: string | undefined;
   segments: AttendeeUtterance[];
   gap: boolean;
   disconnected?: boolean;
@@ -592,8 +592,13 @@ export class AttendeeMeetings {
         connectorToken: binding.connectorToken,
         targetOrigin: `http://127.0.0.1:${port}`,
       });
-      connection = { receiver, connector, segments: [], gap: Boolean(state.botId) };
-      connection.botId = state.botId;
+      connection = {
+        receiver,
+        connector,
+        botId: state.botId,
+        segments: [],
+        gap: Boolean(state.botId),
+      };
       await connector.connect();
       if (generation !== this.sharingGeneration || this.options.edge?.isAvailable?.() === false)
         throw new Error('Online sharing authority lost during audio connection');
@@ -745,7 +750,7 @@ export class AttendeeMeetings {
       if (!credentials) throw new Error('Configure Attendee in Connected services first.');
       if (sessionId !== null && (await this.activeIn(sessionId)))
         throw new Error('An online meeting is already active in this session.');
-      let audioTarget: string | void;
+      let audioTarget: string | void = undefined;
       if (this.options.transcribeAudio) {
         try {
           audioTarget = await this.options.checkAudioTranscription?.();
