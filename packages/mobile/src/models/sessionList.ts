@@ -856,7 +856,9 @@ export class SessionListModel {
    * not come (the server could not compute it, or this app could not read
    * it) is made up for by a list read. */
   private awaitRow(sessionId: string): void {
-    if (this.awaitedRows.has(sessionId)) return;
+    // Each hint waits for a row from after it, so a row of an earlier change
+    // cannot answer for a later one whose row then fails.
+    clearTimeout(this.awaitedRows.get(sessionId));
     this.awaitedRows.set(
       sessionId,
       setTimeout(() => {
