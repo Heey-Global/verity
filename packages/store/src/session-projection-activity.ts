@@ -6,6 +6,7 @@ import { sessionMessageEvent0236 } from './session-message-recency-migration.js'
 interface ActivityFacts {
   eventCount: number;
   lastEventSeq: number;
+  revision: string;
   lastActivityAt: number | null;
   lastMessageAt: number | null;
 }
@@ -18,7 +19,7 @@ export async function readSessionProjectionActivity(
 ): Promise<void> {
   const totals = await tx
     .selectFrom('session_event_stats')
-    .select(['session_id', 'event_count', 'last_event_seq', 'last_activity_at'])
+    .select(['session_id', 'event_count', 'last_event_seq', 'last_activity_at', 'revision'])
     .where('session_id', 'in', ids)
     .execute();
   for (const row of totals) {
@@ -26,6 +27,7 @@ export async function readSessionProjectionActivity(
     if (entry === undefined) continue;
     entry.eventCount = Number(row.event_count);
     entry.lastEventSeq = Number(row.last_event_seq);
+    entry.revision = String(row.revision);
     entry.lastActivityAt = row.last_activity_at?.getTime() ?? null;
   }
 

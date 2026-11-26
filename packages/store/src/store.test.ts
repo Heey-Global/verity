@@ -2103,6 +2103,18 @@ describe('EventStore — project memory (ADR 0008)', () => {
  *  slice and they keep asking what they were written to ask. The tail bound
  *  itself is exercised against a log built to exceed it. */
 const WHOLE_LOG = 1_000;
+/** What the store answers for a session without a log, or one it does not know. */
+const emptyFacts = () => ({
+  eventCount: 0,
+  lastEventSeq: 0,
+  revision: '',
+  lastActivityAt: null,
+  lastMessageAt: null,
+  events: [],
+  eventsTruncated: false,
+  rateLimitEvents: [],
+  usage: aggregateUsage([]),
+});
 
 describe('EventStore — session projection facts', () => {
   const other = { sessionId: 's2', worktree: '/wt/agent-s2', model: 'claude-opus-5' };
@@ -2178,16 +2190,7 @@ describe('EventStore — session projection facts', () => {
   it('returns a zeroed entry for a session with no events and for an unknown id', async () => {
     const facts = await ctx.store.listSessionProjectionFacts(['s1', 'nope'], WHOLE_LOG);
     for (const sessionId of ['s1', 'nope']) {
-      expect(facts.get(sessionId)).toEqual({
-        eventCount: 0,
-        lastEventSeq: 0,
-        lastActivityAt: null,
-        lastMessageAt: null,
-        events: [],
-        eventsTruncated: false,
-        rateLimitEvents: [],
-        usage: aggregateUsage([]),
-      });
+      expect(facts.get(sessionId)).toEqual(emptyFacts());
     }
     expect(await ctx.store.listSessionProjectionFacts([], WHOLE_LOG)).toEqual(new Map());
   });
@@ -2261,16 +2264,7 @@ describe('EventStore — session projection facts', () => {
     const ids = Array.from({ length: 70_000 }, (_, at) => `absent-${String(at)}`);
     const facts = await ctx.store.listSessionProjectionFacts(ids, WHOLE_LOG);
     expect(facts.size).toBe(ids.length);
-    expect(facts.get('absent-69999')).toEqual({
-      eventCount: 0,
-      lastEventSeq: 0,
-      lastActivityAt: null,
-      lastMessageAt: null,
-      events: [],
-      eventsTruncated: false,
-      rateLimitEvents: [],
-      usage: aggregateUsage([]),
-    });
+    expect(facts.get('absent-69999')).toEqual(emptyFacts());
   });
 
   it('takes lastActivityAt from the newest seq, not the newest timestamp', async () => {

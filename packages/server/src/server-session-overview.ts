@@ -33,11 +33,14 @@ import {
   sessionHasOpenTasks,
   type SessionStatus,
 } from './status.js';
+import { liveOpenChoices, pickPermissionRequests } from './session-inbox-facts.js';
 import {
-  openChoicesFromProjection,
-  pendingPermissionRequestsFromProjection,
-  requestInitiatorFromProjection,
-} from './session-inbox-facts.js';
+  LOG_PROJECTION_CACHE_MAX_SESSIONS,
+  projectSessionLog,
+  SessionLogProjectionCache,
+  type SessionLogProjection,
+  type SummaryLogFacts,
+} from './session-log-projection.js';
 import type { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import {
   BRANCH_TTL_MS,
@@ -165,11 +168,11 @@ export function createServerSessionOverview({
     sessionId: string,
     events: readonly AgentEvent[],
     totalEventCount: number,
-  ): SessionStatus => {
-    const derived = deriveSessionStatusFromProjection(events, totalEventCount);
-    if (!AWAITING.has(derived) && conductor.isBusy(sessionId, { turnOnly: true })) return 'running';
-    return derived;
-  };
+  ): SessionStatus =>
+    liveStatusOfDerived(sessionId, deriveSessionStatusFromProjection(events, totalEventCount));
+  /** The live half of {@link liveStatusFromProjection}, for an already derived status. */
+  const liveStatusOfDerived = (sessionId: string, derived: SessionStatus): SessionStatus =>
+    !AWAITING.has(derived) && conductor.isBusy(sessionId, { turnOnly: true }) ? 'running' : derived;
 
   // PR-status enrichment for the overview markers (#387). CI status moves on the
   // order of minutes, but the session list polls every ~2s — resolving each
@@ -923,6 +926,7 @@ export function createServerSessionOverview({
   const emptyProjectionFacts = (): SessionProjectionFacts => ({
     eventCount: 0,
     lastEventSeq: 0,
+    revision: '',
     lastActivityAt: null,
     lastMessageAt: null,
     events: [],
@@ -978,13 +982,25 @@ export function createServerSessionOverview({
    * of them: four batched queries per 500 sessions, and the only part that still
    * carries payloads is bounded to `PROJECTION_TAIL` events per session.
    */
+  const logProjections = new SessionLogProjectionCache(LOG_PROJECTION_CACHE_MAX_SESSIONS);
   const summarizeSessions = async (
     sessions: readonly SessionRecord[],
   ): Promise<SessionSummary[]> => {
     const ids = sessions.map((session) => session.sessionId);
+    // A constant-size marker per log decides which logs moved; only those are
+    // read and derived again (see `SessionLogProjectionCache`).
+    const stats = await measureLatencyPhase('session_log_stats', () =>
+      deps.eventStore.sessionProjections.listSessionEventStats(ids),
+    );
+    const logs = new Map<string, { facts: SummaryLogFacts; projection: SessionLogProjection }>();
+    for (const id of ids) {
+      const unchanged = logProjections.get(id, stats.get(id));
+      if (unchanged !== undefined) logs.set(id, unchanged);
+    }
+    const changed = ids.filter((id) => !logs.has(id));
     const [facts, pendingLinks, automations] = await Promise.all([
       measureLatencyPhase('session_projection', () =>
-        deps.eventStore.listSessionProjectionFacts(ids, PROJECTION_TAIL),
+        deps.eventStore.listSessionProjectionFacts(changed, PROJECTION_TAIL),
       ),
       measureLatencyPhase('session_links', () => deps.eventStore.pendingSessionLinkMessageIds(ids)),
       measureLatencyPhase('session_automations', () =>
@@ -1000,7 +1016,13 @@ export function createServerSessionOverview({
     }
     const restorable = await deps.sessionStorage?.canRestoreMany(missing);
     for (const [id, value] of restorable ?? []) resumable.set(id, value);
-    const fallbackIds = ids.filter((id) => {
+    const remember = (id: string, events: readonly AgentEvent[], keep = true): void => {
+      const read = facts.get(id) ?? emptyProjectionFacts();
+      const projection = projectSessionLog(events, read);
+      if (keep) logProjections.set(id, read, projection);
+      logs.set(id, { facts: read, projection });
+    };
+    const fallbackIds = changed.filter((id) => {
       const entry = facts.get(id);
       return (
         entry?.eventsTruncated &&
@@ -1008,28 +1030,16 @@ export function createServerSessionOverview({
       );
     });
     const boundaries = new Map(fallbackIds.map((id) => [id, facts.get(id)!.lastEventSeq]));
-    const byId = new Map(sessions.map((session) => [session.sessionId, session]));
-    const prepared = new Map<string, SessionSummary>();
-    const prepare = (session: SessionRecord, events: AgentEvent[]) =>
-      summarizeSessionWithFacts(
-        session,
-        facts.get(session.sessionId) ?? emptyProjectionFacts(),
-        pendingLinks.get(session.sessionId) ?? [],
-        automations.get(session.sessionId),
-        events,
-        resumable.get(session.sessionId) ?? false,
-      );
     if (boundaries.size > 0) {
       const fallbackRead = fullProjectionReadTail.then(async () => {
         await yieldToEventLoop();
-        await deps.eventStore.visitSessionProjectionEvents(boundaries, async (id, events) => {
-          prepared.set(
+        // Derive each full log as it arrives, so only one is held at a time.
+        await deps.eventStore.visitSessionProjectionEvents(boundaries, (id, events) => {
+          remember(
             id,
-            await prepare(
-              byId.get(id)!,
-              events.map(({ event }) => event),
-            ),
+            events.map(({ event }) => event),
           );
+          return Promise.resolve();
         });
       });
       fullProjectionReadTail = fallbackRead.then(
@@ -1038,15 +1048,24 @@ export function createServerSessionOverview({
       );
       await fallbackRead;
     }
+    for (const id of changed) {
+      // A fallback log the full read did not return is answered from its tail for
+      // this response only, as before; caching it would keep that answer.
+      if (!logs.has(id))
+        remember(id, facts.get(id)?.events.map(({ event }) => event) ?? [], !boundaries.has(id));
+    }
     return Promise.all(
-      sessions.map(
-        async (session) =>
-          prepared.get(session.sessionId) ??
-          (await prepare(
-            session,
-            facts.get(session.sessionId)?.events.map(({ event }) => event) ?? [],
-          )),
-      ),
+      sessions.map((session) => {
+        const log = logs.get(session.sessionId)!;
+        return summarizeSessionWithFacts(
+          session,
+          log.facts,
+          log.projection,
+          pendingLinks.get(session.sessionId) ?? [],
+          automations.get(session.sessionId),
+          resumable.get(session.sessionId) ?? false,
+        );
+      }),
     );
   };
 
@@ -1161,9 +1180,11 @@ export function createServerSessionOverview({
       deps.eventStore.pendingSessionLinkMessageIds([session.sessionId]),
       deps.eventStore.listSessionAutomationStatuses([session.sessionId]),
     ]);
+    const read = facts.get(session.sessionId) ?? emptyProjectionFacts();
     return summarizeSessionWithFacts(
       session,
-      facts.get(session.sessionId) ?? emptyProjectionFacts(),
+      read,
+      projectSessionLog(await projectionEventsFor(session.sessionId, read), read),
       pendingLinks.get(session.sessionId) ?? [],
       automations.get(session.sessionId),
     );
@@ -1175,14 +1196,13 @@ export function createServerSessionOverview({
 
   const summarizeSessionWithFacts = async (
     session: SessionRecord,
-    facts: SessionProjectionFacts,
-    pendingLinks: readonly string[] = [],
-    automationStatus?: SessionAutomationStatus,
-    preparedEvents?: AgentEvent[],
+    facts: SummaryLogFacts,
+    log: SessionLogProjection,
+    pendingLinks: readonly string[],
+    automationStatus: SessionAutomationStatus | undefined,
     preparedResumable?: boolean,
   ): Promise<SessionSummary> => {
     await conductor.refreshDetachedPermissions?.(session.sessionId);
-    const events = preparedEvents ?? (await projectionEventsFor(session.sessionId, facts));
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
     const resumable = preparedResumable ?? (await sessionResumable(session));
@@ -1196,34 +1216,25 @@ export function createServerSessionOverview({
     const pendingPermissionRequests = [
       ...new Map(
         [
-          ...pendingPermissionRequestsFromProjection(events, conductorPermissions),
+          ...pickPermissionRequests(log.permissionRequests, conductorPermissions),
           ...(conductor.detachedPermissionRequests?.(session.sessionId) ?? []),
         ].map((request) => [request.toolUseId, request]),
       ).values(),
     ];
-    // Unread counts include only agent text; the seq still identifies a nonempty log.
-    const projectedStatus = liveStatusFromProjection(
-      session.sessionId,
-      events,
-      facts.lastEventSeq === 0 ? 0 : 1,
-    );
+    const projectedStatus = liveStatusOfDerived(session.sessionId, log.status);
     const status =
       pendingPermissions.length > 0
         ? 'awaiting_input'
         : projectedStatus === 'awaiting_input' &&
-            permissionEventAwaitsInput(events) &&
+            log.awaitsPermission &&
             pendingPermissions.length === 0
           ? conductor.isBusy(session.sessionId, { turnOnly: true })
             ? 'running'
             : 'completed'
           : projectedStatus;
     const busy = conductor.isBusy(session.sessionId);
-    const branch = listBranchFor(
-      session,
-      resumable,
-      busy || status === 'running' || sessionHasOpenTasks(events),
-    );
-    const openChoices = openChoicesFromProjection(events, status, busy);
+    const branch = listBranchFor(session, resumable, busy || status === 'running' || log.openTasks);
+    const openChoices = liveOpenChoices(log.choices, status, busy);
     // A `Set` the relay reconciler already maintains; this adds one `Set.has` per
     // session and no I/O, so it is safe on a route polled every 2 s per device.
     const attention = sessionAttentionSignals({
@@ -1235,7 +1246,7 @@ export function createServerSessionOverview({
     return {
       ...session,
       status,
-      ...(AWAITING.has(status) && sessionHasOpenTasks(events) ? { backgroundWorking: true } : {}),
+      ...(AWAITING.has(status) && log.openTasks ? { backgroundWorking: true } : {}),
       pendingPermissions,
       ...(status === 'awaiting_input' && pendingPermissions.length > 0
         ? { permissionAwaitingInput: true as const }
@@ -1243,7 +1254,7 @@ export function createServerSessionOverview({
       // Both absent in the common case, so a quiet session's summary is unchanged.
       ...(pendingPermissionRequests.length > 0 ? { pendingPermissionRequests } : {}),
       ...(openChoices !== undefined ? { openChoices } : {}),
-      ...withRequestInitiator(requestInitiatorFromProjection(events)),
+      ...withRequestInitiator(log.requestInitiator),
       // Summed in SQL over the whole log rather than folded out of `events`: the
       // slice is on its way to being a bounded tail, and a total taken from a
       // tail would quietly shrink as a session got longer.

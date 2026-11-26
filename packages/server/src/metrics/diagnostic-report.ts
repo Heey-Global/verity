@@ -130,7 +130,15 @@ export function buildDiagnosticReport(input: ReportInput) {
   >();
   const byRouteClient = new Map<
     string,
-    { method: string; route: string; client: string; requests: number; bytesOut: number }
+    {
+      method: string;
+      route: string;
+      client: string;
+      requests: number;
+      bytesOut: number;
+      notModified: number;
+      compressed: number;
+    }
   >();
   const byClient = new Map<
     string,
@@ -155,9 +163,15 @@ export function buildDiagnosticReport(input: ReportInput) {
       client: entry.client,
       requests: 0,
       bytesOut: 0,
+      notModified: 0,
+      compressed: 0,
     };
     pair.requests += entry.requests;
     pair.bytesOut += entry.bytesOut;
+    // Without these an average size cannot tell a large body sent uncompressed
+    // from a small one diluted by bodiless revalidations.
+    pair.notModified += entry.notModified;
+    pair.compressed += entry.compressed;
     byRouteClient.set(pairKey, pair);
 
     const client = byClient.get(entry.client) ?? {
