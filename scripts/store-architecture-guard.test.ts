@@ -86,6 +86,21 @@ it('allows the Workspace store to resolve the current Google account store', () 
   ]);
 });
 
+it('allows plan implementation to use the existing append and projection stores', () => {
+  const source = (store: string, projection: string) =>
+    'class EventStore { plan = new ' +
+    store +
+    '(() => this.db, () => this.cipher, () => this.eventWrites, ' +
+    projection +
+    '); }';
+  expect(
+    facadeImplementations(source('PlanImplementationStore', '() => this.messageProjection')),
+  ).toEqual({});
+  expect(
+    Object.keys(facadeImplementations(source('OtherStore', '() => this.messageProjection'))),
+  ).toEqual(['plan']);
+});
+
 it.each([
   'class EventStore { [register()] = new EventSnapshotStore(() => this.db); }',
   'class EventStore { @register field = new EventSnapshotStore(() => this.db); }',

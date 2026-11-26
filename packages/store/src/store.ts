@@ -103,6 +103,8 @@ export {
   InvalidProjectNameError,
 } from './project-record.js';
 import type { SessionMockupReview, SessionMockups } from './session-mockups.js';
+import { PlanImplementationStore, type PlanningConsent } from './plan-implementation.js';
+export type { PlanningConsent } from './plan-implementation.js';
 import { SessionPlanningStore, type SessionPlanning } from './session-planning.js';
 import { SESSION_COLUMNS, sessionFromRow } from './session-rows.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
@@ -194,7 +196,7 @@ import {
   type BoundedHistoryResult,
 } from '@verity/events';
 import { randomUUID } from 'node:crypto';
-import { type AgentEvent, parseAgentEvent, parsePlanningProposal } from '@verity/events';
+import { type AgentEvent, parseAgentEvent } from '@verity/events';
 import { type Kysely, sql } from 'kysely';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
 import {
@@ -332,12 +334,6 @@ export interface SessionEventStats {
   lastActivityAt: number | null;
   /** Changes on every log mutation, including deletions below the latest seq. */
   revision: string;
-}
-
-export interface PlanningConsent {
-  turnId: string;
-  promptSeq: number;
-  runningPromptSeq: number;
 }
 
 /**
@@ -597,6 +593,12 @@ export class EventStore implements EventSink {
     this.githubRepositories = new GitHubRepositoryIdentityStore(db);
   }
 
+  private readonly planImplementation = new PlanImplementationStore(
+    () => this.db,
+    () => this.cipher,
+    () => this.eventWrites,
+    () => this.messageProjection,
+  );
   private readonly sessionPlanning = new SessionPlanningStore(() => this.db);
   private readonly sessionPullRequests = new SessionPullRequestStore(() => this.db);
   private readonly sessionAutomations: SessionAutomationStore;
@@ -2241,117 +2243,7 @@ export class EventStore implements EventSink {
     onPersisted?: (event: SequencedEvent) => void,
     consent?: PlanningConsent,
   ): Promise<boolean> {
-    const persisted: { seq: number; createdAt: Date; event: AgentEvent }[] = [];
-    const accepted = await this.db.transaction().execute(async (tx) => {
-      // A newer user prompt revokes chat consent before any tasks or work commit.
-      await sql`select pg_advisory_xact_lock(hashtext(${sessionEventAppendLockKey(input.sessionId)}))`.execute(
-        tx,
-      );
-      if (consent !== undefined) {
-        const running = await tx
-          .selectFrom('running_turns')
-          .select(['turn_id', 'prompt_seq'])
-          .where('session_id', '=', input.sessionId)
-          .forUpdate()
-          .executeTakeFirst();
-        const queuedPrompt = await tx
-          .selectFrom('queued_turns')
-          .select('id')
-          .where('session_id', '=', input.sessionId)
-          .limit(1)
-          .executeTakeFirst();
-        if (queuedPrompt !== undefined) return false;
-        const latest = await tx
-          .selectFrom('events')
-          .select('id')
-          .where('session_id', '=', input.sessionId)
-          .where('type', '=', 'prompt')
-          .orderBy('id', 'desc')
-          .limit(1)
-          .executeTakeFirst();
-        if (
-          running?.turn_id !== consent.turnId ||
-          Number(running.prompt_seq) !== consent.runningPromptSeq ||
-          Number(latest?.id) !== consent.promptSeq
-        )
-          return false;
-      }
-
-      const result = await tx
-        .updateTable('sessions')
-        .set({ planning: 'implemented' })
-        .where('session_id', '=', input.sessionId)
-        .where('planning', '=', 'active')
-        .where('planning_revision', '=', revision)
-        .where('planning_plan', 'is not', null)
-        .executeTakeFirst();
-      if (result.numUpdatedRows === 0n) return false;
-      const session = await tx
-        .selectFrom('sessions')
-        .select(['project_id', 'planning_plan'])
-        .where('session_id', '=', input.sessionId)
-        .executeTakeFirstOrThrow();
-      const tasks = new TaskStore(tx, this.cipher);
-      const ownerUserId = await tasks.agentTaskOwner(input.sessionId, session.project_id);
-      if (ownerUserId !== undefined) {
-        const steps = parsePlanningProposal(session.planning_plan!).steps;
-        const taskIds: string[] = [];
-        for (const [index, step] of steps.entries()) {
-          const id = randomUUID();
-          const title = step
-            .replace(/\*\*/g, '')
-            .split(/\s+[—–]\s+|\n/)[0]!
-            .slice(0, 2_000);
-          await tasks.upsert({
-            id,
-            ownerUserId,
-            projectId: session.project_id,
-            sessionId: input.sessionId,
-            sourceSessionId: input.sessionId,
-            origin: 'agent',
-            title,
-            detail: step.slice(0, 20_000),
-            sort: index,
-          });
-          taskIds.push(id);
-        }
-        // The event and tasks commit with acceptance: recovery never loses the link
-        // to the accepted steps, and concurrent decisions cannot duplicate them.
-        for (let offset = 0; offset < taskIds.length; offset += 100) {
-          const event: AgentEvent = {
-            t: 'tasks_updated',
-            origin: 'agent',
-            change: 'added',
-            taskIds: taskIds.slice(offset, offset + 100),
-          };
-          const eventRow = await this.prepareEventRow(event);
-          await sql`select pg_advisory_xact_lock(hashtext(${sessionEventAppendLockKey(input.sessionId)}))`.execute(
-            tx,
-          );
-          const row = await tx
-            .insertInto('events')
-            .values({ session_id: input.sessionId, type: eventRow.type, payload: eventRow.payload })
-            .returning(['id', 'created_at'])
-            .executeTakeFirstOrThrow();
-          persisted.push({ seq: Number(row.id), createdAt: row.created_at, event });
-        }
-      }
-      await tx
-        .insertInto('queued_turns')
-        .values({
-          id: input.id,
-          session_id: input.sessionId,
-          prompt: input.prompt,
-          opts: JSON.stringify(input.opts),
-        })
-        .execute();
-      return true;
-    });
-    for (const row of persisted) {
-      this.enqueuePersistedMessageEvent(input.sessionId, row.seq, row.createdAt, row.event);
-      onPersisted?.({ seq: row.seq, ts: row.createdAt.getTime(), event: row.event });
-    }
-    return accepted;
+    return this.planImplementation.enqueuePlanImplementation(input, revision, onPersisted, consent);
   }
 
   /**

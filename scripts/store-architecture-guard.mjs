@@ -128,7 +128,9 @@ function isStoreWiring(initializer) {
         argument.body.expression.kind === ts.SyntaxKind.ThisKeyword &&
         (argument.body.name.text === 'db' ||
           (initializer.expression.text === 'GoogleWorkspaceStore' &&
-            argument.body.name.text === 'googleAccounts')),
+            argument.body.name.text === 'googleAccounts') ||
+          (initializer.expression.text === 'PlanImplementationStore' &&
+            ['cipher', 'eventWrites', 'messageProjection'].includes(argument.body.name.text))),
     )
   );
 }
