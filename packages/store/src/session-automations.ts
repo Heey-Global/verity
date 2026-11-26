@@ -63,6 +63,34 @@ export class SessionAutomationStore {
     return egressDestinationDb(this.rootDb);
   }
 
+  async markSessionAutomation(sessionId: string, marker: string): Promise<boolean> {
+    const result = await this.db
+      .insertInto('session_automation_marker')
+      .values({ session_id: sessionId, marker })
+      .onConflict((oc) => oc.columns(['session_id', 'marker']).doNothing())
+      .executeTakeFirst();
+    return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+  }
+
+  async hasSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('session_automation_marker')
+      .select('session_id')
+      .where('session_id', '=', sessionId)
+      .where('marker', '=', marker)
+      .executeTakeFirst();
+    return row !== undefined;
+  }
+
+  async deleteSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {
+    const result = await this.db
+      .deleteFrom('session_automation_marker')
+      .where('session_id', '=', sessionId)
+      .where('marker', '=', marker)
+      .executeTakeFirst();
+    return result.numDeletedRows > 0n;
+  }
+
   private sessionAutomationRowToRecord(row: {
     id: string;
     session_id: string;
