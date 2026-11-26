@@ -94,6 +94,19 @@ type PullRequestStatus = Pick<
   | 'updatedAt'
 >;
 
+/** The row with `status` in place of its own: an optional field the status
+ * leaves out is unknown now, not the row's older value. */
+function withStatus<Row extends PullRequestStatus>(row: Row, status: PullRequestStatus): Row {
+  const {
+    viewerCanMerge: _viewerCanMerge,
+    mergeState: _mergeState,
+    headSha: _headSha,
+    updatedAt: _updatedAt,
+    ...rest
+  } = row;
+  return { ...rest, ...status } as Row;
+}
+
 /** The status fields of a pull request a repository row takes over; what
  * names the pull request or its repository stays the row's. */
 function pullRequestStatus(pr: NonNullable<BranchList['pullRequest']>): PullRequestStatus {
@@ -507,7 +520,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         ? repositoryPullRequests
         : repositoryPullRequests.map((row) =>
             row.repository.isDefault && row.number === shownPr.number
-              ? { ...row, ...pullRequestStatus(shownPr) }
+              ? withStatus(row, pullRequestStatus(shownPr))
               : row,
           ),
     [shownPr, pullRequest, repositoryPullRequests],

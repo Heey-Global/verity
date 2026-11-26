@@ -230,7 +230,7 @@ describe('useBranches with the shared overview store', () => {
       isDefault,
     });
     const rows = [
-      { ...pr(42), repository: repository('main', true) },
+      { ...pr(42), headSha: 'old', viewerCanMerge: true, repository: repository('main', true) },
       {
         ...pr(42),
         url: 'https://github.com/example/other/pull/42',
@@ -249,6 +249,9 @@ describe('useBranches with the shared overview store', () => {
     );
     const [main, other] = result.current.pullRequests;
     expect(main).toMatchObject({ pipeline: 'success', repository: repository('main', true) });
+    // Fields the status leaves out are unknown now, not the row's older values.
+    expect(main).not.toHaveProperty('headSha');
+    expect(main).not.toHaveProperty('viewerCanMerge');
     expect(other).toMatchObject({ pipeline: 'running', repository: repository('other', false) });
     unmount();
     shared.unmount();

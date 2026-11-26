@@ -1,4 +1,4 @@
-import type { ProjectRecord, VerityClient } from '@verity/mobile';
+import type { OverviewStore, ProjectRecord, VerityClient } from '@verity/mobile';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getVerityBaseUrl } from './client';
 import { useOverviewSelection } from './overviewTopics';
@@ -25,9 +25,9 @@ export function useOverviewProjects(client: VerityClient, active: boolean): Proj
   );
   const storeRef = useRef(store);
   storeRef.current = store;
-  const [own, setOwn] = useState<{ projects: ProjectRecord[]; inStore: boolean }>({
+  /** The last read, and the store that took it, if one did. */
+  const [own, setOwn] = useState<{ projects: ProjectRecord[]; store?: OverviewStore }>({
     projects: [],
-    inStore: false,
   });
   useEffect(() => {
     if (!active) return undefined;
@@ -39,7 +39,7 @@ export function useOverviewProjects(client: VerityClient, active: boolean): Proj
       .then((projects) => {
         if (!current) return;
         const applied = target.applyProjects(read, projects, { covers: listedInOverview });
-        setOwn({ projects, inStore: applied && target === storeRef.current });
+        setOwn(applied ? { projects, store: target } : { projects });
       })
       .catch(() => undefined)
       .finally(() => target.endRead(read));
@@ -50,7 +50,8 @@ export function useOverviewProjects(client: VerityClient, active: boolean): Proj
   // In the order of the read, as `/projects` lists them; then the projects
   // other views read since.
   return useMemo(() => {
-    if (!own.inStore) return own.projects;
+    // Another store (an account change) holds none of this read.
+    if (own.store !== store) return own.projects;
     const byId = new Map(held.filter(listedInOverview).map((project) => [project.id, project]));
     const shown = own.projects.flatMap((project) => {
       const copy = byId.get(project.id);
@@ -58,5 +59,5 @@ export function useOverviewProjects(client: VerityClient, active: boolean): Proj
       return copy === undefined ? [] : [copy];
     });
     return [...shown, ...byId.values()];
-  }, [own, held]);
+  }, [own, held, store]);
 }
