@@ -1,7 +1,7 @@
 import type { ProjectRecord, VerityClient } from '@verity/mobile';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getVerityBaseUrl } from './client';
-import { useOverviewStore } from './overviewTopics';
+import { useOverviewSelection } from './overviewTopics';
 
 /** The projects a `/projects` read lists, as the server filters its overview:
  * any other project the store holds is not spoken for by that read. */
@@ -16,8 +16,13 @@ export function listedInOverview(project: ProjectRecord): boolean {
  * and events change both; until the store holds that read, the read itself is
  * shown.
  */
+const NO_PROJECTS: readonly ProjectRecord[] = [];
+
 export function useOverviewProjects(client: VerityClient, active: boolean): ProjectRecord[] {
-  const store = useOverviewStore(getVerityBaseUrl());
+  // Projects only while shown, so a closed sheet does not render its screen.
+  const [store, held] = useOverviewSelection(getVerityBaseUrl(), (overview) =>
+    active ? overview.projects() : NO_PROJECTS,
+  );
   const storeRef = useRef(store);
   storeRef.current = store;
   const [own, setOwn] = useState<{ projects: ProjectRecord[]; inStore: boolean }>({
@@ -42,6 +47,5 @@ export function useOverviewProjects(client: VerityClient, active: boolean): Proj
       current = false;
     };
   }, [client, active]);
-  const held = store.projects();
   return useMemo(() => (own.inStore ? held.filter(listedInOverview) : own.projects), [own, held]);
 }

@@ -14,9 +14,12 @@ describe('useOverviewProjects', () => {
     const listProjects = jest.fn().mockResolvedValue([project('p1'), project('p2')]);
     const client = { listProjects } as unknown as VerityClient;
     const shared = renderHook(() => useOverviewStore('https://core.example'));
-    const { result, rerender } = renderHook(({ active }) => useOverviewProjects(client, active), {
-      initialProps: { active: false },
-    });
+    const { result, rerender } = renderHook(
+      ({ active }: { active: boolean }) => useOverviewProjects(client, active),
+      {
+        initialProps: { active: false },
+      },
+    );
     expect(listProjects).not.toHaveBeenCalled();
     rerender({ active: true });
     await waitFor(() => expect(result.current.map((p) => p.id)).toEqual(['p1', 'p2']));

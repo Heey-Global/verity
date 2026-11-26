@@ -343,6 +343,22 @@ export function useOverviewTopics(
  * without a server they get a store of their own.
  */
 export function useOverviewStore(baseUrl: string | null): OverviewStore {
+  return useOverviewSelection(baseUrl, versionOf)[0];
+}
+
+const versionOf = (store: OverviewStore): number => store.getVersion();
+
+/**
+ * {@link useOverviewStore} for a view that needs only part of the store: it
+ * renders again only when `select` returns something else. `select` must
+ * return what the store keeps (an entity, its field, a held list), whose
+ * identity holds until it changes; a heavy screen such as a session's then
+ * does not render for every event of the overview.
+ */
+export function useOverviewSelection<T>(
+  baseUrl: string | null,
+  select: (store: OverviewStore) => T,
+): [OverviewStore, T] {
   const account = useSyncExternalStore(subscribeAccount, taskAccountScope, taskAccountScope);
   // A dropped store renders the view again, so it takes up the current one.
   useSyncExternalStore(subscribeStores, currentStoresGeneration, currentStoresGeneration);
@@ -360,7 +376,8 @@ export function useOverviewStore(baseUrl: string | null): OverviewStore {
     },
     [store, scope],
   );
-  const version = useCallback(() => store.getVersion(), [store]);
-  useSyncExternalStore(subscribe, version, version);
-  return store;
+  const selectRef = useRef(select);
+  selectRef.current = select;
+  const selected = useCallback(() => selectRef.current(store), [store]);
+  return [store, useSyncExternalStore(subscribe, selected, selected)];
 }

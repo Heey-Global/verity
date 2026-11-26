@@ -21,7 +21,7 @@ import {
 } from '../lib/branchesPrefetch';
 import { getVerityBaseUrl } from '../lib/client';
 import { hasLocalSaveChanges } from '../lib/localSaveVisibility';
-import { useOverviewStore, useOverviewTopics } from '../lib/overviewTopics';
+import { useOverviewSelection, useOverviewTopics } from '../lib/overviewTopics';
 
 export type BranchPullRequest = NonNullable<BranchList['pullRequest']> & {
   repository?: SessionPullRequestStatus['repository'];
@@ -88,15 +88,28 @@ export interface UseBranches {
  * glue hook (no headless model) in the spirit of {@link useSession} /
  * {@link useSessionList}.
  */
+/** The status of a pull request, without what names it or its repository. */
+function pullRequestStatus(pr: NonNullable<BranchList['pullRequest']>) {
+  const { number: _number, title: _title, url: _url, ...status } = pr;
+  return status;
+}
+
 export function useBranches(client: VerityClient, sessionId: string, enabled = true): UseBranches {
   const cached = cachedBranches(client, sessionId);
   // The overview's copy of the session (ADR 0033): its pull request status
   // follows events from the server's sweep, other devices and other views.
   const baseUrl = getVerityBaseUrl();
-  const store = useOverviewStore(baseUrl);
+  // Only the fields this hook shows render the session screen again.
+  const [store, heldPullRequest] = useOverviewSelection(
+    baseUrl,
+    (overview) => overview.session(sessionId)?.pullRequest,
+  );
+  const [, heldProjectId] = useOverviewSelection(
+    baseUrl,
+    (overview) => overview.session(sessionId)?.projectId,
+  );
   const storeRef = useRef(store);
   storeRef.current = store;
-  const held = store.session(sessionId);
   /** The store took this hook's last read, so its status is at least as new. */
   const [readInStore, setReadInStore] = useState(false);
   const [identity, setIdentity] = useState({ client, sessionId });
@@ -440,7 +453,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   // already follows it (Home) shares the subscription.
   useOverviewTopics(
     baseUrl,
-    focused && enabled && held?.projectId ? [held.projectId] : [],
+    focused && enabled && heldProjectId ? [heldProjectId] : [],
     () => undefined,
     () => {
       if (visible.current) void load({ silent: true });
@@ -449,7 +462,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   // The store's status of the same pull request is at least as new as this
   // hook's read. Another pull request there (one opened or replaced since)
   // needs the branch read, which carries its number and repository rows.
-  const heldPr = readInStore ? held?.pullRequest : undefined;
+  const heldPr = readInStore ? heldPullRequest : undefined;
   const otherPr =
     heldPr !== undefined && (heldPr?.number ?? null) !== (pullRequest?.number ?? null);
   // Once per pull request the store names, however often its status changes.
@@ -458,13 +471,14 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     if (otherPr && visible.current && enabled) void load({ silent: true });
   }, [otherPr, heldNumber, load, enabled]);
   const shownPr = heldPr !== undefined && !otherPr ? heldPr : pullRequest;
+  // `null` rows (the server could not observe them) keep their masking below.
   const shownRows = useMemo(
     () =>
-      shownPr === pullRequest || shownPr === null
+      shownPr === pullRequest || shownPr === null || repositoryPullRequests == null
         ? repositoryPullRequests
-        : repositoryPullRequests?.map((row) =>
+        : repositoryPullRequests.map((row) =>
             row.repository.isDefault && row.number === shownPr.number
-              ? { ...row, ...shownPr }
+              ? { ...row, ...pullRequestStatus(shownPr) }
               : row,
           ),
     [shownPr, pullRequest, repositoryPullRequests],

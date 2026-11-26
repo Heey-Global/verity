@@ -136,7 +136,7 @@ describe('useBranches with the shared overview store', () => {
 
   it('reads once for another pull request, however often its status changes', async () => {
     const shared = withListedSession();
-    // The branch read lags behind the sweep and still names the old one.
+    // The branch read keeps naming PR 42 while events name PR 43.
     const getBranches = jest.fn().mockResolvedValue(branches(pr(42)));
     const client = { getBranches } as unknown as VerityClient;
     const { unmount } = renderHook(() => useBranches(client, 's1'));
@@ -155,6 +155,54 @@ describe('useBranches with the shared overview store', () => {
     await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(2));
     await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
     expect(getBranches).toHaveBeenCalledTimes(2);
+    unmount();
+    shared.unmount();
+  });
+
+  // The session screen embeds the transcript; it must not render for every
+  // event of the overview, only for its own pull request.
+  it('renders again only when its own pull request changes', async () => {
+    const shared = withListedSession();
+    const getBranches = jest.fn().mockResolvedValue(branches(pr(42)));
+    const client = { getBranches } as unknown as VerityClient;
+    let renders = 0;
+    const { unmount } = renderHook(() => {
+      renders += 1;
+      return useBranches(client, 's1');
+    });
+    await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(1));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    const before = renders;
+    act(() => {
+      const store = shared.result.current;
+      store.applySessions(
+        store.beginRead(),
+        [{ sessionId: 'other', projectId: 'p1' } as SessionSummary],
+        {
+          covers: (s) => s.sessionId === 'other',
+        },
+      );
+    });
+    expect(renders).toBe(before);
+    unmount();
+    shared.unmount();
+  });
+
+  // Rows the server could not observe stay masked as unknown, whichever copy
+  // of the status is shown.
+  it('keeps unobserved repository rows masked when the store status is shown', async () => {
+    const shared = withListedSession();
+    const getBranches = jest.fn().mockResolvedValue({ ...branches(pr(42)), pullRequests: null });
+    const client = { getBranches } as unknown as VerityClient;
+    const { result, unmount } = renderHook(() => useBranches(client, 's1'));
+    await waitFor(() => expect(mockSinks.has('project:p1')).toBe(true));
+    act(() =>
+      mockSinks
+        .get('project:p1')!
+        .event({ t: 'pr.status', sessionId: 's1', rev: 1, pr: pr(42, 'success') }),
+    );
+    expect(result.current.pullRequest?.pipeline).toBe('success');
+    expect(result.current.pullRequests[0]).toMatchObject({ pipeline: 'unknown', mergeable: null });
     unmount();
     shared.unmount();
   });
