@@ -259,10 +259,13 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   const version = store.getVersion();
   const shown = useMemo(() => {
     if (detail === undefined) return undefined;
+    const fromStore = sessionsInStore && store.project(projectId) !== undefined;
     const sessions = detail.sessions.flatMap((listed) => {
       const held = store.session(listed.sessionId);
       if (held !== undefined) return [held];
-      return sessionsInStore ? [] : [listed];
+      // Until the store took a read of this project (it refused the last one,
+      // or it was replaced since), the page's own read speaks for its sessions.
+      return fromStore ? [] : [listed];
     });
     return {
       ...detail,

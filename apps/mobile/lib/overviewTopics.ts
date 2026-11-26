@@ -203,6 +203,27 @@ const hubs = new Map<string, OverviewHub>();
  * following events. */
 const stores = new Map<string, OverviewStore>();
 let pruneOnAccountChange: (() => void) | undefined;
+/** Views holding a store; told when one is dropped, so they move to the store
+ * the next hub of their scope feeds. */
+const storeHolders = new Set<() => void>();
+let storesGeneration = 0;
+
+function subscribeStores(listener: () => void): () => void {
+  storeHolders.add(listener);
+  return () => {
+    storeHolders.delete(listener);
+  };
+}
+
+function currentStoresGeneration(): number {
+  return storesGeneration;
+}
+
+function dropStore(scope: string): void {
+  if (!stores.delete(scope)) return;
+  storesGeneration += 1;
+  for (const holder of [...storeHolders]) holder();
+}
 
 function storeFor(scope: string): OverviewStore {
   let store = stores.get(scope);
@@ -221,7 +242,7 @@ function pruneStores(): void {
   const signedIn = taskAccountScope();
   for (const scope of stores.keys()) {
     const [, account] = JSON.parse(scope) as [string, string | null];
-    if (account !== signedIn && !hubs.has(scope)) stores.delete(scope);
+    if (account !== signedIn && !hubs.has(scope)) dropStore(scope);
   }
 }
 
@@ -252,7 +273,7 @@ function attachToHub(
     if (!attached.idle || hubs.get(scope) !== attached) return;
     hubs.delete(scope);
     // Nothing applies events to it any more.
-    stores.delete(scope);
+    dropStore(scope);
   };
 }
 
@@ -299,6 +320,8 @@ export function useOverviewTopics(
  */
 export function useOverviewStore(baseUrl: string | null): OverviewStore {
   const account = useSyncExternalStore(subscribeAccount, taskAccountScope, taskAccountScope);
+  // A dropped store renders the view again, so it takes up the current one.
+  useSyncExternalStore(subscribeStores, currentStoresGeneration, currentStoresGeneration);
   const [detached] = useState(() => new OverviewStore());
   const store = baseUrl === null ? detached : storeFor(JSON.stringify([baseUrl, account]));
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);

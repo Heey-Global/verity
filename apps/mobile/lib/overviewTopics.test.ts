@@ -1,4 +1,4 @@
-import type { DomainEvent, LiveTopicSink } from '@verity/mobile';
+import type { DomainEvent, LiveTopicSink, ProjectRecord } from '@verity/mobile';
 import { act, renderHook } from '@testing-library/react-native';
 import { useOverviewStore, useOverviewTopics } from './overviewTopics';
 
@@ -259,6 +259,34 @@ describe('useOverviewTopics', () => {
     expect(renderHook(() => useOverviewStore('https://core.example')).result.current).not.toBe(
       store,
     );
+  });
+
+  // A page whose project changes re-attaches; the store it renders must be
+  // the one the live topics still apply events to.
+  it('moves a view to the store its hub feeds when its projects change', () => {
+    const { result, rerender } = renderHook(
+      ({ ids }: { ids: string[] }) => {
+        useOverviewTopics('https://core.example', ids, jest.fn(), jest.fn());
+        return useOverviewStore('https://core.example');
+      },
+      { initialProps: { ids: ['p1'] } },
+    );
+    rerender({ ids: ['p2'] });
+    const store = result.current;
+    act(() =>
+      store.applyProjects(store.beginRead(), [{ id: 'p2', state: 'cloning' } as ProjectRecord], {
+        covers: (p) => p.id === 'p2',
+      }),
+    );
+    act(() =>
+      mockSinks.get('project:p2')!.event({
+        t: 'sandbox.lifecycle',
+        projectId: 'p2',
+        rev: 1,
+        state: 'active',
+      }),
+    );
+    expect(result.current.project('p2')?.state).toBe('active');
   });
 
   it("drops a signed-out account's store once no view holds it", () => {
