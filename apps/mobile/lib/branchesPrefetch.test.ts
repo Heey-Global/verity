@@ -25,6 +25,13 @@ const branches: BranchList = {
 };
 
 describe('branches prefetch', () => {
+  // Tapping a session is opening it: the PR bar's first read is this one.
+  it('asks for a fresh pull request when prefetching an opened session', () => {
+    const getBranches = jest.fn().mockReturnValue(new Promise(() => undefined));
+    prefetchBranches({ getBranches } as unknown as VerityClient, 'opened');
+    expect(getBranches).toHaveBeenCalledWith('opened', expect.any(AbortSignal), true);
+  });
+
   it('aborts deselected prefetches and prevents late cache publication', async () => {
     let finish!: (value: BranchList) => void;
     const getBranches = jest.fn().mockImplementation(

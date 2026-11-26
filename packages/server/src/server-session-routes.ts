@@ -40,7 +40,7 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionLinkRoutes } from './session-link-routes.js';
 import { registerSessionMergeRoutes } from './session-merge-routes.js';
-import { unavailablePullRequestStatus } from './session-pr-cache.js';
+import { FRESH_MIN_MS, unavailablePullRequestStatus } from './session-pr-cache.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
@@ -433,6 +433,9 @@ export function installSessionRoutes(
   registerSessionBranchReadRoute(app, {
     list: async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
+      // The app opened the session: its pull request is read from the forge
+      // now (see FRESH_MIN_MS), and the result reaches every device as an event.
+      const fresh = (request.query as { fresh?: unknown } | undefined)?.fresh === '1';
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
@@ -467,7 +470,12 @@ export function installSessionRoutes(
         readStage('pr', async () => {
           const key = encodeURIComponent(session.sessionId);
           let entry = repositoryPRReads.get(key);
-          if (!entry || entry.expires < Date.now()) {
+          const settledAt = entry === undefined ? undefined : entry.expires - 5000;
+          if (
+            !entry ||
+            entry.expires < Date.now() ||
+            (fresh && settledAt !== undefined && Date.now() - settledAt >= FRESH_MIN_MS)
+          ) {
             const started: NonNullable<ReturnType<typeof repositoryPRReads.get>> = {
               read: resolvePullRequests(session, pullRequest),
               expires: Infinity,
@@ -534,6 +542,7 @@ export function installSessionRoutes(
         deps.branchPrStatusForBranches !== undefined || deps.branchPrStatus !== undefined
           ? sessionPrCache.get(session, {
               priority: true,
+              fresh,
               load: () => sessionPrStatus(session, current),
             })
           : undefined;

@@ -155,7 +155,8 @@ export function prefetchBranches(client: VerityClient, sessionId: string): void 
   const controller = new AbortController();
   const entry: PendingBranches = {
     controller,
-    promise: client.getBranches(sessionId, controller.signal).then((value) => {
+    // Opening the session: its pull request is read from the forge now.
+    promise: client.getBranches(sessionId, controller.signal, true).then((value) => {
       entry.settledAt = Date.now();
       if (!controller.signal.aborted) publish(value);
       return value;
@@ -189,7 +190,7 @@ export function takePrefetchedBranches(
   return entry.promise
     .catch((error: unknown) => {
       if (signal?.aborted || entry.controller.signal.aborted) throw error;
-      return client.getBranches(sessionId, signal);
+      return client.getBranches(sessionId, signal, true);
     })
     .finally(() => signal?.removeEventListener('abort', abort));
 }

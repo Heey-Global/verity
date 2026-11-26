@@ -390,3 +390,54 @@ it('keeps explicit observation failures non-actionable and backed off', async ()
   await cache.get(session);
   expect(load).toHaveBeenCalledTimes(1);
 });
+
+describe('fresh reads for an opened session', () => {
+  // Opening a session must show the forge's status now, not one up to thirty
+  // seconds old; several devices opening it at once must still cost one read.
+  it('reads fresh for an opened session, once per two seconds, sharing reads on their way', async () => {
+    let now = 0;
+    const load = vi.fn<() => Promise<PullRequestStatus | null>>().mockResolvedValue(pr);
+    const changes = vi.fn();
+    const cache = createSessionPrCache({ load, now: () => now, onChange: changes });
+    await cache.get(session);
+    expect(load).toHaveBeenCalledTimes(1);
+
+    // Within the normal interval a plain read keeps the cached status.
+    now = 5_000;
+    await cache.get(session);
+    expect(load).toHaveBeenCalledTimes(1);
+
+    // Opened: read now, and devices opening it at the same moment share it.
+    load.mockResolvedValue({ ...pr, pipeline: 'success' });
+    const opened = [cache.get(session, { fresh: true }), cache.get(session, { fresh: true })];
+    await expect(Promise.all(opened)).resolves.toMatchObject([
+      { pipeline: 'success' },
+      { pipeline: 'success' },
+    ]);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(changes).toHaveBeenLastCalledWith(
+      session,
+      expect.objectContaining({ pipeline: 'success' }),
+    );
+
+    // Reopened within two seconds: the read that just finished answers.
+    now = 6_000;
+    await cache.get(session, { fresh: true });
+    expect(load).toHaveBeenCalledTimes(2);
+    now = 7_000;
+    await cache.get(session, { fresh: true });
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps a failing forge on its backoff when asked fresh', async () => {
+    let now = 0;
+    const load = vi
+      .fn<() => Promise<PullRequestStatus | null>>()
+      .mockRejectedValue(new Error('rate limited'));
+    const cache = createSessionPrCache({ load, now: () => now });
+    await cache.get(session);
+    now = 3_000;
+    await cache.get(session, { fresh: true });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+});
