@@ -129,6 +129,8 @@ function isStoreWiring(initializer) {
         (argument.body.name.text === 'db' ||
           (initializer.expression.text === 'GoogleWorkspaceStore' &&
             argument.body.name.text === 'googleAccounts') ||
+          (initializer.expression.text === 'AttendeeStateStore' &&
+            argument.body.name.text === 'cipher') ||
           (initializer.expression.text === 'PlanImplementationStore' &&
             ['cipher', 'eventWrites', 'messageProjection'].includes(argument.body.name.text))),
     )
