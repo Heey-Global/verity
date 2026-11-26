@@ -34,6 +34,17 @@ it('accepts parameter forwarding and detects logic hidden in a return expression
   }
 });
 
+it.each(['appId, sessionId', 'sessionId', 'sessionId, sessionId'])(
+  'rejects forwarding that changes the argument list to %s',
+  (argumentsText) => {
+    const source =
+      'class EventStore { read(sessionId, appId) { return this.events.read(' +
+      argumentsText +
+      '); } }';
+    expect(Object.keys(facadeImplementations(source))).toEqual(['read']);
+  },
+);
+
 it('detects executable defaults in forwarding methods and fingerprints retained defaults', () => {
   const source = (value: string) =>
     'class EventStore { read(id = ' + value + ') { return this.events.read(id); } }';

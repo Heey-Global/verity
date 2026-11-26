@@ -54,7 +54,7 @@ export function facadeImplementations(text) {
         ? statements[0].expression
         : undefined;
     const parameterNodes = ts.isFunctionLike(member) ? member.parameters : [];
-    const parameters = new Set(parameterNodes.map((p) => p.name.getText(source)));
+    const parameters = parameterNodes.map((parameter) => parameter.name.getText(source));
     const forwarded =
       parameterNodes.every(
         (parameter) => !parameter.initializer && ts.isIdentifier(parameter.name),
@@ -63,7 +63,10 @@ export function facadeImplementations(text) {
       ts.isCallExpression(expression) &&
       /^this\.[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/.test(expression.expression.getText(source)) &&
       !expression.expression.getText(source).startsWith('this.db.') &&
-      expression.arguments.every((arg) => ts.isIdentifier(arg) && parameters.has(arg.text));
+      expression.arguments.length === parameters.length &&
+      expression.arguments.every(
+        (arg, index) => ts.isIdentifier(arg) && arg.text === parameters[index],
+      );
     if (forwarded || (member.parent === facade && isStoreWiring(initializer))) continue;
     const key = member.parent === facade ? name : 'module: ' + name;
     if (Object.hasOwn(debt, key)) throw new Error('Duplicate facade exception: ' + key);
