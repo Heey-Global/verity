@@ -99,8 +99,9 @@ export {
   defaultProjectName,
   InvalidProjectNameError,
 } from './project-record.js';
-import { type SessionMockupReview, type SessionMockups, mockupReview } from './session-mockups.js';
+import type { SessionMockupReview, SessionMockups } from './session-mockups.js';
 import { SessionPlanningStore, type SessionPlanning } from './session-planning.js';
+import { SESSION_COLUMNS, sessionFromRow } from './session-rows.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 import {
@@ -908,40 +909,25 @@ export class EventStore implements EventSink {
     return row?.initial_model ?? row?.model;
   }
 
-  async getSession(sessionId: string): Promise<SessionRecord | undefined> {
+  getSession(sessionId: string): Promise<SessionRecord | undefined> {
+    return this.findSession('session_id', sessionId);
+  }
+
+  /** The session owning a primary worktree, without loading every session. */
+  getSessionByWorktree(worktree: string): Promise<SessionRecord | undefined> {
+    return this.findSession('worktree', worktree);
+  }
+
+  private async findSession(
+    column: 'session_id' | 'worktree',
+    value: string,
+  ): Promise<SessionRecord | undefined> {
     const row = await this.db
       .selectFrom('sessions')
-      .select([
-        'session_id',
-        'worktree',
-        'model',
-        'name',
-        'project_id',
-        'last_seen_event_count',
-        'planning',
-        'planning_revision',
-        'planning_plan',
-        'mockup_review',
-        'mockup_revision',
-        'mockup_screens',
-        'favorite',
-      ])
-      .where('session_id', '=', sessionId)
+      .select(SESSION_COLUMNS)
+      .where(column, '=', value)
       .executeTakeFirst();
-    if (!row) return undefined;
-    return {
-      sessionId: row.session_id,
-      worktree: row.worktree,
-      model: row.model,
-      name: row.name,
-      projectId: row.project_id,
-      lastSeenEventCount: row.last_seen_event_count,
-      ...(row.planning !== null ? { planning: row.planning } : {}),
-      planningRevision: row.planning_revision,
-      planningPlan: row.planning_plan,
-      ...mockupReview(row.mockup_review, row.mockup_revision, row.mockup_screens),
-      ...(row.favorite ? { favorite: true } : {}),
-    };
+    return row && sessionFromRow(row);
   }
 
   async getSessionWorkspaceFile(
@@ -1499,39 +1485,13 @@ export class EventStore implements EventSink {
   async listSessions(): Promise<SessionRecord[]> {
     const rows = await this.db
       .selectFrom('sessions')
-      .select([
-        'session_id',
-        'worktree',
-        'model',
-        'name',
-        'project_id',
-        'last_seen_event_count',
-        'planning',
-        'planning_revision',
-        'planning_plan',
-        'mockup_review',
-        'mockup_revision',
-        'mockup_screens',
-        'favorite',
-      ])
+      .select(SESSION_COLUMNS)
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
       // inserts can share a timestamp — without this the order is unspecified.
       .orderBy('created_at', 'asc')
       .orderBy('session_id', 'asc')
       .execute();
-    return rows.map((r) => ({
-      sessionId: r.session_id,
-      worktree: r.worktree,
-      model: r.model,
-      name: r.name,
-      projectId: r.project_id,
-      lastSeenEventCount: r.last_seen_event_count,
-      ...(r.planning !== null ? { planning: r.planning } : {}),
-      planningRevision: r.planning_revision,
-      planningPlan: r.planning_plan,
-      ...mockupReview(r.mockup_review, r.mockup_revision, r.mockup_screens),
-      ...(r.favorite ? { favorite: true } : {}),
-    }));
+    return rows.map(sessionFromRow);
   }
 
   /** Overview positions are separate from the chronological session registry. */

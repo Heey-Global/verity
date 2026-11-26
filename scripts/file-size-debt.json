@@ -30,7 +30,7 @@
   "packages/server/src/self-update/managed-server-owner.test.ts": 1726,
   "packages/server/src/self-update/updater-status.test.ts": 1908,
   "packages/server/src/self-update/updater-status.ts": 1683,
-  "packages/server/src/server-activity.test.ts": 3020,
+  "packages/server/src/server-activity.test.ts": 1624,
   "packages/server/src/server-branches.test.ts": 3148,
   "packages/server/src/server-infrastructure.test.ts": 2148,
   "packages/server/src/server-mcp-routes.ts": 2161,
@@ -51,7 +51,7 @@
   "packages/store/src/projects.test.ts": 1766,
   "packages/store/src/schema.ts": 2115,
   "packages/store/src/store.test.ts": 2611,
-  "packages/store/src/store.ts": 4215,
+  "packages/store/src/store.ts": 4175,
   "scripts/ci-workflow.test.ts": 6046,
   "scripts/probes/project-egress/host-smoke.ts": 1523,
   "scripts/release-workflow.test.ts": 1842
