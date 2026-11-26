@@ -25,6 +25,7 @@ export function applyOverviewEvent(
     return { kind: 'reload' };
   }
   if (event.t === 'pr.status') {
+    if (!sessions.some((session) => session.sessionId === event.sessionId)) return { kind: 'none' };
     const parsed = pullRequestSchema.safeParse(event.pr);
     // A status this app cannot read is left to the overview read.
     if (!parsed.success) return { kind: 'reload' };

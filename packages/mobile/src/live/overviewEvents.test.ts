@@ -132,6 +132,17 @@ describe('applyOverviewEvent pr.status', () => {
     ).toBe('reload');
   });
 
+  it('does not read for an unreadable status of a session this view does not hold', () => {
+    expect(
+      applyOverviewEvent([waiting()], {
+        t: 'pr.status',
+        sessionId: 's9',
+        rev: 1,
+        pr: { number: 'seven' },
+      }).kind,
+    ).toBe('none');
+  });
+
   it('ignores sessions this view does not hold', () => {
     expect(
       applyOverviewEvent([waiting()], { t: 'pr.status', sessionId: 's9', rev: 1, pr: merged }).kind,
