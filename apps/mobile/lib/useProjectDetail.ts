@@ -83,6 +83,8 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   // to show the operator until they come back — at which point the focus
   // reload below fetches fresh state anyway.
   const focusedRef = useRef(false);
+  // The record this screen published itself; its echo is already adopted.
+  const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
 
   const onProjectUpdated = useCallback((next: ProjectRecord) => {
     // A poll already in flight carries pre-action state and must not win later.
@@ -90,6 +92,7 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     setLoading(false);
     adoptProject(storeRef.current, next);
     setDetail((current) => (current ? { ...current, project: next } : current));
+    publishedProjectRef.current = next;
     publishProjectStatusMutation(next);
   }, []);
   const onSettingsSaved = useCallback((next: ProjectSettings) => {
@@ -160,7 +163,9 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
           setDetail(next);
           setSavedProfile(undefined);
           // Events this read would need replayed were dropped: read again.
-          if (!projectApplied || !sessionsApplied) queueMicrotask(() => void loadRef.current(true));
+          // A screen below the one on top reads again when it comes back.
+          if ((!projectApplied || !sessionsApplied) && focusedRef.current)
+            queueMicrotask(() => void loadRef.current(true));
           // A fetch result deliberately stays off the status bus. Only an
           // action's response is published (see `onProjectUpdated`): with the
           // project screen and its settings routes stacked, each polling, a
@@ -187,7 +192,7 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   useEffect(
     () =>
       subscribeProjectStatusMutations((next) => {
-        if (next.id !== projectId) return;
+        if (next.id !== projectId || next === publishedProjectRef.current) return;
         // Another screen's action: newer than a read of this one in flight.
         adoptProject(storeRef.current, next);
         setDetail((current) => (current ? { ...current, project: next } : current));

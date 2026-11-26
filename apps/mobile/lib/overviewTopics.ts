@@ -196,15 +196,20 @@ class OverviewHub {
 /** One hub per server and account while any view uses it. */
 const hubs = new Map<string, OverviewHub>();
 
-/** The store of the server and account in use. It outlives the views, so a
- * page opened again starts from what the app already knows; another server or
- * account replaces it with an empty one. */
-let current: { scope: string; store: OverviewStore } | undefined;
+/** The stores of the servers and accounts in use. A store outlives the views,
+ * so a page opened again starts from what the app already knows; when another
+ * server or account comes into use, stores no hub holds any more are dropped,
+ * so a returning account starts empty unless a view kept it live. */
+const stores = new Map<string, OverviewStore>();
 
 function storeFor(scope: string): OverviewStore {
+  let store = stores.get(scope);
+  if (store !== undefined) return store;
+  for (const held of stores.keys()) if (!hubs.has(held)) stores.delete(held);
   // Gated per topic by the hub, so one topic's resync does not open another's.
-  if (current?.scope !== scope) current = { scope, store: new OverviewStore({ gated: false }) };
-  return current.store;
+  store = new OverviewStore({ gated: false });
+  stores.set(scope, store);
+  return store;
 }
 
 function subscribeAccount(listener: () => void): () => void {

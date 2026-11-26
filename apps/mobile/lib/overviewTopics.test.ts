@@ -239,6 +239,17 @@ describe('useOverviewTopics', () => {
     expect(mounted.result.current).not.toBe(store);
   });
 
+  it('keeps the store a live view holds when its account comes back', () => {
+    const account = mockAccount;
+    renderHook(() => useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()));
+    const held = renderHook(() => useOverviewStore('https://core.example')).result.current;
+    mockAccount += 1;
+    renderHook(() => useOverviewStore('https://core.example'));
+    mockAccount = account;
+    // The hub still applies events to this store; a new one would never see them.
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(held);
+  });
+
   it('subscribes nothing without a server or projects', () => {
     renderHook(() =>
       useOverviewTopics(
