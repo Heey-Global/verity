@@ -256,4 +256,30 @@ describe('useBranches with the shared overview store', () => {
     unmount();
     shared.unmount();
   });
+
+  it('reads once more when the store lists the session only after its read', async () => {
+    const shared = renderHook(() => useOverviewStore(BASE));
+    const getBranches = jest.fn().mockResolvedValue(branches(pr(42)));
+    const client = { getBranches } as unknown as VerityClient;
+    const { result, unmount } = renderHook(() => useBranches(client, 's1'));
+    await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(1));
+    // Home's list loads after the session was opened by a link.
+    act(() => {
+      const store = shared.result.current;
+      store.applySessions(store.beginRead(), [{ ...session, pullRequest: pr(42) }], {
+        covers: () => true,
+      });
+    });
+    await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockSinks.has('project:p1')).toBe(true));
+    act(() =>
+      mockSinks
+        .get('project:p1')!
+        .event({ t: 'pr.status', sessionId: 's1', rev: 1, pr: pr(42, 'success') }),
+    );
+    await waitFor(() => expect(result.current.pullRequest?.pipeline).toBe('success'));
+    expect(getBranches).toHaveBeenCalledTimes(2);
+    unmount();
+    shared.unmount();
+  });
 });

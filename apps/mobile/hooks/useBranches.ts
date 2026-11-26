@@ -507,6 +507,17 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   // needs the branch read, which carries its number and repository rows.
   // Another store (an account change) never took this read.
   const heldPr = readStore === store ? heldPullRequest : undefined;
+  // A session the store lists only after this hook's read (opened by a link
+  // before Home loaded, or another account's store): one more read puts the
+  // status there, and the store's events then show.
+  const unheard = heldPullRequest !== undefined && readStore !== store;
+  const caughtUp = useRef<OverviewStore | undefined>(undefined);
+  useEffect(() => {
+    if (!unheard || !visible.current || !enabled || caughtUp.current === store) return;
+    caughtUp.current = store;
+    // A read already out takes care of it.
+    void load({ silent: true, force: false });
+  }, [unheard, store, load, enabled]);
   const otherPr =
     heldPr !== undefined && (heldPr?.number ?? null) !== (pullRequest?.number ?? null);
   // Once per pull request the store names, however often its status changes.
