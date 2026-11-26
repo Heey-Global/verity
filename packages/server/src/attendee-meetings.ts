@@ -120,6 +120,7 @@ interface OnlineMeeting {
     token: string;
     segments: AttendeeUtterance[];
     receivedAudio?: boolean;
+    finalized?: boolean;
     target?: string;
     gap: boolean;
     disabled?: boolean;
@@ -271,6 +272,8 @@ export class AttendeeMeetings {
             try {
               await this.audioSnapshot(state, true);
               state.audio.gap = true;
+              state.audio.disabled = true;
+              state.audio.token = '';
               await this.save(state);
               await this.releaseAudio(state);
               await this.save(state);
@@ -573,6 +576,7 @@ export class AttendeeMeetings {
           });
         } finally {
           finished.resolve();
+          await previous;
           if (speakerWork.get(participantId) === ordered) speakerWork.delete(participantId);
         }
       },
@@ -693,7 +697,12 @@ export class AttendeeMeetings {
             !audio.receivedAudio &&
             state.joinedAt !== undefined),
       );
-    } else if (state.joinedAt !== undefined && final && !audio.receivedAudio) {
+    } else if (
+      final &&
+      !audio.finalized &&
+      state.joinedAt !== undefined &&
+      (!audio.receivedAudio || state.stopRequested)
+    ) {
       audio.gap = true;
     }
     const names = new Map<string, string>();
@@ -1423,6 +1432,7 @@ export class AttendeeMeetings {
     if (final) {
       if (state.audio) {
         state.audio.segments = snapshot;
+        state.audio.finalized = true;
         await this.save(state);
       }
       await this.releaseAudio(state);
