@@ -74,7 +74,9 @@ describe('createPrEvents', () => {
   it('publishes sessions without a project on their own topic only', async () => {
     const w = setup();
     w.record('session:s0');
+    w.record('project:p1');
     w.onStatus(session('s0', null), open);
     await vi.waitFor(() => expect(w.published).toHaveLength(1));
+    expect(w.published[0]!.topic).toBe('session:s0');
   });
 });

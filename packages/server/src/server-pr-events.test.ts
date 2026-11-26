@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PullRequestStatus } from './github.js';
+import type { PullRequestStatus } from './forge-provider.js';
 import {
   branchSvc,
   bus,
