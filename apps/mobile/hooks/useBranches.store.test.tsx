@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
 import type { BranchList, LiveTopicSink, SessionSummary, VerityClient } from '@verity/mobile';
 import { useBranches } from './useBranches';
+import { prefetchBranches } from '../lib/branchesPrefetch';
 import { useOverviewStore } from '../lib/overviewTopics';
 
 const BASE = 'https://core.example';
@@ -107,6 +108,52 @@ describe('useBranches with the shared overview store', () => {
       mockSinks.get('project:p1')!.event({ t: 'pr.status', sessionId: 's1', rev: 1, pr: pr(43) }),
     );
     await waitFor(() => expect(result.current.currentPr).toBe(43));
+    expect(getBranches).toHaveBeenCalledTimes(2);
+    unmount();
+    shared.unmount();
+  });
+
+  // Opening a session from Home prefetches its branches; a status the store
+  // took after that request is newer than the prefetch's answer.
+  it('keeps a newer status in the store over a prefetched read', async () => {
+    const shared = withListedSession();
+    const store = shared.result.current;
+    act(() => {
+      store.applySessions(store.beginRead(), [{ ...session, pullRequest: pr(42, 'success') }], {
+        covers: (s) => s.sessionId === 's1',
+      });
+    });
+    const getBranches = jest.fn().mockResolvedValue(branches(pr(42, 'running')));
+    const client = { getBranches } as unknown as VerityClient;
+    prefetchBranches(client, 's1');
+    const { result, unmount } = renderHook(() => useBranches(client, 's1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(store.session('s1')?.pullRequest?.pipeline).toBe('success');
+    expect(result.current.pullRequest?.pipeline).toBe('success');
+    unmount();
+    shared.unmount();
+  });
+
+  it('reads once for another pull request, however often its status changes', async () => {
+    const shared = withListedSession();
+    // The branch read lags behind the sweep and still names the old one.
+    const getBranches = jest.fn().mockResolvedValue(branches(pr(42)));
+    const client = { getBranches } as unknown as VerityClient;
+    const { unmount } = renderHook(() => useBranches(client, 's1'));
+    await waitFor(() => expect(mockSinks.has('project:p1')).toBe(true));
+    await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(1));
+    for (const [rev, pipeline] of [
+      [1, 'running'],
+      [2, 'success'],
+      [3, 'failure'],
+    ] as const)
+      act(() =>
+        mockSinks
+          .get('project:p1')!
+          .event({ t: 'pr.status', sessionId: 's1', rev, pr: pr(43, pipeline) }),
+      );
+    await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(2));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
     expect(getBranches).toHaveBeenCalledTimes(2);
     unmount();
     shared.unmount();

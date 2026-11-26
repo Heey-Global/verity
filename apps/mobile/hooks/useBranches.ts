@@ -212,12 +212,16 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
                   : res.pullRequests;
               publishSnapshot(res);
               const listed = target.session(sessionId);
+              // A prefetch was asked before this read began, so an event since
+              // may be newer than it: the store's copy, which follows events,
+              // is shown rather than overwritten.
               const applied =
                 listed !== undefined &&
-                res.pullRequest !== undefined &&
-                target.applySessions(storeRead, [withPullRequest(listed, res.pullRequest)], {
-                  covers: (session) => session.sessionId === sessionId,
-                });
+                (prefetched !== undefined ||
+                  (res.pullRequest !== undefined &&
+                    target.applySessions(storeRead, [withPullRequest(listed, res.pullRequest)], {
+                      covers: (session) => session.sessionId === sessionId,
+                    })));
               setReadInStore(applied && target === storeRef.current);
               setCurrent(res.current);
               setSwitchable(res.switchable);
@@ -448,9 +452,11 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   const heldPr = readInStore ? held?.pullRequest : undefined;
   const otherPr =
     heldPr !== undefined && (heldPr?.number ?? null) !== (pullRequest?.number ?? null);
+  // Once per pull request the store names, however often its status changes.
+  const heldNumber = heldPr === undefined ? undefined : (heldPr?.number ?? null);
   useEffect(() => {
     if (otherPr && visible.current && enabled) void load({ silent: true });
-  }, [otherPr, heldPr, load, enabled]);
+  }, [otherPr, heldNumber, load, enabled]);
   const shownPr = heldPr !== undefined && !otherPr ? heldPr : pullRequest;
   const shownRows = useMemo(
     () =>
