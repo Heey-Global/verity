@@ -49,4 +49,59 @@ describe('GET /sessions/:id/branches?fresh=1', () => {
       await server.close();
     }
   });
+
+  // A forge that just failed must not be asked again every two seconds
+  // because a device keeps opening the session.
+  it('keeps a failed repository pull request read on its TTL when asked fresh', async () => {
+    await createExistingSession('s1');
+    await ctx.store.upsertProject({
+      id: 'p1',
+      owner: 'team',
+      repo: 'app',
+      containerName: 'app',
+      state: 'active',
+    });
+    await ctx.store.setSessionProject('s1', 'p1');
+    branchSvc.current.mockResolvedValue('feat/fresh');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const listRepositories = ctx.store.listProjectRepositories.bind(ctx.store);
+    const repositories = vi
+      .spyOn(ctx.store, 'listProjectRepositories')
+      .mockRejectedValueOnce(new Error('forge down'));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi.fn(async () => null),
+      projectPullRequests: {
+        list: vi.fn().mockResolvedValue({ webUrl: '', pulls: [] }),
+        status: vi.fn().mockResolvedValue(null),
+        merge: vi.fn().mockResolvedValue(false),
+      },
+    });
+    try {
+      const read = () => server.inject({ method: 'GET', url: '/sessions/s1/branches?fresh=1' });
+      await read();
+      const failedReads = repositories.mock.calls.length;
+      expect(failedReads).toBeGreaterThan(0);
+      repositories.mockImplementation(listRepositories);
+      vi.setSystemTime(Date.now() + 2_500);
+      await read();
+      expect(repositories.mock.calls.length).toBe(failedReads);
+      vi.setSystemTime(Date.now() + 3_000);
+      await read();
+      const settledReads = repositories.mock.calls.length;
+      expect(settledReads).toBeGreaterThan(failedReads);
+      vi.setSystemTime(Date.now() + 2_500);
+      await read();
+      expect(repositories.mock.calls.length).toBeGreaterThan(settledReads);
+    } finally {
+      vi.useRealTimers();
+      repositories.mockRestore();
+      await server.close();
+    }
+  });
 });
