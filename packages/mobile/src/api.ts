@@ -6691,8 +6691,8 @@ export class VerityClient {
     return result;
   }
 
-  async listTasks(): Promise<Task[]> {
-    const res = await this.request('/tasks', { method: 'GET' });
+  async listTasks(query = ''): Promise<Task[]> {
+    const res = await this.request(`/tasks${query}`, { method: 'GET' });
     return z.object({ tasks: z.array(taskSchema) }).parse(await res.json()).tasks;
   }
 

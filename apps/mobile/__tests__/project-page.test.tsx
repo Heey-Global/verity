@@ -22,6 +22,7 @@ jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enable
 jest.mock('../lib/tasksStore', () => ({
   taskAccountScope: () => null,
   useTasks: () => ({ tasks: [], pending: [], conflicts: [] }),
+  useTaskView: () => undefined,
 }));
 const mockDesign = { value: true as boolean | undefined };
 const mockWide = { value: false };

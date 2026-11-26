@@ -11,6 +11,7 @@ import { patchTask, removeTask, useTasks } from '../lib/tasksStore';
 import type { Task } from '@verity/mobile';
 jest.mock('../lib/tasksStore', () => ({
   useTasks: jest.fn(),
+  useTaskView: jest.fn(),
   patchTask: jest.fn(),
   refreshTasks: jest.fn(),
   removeTask: jest.fn(),

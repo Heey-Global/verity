@@ -50,6 +50,8 @@ const listQuery = z
       .transform((value) => value.split(','))
       .pipe(z.array(taskStatus).min(1))
       .optional(),
+    /** The operator's own tasks, or the steps agents recorded while working. */
+    origin: z.enum(['user', 'agent']).optional(),
   })
   .strict();
 
@@ -274,6 +276,7 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
             : query.projectId,
       sessionId: query.sessionId,
       statuses: query.status as TaskRecord['status'][] | undefined,
+      origin: query.origin,
     });
     const readable = new Set<string | null>();
     for (const projectId of new Set(list.map((task) => task.projectId))) {
