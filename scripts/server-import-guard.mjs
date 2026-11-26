@@ -135,8 +135,12 @@ function specifiers(file, text) {
   return [...found];
 }
 
-/** @param {string} root @param {string[]} files */
-export function serverImportViolations(root, files) {
+/** @param {string} root @param {string[]} files
+ * @param {{ source?: string, roots?: string[], entries?: Set<string>, reportEdges?: boolean }} options */
+export function serverImportViolations(root, files, options = {}) {
+  const sourcePrefix = options.source ?? SOURCE;
+  const roots = options.roots ?? ROOTS;
+  const entries = options.entries ?? ENTRY_POINTS;
   const configPath = join(root, 'packages/server/tsconfig.json');
   const config = ts.readConfigFile(configPath, (f) => ts.sys.readFile(f));
   if (config.error)
@@ -150,7 +154,7 @@ export function serverImportViolations(root, files) {
         getNewLine: () => '\n',
       }),
     );
-  const localFiles = files.filter((f) => f.startsWith(SOURCE));
+  const localFiles = files.filter((f) => f.startsWith(sourcePrefix));
   const sources = new Set(files.map((f) => resolve(root, f)));
   /** @type {Map<string, string>} */
   const emitted = new Map();
@@ -242,30 +246,45 @@ export function serverImportViolations(root, files) {
   }
   // Reverse traversal finds a shortest diagnostic path for every consumer and
   // handles cycles without repeatedly walking the same subtree.
-  return ROOTS.flatMap((targetRoot) => {
-    /** @type {Map<string, string[]>} */
-    const paths = new Map([[targetRoot, [targetRoot]]]);
-    const pending = [targetRoot];
-    for (const target of pending) {
-      for (const file of reverse.get(target) ?? []) {
-        if (paths.has(file)) continue;
-        paths.set(file, [file, ...(paths.get(target) ?? [])]);
-        pending.push(file);
+  return roots
+    .flatMap((targetRoot) => {
+      /** @type {Map<string, string[]>} */
+      const paths = new Map([[targetRoot, [targetRoot]]]);
+      const pending = [targetRoot];
+      for (const target of pending) {
+        for (const file of reverse.get(target) ?? []) {
+          if (paths.has(file)) continue;
+          paths.set(file, [file, ...(paths.get(target) ?? [])]);
+          pending.push(file);
+        }
       }
-    }
-    return [...paths.entries()]
-      .filter(
-        ([file]) =>
-          file.startsWith(SOURCE) &&
-          file !== targetRoot &&
-          !ENTRY_POINTS.has(file.slice(SOURCE.length)) &&
-          !(
-            targetRoot === ROOTS[0] && [`${SOURCE}app.ts`, `${SOURCE}embedded.ts`].includes(file)
-          ) &&
-          !testConsumer(file),
-      )
-      .map(([, path]) => path.join(' -> '));
-  }).sort();
+      if (options.reportEdges) {
+        return [...paths.keys()].flatMap((target) =>
+          [...(reverse.get(target) ?? [])]
+            .filter(
+              (file) =>
+                file.startsWith(sourcePrefix) &&
+                file !== targetRoot &&
+                !entries.has(file.slice(sourcePrefix.length)) &&
+                !testConsumer(file),
+            )
+            .map((file) => file + ' -> ' + target),
+        );
+      }
+      return [...paths.entries()]
+        .filter(
+          ([file]) =>
+            file.startsWith(sourcePrefix) &&
+            file !== targetRoot &&
+            !entries.has(file.slice(sourcePrefix.length)) &&
+            !(
+              targetRoot === ROOTS[0] && [`${SOURCE}app.ts`, `${SOURCE}embedded.ts`].includes(file)
+            ) &&
+            !testConsumer(file),
+        )
+        .map(([, path]) => path.join(' -> '));
+    })
+    .sort();
 }
 
 /** @param {string} root */

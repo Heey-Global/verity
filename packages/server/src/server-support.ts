@@ -94,6 +94,7 @@ const PROJECT_RELAY_HANDOFF_RETRY_WINDOW_MS = 30_000;
  *  `buildServer` and {@link ServerDeps.branchCacheTtlMs}. */
 export const BRANCH_TTL_MS = 10_000;
 export const IDLE_LIST_BRANCH_TTL_MS = 60_000;
+export const IDLE_KNOWN_LIST_BRANCH_TTL_MS = 15 * 60_000;
 
 /** Shared empty answer for a deployment whose provisioner does not classify
  *  sandboxes (tests, non-relay setups) — allocating one per session summary on a

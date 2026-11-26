@@ -1,10 +1,10 @@
 import { PermissionRequestDetails } from '../../components/session/PermissionRequestDetails';
+import { GmailSendPreview } from '../../components/session/GmailSendPreview';
 import { TranscriptPositionCover } from '../../components/TranscriptPositionCover';
 import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
 import { SessionRepositories } from '../../components/project/SessionRepositories';
-import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { NetworkApprovalPrompt } from '../../components/NetworkApprovalPrompt';
-import { SecretApprovalHistory } from '../../components/SecretApprovalHistory';
+import * as Requests from '../../components/session/SessionRequests';
 import { SecretApprovalCard } from '../../components/SecretApprovalCard';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
 import { connectionFailureKind, projectTitle } from '@verity/mobile';
@@ -40,6 +40,7 @@ import {
 } from '../../components/settings/GoogleAccountPicker';
 import { MatrixSendPreview } from '../../components/ui/MatrixSendPreview';
 import { Button } from '../../components/ui/Button';
+import { SessionBanner } from '../../components/session/SessionBanner';
 import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
 import { meetingSavedCard, latestMeetingCards } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
@@ -120,8 +121,6 @@ import {
   START_PLANNING_TOOL,
   freezeTranscriptTail,
   frozenTranscriptRows,
-  gmailPreviewHtml,
-  formatAttachmentSize,
   gmailSendSummary,
   matrixSendSummary,
   calendarChangeSummary,
@@ -216,11 +215,16 @@ import {
   type ViewStyle,
   type ViewToken,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
 import { openLocalPreview } from '../../components/project/previewAccess';
 import { openFailureAlert, RunningServerCard } from '../../components/project/RunningServerCard';
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
-import { SystemNotice, SystemNoticeIndicator, useConfirm } from '../../components/ui';
+import {
+  PinnedScroll,
+  pinnedCardLayout,
+  SystemNotice,
+  SystemNoticeIndicator,
+  useConfirm,
+} from '../../components/ui';
 import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
 import { ResizableSheetPanel } from '../../components/files/ResizableSheet';
 import { KNOWLEDGE_ICON } from '../../components/files/knowledgeIcon';
@@ -3939,6 +3943,7 @@ export const SessionChat = memo(function SessionChat({
         // The spinner belongs to the OLDEST end, which in the newest-first
         // list is the footer. It sits behind the viewport, so unlike the
         // former header spinner it cannot shift a single visible row.
+        ListHeaderComponent={<Requests.TranscriptRequestTail style={styles.invertedItem} />}
         ListFooterComponent={
           <View style={[styles.olderSpinner, styles.invertedItem]}>
             <ActivityIndicator
@@ -3983,6 +3988,33 @@ export const SessionChat = memo(function SessionChat({
     ],
   );
 
+  const waiting = session.pendingPermission;
+  const pendingId = waiting?.toolUseId;
+  const requests = Requests.useSessionRequests(
+    client,
+    sessionId,
+    !!projectId,
+    pendingId,
+    permissionError,
+  );
+  // A hidden waiting request leaves the composer for the end of the chat, still open.
+  const hidden = pendingId !== undefined && requests.dismissed.has(pendingId);
+  const permissionPrompt =
+    waiting &&
+    !(planning === 'active' && planningPlan != null && isPlanImplementationPermission(waiting)) ? (
+      <PermissionPrompt
+        sessionId={sessionId}
+        pending={waiting}
+        deciding={decidingPermission === waiting.toolUseId}
+        dead={dead && !pendingLinkedMessages.some((item) => item.id === waiting.toolUseId)}
+        approvedForDelivery={pendingLinkedMessages.some(
+          (item) => item.id === waiting.toolUseId && item.approved,
+        )}
+        onDecide={decidePermission}
+        onDismiss={hidden ? undefined : () => requests.dismiss([waiting.toolUseId])}
+      />
+    ) : null;
+  const requestTail = hidden ? permissionPrompt : null;
   finishChatWork();
   return (
     <Reanimated.View
@@ -4378,13 +4410,13 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {dead ? (
-        <Banner
+        <SessionBanner
           tone="attention"
           text="This session's workspace was cleaned up. The transcript stays available, but new turns need a new agent."
         />
       ) : null}
       {rateNotice ? (
-        <Banner
+        <SessionBanner
           tone={rateLimitNoticeTone(rateNotice)}
           text={rateLimitNoticeText(
             rateNotice,
@@ -4394,7 +4426,7 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {historyError && !hidesHistoryError ? (
         <>
-          <Banner tone="attention" text={historyError} />
+          <SessionBanner tone="attention" text={historyError} />
           <Button
             label="Retry history"
             variant="secondary"
@@ -4405,14 +4437,17 @@ export const SessionChat = memo(function SessionChat({
         </>
       ) : null}
       {streamError && !hidesStreamError ? (
-        <Banner tone="attention" text={`Stream: ${streamError}`} />
+        <SessionBanner tone="attention" text={`Stream: ${streamError}`} />
       ) : null}
-      {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
+      {sendError ? <SessionBanner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
-        <Banner tone="danger" text={`Model switch failed: ${switchModelError}`} />
+        <SessionBanner tone="danger" text={`Model switch failed: ${switchModelError}`} />
       ) : null}
       {modelSwitchPending ? (
-        <Banner tone="attention" text="Switching model — handing over from the running agent…" />
+        <SessionBanner
+          tone="attention"
+          text="Switching model — handing over from the running agent…"
+        />
       ) : null}
       {/* Busy for a reason nothing else on this screen explains: the worktree stays
           reserved until the previous agent process is confirmed gone. Nothing is
@@ -4422,18 +4457,18 @@ export const SessionChat = memo(function SessionChat({
           plane never produces any, so this state can outlast every automatic path.
           Hence the escape hatch: waiting is the advice, not the only option. */}
       {terminationUnconfirmed ? (
-        <Banner
+        <SessionBanner
           tone="attention"
           text="Waiting for the previous agent to exit — the session stays reserved until it does."
           action={{ label: 'Release', onPress: onForceRelease }}
         />
       ) : null}
-      {cancelError ? <Banner tone="danger" text={`Stop failed: ${cancelError}`} /> : null}
-      {permissionError ? (
-        <Banner tone="danger" text={`Decision failed: ${permissionError}`} />
+      {cancelError ? <SessionBanner tone="danger" text={`Stop failed: ${cancelError}`} /> : null}
+      {requests.notice ? (
+        <SessionBanner tone="danger" text={requests.notice} onDismiss={requests.dismissNotice} />
       ) : null}
       {voice.preparation ? (
-        <Banner
+        <SessionBanner
           tone="attention"
           text={
             voice.preparation === 'downloading'
@@ -4442,22 +4477,13 @@ export const SessionChat = memo(function SessionChat({
           }
         />
       ) : null}
-      {voice.error ? <Banner tone="danger" text={`Voice: ${voice.error}`} /> : null}
+      {voice.error ? <SessionBanner tone="danger" text={`Voice: ${voice.error}`} /> : null}
       {!loaded && !locallyCreated && messages.length === 0 && !streamError && !historyError ? (
-        // Still coming up: transcript hasn't drained yet and nothing has streamed in.
-        // Show the loading animation inside the real chat body (header + composer
-        // already rendered) rather than a blank pane. Locally-created sessions
-        // deliberately skip this branch because their empty start is already known.
-        // Suppressed on `streamError` so the spinner never contradicts the error
-        // banner rendered above.
         <View style={styles.centered}>
           <ActivityIndicator color={theme.colors.textMuted} />
           <Text style={styles.emptySubtitle}>Opening session…</Text>
         </View>
       ) : (loaded || locallyCreated) && messages.length === 0 ? (
-        // Existing sessions wait for their backlog before claiming to be empty.
-        // A locally-created session is already known to start empty, so show the
-        // usable chat state immediately while provisioning continues behind it.
         <ScrollView
           contentContainerStyle={styles.starterScreen}
           keyboardShouldPersistTaps="handled"
@@ -4506,7 +4532,9 @@ export const SessionChat = memo(function SessionChat({
                       sessionId={sessionId}
                       projectId={projectId}
                     >
-                      {transcriptList}
+                      <Requests.SessionRequestsProvider requests={requests} tail={requestTail}>
+                        {transcriptList}
+                      </Requests.SessionRequestsProvider>
                       <TranscriptPositionCover
                         restoring={restoring}
                         finding={pendingUserJump !== null}
@@ -4521,6 +4549,13 @@ export const SessionChat = memo(function SessionChat({
           </SessionPeopleProvider>
         </SessionActionsContext.Provider>
       )}
+      {messages.length === 0 &&
+      (loaded || locallyCreated || (!streamError && !historyError)) &&
+      requests.dismissed.size > 0 ? (
+        <Requests.SessionRequestsProvider requests={requests} tail={requestTail}>
+          <Requests.TranscriptRequestTail style={undefined} />
+        </Requests.SessionRequestsProvider>
+      ) : null}
       {messages.length > 0 ? (
         // Gate on the transcript existing, NOT on a `user-text` row being loaded: with
         // one opening prompt + a very long agent turn, that row sits above the first
@@ -4607,34 +4642,7 @@ export const SessionChat = memo(function SessionChat({
       {projectId && !session.pendingPermission ? (
         <NetworkApprovalPrompt key={projectId} client={client} projectId={projectId} />
       ) : null}
-      {projectId ? (
-        <SecretApprovalHistory
-          key={sessionId}
-          client={client}
-          sessionId={sessionId}
-          refreshKey={session.pendingPermission?.toolUseId}
-        />
-      ) : null}
-      {session.pendingPermission &&
-      !(
-        planning === 'active' &&
-        planningPlan != null &&
-        isPlanImplementationPermission(session.pendingPermission)
-      ) ? (
-        <PermissionPrompt
-          sessionId={sessionId}
-          pending={session.pendingPermission}
-          deciding={decidingPermission === session.pendingPermission.toolUseId}
-          dead={
-            dead &&
-            !pendingLinkedMessages.some((item) => item.id === session.pendingPermission?.toolUseId)
-          }
-          approvedForDelivery={pendingLinkedMessages.some(
-            (item) => item.id === session.pendingPermission?.toolUseId && item.approved,
-          )}
-          onDecide={decidePermission}
-        />
-      ) : null}
+      {hidden ? null : permissionPrompt}
       {pendingLinkedMessages
         .filter((item) => item.id !== session.pendingPermission?.toolUseId)
         .slice(0, 1)
@@ -4656,7 +4664,7 @@ export const SessionChat = memo(function SessionChat({
             onDecide={decideLinkedMessage}
           />
         ))}
-      <ProjectInquiryCards client={client} sessionId={sessionId} />
+      <Requests.PinnedProjectRequests requests={requests} />
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
@@ -5011,7 +5019,11 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     );
   switch (item.message.kind) {
     case 'user-text':
-      return <UserBubble message={item.message} />;
+      return (
+        <Requests.InquiryAnswerTurn text={item.message.text}>
+          <UserBubble message={item.message} />
+        </Requests.InquiryAnswerTurn>
+      );
     case 'agent-text': {
       const saved = meetingSavedCard(item.message.text);
       if (saved) return <SavedMeetingNotice card={saved} />;
@@ -5022,10 +5034,9 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     case 'agent-event':
       if (item.message.event.t === 'notice' && item.message.event.secretApproval)
         return (
-          <SecretApprovalCard
+          <Requests.TranscriptSecretApproval
             key={item.message.id}
             request={item.message.event.secretApproval}
-            decision={item.message.event.secretApproval.decision}
           />
         );
       if (item.message.event.t === 'mcp_app') return <McpAppCard event={item.message.event} />;
@@ -6778,9 +6789,12 @@ function PermissionPrompt({
   dead,
   approvedForDelivery = false,
   onDecide,
+  onDismiss,
 }: {
   sessionId: string;
   pending: PendingPermission;
+  /** Secret requests only: hides the waiting card from above the composer. */
+  onDismiss?: (() => void) | undefined;
   /** A decision POST for THIS prompt is in flight — disable the buttons + spin. */
   deciding: boolean;
   /** Session can't be resumed (worktree gone) — the prompt is inert. */
@@ -6949,6 +6963,7 @@ function PermissionPrompt({
           allow,
           deny: () => onDecide(pending.toolUseId, { behavior: 'deny' }),
         }}
+        onDismiss={onDismiss}
       />
     );
   }
@@ -6988,273 +7003,183 @@ function PermissionPrompt({
                 : pending.riskClass}
         </Text>
       </View>
-      {googleAccountEmail ? (
-        <Text style={styles.permissionSubtitle} selectable>
-          Google account: {spellOutBidiControls(googleAccountEmail)}
-        </Text>
-      ) : null}
-      {isPresentPlan ? (
-        <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionHttpMeta}>
-            The agent wants to show you a plan for review. This does not approve implementation.
-          </Text>
-        </View>
-      ) : null}
-      {packageInstall !== null ? (
-        <View style={styles.permissionHttpSummary}>
+      <PinnedScroll gap="sm">
+        {googleAccountEmail ? (
           <Text style={styles.permissionSubtitle} selectable>
-            {spellOutBidiControls(packageInstall.command)}
+            Google account: {spellOutBidiControls(googleAccountEmail)}
           </Text>
-          <Text style={styles.permissionInstallExplanation}>
-            {spellOutBidiControls(packageInstall.explanation)}
-          </Text>
-        </View>
-      ) : knowledgeSummary !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionSubtitle} selectable>
-            Source: {spellOutBidiControls(knowledgeSummary.source)}
-          </Text>
-          <Text style={styles.permissionSubtitle} selectable>
-            Destination: {spellOutBidiControls(knowledgeSummary.destination)}
-          </Text>
-          <Text style={styles.permissionHttpMeta}>{KNOWLEDGE_PUBLISH_EXPLANATION}</Text>
-          {knowledgeSummary.replacesExisting ? (
+        ) : null}
+        {isPresentPlan ? (
+          <View style={styles.permissionHttpSummary}>
             <Text style={styles.permissionHttpMeta}>
-              Saves the project version as the updated global file. Agents in every project can use
-              the updated content.
+              The agent wants to show you a plan for review. This does not approve implementation.
             </Text>
-          ) : null}
-        </View>
-      ) : linkedMessage !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionHttpMeta} selectable>
-            To {linkedMessage.targetSessionId}
-          </Text>
-          <ScrollView style={styles.permissionBriefing} nestedScrollEnabled>
+          </View>
+        ) : null}
+        {packageInstall !== null ? (
+          <View style={styles.permissionHttpSummary}>
+            <Text style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(packageInstall.command)}
+            </Text>
+            <Text style={styles.permissionInstallExplanation}>
+              {spellOutBidiControls(packageInstall.explanation)}
+            </Text>
+          </View>
+        ) : knowledgeSummary !== null ? (
+          <View style={styles.permissionHttpSummary}>
+            <Text style={styles.permissionSubtitle} selectable>
+              Source: {spellOutBidiControls(knowledgeSummary.source)}
+            </Text>
+            <Text style={styles.permissionSubtitle} selectable>
+              Destination: {spellOutBidiControls(knowledgeSummary.destination)}
+            </Text>
+            <Text style={styles.permissionHttpMeta}>{KNOWLEDGE_PUBLISH_EXPLANATION}</Text>
+            {knowledgeSummary.replacesExisting ? (
+              <Text style={styles.permissionHttpMeta}>
+                Saves the project version as the updated global file. Agents in every project can
+                use the updated content.
+              </Text>
+            ) : null}
+          </View>
+        ) : linkedMessage !== null ? (
+          <View style={styles.permissionHttpSummary}>
+            <Text style={styles.permissionHttpMeta} selectable>
+              To {linkedMessage.targetSessionId}
+            </Text>
             <Text style={styles.permissionSubtitle} selectable>
               {spellOutBidiControls(linkedMessage.message)}
             </Text>
-          </ScrollView>
-          <Text style={styles.permissionHttpMeta}>
-            {approvedForDelivery
-              ? 'Already approved. Retry sending this message or cancel it.'
-              : 'Allowing sends this message and permits a small further exchange. The next limit asks again.'}
-          </Text>
-        </View>
-      ) : handoffSummary !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          {/* The target again, in full and selectable. The headline carries it too, but on one
+            <Text style={styles.permissionHttpMeta}>
+              {approvedForDelivery
+                ? 'Already approved. Retry sending this message or cancel it.'
+                : 'Allowing sends this message and permits a small further exchange. The next limit asks again.'}
+            </Text>
+          </View>
+        ) : handoffSummary !== null ? (
+          <View style={styles.permissionHttpSummary}>
+            {/* The target again, in full and selectable. The headline carries it too, but on one
               clipped line — and a session id may be 128 characters and a project reference 200,
               so the field this card exists to name is the one the header is likeliest to
               ellipsize away. Wrapped rather than clipped here, and first, because it is what
               the decision is about. */}
-          <Text style={styles.permissionSubtitle} selectable>
-            To {handoffSummary.target}
-          </Text>
-          <Text style={styles.permissionSubtitle} selectable numberOfLines={2}>
-            {handoffSummary.title}
-          </Text>
-          {/* The briefing in full, scrollable. Approving is what turns this text into a
-              prompt in another session, so it is the thing to read — not a preview of it.
-              Its extent is stated first, because the box is the same height either way and a
-              long briefing is otherwise indistinguishable from a short one until scrolled. */}
-          <Text style={styles.permissionHttpMeta}>{briefingExtent(handoffSummary)}</Text>
-          <ScrollView style={styles.permissionBriefing} nestedScrollEnabled>
+            <Text style={styles.permissionSubtitle} selectable>
+              To {handoffSummary.target}
+            </Text>
+            <Text style={styles.permissionSubtitle} selectable numberOfLines={2}>
+              {handoffSummary.title}
+            </Text>
+            {/* The briefing in full. Approving is what turns this text into a prompt in another
+              session, so it is the thing to read — not a preview of it. Its extent is stated
+              first, because the bounded card looks the same for a long briefing and a short one
+              until scrolled. */}
+            <Text style={styles.permissionHttpMeta}>{briefingExtent(handoffSummary)}</Text>
             <Text style={styles.permissionSubtitle} selectable>
               {handoffSummary.briefing}
             </Text>
-          </ScrollView>
-          <Text style={styles.permissionHttpMeta}>{sessionHandoffCaveats(handoffSummary)}</Text>
-        </View>
-      ) : listingSummary !== null ? (
-        // No scroll box and no input echo: the whole request is two fields, and both are
-        // already in the headline and this sentence.
-        <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionHttpMeta}>{listSessionsSentence(listingSummary)}</Text>
-        </View>
-      ) : progressSummary !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionHttpMeta}>
-            One on-demand metadata read for session {progressSummary.sessionId}. No transcript
-            content is returned. Do not poll this tool.
-          </Text>
-        </View>
-      ) : recentSummary !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionSubtitle} selectable>
-            Session {recentSummary.sessionId}
-          </Text>
-          <Text style={styles.permissionHttpMeta} selectable>
-            Purpose: {recentSummary.purpose}. Scope: up to {recentSummary.count} redacted messages
-            {recentSummary.sinceMinutes === undefined
-              ? ''
-              : ` from the last ${String(recentSummary.sinceMinutes)} minutes`}
-            {recentSummary.beforeSeq === undefined
-              ? ''
-              : ` before event ${String(recentSummary.beforeSeq)}`}
-            . Attachments and tool payloads are excluded; recognized credential patterns are
-            redacted, but free text may still contain sensitive material. Another page requires a
-            new approval.
-          </Text>
-        </View>
-      ) : calendarSummary !== null ? (
-        <View>
-          {calendarSummary.details.map((detail, index) => (
-            <Text key={index} style={styles.permissionSubtitle} selectable>
-              {spellOutBidiControls(detail)}
+            <Text style={styles.permissionHttpMeta}>{sessionHandoffCaveats(handoffSummary)}</Text>
+          </View>
+        ) : listingSummary !== null ? (
+          // No scroll box and no input echo: the whole request is two fields, and both are
+          // already in the headline and this sentence.
+          <View style={styles.permissionHttpSummary}>
+            <Text style={styles.permissionHttpMeta}>{listSessionsSentence(listingSummary)}</Text>
+          </View>
+        ) : progressSummary !== null ? (
+          <View style={styles.permissionHttpSummary}>
+            <Text style={styles.permissionHttpMeta}>
+              One on-demand metadata read for session {progressSummary.sessionId}. No transcript
+              content is returned. Do not poll this tool.
             </Text>
-          ))}
-        </View>
-      ) : schedulingSummary !== null &&
-        schedulingSummary.editable !== null &&
-        schedulingEdit !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          <Text style={styles.permissionSubtitle} selectable>
-            {spellOutBidiControls(schedulingSummary.editable.meeting)}
-          </Text>
-          {schedulingSummary.details.slice(1).map((detail, index) => (
-            <Text key={index} style={styles.permissionSubtitle} selectable>
-              {spellOutBidiControls(detail)}
+          </View>
+        ) : recentSummary !== null ? (
+          <View style={styles.permissionHttpSummary}>
+            <Text style={styles.permissionSubtitle} selectable>
+              Session {recentSummary.sessionId}
             </Text>
-          ))}
-          <SchedulingApprovalEditor
-            editable={schedulingSummary.editable}
-            edit={schedulingEdit}
-            onChange={(edit) => setSchedulingDraft({ toolUseId: pending.toolUseId, edit })}
-            error={
-              schedulingDraft?.toolUseId === pending.toolUseId ? schedulingDraft.error : undefined
-            }
-            disabled={!active}
-          />
-          <Text style={styles.permissionHttpMeta}>
-            {spellOutBidiControls(schedulingSummary.scope)}
-          </Text>
-        </View>
-      ) : schedulingSummary !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          {schedulingSummary.details.map((detail, index) => (
-            <Text key={index} style={styles.permissionSubtitle} selectable>
-              {spellOutBidiControls(detail)}
+            <Text style={styles.permissionHttpMeta} selectable>
+              Purpose: {recentSummary.purpose}. Scope: up to {recentSummary.count} redacted messages
+              {recentSummary.sinceMinutes === undefined
+                ? ''
+                : ` from the last ${String(recentSummary.sinceMinutes)} minutes`}
+              {recentSummary.beforeSeq === undefined
+                ? ''
+                : ` before event ${String(recentSummary.beforeSeq)}`}
+              . Attachments and tool payloads are excluded; recognized credential patterns are
+              redacted, but free text may still contain sensitive material. Another page requires a
+              new approval.
             </Text>
-          ))}
-          {schedulingSummary.email === null ? null : (
-            <>
-              <Text style={styles.permissionSubtitle} selectable>
-                Subject: {spellOutBidiControls(schedulingSummary.email.subject)}
+          </View>
+        ) : calendarSummary !== null ? (
+          <View>
+            {calendarSummary.details.map((detail, index) => (
+              <Text key={index} style={styles.permissionSubtitle} selectable>
+                {spellOutBidiControls(detail)}
               </Text>
-              <Text style={styles.permissionHttpMeta} selectable>
-                {spellOutBidiControls(schedulingSummary.email.body)}
+            ))}
+          </View>
+        ) : schedulingSummary !== null &&
+          schedulingSummary.editable !== null &&
+          schedulingEdit !== null ? (
+          <View style={styles.permissionHttpSummary}>
+            <Text style={styles.permissionSubtitle} selectable>
+              {spellOutBidiControls(schedulingSummary.editable.meeting)}
+            </Text>
+            {schedulingSummary.details.slice(1).map((detail, index) => (
+              <Text key={index} style={styles.permissionSubtitle} selectable>
+                {spellOutBidiControls(detail)}
               </Text>
-            </>
-          )}
-          <Text style={styles.permissionHttpMeta}>
-            {spellOutBidiControls(schedulingSummary.scope)}
-          </Text>
-        </View>
-      ) : matrixSummary !== null ? (
-        <MatrixSendPreview summary={matrixSummary} />
-      ) : gmailSummary !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          {gmailSummary.from === null ? null : (
-            <Text style={styles.permissionSubtitle} selectable>
-              From: {spellOutBidiControls(gmailSummary.from)}
-            </Text>
-          )}
-          {gmailSummary.replyTo === null ? null : (
-            <Text style={styles.permissionSubtitle} selectable>
-              Reply-To: {spellOutBidiControls(gmailSummary.replyTo)}
-            </Text>
-          )}
-          <Text style={styles.permissionSubtitle} selectable>
-            To: {spellOutBidiControls(gmailSummary.to.join(', '))}
-          </Text>
-          {gmailSummary.cc.length > 0 ? (
-            <Text style={styles.permissionSubtitle} selectable>
-              CC: {spellOutBidiControls(gmailSummary.cc.join(', '))}
-            </Text>
-          ) : null}
-          {gmailSummary.bcc.length > 0 ? (
-            <Text style={styles.permissionSubtitle} selectable>
-              BCC: {spellOutBidiControls(gmailSummary.bcc.join(', '))}
-            </Text>
-          ) : null}
-          <Text style={styles.permissionSubtitle} selectable>
-            Subject: {spellOutBidiControls(gmailSummary.subject)}
-          </Text>
-          {gmailSummary.htmlBody === null ? null : (
-            <Text style={styles.permissionHttpMeta}>HTML version:</Text>
-          )}
-          {gmailSummary.htmlBody === null ? null : (
-            <WebView
-              style={styles.permissionHtmlPreview}
-              source={{ html: gmailPreviewHtml(gmailSummary.htmlBody), baseUrl: 'about:blank' }}
-              javaScriptEnabled={false}
-              domStorageEnabled={false}
-              cacheEnabled={false}
-              originWhitelist={['about:blank']}
-              onShouldStartLoadWithRequest={(request) => request.url === 'about:blank'}
-              accessibilityLabel="Email HTML preview; external images and navigation are blocked"
+            ))}
+            <SchedulingApprovalEditor
+              editable={schedulingSummary.editable}
+              edit={schedulingEdit}
+              onChange={(edit) => setSchedulingDraft({ toolUseId: pending.toolUseId, edit })}
+              error={
+                schedulingDraft?.toolUseId === pending.toolUseId ? schedulingDraft.error : undefined
+              }
+              disabled={!active}
             />
-          )}
-          {gmailSummary.htmlBody === null ? null : (
-            <Text style={styles.permissionHttpMeta}>Plain-text alternative:</Text>
-          )}
-          <ScrollView style={styles.permissionBriefing} nestedScrollEnabled>
-            <Text style={styles.permissionSubtitle} selectable>
-              {spellOutBidiControls(gmailSummary.body)}
+            <Text style={styles.permissionHttpMeta}>
+              {spellOutBidiControls(schedulingSummary.scope)}
             </Text>
-          </ScrollView>
-          {gmailSummary.attachments.length > 0 ? (
-            <View>
-              <Text style={styles.permissionHttpMeta}>
-                Attachments ({gmailSummary.attachments.length}):
+          </View>
+        ) : schedulingSummary !== null ? (
+          <View style={styles.permissionHttpSummary}>
+            {schedulingSummary.details.map((detail, index) => (
+              <Text key={index} style={styles.permissionSubtitle} selectable>
+                {spellOutBidiControls(detail)}
               </Text>
-              {gmailSummary.attachments.map((attachment, index) => (
-                <Text key={index} style={styles.permissionHttpMeta} selectable>
-                  {spellOutBidiControls(attachment.filename)} ·{' '}
-                  {formatAttachmentSize(attachment.size)} · {attachment.mimeType}
+            ))}
+            {schedulingSummary.email === null ? null : (
+              <>
+                <Text style={styles.permissionSubtitle} selectable>
+                  Subject: {spellOutBidiControls(schedulingSummary.email.subject)}
                 </Text>
-              ))}
-            </View>
-          ) : null}
-          {gmailSummary.externalUrls.length > 0 ? (
-            <View>
-              <Text style={styles.permissionHttpMeta}>
-                External links and images in this email:
-              </Text>
-              {gmailSummary.externalUrls.map((url) => (
-                <Text key={url} style={styles.permissionHttpMeta} selectable>
-                  {spellOutBidiControls(url)}
+                <Text style={styles.permissionHttpMeta} selectable>
+                  {spellOutBidiControls(schedulingSummary.email.body)}
                 </Text>
-              ))}
-            </View>
-          ) : null}
-          <Text style={styles.permissionHttpMeta}>
-            Gmail sends exactly this text, HTML, and attachment snapshot once. After sending, Verity
-            deletes the original draft if the final check still matches this preview. A change
-            during cleanup may be lost.
-          </Text>
-        </View>
-      ) : brokeredRequestDetails !== null ? (
-        <View style={styles.permissionHttpSummary}>
-          {/* A handoff that fell back to raw JSON is still a briefing to read before approving,
-              so it keeps the taller box rather than being the one card that shows 20,000
-              characters through the short window. */}
-          <ScrollView
-            style={isSessionHandoff ? styles.permissionBriefing : styles.permissionDetails}
-            nestedScrollEnabled
-          >
+              </>
+            )}
+            <Text style={styles.permissionHttpMeta}>
+              {spellOutBidiControls(schedulingSummary.scope)}
+            </Text>
+          </View>
+        ) : matrixSummary !== null ? (
+          <MatrixSendPreview summary={matrixSummary} />
+        ) : gmailSummary !== null ? (
+          <GmailSendPreview summary={gmailSummary} />
+        ) : brokeredRequestDetails !== null ? (
+          <View style={styles.permissionHttpSummary}>
             <Text style={styles.permissionSubtitle} selectable>
               {brokeredRequestDetails}
             </Text>
-          </ScrollView>
-          {brokeredRequestCaveats !== null ? (
-            <Text style={styles.permissionHttpMeta}>{brokeredRequestCaveats}</Text>
-          ) : null}
-        </View>
-      ) : (
-        <PermissionRequestDetails input={pending.input} />
-      )}
+            {brokeredRequestCaveats !== null ? (
+              <Text style={styles.permissionHttpMeta}>{brokeredRequestCaveats}</Text>
+            ) : null}
+          </View>
+        ) : (
+          <PermissionRequestDetails input={pending.input} inline />
+        )}
+      </PinnedScroll>
       <View style={styles.permissionButtons}>
         <Pressable
           onPress={() =>
@@ -7942,40 +7867,6 @@ function MicButton({
   );
 }
 
-/** A one-line status strip. `action` turns it into an offer rather than a statement —
- * only for states where the operator has a lever the app cannot pull for them. */
-function Banner({
-  tone,
-  text,
-  action,
-}: {
-  tone: 'attention' | 'danger';
-  text: string;
-  action?: { label: string; onPress: () => void };
-}) {
-  const { theme } = useUnistyles();
-  const color = toneColor(theme.colors, tone);
-  return (
-    <View style={[styles.banner, { borderLeftColor: color }]}>
-      <View style={styles.bannerRow}>
-        <Text style={[styles.bannerText, { color }]} numberOfLines={2}>
-          {text}
-        </Text>
-        {action ? (
-          <Pressable
-            onPress={action.onPress}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={action.label}
-          >
-            <Text style={[styles.bannerAction, { color }]}>{action.label}</Text>
-          </Pressable>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
 function CenteredMessage({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <View style={styles.centered}>
@@ -8459,29 +8350,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.footnote.fontSize,
     fontFamily: theme.fonts.semibold,
     textAlign: 'right',
-  },
-  banner: {
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.sm,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderLeftWidth: 3,
-  },
-  bannerText: {
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-    // Takes the row's slack so long copy wraps to its two lines instead of pushing
-    // the action off the edge.
-    flex: 1,
-  },
-  bannerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-  },
-  bannerAction: {
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-    textDecorationLine: 'underline',
   },
   // The transcript is stored newest-first and flipped: history then APPENDS at the
   // data end, behind the viewport, instead of being inserted in front of the reader.
@@ -9046,6 +8914,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.attention,
     backgroundColor: theme.colors.surfaceAlt,
     gap: theme.spacing.sm,
+    ...pinnedCardLayout,
   },
   permissionHeader: {
     flexDirection: 'row',
@@ -9074,19 +8943,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.textMuted,
     fontSize: theme.typography.footnote.fontSize,
     fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-  },
-  permissionDetails: {
-    maxHeight: 220,
-  },
-  // Taller than `permissionDetails`: a handoff briefing is prose meant to be read before
-  // it is approved, not a request body being spot-checked.
-  permissionBriefing: {
-    maxHeight: 320,
-  },
-  permissionHtmlPreview: {
-    height: 320,
-    borderRadius: theme.radius.sm,
-    overflow: 'hidden',
   },
   permissionButtons: {
     flexDirection: 'row',

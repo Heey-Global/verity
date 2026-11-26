@@ -2964,7 +2964,7 @@ export class Conductor {
     options?: {
       scope?: 'once' | 'session' | 'project' | 'forever';
       actorId?: string;
-      onScopeSaved?: (saved: boolean) => void;
+      onScopeSaved?: (saved: boolean, actionContinued: boolean) => void;
       /** How the answer was reached. Only the standing-grant path sets `grant`; the
        *  decide route omits it, because everything arriving there is a card the
        *  operator answered. Recorded by an out-of-band caller's audit trail
@@ -3036,7 +3036,7 @@ export class Conductor {
         brokeredGrantToolName(request.toolName) !== undefined
       ) {
         if (decision.updatedInput !== undefined) {
-          options.onScopeSaved?.(false);
+          options.onScopeSaved?.(false, true);
           return true;
         }
         try {
@@ -3050,12 +3050,12 @@ export class Conductor {
             external?.channel,
             external?.brokeredGrantBindingId,
           );
-          options.onScopeSaved?.(true);
+          options.onScopeSaved?.(true, true);
         } catch {
           // The runner has already consumed the allow and may have executed a
           // non-idempotent request. Report the unsaved scope separately instead
           // of turning the decision into a retryable request failure.
-          options.onScopeSaved?.(false);
+          options.onScopeSaved?.(false, true);
         }
       }
       return true;

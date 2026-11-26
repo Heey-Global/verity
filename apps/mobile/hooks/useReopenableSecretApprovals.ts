@@ -1,10 +1,7 @@
 import { type VerityClient, VerityApiError } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
-
-import { Button, Card, Text } from './ui';
-import { Disclosure } from './ui/Disclosure';
 
 type Requests = Awaited<ReturnType<VerityClient['secretApprovals']['list']>>;
 const POLL_INTERVAL_MS = 10_000;
@@ -16,23 +13,34 @@ function canReadHistory(): boolean {
   return AppState.currentState !== 'background';
 }
 
+export type ReopenableStatus = Requests[number]['status'];
+
+export interface ReopenableSecretApprovals {
+  /** What the server reports it can reopen, by approval id. The transcript card
+   *  of a secret request carries the same id, so it looks itself up here. */
+  statuses: ReadonlyMap<string, ReopenableStatus>;
+  /** The approval being reopened right now. */
+  reopening: string | undefined;
+  error: { id: string; text: string } | undefined;
+  /** Asks for a fresh decision. It neither approves nor runs anything. */
+  reopen: (id: string) => void;
+}
+
+const NONE: ReadonlyMap<string, ReopenableStatus> = new Map();
+
 /** Reconsideration is an explicit user action, never an agent's automatic retry. */
-export function SecretApprovalHistory({
-  client,
-  sessionId,
-  refreshKey,
-}: {
-  client: VerityClient;
-  sessionId: string;
-  refreshKey?: string | undefined;
-}) {
+export function useReopenableSecretApprovals(
+  client: VerityClient,
+  sessionId: string,
+  enabled: boolean,
+  refreshKey?: string,
+): ReopenableSecretApprovals {
   const [snapshot, setSnapshot] = useState<{ sessionId: string; requests: Requests }>();
-  const [error, setError] = useState<string>();
-  const [working, setWorking] = useState(false);
-  const [index, setIndex] = useState(0);
+  const [error, setError] = useState<{ id: string; text: string }>();
+  const [reopening, setReopening] = useState<string>();
   const busy = useRef(false);
-  const historyVersion = useRef(0);
   const generation = useRef(0);
+  const historyVersion = useRef(0);
   const refresh = useRef<(() => void) | undefined>(undefined);
   const previousRefreshKey = useRef(refreshKey);
   const refreshPending = useRef(false);
@@ -46,17 +54,17 @@ export function SecretApprovalHistory({
     ++generation.current;
     busy.current = false;
     refreshPending.current = false;
-    setWorking(false);
-    setIndex(0);
+    setReopening(undefined);
     setError(undefined);
     setSnapshot(undefined);
-  }, [client, sessionId]);
+  }, [client, sessionId, enabled]);
 
   // Polls only while this session's screen is focused. Session screens stay
   // mounted beneath the ones pushed over them, so an unscoped timer keeps one
   // poll per screen ever opened running for as long as the app does.
   useFocusEffect(
     useCallback(() => {
+      if (!enabled) return undefined;
       const current = generation.current;
       let stopped = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -126,82 +134,65 @@ export function SecretApprovalHistory({
         subscription.remove();
         webDocument?.removeEventListener('visibilitychange', refreshWhenVisible);
       };
-    }, [client, sessionId]),
+    }, [client, sessionId, enabled]),
   );
 
   useEffect(() => {
     if (previousRefreshKey.current === refreshKey) return;
     previousRefreshKey.current = refreshKey;
     historyVersion.current += 1;
+    setSnapshot(undefined);
     refreshPending.current = true;
     refresh.current?.();
   }, [refreshKey]);
 
-  const reopen = async (id: string): Promise<void> => {
-    if (busy.current) return;
-    busy.current = true;
-    historyVersion.current += 1;
-    const current = generation.current;
-    setWorking(true);
-    setError(undefined);
-    try {
-      await client.secretApprovals.reopen(sessionId, id);
-      if (generation.current === current) {
-        setSnapshot(
-          (old) => old && { ...old, requests: old.requests.filter((request) => request.id !== id) },
-        );
-      }
-    } catch (caught) {
-      if (generation.current === current)
-        setError(
-          caught instanceof VerityApiError && caught.status === 403
-            ? 'You do not have permission to reopen this request.'
-            : 'Could not reopen this request. Refresh and try again.',
-        );
-    } finally {
-      if (generation.current === current) {
-        busy.current = false;
-        setWorking(false);
-        refresh.current?.();
-      }
-    }
-  };
+  const reopen = useCallback(
+    (id: string): void => {
+      if (busy.current) return;
+      busy.current = true;
+      historyVersion.current += 1;
+      const current = generation.current;
+      setReopening(id);
+      setError(undefined);
+      void (async () => {
+        try {
+          await client.secretApprovals.reopen(sessionId, id);
+          if (generation.current === current)
+            setSnapshot(
+              (old) =>
+                old && { ...old, requests: old.requests.filter((request) => request.id !== id) },
+            );
+        } catch (caught) {
+          if (generation.current === current)
+            setError({
+              id,
+              text:
+                caught instanceof VerityApiError && caught.status === 403
+                  ? 'You do not have permission to reopen this request.'
+                  : 'Could not reopen this request. Refresh and try again.',
+            });
+        } finally {
+          if (generation.current === current) {
+            busy.current = false;
+            setReopening(undefined);
+            refresh.current?.();
+          }
+        }
+      })();
+    },
+    [client, sessionId],
+  );
 
-  const requests = snapshot?.sessionId === sessionId ? snapshot.requests : [];
-  const selectedIndex = Math.min(index, Math.max(0, requests.length - 1));
-  if (requests.length === 0 && !error) return null;
-  return (
-    <Card flush>
-      <Disclosure title="Previous secret requests" subtitle="Reopen a request to review it again">
-        <Text tone="muted">Reopening asks for fresh approval. It does not run the action.</Text>
-        {requests.slice(selectedIndex, selectedIndex + 1).map((request) => (
-          <Card stacked key={request.id}>
-            <Text variant="subtitle">
-              {request.summary ??
-                (request.toolName === 'verity_http_request'
-                  ? 'Secret HTTP request'
-                  : 'Secret command')}
-            </Text>
-            <Text tone="muted">
-              {request.status === 'denied' ? 'Denied' : 'Approval was not used in time'}
-            </Text>
-            <Button
-              label="Review request again"
-              accessibilityLabel={`Review secret request ${request.id} again`}
-              disabled={working}
-              onPress={() => void reopen(request.id)}
-            />
-          </Card>
-        ))}
-        {requests.length > 1 ? (
-          <Button
-            label={`Next request (${selectedIndex + 1} of ${requests.length})`}
-            variant="text"
-            onPress={() => setIndex((selectedIndex + 1) % requests.length)}
-          />
-        ) : null}
-        {error ? <Text tone="attention">{error}</Text> : null}
-      </Disclosure>
-    </Card>
+  const requests = snapshot?.sessionId === sessionId ? snapshot.requests : undefined;
+  const statuses = useMemo(
+    () =>
+      requests === undefined
+        ? NONE
+        : new Map(requests.map((request) => [request.id, request.status] as const)),
+    [requests],
+  );
+  return useMemo(
+    () => ({ statuses, reopening, error, reopen }),
+    [statuses, reopening, error, reopen],
   );
 }

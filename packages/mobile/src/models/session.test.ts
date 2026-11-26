@@ -2909,8 +2909,8 @@ describe('SessionModel — decidePermission (#149)', () => {
     });
 
     await model.decidePermission('tu_1', { behavior: 'allow', scope: 'project' });
-    expect(model.state.permissionError).toContain('Request allowed');
-    expect(model.state.permissionError).toContain('will ask again');
+    expect(model.state.permissionError).not.toContain('Decision failed'); // older server: no guess
+    expect(model.state.permissionError).toContain('chat shows whether the request ran');
     model.stop();
   });
 
@@ -2929,7 +2929,7 @@ describe('SessionModel — decidePermission (#149)', () => {
 
     decidePermission.mockRejectedValueOnce(new Error('network down'));
     await model.decidePermission('tu_1', { behavior: 'deny' });
-    expect(model.state.permissionError).toBe('failed to send the decision');
+    expect(model.state.permissionError).toBe('Decision failed: the decision could not be sent');
     model.stop();
   });
 });

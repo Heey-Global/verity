@@ -147,6 +147,7 @@ export function installSessionRoutes(
   type RepairObservation = {
     session: Parameters<typeof maybeDispatchPrRepairTurns>[0];
     read: Promise<PullRequestStatus | null>;
+    branch: string;
   };
   const branchPrRepairs = new Map<string, { latest: RepairObservation; done: Promise<void> }>();
   const invalidateRepositoryPRRead = (key: string): void => {
@@ -536,6 +537,65 @@ export function installSessionRoutes(
               load: () => sessionPrStatus(session, current),
             })
           : undefined;
+      // Repair reconciliation can wait on another session. Branch metadata is
+      // ready to return while reconciliation finishes on the server.
+      let repair = branchPrRepairs.get(id);
+      if (prRead) {
+        const observation = { session, read: prRead, branch: current };
+        if (repair) {
+          repair.latest = observation;
+        } else {
+          const reconcile = async () => {
+            let previousStatus: PullRequestStatus | null | undefined;
+            let previous: RepairObservation | undefined;
+            let next: RepairObservation | undefined = observation;
+            try {
+              while (next) {
+                const processed: RepairObservation = next;
+                const status = await processed.read;
+                const target = processed.session;
+                if (
+                  status !== previousStatus ||
+                  target.projectId !== previous?.session.projectId ||
+                  target.worktree !== previous?.session.worktree ||
+                  processed.branch !== previous?.branch
+                ) {
+                  await readStage('repair', async () => {
+                    const active = await deps.eventStore.getSession(id);
+                    if (
+                      !active ||
+                      active.projectId !== target.projectId ||
+                      active.worktree !== target.worktree ||
+                      (await readBranchMetadata(branches, target.worktree)).current !==
+                        processed.branch
+                    )
+                      return;
+                    const latest = branchPrRepairs.get(id)?.latest;
+                    if (
+                      latest?.read === processed.read &&
+                      latest.session.projectId === target.projectId &&
+                      latest.session.worktree === target.worktree &&
+                      latest.branch === processed.branch
+                    ) {
+                      previousStatus = status;
+                      previous = processed;
+                      await maybeDispatchPrRepairTurns(active, status);
+                    }
+                  }).catch((err: unknown) =>
+                    request.log.warn({ err }, 'Session PR repair check failed'),
+                  );
+                }
+                next = branchPrRepairs.get(id)?.latest;
+                if (next === processed) return;
+              }
+            } finally {
+              branchPrRepairs.delete(id);
+            }
+          };
+          repair = { latest: observation, done: reconcile() };
+          branchPrRepairs.set(id, repair);
+        }
+      }
       const rawPullRequest =
         prRead === undefined
           ? undefined
@@ -569,58 +629,6 @@ export function installSessionRoutes(
                 deps.branchPr!(current, session.worktree).catch(() => null),
               )
             : undefined;
-      // Repair reconciliation can wait on another session. Branch metadata is
-      // ready to return while reconciliation finishes on the server.
-      let repair = branchPrRepairs.get(id);
-      if (prRead) {
-        const observation = { session, read: prRead };
-        if (repair) {
-          repair.latest = observation;
-        } else {
-          const reconcile = async () => {
-            let previousStatus: PullRequestStatus | null | undefined;
-            let previousSession: RepairObservation['session'] | undefined;
-            let next: RepairObservation | undefined = observation;
-            try {
-              while (next) {
-                const processed: RepairObservation = next;
-                const status = await processed.read;
-                const target = processed.session;
-                if (
-                  status !== previousStatus ||
-                  target.projectId !== previousSession?.projectId ||
-                  target.worktree !== previousSession?.worktree
-                ) {
-                  await readStage('repair', async () => {
-                    const active = await deps.eventStore.getSession(id);
-                    const latest = branchPrRepairs.get(id)?.latest;
-                    if (
-                      latest?.read === processed.read &&
-                      latest.session.projectId === target.projectId &&
-                      latest.session.worktree === target.worktree &&
-                      active &&
-                      active.projectId === target.projectId &&
-                      active?.worktree === target.worktree
-                    ) {
-                      previousStatus = status;
-                      previousSession = target;
-                      await maybeDispatchPrRepairTurns(active, status);
-                    }
-                  }).catch((err: unknown) =>
-                    request.log.warn({ err }, 'Session PR repair check failed'),
-                  );
-                }
-                next = branchPrRepairs.get(id)?.latest;
-                if (next === processed) return;
-              }
-            } finally {
-              branchPrRepairs.delete(id);
-            }
-          };
-          repair = { latest: observation, done: reconcile() };
-          branchPrRepairs.set(id, repair);
-        }
-      }
       // Best-effort GitHub identity (#161): owner/repo for the mobile header to build
       // tappable Issue/PR chip URLs. Omitted entirely when there's no resolver or no
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the

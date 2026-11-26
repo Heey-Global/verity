@@ -10732,7 +10732,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
       ),
     ).resolves.toBe(true);
     expect(persist).not.toHaveBeenCalled();
-    expect(onScopeSaved).toHaveBeenCalledWith(false);
+    expect(onScopeSaved).toHaveBeenCalledWith(false, true);
     await vi.waitFor(() => {
       expect(conductor.isBusy('sg1')).toBe(false);
     });
@@ -10785,7 +10785,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
-    expect(onScopeSaved).toHaveBeenCalledWith(false);
+    expect(onScopeSaved).toHaveBeenCalledWith(false, true);
     // An unsaved grant must not withhold the decision from the agent.
     await vi.waitFor(() => {
       expect(fake.decisions()).toEqual([{ behavior: 'allow' }]);
@@ -10882,7 +10882,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
-    expect(onScopeSaved).toHaveBeenCalledWith(true);
+    expect(onScopeSaved).toHaveBeenCalledWith(true, true);
     expect(persist).toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'project', channel: 'acp' }),
     );
@@ -10936,7 +10936,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         { scope: 'forever', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
-    expect(onScopeSaved).toHaveBeenCalledWith(false);
+    expect(onScopeSaved).toHaveBeenCalledWith(false, true);
     expect(persist).not.toHaveBeenCalled();
     await vi.waitFor(() => {
       expect(conductor.isBusy('sg-cli-forever')).toBe(false);
@@ -10965,7 +10965,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
       { behavior: 'allow' },
       { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
     );
-    expect(onScopeSaved).toHaveBeenCalledWith(true);
+    expect(onScopeSaved).toHaveBeenCalledWith(true, true);
     expect(persist).toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'project', userId: 'operator-1' }),
     );
@@ -11078,7 +11078,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
-    expect(onScopeSaved).toHaveBeenCalledWith(false);
+    expect(onScopeSaved).toHaveBeenCalledWith(false, true);
     await vi.waitFor(() => {
       expect(fake.decisions()).toEqual([{ behavior: 'allow' }]);
     });
@@ -11297,7 +11297,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       { scope: 'project', onScopeSaved },
     );
     await expect(unnamed).resolves.toMatchObject({ decidedBy: 'card' });
-    expect(onScopeSaved).toHaveBeenCalledWith(false);
+    expect(onScopeSaved).toHaveBeenCalledWith(false, true);
     expect(persist).not.toHaveBeenCalled();
   });
 
@@ -11364,7 +11364,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       scope: 'session',
       bindingId: 'original-provider-binding',
     });
-    expect(onScopeSaved).toHaveBeenCalledWith(true);
+    expect(onScopeSaved).toHaveBeenCalledWith(true, true);
   });
 
   it('binds project CLI grants to the server-resolved execution directory', async () => {
@@ -11453,7 +11453,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
-    expect(onScopeSaved).toHaveBeenCalledWith(true);
+    expect(onScopeSaved).toHaveBeenCalledWith(true, true);
     expect(persist).toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'project', userId: 'operator-1' }),
     );
@@ -11568,7 +11568,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
-    expect(onScopeSaved).toHaveBeenCalledWith(true);
+    expect(onScopeSaved).toHaveBeenCalledWith(true, true);
     expect(persist).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'x5',

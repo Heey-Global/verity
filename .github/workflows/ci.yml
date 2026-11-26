@@ -979,6 +979,15 @@ jobs:
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On pull requests the test checkout is the merge commit. Its first
+          # parent provides the architecture debt baseline without full history.
+          fetch-depth: 2
+      - name: Select Store architecture baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          base=$(git rev-parse HEAD^1)
+          echo "STORE_ARCHITECTURE_BASE=$base" >> "$GITHUB_ENV"
       - name: Ensure GNU inventory tools
         run: |
           if [[ ! -x /usr/bin/gnutimeout ]]; then
@@ -1074,6 +1083,13 @@ jobs:
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - name: Select Store architecture baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          base=$(git rev-parse HEAD^1)
+          echo "STORE_ARCHITECTURE_BASE=$base" >> "$GITHUB_ENV"
       - name: Ensure GNU inventory tools
         run: |
           if [[ ! -x /usr/bin/gnutimeout ]]; then

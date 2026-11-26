@@ -95,39 +95,52 @@ it('offers the decision in the asking session and says who asks whom', async () 
 });
 
 it.each(['source', 'target'])(
-  'keeps long requests behind one row in the %s session and closes their details',
+  'keeps long waiting requests behind one row in the %s session and closes their details',
   async (sessionId) => {
     const body = 'Review the staging service.\n'.repeat(100);
-    const answer = 'The staging service is ready.\n'.repeat(100);
     const client = {
       listProjectInquiries: jest.fn().mockResolvedValue([
-        { ...inquiry, body, status: 'queued' },
-        { ...inquiry, id: 'answered', title: 'Inspect staging', answer, status: 'answered' },
+        { ...inquiry, body },
+        { ...inquiry, id: 'second', title: 'Inspect staging' },
       ]),
     } as unknown as VerityClient;
     const view = render(<ProjectInquiryCards client={client} sessionId={sessionId} />);
 
     const row = await view.findByRole('button', { name: 'Project requests', expanded: false });
-    expect(view.getByText('2 requests')).toBeTruthy();
+    expect(view.getByText('2 awaiting approval')).toBeTruthy();
     expect(view.queryByText(body.trim())).toBeNull();
-    expect(view.queryByText(answer.trim())).toBeNull();
 
     fireEvent.press(row);
     // Unclamped, a long request pushes its decision buttons below the sheet's fold.
     expect(view.getByText(body.trim()).props.numberOfLines).toBe(6);
-    expect(view.getByText(answer.trim()).props.numberOfLines).toBe(6);
-    fireEvent.press(view.getAllByRole('button', { name: 'Show full request' })[0]!);
+    fireEvent.press(view.getByRole('button', { name: 'Show full request' }));
     expect(view.getByText(body.trim()).props.numberOfLines).toBeUndefined();
-    expect(view.getByText(answer.trim()).props.numberOfLines).toBe(6);
     fireEvent.press(view.getByRole('button', { name: 'Show less' }));
     expect(view.getByText(body.trim()).props.numberOfLines).toBe(6);
 
     fireEvent.press(view.getByTestId('sheet-scrim'));
     expect(view.queryByText(body.trim())).toBeNull();
-    expect(view.queryByText(answer.trim())).toBeNull();
     expect(view.getByRole('button', { name: 'Project requests', expanded: false })).toBeTruthy();
   },
 );
+
+// A settled request is already in the chat (its answer) and under the header
+// (the linked session); a second row for it only repeated both.
+it('shows no row in a session once nothing waits for a decision', async () => {
+  const listProjectInquiries = jest.fn().mockResolvedValue([
+    { ...inquiry, status: 'queued' },
+    { ...inquiry, id: 'answered', status: 'answered', answer: 'Done.' },
+  ]);
+  const view = render(
+    <ProjectInquiryCards
+      client={{ listProjectInquiries } as unknown as VerityClient}
+      sessionId="source"
+    />,
+  );
+  await waitFor(() => expect(listProjectInquiries).toHaveBeenCalled());
+  await act(async () => undefined);
+  expect(view.queryByRole('button', { name: 'Project requests' })).toBeNull();
+});
 
 // The row is the only place left that announces a pending decision; a refresh
 // failing after it loaded must not replace that with a load error.

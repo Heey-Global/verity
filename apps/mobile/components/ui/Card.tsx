@@ -5,6 +5,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconName } from '../Icon';
 import { Dot, type StatusIntent } from './Status';
 import { Button, IconButton } from './Button';
+import { pinnedCardLayout } from './PinnedScroll';
 import { Toggle } from './Toggle';
 import { tint } from './tint';
 
@@ -24,6 +25,7 @@ export function Card({
   stacked = false,
   divided = false,
   grouped = false,
+  pinned = false,
 }: {
   children: ReactNode;
   selected?: boolean;
@@ -42,6 +44,9 @@ export function Card({
    *  the dividers, so the card draws neither border nor corners of its own, and
    *  selected fills it like a selected row instead of outlining it. */
   grouped?: boolean;
+  /** For a card pinned above the composer: bounded to part of the screen so its
+   *  buttons stay reachable. Wrap its long content in a `PinnedScroll`. */
+  pinned?: boolean;
 }) {
   const sections = divided ? Children.toArray(children).filter(isValidElement) : null;
   return (
@@ -54,6 +59,7 @@ export function Card({
         grouped ? styles.cardGrouped : null,
         selected ? (grouped ? styles.rowActive : styles.cardSelected) : null,
         muted ? styles.muted : null,
+        pinned ? pinnedCardLayout : null,
       ]}
     >
       {sections === null

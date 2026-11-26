@@ -17,3 +17,9 @@ it('renders malformed values without losing the approval card', () => {
   render(<PermissionRequestDetails input={{ summary: 'a\u202eb', size: 1n }} />);
   expect(screen.getByTestId('permission-request-details').props.children).toContain('fields:');
 });
+
+it('leaves scrolling to a pinned card that already scrolls its body', () => {
+  const view = render(<PermissionRequestDetails input={{ summary: 'x' }} inline />);
+  expect(screen.getByTestId('permission-request-details')).toBeTruthy();
+  expect(view.UNSAFE_queryAllByType(ScrollView)).toHaveLength(0);
+});

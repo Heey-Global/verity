@@ -1,22 +1,38 @@
-import type { DomainEvent, LiveTopicSink } from '@verity/mobile';
-import { renderHook } from '@testing-library/react-native';
-import { useOverviewTopics } from './overviewTopics';
+import type { DomainEvent, LiveTopicSink, ProjectRecord } from '@verity/mobile';
+import { act, render, renderHook } from '@testing-library/react-native';
+import { createElement } from 'react';
+import { useOverviewStore, useOverviewTopics } from './overviewTopics';
 
 const mockSinks = new Map<string, LiveTopicSink>();
 const mockUnsubscribed: string[] = [];
+const mockSubscribed: string[] = [];
 jest.mock('./liveConnection', () => ({
   liveConnectionFor: () => ({
     subscribeTopic: (topic: string, sink: LiveTopicSink) => {
       mockSinks.set(topic, sink);
+      mockSubscribed.push(topic);
       return () => mockUnsubscribed.push(topic);
     },
   }),
 }));
+// Each test signs in to its own account, so it starts from an empty store.
+let mockAccount = 0;
+const mockAccountListeners = new Set<() => void>();
+jest.mock('./authToken', () => ({
+  subscribeAuthToken: (listener: () => void) => {
+    mockAccountListeners.add(listener);
+    return () => mockAccountListeners.delete(listener);
+  },
+}));
+jest.mock('./browserSession', () => ({ subscribeBrowserSession: () => () => undefined }));
+jest.mock('./tasksStore', () => ({ taskAccountScope: () => `account-${mockAccount}` }));
 
 const answered = (rev: number): DomainEvent => ({ t: 'choices.answered', sessionId: 's1', rev });
 
 beforeEach(() => {
+  mockAccount += 1;
   mockSinks.clear();
+  mockSubscribed.length = 0;
   mockUnsubscribed.length = 0;
 });
 
@@ -58,6 +74,260 @@ describe('useOverviewTopics', () => {
     // The snapshot now decides; an older revision applies again afterwards.
     sink.event(answered(1));
     expect(events).toEqual([answered(2), answered(1)]);
+  });
+
+  it('shares one subscription and one gate between views of the same project', () => {
+    const home: DomainEvent[] = [];
+    const page: DomainEvent[] = [];
+    const homeView = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1', 'p2'], (e) => home.push(e), jest.fn()),
+    );
+    const pageView = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], (e) => page.push(e), jest.fn()),
+    );
+    expect(mockSubscribed.sort()).toEqual(['project:p1', 'project:p2']);
+    mockSinks.get('project:p1')!.event(answered(3));
+    mockSinks.get('project:p2')!.event({ t: 'choices.answered', sessionId: 's2', rev: 1 });
+    expect(home).toHaveLength(2);
+    // The page hears its own project only.
+    expect(page).toEqual([answered(3)]);
+    // Leaving the page keeps the topic Home still shows.
+    pageView.unmount();
+    expect(mockUnsubscribed).toEqual([]);
+    homeView.unmount();
+    expect(mockUnsubscribed.sort()).toEqual(['project:p1', 'project:p2']);
+  });
+
+  it('asks a view joining a live topic to read, since the server answers only new subscriptions', async () => {
+    renderHook(() => useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()));
+    const joined = jest.fn();
+    renderHook(() => useOverviewTopics('https://core.example', ['p1'], jest.fn(), joined));
+    await Promise.resolve();
+    expect(joined).toHaveBeenCalledTimes(1);
+    expect(mockSubscribed).toEqual(['project:p1']);
+  });
+
+  it('keeps topics for a project page while Home waits past its share', () => {
+    const many = Array.from({ length: 48 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    renderHook(() => useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()));
+    // Home's long list leaves the reserve free, so an opened page is live.
+    expect(mockSubscribed).toHaveLength(40);
+    renderHook(() => useOverviewTopics('https://core.example', ['zz'], jest.fn(), jest.fn()));
+    expect(mockSubscribed).toContain('project:zz');
+    // A page of a project Home waits for takes it out of the queue.
+    renderHook(() => useOverviewTopics('https://core.example', ['p47'], jest.fn(), jest.fn()));
+    expect(mockSubscribed).toContain('project:p47');
+  });
+
+  it('returns a reserved topic once the page leaves and Home is past its share', () => {
+    const many = Array.from({ length: 48 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    renderHook(() => useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()));
+    const page = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p47'], jest.fn(), jest.fn()),
+    );
+    expect(mockSubscribed).toContain('project:p47');
+    page.unmount();
+    // Otherwise every page visit would use up the reserve for good.
+    expect(mockUnsubscribed).toEqual(['project:p47']);
+  });
+
+  it("keeps a topic within Home's share when a page of that project leaves", () => {
+    const many = Array.from({ length: 48 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    renderHook(() => useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()));
+    renderHook(() => useOverviewTopics('https://core.example', ['p47'], jest.fn(), jest.fn()));
+    const page = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p00'], jest.fn(), jest.fn()),
+    );
+    page.unmount();
+    // p00 was Home's own, not the reserve's.
+    expect(mockUnsubscribed).toEqual([]);
+  });
+
+  it('gives a freed topic to a project that waited past the cap', () => {
+    const many = Array.from({ length: 41 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    const first = renderHook(() =>
+      useOverviewTopics('https://core.example', many.slice(0, 20), jest.fn(), jest.fn()),
+    );
+    renderHook(() =>
+      useOverviewTopics('https://core.example', many.slice(20), jest.fn(), jest.fn()),
+    );
+    expect(mockSubscribed).toHaveLength(40);
+    expect(mockSubscribed).not.toContain('project:p40');
+    first.unmount();
+    expect(mockSubscribed).toContain('project:p40');
+  });
+
+  it('does not promote a waiting project of the view that detaches', () => {
+    // 41 projects: the last one waits. Unmounting must not subscribe it on its
+    // way out only to release it again.
+    const many = Array.from({ length: 41 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    const home = renderHook(() =>
+      useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()),
+    );
+    expect(mockSubscribed).not.toContain('project:p40');
+    home.unmount();
+    expect(mockSubscribed).not.toContain('project:p40');
+  });
+
+  it('lets a resync of one topic replay only that topic', () => {
+    const events: DomainEvent[] = [];
+    renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1', 'p2'], (e) => events.push(e), jest.fn()),
+    );
+    const other: DomainEvent = { t: 'choices.answered', sessionId: 's2', rev: 3 };
+    mockSinks.get('project:p2')!.event(other);
+    mockSinks.get('project:p1')!.resync();
+    // p2 was not resynced, so its views read nothing and must not see the
+    // same revision twice.
+    mockSinks.get('project:p2')!.event(other);
+    expect(events).toEqual([other]);
+  });
+
+  it('keeps one hub per server while views of two servers are mounted', () => {
+    renderHook(() => useOverviewTopics('https://a.example', ['p1'], jest.fn(), jest.fn()));
+    renderHook(() => useOverviewTopics('https://b.example', ['p1'], jest.fn(), jest.fn()));
+    renderHook(() => useOverviewTopics('https://a.example', ['p1'], jest.fn(), jest.fn()));
+    // The second view of server A shares its topic instead of subscribing again.
+    expect(mockSubscribed).toEqual(['project:p1', 'project:p1']);
+  });
+
+  it('starts from an empty store for another account', () => {
+    const events: DomainEvent[] = [];
+    const first = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], (e) => events.push(e), jest.fn()),
+    );
+    mockSinks.get('project:p1')!.event(answered(5));
+    first.unmount();
+    mockAccount += 1;
+    renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], (e) => events.push(e), jest.fn()),
+    );
+    // The other account's gate never saw revision 5.
+    mockSinks.get('project:p1')!.event(answered(5));
+    expect(events).toEqual([answered(5), answered(5)]);
+  });
+
+  it('moves a view that stays mounted to the new account', () => {
+    const events: DomainEvent[] = [];
+    renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], (e) => events.push(e), jest.fn()),
+    );
+    const before = mockSinks.get('project:p1')!;
+    before.event(answered(5));
+    act(() => {
+      mockAccount += 1;
+      for (const listener of mockAccountListeners) listener();
+    });
+    // The old account's topic is released and the new account subscribes its own.
+    expect(mockUnsubscribed).toEqual(['project:p1']);
+    expect(mockSinks.get('project:p1')).not.toBe(before);
+    mockSinks.get('project:p1')!.event(answered(5));
+    expect(events).toEqual([answered(5), answered(5)]);
+  });
+
+  const switchAccount = (to: number) =>
+    act(() => {
+      mockAccount = to;
+      for (const listener of mockAccountListeners) listener();
+    });
+
+  it('shares one store per server and account, and starts empty after a switch', () => {
+    const account = mockAccount;
+    const topics = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()),
+    );
+    const store = renderHook(() => useOverviewStore('https://core.example')).result.current;
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(store);
+    const mounted = renderHook(() => useOverviewStore('https://core.example'));
+    switchAccount(account + 1);
+    // Another account never sees the previous one's sessions.
+    expect(mounted.result.current).not.toBe(store);
+    // The view moved to the other account, so nothing kept following the
+    // first one's events: coming back starts empty.
+    switchAccount(account);
+    expect(mounted.result.current).not.toBe(store);
+    topics.unmount();
+  });
+
+  // A store nothing holds stopped following events; a page opened later
+  // would show a copy that missed them.
+  it('drops the store once nothing holds it', () => {
+    const topics = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()),
+    );
+    const view = renderHook(() => useOverviewStore('https://core.example'));
+    const store = view.result.current;
+    topics.unmount();
+    // The page still shows it; its next subscription brings it up to date.
+    const again = renderHook(() => useOverviewStore('https://core.example'));
+    expect(again.result.current).toBe(store);
+    again.unmount();
+    view.unmount();
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).not.toBe(
+      store,
+    );
+  });
+
+  // One screen replaces another in a single commit, each the only holder: the
+  // old one's release must not send the new one chasing dropped stores.
+  it('keeps the store when the only view holding it is replaced', () => {
+    const seen: unknown[] = [];
+    const Screen = () => {
+      seen.push(useOverviewStore('https://core.example'));
+      return null;
+    };
+    const ScreenX = () => createElement(Screen);
+    const ScreenY = () => createElement(Screen);
+    const view = render(createElement(ScreenX));
+    const first = seen.at(-1);
+    view.rerender(createElement(ScreenY));
+    expect(seen.at(-1)).toBe(first);
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(first);
+    view.unmount();
+  });
+
+  // A page whose project changes re-attaches; the store it renders must be
+  // the one the live topics still apply events to.
+  it('moves a view to the store its hub feeds when its projects change', () => {
+    const { result, rerender } = renderHook(
+      ({ ids }: { ids: string[] }) => {
+        useOverviewTopics('https://core.example', ids, jest.fn(), jest.fn());
+        return useOverviewStore('https://core.example');
+      },
+      { initialProps: { ids: ['p1'] } },
+    );
+    rerender({ ids: ['p2'] });
+    const store = result.current;
+    act(() =>
+      store.applyProjects(store.beginRead(), [{ id: 'p2', state: 'cloning' } as ProjectRecord], {
+        covers: (p) => p.id === 'p2',
+      }),
+    );
+    act(() =>
+      mockSinks.get('project:p2')!.event({
+        t: 'sandbox.lifecycle',
+        projectId: 'p2',
+        rev: 1,
+        state: 'active',
+      }),
+    );
+    expect(result.current.project('p2')?.state).toBe('active');
+  });
+
+  it("drops a signed-out account's store once no view holds it", () => {
+    const account = mockAccount;
+    const view = renderHook(() => useOverviewStore('https://core.example'));
+    const store = view.result.current;
+    view.unmount();
+    act(() => {
+      mockAccount += 1;
+      for (const listener of mockAccountListeners) listener();
+    });
+    mockAccount = account;
+    // Signing back in must not show the sessions kept from before.
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).not.toBe(
+      store,
+    );
   });
 
   it('subscribes nothing without a server or projects', () => {
