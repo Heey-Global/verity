@@ -43,7 +43,6 @@ import {
   type PublicProjectRecord,
   type SandboxRepairVerdicts,
   type SessionArtifactPurgeBudget,
-  type SessionSummary,
 } from './server-types.js';
 import { isDriftReportable, toolkitDriftEntryOf } from './toolkit-drift.js';
 import {
@@ -61,7 +60,7 @@ import {
   publicProjectSettings,
   SESSION_ARTIFACT_PURGE_TIMEOUT_MS,
 } from './server-support.js';
-import type { createServerSessionOverview } from './server-session-overview.js';
+import type { SessionListReader } from './session-list-route.js';
 
 /**
  * Closures `buildServer` still owns that the project routes depend on. Each one
@@ -75,7 +74,8 @@ export interface ProjectsWiring {
     exceptSessionIds?: ReadonlySet<string>,
   ) => Promise<ProjectActivitySnapshot>;
   hasMeetingJob: (sessionId: string) => boolean;
-  summarizeSessions: ReturnType<typeof createServerSessionOverview>['summarizeSessions'];
+  /** The project page lists its sessions exactly as `/sessions` does. */
+  listSessionsAs: SessionListReader;
   /** The teardown sets `ServerContext` exposes read-only; only the delete writes them. */
   projectsBeingDeleted: Set<string>;
   sessionsBeingReaped: Set<string>;
@@ -106,7 +106,7 @@ export function installProjects(
     presentProject,
     projectActivity,
     hasMeetingJob,
-    summarizeSessions,
+    listSessionsAs,
     projectsBeingDeleted,
     sessionsBeingReaped,
     projectDeletesInFlight,
@@ -327,22 +327,6 @@ export function installProjects(
       : {}),
   });
 
-  // Read marks and dismissed Home items of the person asking; a session they
-  // never touched is unread-neutral and hides nothing.
-  const sessionsAsSeenBy = async (
-    viewer: string,
-    summaries: SessionSummary[],
-  ): Promise<SessionSummary[]> => {
-    const views = await deps.eventStore.viewState.sessionViews(viewer);
-    return summaries.map((summary) => {
-      const view = views.get(summary.sessionId);
-      return {
-        ...summary,
-        lastSeenEventCount: view?.lastSeenEventCount ?? null,
-        inboxDismissed: view?.inboxDismissed ?? [],
-      };
-    });
-  };
   // What this person may do in a project, so the app offers only that. The
   // routes check again; this only spares an action the server would refuse.
   // Without accounts the one operator may do everything, and the route policy
@@ -492,7 +476,7 @@ export function installProjects(
     isUniqueViolation,
   });
   registerProjectDetailRoutes(app, {
-    getDetail: async (id, viewer) => {
+    getDetail: async (id, viewer, localUserId) => {
       const cached = await deps.eventStore.getProject(id);
       if (cached === undefined) return undefined;
       const project = deps.reconcileProjectState
@@ -500,9 +484,6 @@ export function installProjects(
         : cached;
       const settings =
         (await projectSettingsStore(deps.eventStore).getProjectSettingsRaw(id)) ?? null;
-      const sessions = (await deps.eventStore.listSessions()).filter(
-        (session) => session.projectId === id,
-      );
       const resolved = await resolveProjectRelease(project);
       const sandboxUpdate = withSelfRepair(
         resolved.project,
@@ -533,7 +514,7 @@ export function installProjects(
                 // The viewer's own default, not anyone else's.
                 defaultModel: await ownDefaultModel(deps.eventStore, viewer, id, settings),
               },
-        sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
+        sessions: await listSessionsAs(localUserId, id),
         // What this person may change here, so the app offers only that. The
         // routes check again; this only spares an edit the server would refuse.
         viewer: await viewerRights(viewer, id),
