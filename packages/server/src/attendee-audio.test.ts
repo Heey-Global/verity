@@ -118,9 +118,9 @@ describe('Attendee audio receiver', () => {
         new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true })),
     );
     const client = await connect(url);
-    for (let i = 0; i < 12; i++) client.send(frame({ time: timestampMs + i * 500 }));
+    for (let i = 0; i < 16; i++) client.send(frame({ time: timestampMs + i * 500 }));
     await vi.waitFor(() => expect(onGap).toHaveBeenCalledWith('overloaded'));
-    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledTimes(5);
     await receiver.close();
     expect(transcribe.mock.calls[0]?.[0].signal.aborted).toBe(true);
   });

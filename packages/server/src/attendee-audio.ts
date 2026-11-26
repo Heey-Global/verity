@@ -13,6 +13,7 @@ const MAX_PARTICIPANTS = 32;
 const MAX_PENDING_BYTES = 256 * 1024;
 const MAX_PENDING_FRAMES = 32;
 const MAX_QUEUE = 8;
+const MAX_TRANSCRIPTIONS = 5;
 const CHUNK_BYTES = 4 * BYTES_PER_SECOND;
 const IDLE_MS = 650;
 const DRAIN_TIMEOUT_MS = 20_000;
@@ -98,7 +99,7 @@ export class AttendeeAudioReceiver {
   private readonly reported = new Set<AttendeeAudioGap>();
   private socket: WebSocket | undefined;
   private disconnectedNormally = false;
-  private working: Promise<void> | undefined;
+  private readonly working = new Set<Promise<void>>();
   private stopping = false;
   private shutdown: Promise<void> | undefined;
   private draining: Promise<void> | undefined;
@@ -295,9 +296,11 @@ export class AttendeeAudioReceiver {
       return;
     }
     this.queued.push(chunk);
-    this.working ??= this.processQueue().finally(() => {
-      this.working = undefined;
+    if (this.working.size >= MAX_TRANSCRIPTIONS) return;
+    const work = this.processQueue().finally(() => {
+      this.working.delete(work);
     });
+    this.working.add(work);
   }
 
   private async processQueue(): Promise<void> {
@@ -329,7 +332,7 @@ export class AttendeeAudioReceiver {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        this.working,
+        Promise.all(this.working),
         new Promise<void>((resolve) => {
           timeout = setTimeout(() => {
             this.gap('transcription_failed');

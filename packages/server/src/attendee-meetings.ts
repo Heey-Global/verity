@@ -1035,6 +1035,7 @@ export class AttendeeMeetings {
     state.stopRequested = true;
     state.pendingRequests = {};
     state.meeting.transcript = '';
+    if (state.audio) state.audio.segments = [];
     state.meeting.timedWords = [];
     state.meeting.speakerTurns = [];
   }
@@ -1047,7 +1048,6 @@ export class AttendeeMeetings {
       await this.releaseAudio(state).catch((error: unknown) => {
         this.options.log?.warn(failureFields(error), 'Audio share revocation will be retried');
       });
-      state.audio.segments = [];
       await this.save(state);
     }
     if (state.phase !== 'ended') await this.reconcileOne(state, true);
@@ -1332,7 +1332,6 @@ export class AttendeeMeetings {
     }
     if (final) {
       await this.releaseAudio(state);
-      if (state.audio) await this.clearParticipants(state.meeting.id);
       if (state.binding) await this.revokeShare(state.binding.shareId);
       this.connectors.get(state.meeting.id)?.close();
       this.connectors.delete(state.meeting.id);
@@ -1342,6 +1341,7 @@ export class AttendeeMeetings {
       state.pin = '';
       delete state.binding;
       await this.save(state);
+      if (state.audio) await this.clearParticipants(state.meeting.id);
     } else if (state.binding && new Date(state.binding.expiresAt).getTime() > Date.now()) {
       try {
         await this.connect(state);
