@@ -85,11 +85,11 @@ export function useDecisionNotice(
         ? undefined
         : { message, ...(pendingId === undefined ? {} : { pendingId }), hidden: false },
     );
-  const visible =
-    message !== undefined &&
-    seen?.message === message &&
-    !seen.hidden &&
-    (pendingId === undefined || pendingId === seen.pendingId);
+  // A different request waiting supersedes the message for good, even after
+  // that request is settled elsewhere and nothing waits any more.
+  if (seen && !seen.hidden && pendingId !== undefined && pendingId !== seen.pendingId)
+    setSeen({ ...seen, hidden: true });
+  const visible = message !== undefined && seen?.message === message && !seen.hidden;
   const dismiss = useCallback(
     () => setSeen((current) => current && { ...current, hidden: true }),
     [],

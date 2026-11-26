@@ -334,5 +334,8 @@ describe('the decision notice', () => {
     expect(result.current[0]).toBe('Decision failed: boom');
     rerender({ message: 'Decision failed: boom', pending: 'p2' });
     expect(result.current[0]).toBeUndefined();
+    // Settled on another device: nothing waits, but the old message stays gone.
+    rerender({ message: 'Decision failed: boom', pending: undefined });
+    expect(result.current[0]).toBeUndefined();
   });
 });
