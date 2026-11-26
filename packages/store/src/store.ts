@@ -78,14 +78,12 @@ import { ProjectAccessStore } from './project-access.js';
 import { ProjectLifecycleStore } from './project-lifecycle.js';
 import { ProjectChangeFeed } from './project-changes.js';
 import {
-  projectRowToRecord,
   type ProjectState,
   type ProjectSetupState,
   type ProjectKind,
   type ProjectRecord,
   type ProjectReleaseStatus,
   type ProjectUpsertInput,
-  defaultProjectName,
 } from './project-record.js';
 export {
   type ProjectState,
@@ -101,8 +99,9 @@ export {
   defaultProjectName,
   InvalidProjectNameError,
 } from './project-record.js';
-import { type SessionMockupReview, type SessionMockups, mockupReview } from './session-mockups.js';
+import type { SessionMockupReview, SessionMockups } from './session-mockups.js';
 import { SessionPlanningStore, type SessionPlanning } from './session-planning.js';
+import { SESSION_COLUMNS, sessionFromRow } from './session-rows.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 import {
@@ -209,7 +208,7 @@ export {
 import { KnowledgeStore } from './knowledge.js';
 import { IntegrationStore } from './integrations.js';
 import { LiveMeetingStore } from './live-meetings.js';
-import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
+import { StarterProjectStore } from './starter-projects.js';
 import { scrubNulEscapes } from './nul-scrub.js';
 import { redactSecrets } from './redact.js';
 import {
@@ -910,40 +909,25 @@ export class EventStore implements EventSink {
     return row?.initial_model ?? row?.model;
   }
 
-  async getSession(sessionId: string): Promise<SessionRecord | undefined> {
+  getSession(sessionId: string): Promise<SessionRecord | undefined> {
+    return this.findSession('session_id', sessionId);
+  }
+
+  /** The session owning a primary worktree, without loading every session. */
+  getSessionByWorktree(worktree: string): Promise<SessionRecord | undefined> {
+    return this.findSession('worktree', worktree);
+  }
+
+  private async findSession(
+    column: 'session_id' | 'worktree',
+    value: string,
+  ): Promise<SessionRecord | undefined> {
     const row = await this.db
       .selectFrom('sessions')
-      .select([
-        'session_id',
-        'worktree',
-        'model',
-        'name',
-        'project_id',
-        'last_seen_event_count',
-        'planning',
-        'planning_revision',
-        'planning_plan',
-        'mockup_review',
-        'mockup_revision',
-        'mockup_screens',
-        'favorite',
-      ])
-      .where('session_id', '=', sessionId)
+      .select(SESSION_COLUMNS)
+      .where(column, '=', value)
       .executeTakeFirst();
-    if (!row) return undefined;
-    return {
-      sessionId: row.session_id,
-      worktree: row.worktree,
-      model: row.model,
-      name: row.name,
-      projectId: row.project_id,
-      lastSeenEventCount: row.last_seen_event_count,
-      ...(row.planning !== null ? { planning: row.planning } : {}),
-      planningRevision: row.planning_revision,
-      planningPlan: row.planning_plan,
-      ...mockupReview(row.mockup_review, row.mockup_revision, row.mockup_screens),
-      ...(row.favorite ? { favorite: true } : {}),
-    };
+    return row && sessionFromRow(row);
   }
 
   async getSessionWorkspaceFile(
@@ -1129,6 +1113,7 @@ export class EventStore implements EventSink {
     );
   }
 
+  private readonly starterProjects = new StarterProjectStore(() => this.db);
   private readonly projectLifecycle = new ProjectLifecycleStore(
     () => this.db,
     (id) => this.getProject(id),
@@ -1500,39 +1485,13 @@ export class EventStore implements EventSink {
   async listSessions(): Promise<SessionRecord[]> {
     const rows = await this.db
       .selectFrom('sessions')
-      .select([
-        'session_id',
-        'worktree',
-        'model',
-        'name',
-        'project_id',
-        'last_seen_event_count',
-        'planning',
-        'planning_revision',
-        'planning_plan',
-        'mockup_review',
-        'mockup_revision',
-        'mockup_screens',
-        'favorite',
-      ])
+      .select(SESSION_COLUMNS)
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
       // inserts can share a timestamp — without this the order is unspecified.
       .orderBy('created_at', 'asc')
       .orderBy('session_id', 'asc')
       .execute();
-    return rows.map((r) => ({
-      sessionId: r.session_id,
-      worktree: r.worktree,
-      model: r.model,
-      name: r.name,
-      projectId: r.project_id,
-      lastSeenEventCount: r.last_seen_event_count,
-      ...(r.planning !== null ? { planning: r.planning } : {}),
-      planningRevision: r.planning_revision,
-      planningPlan: r.planning_plan,
-      ...mockupReview(r.mockup_review, r.mockup_revision, r.mockup_screens),
-      ...(r.favorite ? { favorite: true } : {}),
-    }));
+    return rows.map(sessionFromRow);
   }
 
   /** Overview positions are separate from the chronological session registry. */
@@ -1930,103 +1889,24 @@ export class EventStore implements EventSink {
    * deleted (projects are soft-deleted), so it is never recreated.
    */
   async recordStarterProject(projectId: string): Promise<boolean> {
-    const result = await this.db
-      .insertInto('starter_project')
-      .values({ singleton: true, project_id: projectId })
-      .onConflict((oc) => oc.column('singleton').doNothing())
-      .executeTakeFirst();
-    return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+    return this.starterProjects.recordStarterProject(projectId);
   }
 
   /** Explicit tour replay restores only the recorded starter, never a name match. */
   async ensureReplayStarterProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
-    const row = await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const recorded = await tx
-        .selectFrom('starter_project')
-        .select('project_id')
-        .executeTakeFirst();
-      if (recorded) {
-        const existing = await tx
-          .selectFrom('projects')
-          .selectAll()
-          .where('id', '=', recorded.project_id)
-          .forUpdate()
-          .executeTakeFirst();
-        if (existing) {
-          if (existing.hidden_at === null) return existing;
-          const restored = await tx
-            .updateTable('projects')
-            .set({
-              hidden_at: null,
-              archived: false,
-              overview_visible: true,
-              state: 'absent',
-              provision_error: null,
-              provision_warning: null,
-              sleep_compatibility_fingerprint: null,
-              sleeping_since: null,
-              wake_started_at: null,
-              state_changed_at: sql`now()`,
-              updated_at: sql`now()`,
-            })
-            .where('id', '=', existing.id)
-            .returningAll()
-            .executeTakeFirstOrThrow();
-          await ensureProjectKnowledgeSpace(tx, restored.id, restored.repo);
-          return restored;
-        }
-      }
-      // A unique replay identity cannot claim a user's similarly named project.
-      await tx
-        .insertInto('project_identity_claims')
-        .values({ owner: input.owner, repo: input.repo, project_id: input.id })
-        .execute();
-      const created = await tx
-        .insertInto('projects')
-        .values({
-          id: input.id,
-          name: input.name ?? defaultProjectName(input),
-          owner: input.owner,
-          repo: input.repo,
-          container_name: input.containerName,
-          kind: 'local',
-          clone_dir: input.cloneDir ?? null,
-          state: 'absent',
-          overview_visible: true,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      await tx
-        .insertInto('starter_project')
-        .values({ singleton: true, project_id: created.id })
-        .onConflict((oc) => oc.column('singleton').doUpdateSet({ project_id: created.id }))
-        .execute();
-      await ensureProjectKnowledgeSpace(tx, created.id, created.repo);
-      return created;
-    });
-    return projectRowToRecord(row);
+    return this.starterProjects.ensureReplayStarterProject(input);
   }
 
   async getStarterWelcomeSessionId(): Promise<string | undefined> {
-    const row = await this.db
-      .selectFrom('starter_project')
-      .select('welcome_session_id')
-      .executeTakeFirst();
-    return row?.welcome_session_id ?? undefined;
+    return this.starterProjects.getStarterWelcomeSessionId();
   }
 
   async recordStarterWelcomeSession(sessionId: string): Promise<void> {
-    await this.db
-      .updateTable('starter_project')
-      .set({ welcome_session_id: sessionId })
-      .where('singleton', '=', true)
-      .execute();
+    return this.starterProjects.recordStarterWelcomeSession(sessionId);
   }
 
   async getStarterProjectId(): Promise<string | undefined> {
-    const row = await this.db.selectFrom('starter_project').select('project_id').executeTakeFirst();
-    return row?.project_id;
+    return this.starterProjects.getStarterProjectId();
   }
 
   /**

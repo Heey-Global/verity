@@ -12,10 +12,18 @@ export { publishSettledPermission, subscribeSettledPermissions } from './permiss
 export { clearConditionalReads } from './conditionalReads.js';
 export {
   applyOverviewEvent,
+  appliesToEarlierReads,
+  keptWithout,
   RevisionGate,
   type OverviewEventEffect,
 } from './live/overviewEvents.js';
 export { projectEventUpdate, type ProjectEventUpdate } from './live/projectEvents.js';
+export {
+  OverviewStore,
+  type OverviewEventOutcome,
+  type OverviewRead,
+  type OverviewReadScope,
+} from './live/overviewStore.js';
 export type { LiveTopicSink } from './live/topics.js';
 export type { DomainEvent } from '@verity/events';
 export {

@@ -41,6 +41,7 @@ import {
 import type { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import {
   BRANCH_TTL_MS,
+  IDLE_KNOWN_LIST_BRANCH_TTL_MS,
   IDLE_LIST_BRANCH_TTL_MS,
   NO_DISCONNECTED_SANDBOXES,
   isControlPlaneProject,
@@ -48,6 +49,7 @@ import {
   ACTIVITY_BUSY_CACHE_MAX_SESSIONS,
 } from './server-support.js';
 import type { Conductor } from '@verity/session';
+import { withoutQuerySandbox } from './query-sandbox-policy.js';
 
 type BranchMetadata = { current: string; switchable: string[]; previewableRaw: string[] };
 
@@ -63,6 +65,8 @@ export interface ServerSessionOverviewOptions {
   pushFirePoints: PushFirePoints | undefined;
   describePushSession: (session: SessionRecord) => Promise<PushSessionContext>;
   vulnerabilitySessions: Pick<ReturnType<typeof createVulnerabilitySessionMonitor>, 'attention'>;
+  /** Told every pull request status the session cache presents (ADR 0033). */
+  onPrStatus?: (session: SessionRecord, status: PullRequestStatus | null) => void;
 }
 
 export interface ServerSessionOverview {
@@ -137,6 +141,7 @@ export function createServerSessionOverview({
   pushFirePoints,
   describePushSession,
   vulnerabilitySessions,
+  onPrStatus,
 }: ServerSessionOverviewOptions): ServerSessionOverview {
   // A session's live status badge. The event log lags the conductor: between a
   // turn being dispatched and claude emitting its first `status: running` event,
@@ -235,18 +240,29 @@ export function createServerSessionOverview({
    */
   const branchTtlMs = deps.branchCacheTtlMs ?? BRANCH_TTL_MS;
   const branchCache = new Map<string, { branch: string; at: number }>();
-  // A fleet-wide list must not launch one Docker exec per retained worktree at once.
-  let branchReads = 0;
-  const branchReadQueue: (() => void)[] = [];
-  const limitBranchRead = async <T>(read: () => Promise<T>): Promise<T> => {
-    if (branchReads >= 2) await new Promise<void>((resolve) => branchReadQueue.push(resolve));
-    else branchReads++;
+  // A fleet-wide list must not launch one Docker exec per retained worktree at once:
+  // each lane runs at most two git reads. The list's speculative refreshes get their
+  // own lane, so at most four run in total; sharing one queue put the
+  // branch menu of the session someone is looking at behind every retained
+  // worktree's refresh, and it waited up to a minute for its turn.
+  const branchReadLanes = {
+    foreground: { running: 0, queue: [] as (() => void)[] },
+    background: { running: 0, queue: [] as (() => void)[] },
+  };
+  type BranchReadLane = keyof typeof branchReadLanes;
+  const limitBranchRead = async <T>(
+    read: () => Promise<T>,
+    laneName: BranchReadLane = 'foreground',
+  ): Promise<T> => {
+    const lane = branchReadLanes[laneName];
+    if (lane.running >= 2) await new Promise<void>((resolve) => lane.queue.push(resolve));
+    else lane.running++;
     try {
       return await read();
     } finally {
-      const next = branchReadQueue.shift();
+      const next = lane.queue.shift();
       if (next) next();
-      else branchReads--;
+      else lane.running--;
     }
   };
   const branchMetadata = new Map<string, { value: BranchMetadata; at: number }>();
@@ -262,7 +278,10 @@ export function createServerSessionOverview({
    *  correct it. Marking the token beats comparing map presence, because another
    *  read may have repopulated the entry in the meantime and a `delete` leaves no
    *  trace. */
-  const branchInFlight = new Map<string, { disowned: boolean; read: Promise<string> }>();
+  const branchInFlight = new Map<
+    string,
+    { disowned: boolean; background: boolean; read: Promise<string> }
+  >();
   const disownBranchRefresh = (worktree: string): void => {
     const running = branchInFlight.get(worktree);
     if (running !== undefined) running.disowned = true;
@@ -276,7 +295,11 @@ export function createServerSessionOverview({
   };
   /** Read git for this worktree, or join the read already running for it, and
    *  write the answer back unless it was disowned meanwhile. */
-  const readBranch = (branches: GitBranchService, worktree: string): Promise<string> => {
+  const readBranch = (
+    branches: GitBranchService,
+    worktree: string,
+    background = false,
+  ): Promise<string> => {
     const metadata = branchMetadataInFlight.get(worktree);
     if (branches.metadata && metadata && !metadata.disowned) {
       return metadata.read.then((value) => value.current);
@@ -285,8 +308,18 @@ export function createServerSessionOverview({
     // An invalidation disowns the pre-switch read immediately, but the promise
     // can remain unsettled for arbitrarily long. A poll arriving in that window
     // must start a post-switch read rather than joining the known-stale one.
-    if (running !== undefined && !running.disowned) return running.read;
-    const token = { disowned: false, read: limitBranchRead(() => branches.current(worktree)) };
+    // A foreground read does not join a background one either: that one waits in
+    // the slower lane and declines to wake a sleeping sandbox.
+    if (running !== undefined && !running.disowned && (background || !running.background))
+      return running.read;
+    if (running !== undefined) running.disowned = true;
+    const token = {
+      disowned: false,
+      background,
+      read: background
+        ? limitBranchRead(() => withoutQuerySandbox(() => branches.current(worktree)), 'background')
+        : limitBranchRead(() => branches.current(worktree)),
+    };
     branchInFlight.set(worktree, token);
     token.read
       .then((branch) => {
@@ -370,8 +403,12 @@ export function createServerSessionOverview({
   };
   /**
    * The branch for the session LIST, answered from {@link branchCache} only.
-   * Idle summaries refresh at most once a minute; active sessions keep the
-   * header cadence. Turn completion and explicit branch changes invalidate both.
+   * Idle summaries with a known label are re-read every 15 minutes, idle ones
+   * without one at most once a minute; active sessions keep the header cadence.
+   * These reads run in the background lane and never wake a sleeping sandbox. A
+   * declined read keeps a known label as it was; a missing one is retried at the
+   * idle cadence (one container inspect, no git) and fills in once the sandbox
+   * runs, or at once when the session is opened.
    *
    * The overview derives a session's issue chip from it, but the list is polled
    * every 2 s for every session at once, so unlike the header it never awaits
@@ -391,14 +428,22 @@ export function createServerSessionOverview({
     if (!exists || deps.branches === undefined) return undefined;
     if (deps.projectWorktreeBranchesOnly === true && session.projectId === null) return undefined;
     const cached = branchCache.get(worktree);
-    const ttlMs = active ? branchTtlMs : Math.max(branchTtlMs, IDLE_LIST_BRANCH_TTL_MS);
+    // An idle session's branch moves through a turn's tool activity or an explicit
+    // switch, both of which invalidate this entry, and opening the session refreshes
+    // it through the header. A known label is therefore only re-read on a long
+    // backstop for changes nothing here sees, such as git run from a terminal;
+    // re-reading it every minute cost a git call per retained worktree.
+    const known = cached !== undefined && cached.branch !== '';
+    const ttlMs = active
+      ? branchTtlMs
+      : Math.max(branchTtlMs, known ? IDLE_KNOWN_LIST_BRANCH_TTL_MS : IDLE_LIST_BRANCH_TTL_MS);
     if (cached === undefined || Date.now() - cached.at >= ttlMs) {
       void branchesForSession(session)
         .then((branches) => {
           // A project without branch reads (control plane) is stamped empty too,
           // so it is not asked for its project record on every poll either.
           if (branches === undefined) branchCache.set(worktree, { branch: '', at: Date.now() });
-          else return readBranch(branches, worktree);
+          else return readBranch(branches, worktree, true);
         })
         .catch(() => {
           // `readBranch` re-stamps an existing entry on failure; only a cold one is left.
@@ -526,6 +571,7 @@ export function createServerSessionOverview({
     now: deps.pullRequestCacheNow,
     onChange: (session, status) => {
       prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
+      onPrStatus?.(session, status);
       // A merged change is when the product changed. The occasion is recorded once
       // per pull request; a cache refilled after a restart reports it again. It
       // names the pull request only: the session's conversation is kept for the

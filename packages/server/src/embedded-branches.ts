@@ -4,6 +4,7 @@ import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 import type { DockerClient } from './docker.js';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
+import { assertQuerySandboxAllowed } from './query-sandbox-policy.js';
 import { projectClonePath, type ProjectImageRefSource } from './provisioner.js';
 import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
 import {
@@ -26,17 +27,17 @@ export function createEmbeddedBranches(
   >,
   eventStore: Pick<
     EventStore,
-    'listSessions' | 'getProject' | 'sessionRepositoryWorkspaceSessionId'
+    'getSession' | 'getSessionByWorktree' | 'getProject' | 'sessionRepositoryWorkspaceSessionId'
   >,
   runtime: EmbeddedBranchRuntime,
 ) {
   const sessionForWorktree = async (worktree: string | undefined) => {
     if (!worktree) return undefined;
-    const sessions = await eventStore.listSessions();
-    const primary = sessions.find((session) => session.worktree === worktree);
+    // Every git call resolves its session here, so it must not load the whole list.
+    const primary = await eventStore.getSessionByWorktree(worktree);
     if (primary) return primary;
     const owner = await eventStore.sessionRepositoryWorkspaceSessionId(worktree);
-    return sessions.find((session) => session.sessionId === owner);
+    return owner === undefined ? undefined : eventStore.getSession(owner);
   };
   // Branch switcher for each session's worktree (#91). A dev checkout may provide
   // one global repo root; the multi-project runner deliberately sets VERITY_REPO_DIR=''
@@ -63,6 +64,7 @@ export function createEmbeddedBranches(
                       : project.containerName;
                   const hostRoot = projectClonePath(config.hostCloneRoot!, project);
                   if (!(await sandboxIsRunning(() => docker.inspectContainer(containerName)))) {
+                    assertQuerySandboxAllowed();
                     if (config.dataVolume && !runtime.dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return withSleepingSessionGit(
@@ -138,6 +140,7 @@ export function createEmbeddedBranches(
                     readOnly &&
                     !(await sandboxIsRunning(() => projectDocker.inspectContainer(containerName)))
                   ) {
+                    assertQuerySandboxAllowed();
                     if (config.dataVolume && !runtime.dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return createSleepingSessionGit({
