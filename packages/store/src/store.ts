@@ -1,8 +1,8 @@
 import { SessionOrderStore } from './session-order.js';
 import { PackageProtectionStore } from './package-protection.js';
 import { AttendeeStateStore } from './attendee-state.js';
-import { EventHistoryStore, type SequencedEvent } from './event-history.js';
-export type { SequencedEvent } from './event-history.js';
+import { EventHistoryStore, type SequencedEvent, type SessionEventStats } from './event-history.js';
+export type { SequencedEvent, SessionEventStats } from './event-history.js';
 import { EventSnapshotStore } from './event-snapshots.js';
 import {
   SessionBackendStateStore,
@@ -199,7 +199,7 @@ import {
 } from '@verity/events';
 import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from '@verity/events';
-import { type Kysely, sql } from 'kysely';
+import type { Kysely } from 'kysely';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
 import {
   DevServerConfigStore,
@@ -322,19 +322,6 @@ export {
   type SessionAutomationRecord,
   type SessionAutomationInput,
 } from './session-automations.js';
-
-/**
- * What the overview projections need from one session's log — see
- * {@link EventStore.listSessionProjectionFacts}.
- */
-export interface SessionEventStats {
-  /** Nonempty agent-text events; used for unread state. */
-  eventCount: number;
-  lastEventSeq: number;
-  lastActivityAt: number | null;
-  /** Changes on every log mutation, including deletions below the latest seq. */
-  revision: string;
-}
 
 /**
  * The narrow persistence seam the Runner's ingest path drives (ADR 0006 D2). It
@@ -1542,27 +1529,11 @@ export class EventStore implements EventSink {
 
   /** Constant-size log marker; a never-written session has no stats row. */
   async getSessionEventStats(sessionId: string): Promise<SessionEventStats | undefined> {
-    const row = await this.db
-      .selectFrom('session_event_stats')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    return {
-      eventCount: Number(row.event_count),
-      lastEventSeq: Number(row.last_event_seq),
-      lastActivityAt: row.last_activity_at?.getTime() ?? null,
-      revision: String(row.revision),
-    };
+    return this.eventHistory.getSessionEventStats(sessionId);
   }
 
   async latestEventSeq(sessionId: string): Promise<number> {
-    const row = await this.db
-      .selectFrom('events')
-      .select((eb) => eb.fn.max('id').as('seq'))
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return Number(row?.seq ?? 0);
+    return this.eventHistory.latestEventSeq(sessionId);
   }
 
   scheduleMessageProjection(): void {
@@ -1929,16 +1900,7 @@ export class EventStore implements EventSink {
   /** The user behind the session's most recent prompt that names one, or `undefined`
    *  when no prompt in the session has an initiator. */
   async latestPromptInitiator(sessionId: string): Promise<{ userId: string } | undefined> {
-    const row = await this.db
-      .selectFrom('events')
-      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
-      .where('session_id', '=', sessionId)
-      .where(sql<boolean>`payload->>'t' = 'prompt'`)
-      .where(sql<boolean>`payload->'initiatedBy'->>'userId' is not null`)
-      .orderBy('id', 'desc')
-      .limit(1)
-      .executeTakeFirst();
-    return row?.userId ? { userId: row.userId } : undefined;
+    return this.eventHistory.latestPromptInitiator(sessionId);
   }
 
   /** The user a turn runs for while it is the session's running turn, or
@@ -1957,14 +1919,7 @@ export class EventStore implements EventSink {
    *  event is not a prompt or names no initiator. Recovery uses it to resume a
    *  turn under the identity it started with rather than the latest one. */
   async promptInitiatorAt(sessionId: string, seq: number): Promise<{ userId: string } | undefined> {
-    const row = await this.db
-      .selectFrom('events')
-      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
-      .where('session_id', '=', sessionId)
-      .where('id', '=', seq)
-      .where(sql<boolean>`payload->>'t' = 'prompt'`)
-      .executeTakeFirst();
-    return row?.userId ? { userId: row.userId } : undefined;
+    return this.eventHistory.promptInitiatorAt(sessionId, seq);
   }
 
   /**
