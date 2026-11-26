@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { sql, type Kysely } from 'kysely';
 import { parseAgentEvent, type AgentEvent } from '@verity/events';
 import type { Database } from './schema.js';
@@ -813,5 +814,93 @@ export class EventWriteStore {
       );
     }
     return persisted;
+  }
+
+  async reserveBackgroundDispatch(id: string, sessionId: string): Promise<void> {
+    await this.db
+      .insertInto('qa_dispatches')
+      .values({
+        id,
+        session_id: sessionId,
+        state: 'reserved',
+      })
+      .onConflict((oc) => oc.column('id').doNothing())
+      .execute();
+  }
+
+  async admitBackgroundDispatch(
+    id: string,
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing: boolean; markerId?: string } | undefined> {
+    const eventRow = await this.prepareEventRow(event);
+    const result = await this.db.transaction().execute(async (trx) => {
+      const receipt = await trx
+        .selectFrom('qa_dispatches')
+        .selectAll()
+        .where('id', '=', id)
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!receipt || receipt.state === 'cancelled' || receipt.state === 'legacy') return undefined;
+      if (receipt.state === 'admitted')
+        return {
+          seq: Number(receipt.prompt_seq),
+          ts: receipt.created_at.getTime(),
+          existing: true,
+        };
+      await sessionEventAppendLock(trx, sessionId);
+      const predecessor = await trx
+        .selectFrom('running_turns')
+        .selectAll()
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (predecessor) {
+        // Transcript terminal events may be late, unrelated or merely announce
+        // cancellation. Only a server-confirmed completion or the exact
+        // Runner's durable terminal/fence claim establishes relinquished ownership.
+        const runnerClosed =
+          predecessor.turn_id === null
+            ? undefined
+            : await trx
+                .selectFrom('runner_frames')
+                .select('turn_id')
+                .where('session_id', '=', sessionId)
+                .where('turn_id', '=', predecessor.turn_id)
+                .where('terminal', '=', true)
+                .executeTakeFirst();
+        if (!predecessor.settled && !runnerClosed) return undefined;
+        await trx
+          .deleteFrom('running_turns')
+          .where('session_id', '=', sessionId)
+          .where('prompt_seq', '=', predecessor.prompt_seq)
+          .execute();
+      }
+      const markerId = randomUUID();
+      const row = await trx
+        .insertInto('events')
+        .values({ session_id: sessionId, type: eventRow.type, payload: eventRow.payload })
+        .returning(['id', 'created_at'])
+        .executeTakeFirstOrThrow();
+      await trx
+        .insertInto('running_turns')
+        .values({ session_id: sessionId, prompt_seq: row.id, marker_id: markerId })
+        .execute();
+      await trx
+        .updateTable('qa_dispatches')
+        .set({ state: 'admitted', prompt_seq: row.id })
+        .where('id', '=', id)
+        .execute();
+      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: false, markerId };
+    });
+    if (result && !result.existing)
+      this.deps.enqueuePersistedMessageEvent(
+        sessionId,
+        result.seq,
+        new Date(result.ts),
+        JSON.parse(eventRow.payload) as AgentEvent,
+      );
+    return result;
   }
 }
