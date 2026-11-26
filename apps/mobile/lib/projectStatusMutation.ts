@@ -1,7 +1,7 @@
 import type { ProjectRecord } from '@verity/mobile';
 
-/** Status events originate outside the overview and do not own its per-person
- *  view: fold state and dismissed Home items come only from the overview list. */
+/** An action's answer does not own the person's view of a project: fold state
+ *  and dismissed items come only from reads, which speak for that person. */
 export function mergeProjectStatusMutation(
   current: ProjectRecord | undefined,
   updated: ProjectRecord,
