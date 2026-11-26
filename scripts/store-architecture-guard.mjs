@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import { serverImportViolations } from './server-import-guard.mjs';
 
-export const FACADE = 'packages/store/src/store.ts';
-export const DEBT = 'scripts/store-architecture-debt.json';
+const FACADE = 'packages/store/src/store.ts';
+const DEBT = 'scripts/store-architecture-debt.json';
 
 /** Only direct collaborator calls with forwarded parameters belong in facade methods.
  * Callback adapters and lifecycle infrastructure remain explicit migration debt.
