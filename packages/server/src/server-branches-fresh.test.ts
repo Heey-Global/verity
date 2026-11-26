@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   branchSvc,
   bus,
@@ -9,6 +9,11 @@ import {
 import { buildServer } from './server.js';
 
 describe('GET /sessions/:id/branches?fresh=1', () => {
+  // A fake clock installed before a failing buildServer must not reach later files.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   // The cache answers a plain read with a status up to thirty seconds old;
   // opening the session must reach the forge.
   it('reads the pull request from the forge when the session is opened', async () => {

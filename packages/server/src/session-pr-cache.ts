@@ -39,8 +39,9 @@ interface ReadOptions {
   background?: boolean;
   priority?: boolean;
   /** Someone opened the session: read the forge now unless a read finished
-   * within {@link FRESH_MIN_MS}. Reads already on their way are shared, and a
-   * failing forge keeps its backoff. */
+   * within {@link FRESH_MIN_MS}. Reads already on their way are shared, a
+   * failing forge keeps its backoff, and a merged PR, which no longer changes,
+   * keeps its slow cadence. */
   fresh?: boolean;
   load?: () => Promise<PullRequestStatus | null>;
 }
@@ -138,7 +139,8 @@ export function createSessionPrCache(options: {
     }
     const previous = entries.get(key);
     const due =
-      readOptions.fresh === true && (previous === undefined || previous.failures === 0)
+      readOptions.fresh === true &&
+      (previous === undefined || (previous.failures === 0 && previous.status?.phase !== 'merged'))
         ? previous === undefined || now() - previous.at >= FRESH_MIN_MS
         : isDue(session, readOptions.background);
     if (!due) return Promise.resolve(previous?.status ?? null);

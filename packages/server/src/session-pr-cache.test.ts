@@ -440,4 +440,17 @@ describe('fresh reads for an opened session', () => {
     await cache.get(session, { fresh: true });
     expect(load).toHaveBeenCalledTimes(1);
   });
+
+  // Without this gate every opening of a long-merged session costs a forge read.
+  it('keeps a merged pull request on its slow cadence when asked fresh', async () => {
+    let now = 0;
+    const load = vi
+      .fn<() => Promise<PullRequestStatus | null>>()
+      .mockResolvedValue({ ...pr, phase: 'merged', pipeline: 'success' });
+    const cache = createSessionPrCache({ load, now: () => now });
+    await cache.get(session);
+    now = 3_000;
+    await cache.get(session, { fresh: true });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
 });
