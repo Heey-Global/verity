@@ -72,4 +72,32 @@ describe('useProjectDetail overview events', () => {
     await waitFor(() => expect(result.current.detail).toBeDefined());
     expect(result.current.detail?.sessions[0]?.pendingPermissionRequests).toEqual([]);
   });
+
+  it('shows a sandbox change of this project and ignores other projects', async () => {
+    const client = {
+      getProject: jest.fn().mockResolvedValue({
+        ...detailWith([]),
+        project: { id: 'p1', name: 'P1', state: 'container_starting' },
+      }),
+      setProjectSetupStatus: jest.fn(),
+    } as unknown as VerityClient;
+    const { result } = renderHook(() => useProjectDetail(client, 'p1'));
+    await waitFor(() => expect(result.current.detail).toBeDefined());
+    const sink = mockSinks.get('project:p1')!;
+    act(() => sink.event({ t: 'sandbox.lifecycle', projectId: 'p2', rev: 1, state: 'failed' }));
+    expect(result.current.detail?.project.state).toBe('container_starting');
+    act(() =>
+      sink.event({
+        t: 'sandbox.lifecycle',
+        projectId: 'p1',
+        rev: 2,
+        state: 'active',
+        lifecycleState: 'sleeping',
+      }),
+    );
+    expect(result.current.detail?.project).toMatchObject({
+      state: 'active',
+      lifecycleState: 'sleeping',
+    });
+  });
 });

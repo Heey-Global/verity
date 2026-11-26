@@ -76,6 +76,7 @@ import { sessionEventAppendLock, sessionEventAppendLockKey } from './session-eve
 export { DeletedProjectError } from './deleted-project-error.js';
 import { ProjectAccessStore } from './project-access.js';
 import { ProjectLifecycleStore } from './project-lifecycle.js';
+import { ProjectChangeFeed } from './project-changes.js';
 import {
   projectRowToRecord,
   type ProjectState,
@@ -566,11 +567,11 @@ export class EventStore implements EventSink {
   private get db(): Kysely<Database> {
     return egressDestinationDb(this.rootDb);
   }
-
   withEgressDestinationTransaction<T>(action: () => Promise<T>): Promise<T> {
     return withEgressDestinationTransaction(this.rootDb, action);
   }
-
+  /** Project writes, announced after they commit for live views (ADR 0033). */
+  readonly projectChanges = new ProjectChangeFeed();
   private readonly backupRevocationListeners = new Set<() => Promise<void>>();
 
   /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
@@ -1128,12 +1129,11 @@ export class EventStore implements EventSink {
     );
   }
 
-  private get projectLifecycle(): ProjectLifecycleStore {
-    return new ProjectLifecycleStore(
-      () => this.db,
-      (id) => this.getProject(id),
-    );
-  }
+  private readonly projectLifecycle = new ProjectLifecycleStore(
+    () => this.db,
+    (id) => this.getProject(id),
+    this.projectChanges,
+  );
 
   get calendarWatch(): CalendarWatchStore {
     return new CalendarWatchStore(this.db, this.cipher);

@@ -1,5 +1,6 @@
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { Database } from './schema.js';
+import type { ProjectChangeFeed } from './project-changes.js';
 import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import {
   installationPlaceholderHasDependents,
@@ -27,6 +28,8 @@ export class ProjectLifecycleStore {
   constructor(
     private readonly currentDb: () => Kysely<Database>,
     private readonly readProject: (id: string) => Promise<ProjectRecord | undefined>,
+    /** Told after each write of a project's state, image or overview fields. */
+    private readonly changes?: ProjectChangeFeed,
   ) {}
   private get db(): Kysely<Database> {
     return this.currentDb();
@@ -886,6 +889,7 @@ export class ProjectLifecycleStore {
         await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
       }
     });
+    this.changes?.announce(id);
     return this.readProject(id);
   }
 
@@ -921,6 +925,7 @@ export class ProjectLifecycleStore {
         await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
       }
     });
+    this.changes?.announce(id);
     return this.readProject(id);
   }
 
@@ -948,6 +953,7 @@ export class ProjectLifecycleStore {
       })
       .where('id', '=', id)
       .execute();
+    this.changes?.announce(id);
   }
 
   async setProjectSetupStatus(
@@ -959,6 +965,7 @@ export class ProjectLifecycleStore {
       .set({ setup_status: status, updated_at: sql`now()` })
       .where('id', '=', id)
       .execute();
+    this.changes?.announce(id);
     return this.readProject(id);
   }
 
@@ -1006,6 +1013,7 @@ export class ProjectLifecycleStore {
       .where('id', '=', id)
       .returningAll()
       .executeTakeFirst();
+    if (row) this.changes?.announce(id);
     return row ? projectRowToRecord(row) : undefined;
   }
 

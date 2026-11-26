@@ -1,5 +1,6 @@
 import { domainTopic, type AgentEvent, type DomainEvent, type DomainTopic } from '@verity/events';
 import type { ServerContext } from '../server-context.js';
+import { createRevisions } from './revisions.js';
 
 type Conductor = ServerContext['conductor'];
 
@@ -89,22 +90,6 @@ export function installOverviewEvents(
     });
   });
   lifecycle.onClose(restore);
-}
-
-/** Per-session revisions that keep increasing across server restarts: a view
- * compares them with revisions it received from the previous process. */
-function createRevisions(now: () => number = Date.now) {
-  const last = new Map<string, number>();
-  return {
-    next(sessionId: string): number {
-      const rev = Math.max(now(), (last.get(sessionId) ?? 0) + 1);
-      last.set(sessionId, rev);
-      // Bounded: a forgotten session restarts from the clock, which still
-      // orders after anything it published before.
-      if (last.size > 4_096) last.delete(last.keys().next().value!);
-      return rev;
-    },
-  };
 }
 
 /**

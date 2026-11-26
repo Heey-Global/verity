@@ -447,3 +447,4 @@ export {
   type DetailModeStarter,
   type ServerMonitoringSettings,
 } from './server-monitoring-settings.js';
+export { ProjectChangeFeed } from './project-changes.js';
