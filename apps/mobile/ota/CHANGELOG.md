@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.95.8](https://github.com/Heey-Global/verity/compare/mobile-v1.95.7...mobile-v1.95.8) (2026-11-26)
+
+
+### Features
+
+* **live:** list Home's projects from the shared overview store ([#2952](https://github.com/Heey-Global/verity/issues/2952)) ([af0af37](https://github.com/Heey-Global/verity/commit/af0af37dbe3e639ac81283ba6333256313e3ec38))
+* **live:** show the project page from one shared overview store ([#2947](https://github.com/Heey-Global/verity/issues/2947)) ([1fa343d](https://github.com/Heey-Global/verity/commit/1fa343dc604b35a014f41b120c521a4ee8af19eb))
+* **mobile:** keep session requests in the transcript ([#2945](https://github.com/Heey-Global/verity/issues/2945)) ([65b6d0a](https://github.com/Heey-Global/verity/commit/65b6d0a8e6b507f69a2a52c070b4f9b1ba59e7ed))
+
+
+### Bug Fixes
+
+* **performance:** reduce polling and unblock branch reads ([#2951](https://github.com/Heey-Global/verity/issues/2951)) ([7288001](https://github.com/Heey-Global/verity/commit/728800100176025e08a250c4a8da80e9acfccbb4))
+
 ## [1.95.7](https://github.com/Heey-Global/verity/compare/mobile-v1.95.6...mobile-v1.95.7) (2026-11-26)
 
 

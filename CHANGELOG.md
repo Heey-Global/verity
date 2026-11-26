@@ -6,6 +6,18 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.107.0](https://github.com/Heey-Global/verity/compare/v4.106.0...v4.107.0) (2026-11-26)
+
+
+### Features
+
+* **mobile:** keep session requests in the transcript ([#2945](https://github.com/Heey-Global/verity/issues/2945)) ([65b6d0a](https://github.com/Heey-Global/verity/commit/65b6d0a8e6b507f69a2a52c070b4f9b1ba59e7ed))
+
+
+### Bug Fixes
+
+* **performance:** reduce polling and unblock branch reads ([#2951](https://github.com/Heey-Global/verity/issues/2951)) ([7288001](https://github.com/Heey-Global/verity/commit/728800100176025e08a250c4a8da80e9acfccbb4))
+
 ## [4.106.0](https://github.com/Heey-Global/verity/compare/v4.105.0...v4.106.0) (2026-11-26)
 
 

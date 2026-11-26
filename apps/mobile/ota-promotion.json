@@ -1,17 +1,23 @@
 {
   "schema": 1,
-  "version": "1.95.5",
+  "version": "1.95.7",
   "runtime": "1.95.0",
   "channel": "production",
-  "commit": "0301f1ab07e1d1dffe65b50125fc01ca4d5c5fbc",
-  "tag": "mobile-v1.95.5",
-  "branch": "staging-mobile-v1.95.5-0301f1ab07e1d1dffe65b50125fc01ca4d5c5fbc",
-  "baseline": "mobile-v1.95.4",
-  "group": "21d1c735-4140-4030-bf9c-d98c547e19db",
+  "commit": "c83acffa16ae72fecd1e57362fa284bcfbba7763",
+  "tag": "mobile-v1.95.7",
+  "branch": "staging-mobile-v1.95.7-c83acffa16ae72fecd1e57362fa284bcfbba7763",
+  "baseline": "mobile-v1.95.5",
+  "group": "f6646849-1eb0-450a-b065-1ff26a180f05",
   "notes": [
-    "keep project requests from covering the session chat (#2912)",
-    "count outbound calls per target and cause (#2910)",
-    "compress and revalidate overview reads, settle Home cards (#2909)",
-    "in-memory server monitoring and diagnostic report (#2905)"
+    "share one overview store and topic subscription across views (#2944)",
+    "keep approval buttons reachable above long requests (#2943)",
+    "show active sessions ahead of mockup reviews (#2941)",
+    "publish pull request status as domain events (#2936)",
+    "leave dropped and older done tasks out of the default list (#2935)",
+    "publish sandbox lifecycle, update and project changes as domain events (#2930)",
+    "load only the tasks a view shows, and only while it is open (#2928)",
+    "publish answered requests and Quick Actions as domain events (#2923)",
+    "stop hidden session screens from polling secret approvals (#2925)",
+    "domain-event topics on the live connection (protocol 2) (#2915)"
   ]
 }
