@@ -32,6 +32,9 @@ interface TopicEntry {
   readonly sinks: Set<LiveTopicSink>;
   /** Consecutive transient endings, for retry backoff. */
   failures: number;
+  /** The server answered the subscription (an event or `resync`) since the
+   * connection was last ready. */
+  answered: boolean;
 }
 
 /**
@@ -49,13 +52,16 @@ export class LiveTopics {
   private epoch: string | undefined;
   /** Whether the connected server accepts topics (protocol 2). */
   supported = false;
+  /** Whether this server process publishes `session.summary`, as one it sent
+   * shows; an older server announces status only as hints. */
+  private summaries = false;
 
   constructor(private readonly send: (frame: LiveClientFrame) => void) {}
 
   subscribe(topic: DomainTopic, sink: LiveTopicSink): () => void {
     let entry = this.topics.get(topic);
     if (entry === undefined) {
-      entry = { cursor: undefined, sinks: new Set(), failures: 0 };
+      entry = { cursor: undefined, sinks: new Set(), failures: 0, answered: false };
       this.topics.set(topic, entry);
       if (this.supported) this.send({ k: 'topics.sub', topics: [{ topic }] });
     }
@@ -77,10 +83,15 @@ export class LiveTopics {
       // name positions this one never handed out; the views read snapshots.
       for (const entry of this.topics.values()) entry.cursor = undefined;
       this.epoch = epoch;
+      this.summaries = false;
     }
     // A fresh connection starts every backoff over: the earlier failures may
     // have been cured by whatever made this connection possible.
-    for (const entry of this.topics.values()) entry.failures = 0;
+    for (const entry of this.topics.values()) {
+      entry.failures = 0;
+      // Resubscribed; until the server answers, the topic may yet fail.
+      entry.answered = false;
+    }
     if (!supported || this.topics.size === 0) return;
     const requests: TopicSubscription[] = [...this.topics].map(([topic, { cursor }]) =>
       cursor === undefined ? { topic } : { topic, cursor },
@@ -88,6 +99,23 @@ export class LiveTopics {
     for (let i = 0; i < requests.length; i += LIVE_MAX_TOPIC_SUBSCRIPTIONS) {
       this.send({ k: 'topics.sub', topics: requests.slice(i, i + LIVE_MAX_TOPIC_SUBSCRIPTIONS) });
     }
+  }
+
+  /**
+   * Whether `topic` delivers its sessions' status as `session.summary` now:
+   * the server publishes it, and the subscription is live: the server answered
+   * it (an event or `resync`) since the connection was last ready, and it is
+   * not retrying after an error.
+   */
+  follows(topic: DomainTopic): boolean {
+    const entry = this.topics.get(topic);
+    return (
+      this.supported &&
+      this.summaries &&
+      entry !== undefined &&
+      entry.answered &&
+      entry.failures === 0
+    );
   }
 
   /** The connection dropped; nothing arrives until the next {@link ready}. */
@@ -102,6 +130,8 @@ export class LiveTopics {
     if (entry.cursor !== undefined && cursor <= entry.cursor) return;
     entry.cursor = cursor;
     entry.failures = 0;
+    entry.answered = true;
+    if (event.t === 'session.summary') this.summaries = true;
     for (const sink of [...entry.sinks]) sink.event(event);
   }
 
@@ -110,6 +140,7 @@ export class LiveTopics {
     if (entry === undefined) return;
     entry.cursor = cursor;
     entry.failures = 0;
+    entry.answered = true;
     for (const sink of [...entry.sinks]) sink.resync();
   }
 

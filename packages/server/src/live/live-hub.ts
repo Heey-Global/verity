@@ -124,6 +124,14 @@ const MAX_LIVE_BACKLOG = 2_000;
 
 const PROJECTION_TYPES: ReadonlySet<string> = new Set(SESSION_PROJECTION_EVENT_TYPES);
 
+/** A change {@link LiveHub.notify} hints to the overview. */
+export interface LiveHubChange {
+  sessionId: string;
+  projectId?: string | null | undefined;
+  topics: readonly LiveHintTopic[];
+  deleted?: boolean | undefined;
+}
+
 /** The overview topics an event touches. Every event counts toward a session's
  * unread count, so each one at least hints `events`. */
 function hintTopicsFor(event: AgentEvent): LiveHintTopic[] {
@@ -565,12 +573,25 @@ export class LiveHub {
     await Promise.all([...this.connections].map((connection) => connection.recheck({ sessionId })));
   }
 
-  notify(change: {
-    sessionId: string;
-    projectId?: string | null | undefined;
-    topics: readonly LiveHintTopic[];
-    deleted?: boolean | undefined;
-  }): void {
+  private readonly notifyListeners = new Set<(change: LiveHubChange) => void>();
+
+  /** Every change hinted to the overview, as {@link notify} receives it. */
+  onNotify(listener: (change: LiveHubChange) => void): () => void {
+    this.notifyListeners.add(listener);
+    return () => {
+      this.notifyListeners.delete(listener);
+    };
+  }
+
+  notify(change: LiveHubChange): void {
+    // An observer's failure must not keep the hint from any viewer.
+    for (const listener of this.notifyListeners) {
+      try {
+        listener(change);
+      } catch {
+        // The observer reports its own failures.
+      }
+    }
     if (change.projectId !== undefined)
       this.projectOfSession.set(change.sessionId, change.projectId);
     const pending = this.pendingHints.get(change.sessionId) ?? {

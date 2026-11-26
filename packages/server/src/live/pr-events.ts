@@ -56,7 +56,7 @@ export function createPrEvents(
     const event: DomainEvent = {
       t: 'pr.status',
       sessionId: session.sessionId,
-      rev: revisions.next(session.sessionId),
+      rev: revisions.next(),
       pr: status === null ? null : { ...status },
     };
     for (const topic of topics) domainEvents.publish(topic, event);
@@ -86,7 +86,7 @@ export function createPrEvents(
 
 /** Whether the session maintains a Wiki. A store without that record (a test
  * double) has none. */
-async function isMaintenanceSession(store: object, sessionId: string): Promise<boolean> {
+export async function isMaintenanceSession(store: object, sessionId: string): Promise<boolean> {
   const maintenance = (store as { wikiMaintenance?: { isSession?: unknown } }).wikiMaintenance;
   if (typeof maintenance?.isSession !== 'function') return false;
   return (maintenance as { isSession(id: string): Promise<boolean> }).isSession(sessionId);

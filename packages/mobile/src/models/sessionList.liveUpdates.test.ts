@@ -251,3 +251,124 @@ describe('SessionListModel.applyDomainEvent', () => {
     expect(model.state.sessions[0]?.pr).toMatchObject({ pipeline: 'success' });
   });
 });
+
+describe('SessionListModel.applyHints with followed projects', () => {
+  it('reads nothing for status and transcript hints a followed project answers with events', async () => {
+    const listSessions = vi.fn(() =>
+      Promise.resolve([summary('s1', { projectId: 'p1' }), summary('s2', { projectId: 'p2' })]),
+    );
+    const model = new SessionListModel({
+      client: clientFor(listSessions),
+      pollIntervalMs: 0,
+      followsLive: (projectId) => projectId === 'p1',
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(2));
+    // Let the first read settle, so a further read would start at once.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    model.applyHints([{ sessionId: 's1', topics: ['status', 'events'] }]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    // A request's content, and sessions of projects not followed, still need the read.
+    model.applyHints([{ sessionId: 's1', topics: ['permission'] }]);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    model.applyHints([{ sessionId: 's2', topics: ['status'] }]);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(3));
+    model.stop();
+  });
+});
+
+describe("SessionListModel waiting for a skipped hint's row", () => {
+  // The server may fail to compute a row, or this app may not read it; a
+  // skipped hint must not leave the session stale for good.
+  it('reads the list when the row does not come, and not when it does', async () => {
+    const listSessions = vi.fn(() => Promise.resolve([summary('s1', { projectId: 'p1' })]));
+    const model = new SessionListModel({
+      client: clientFor(listSessions),
+      pollIntervalMs: 0,
+      followsLive: () => true,
+      rowWaitMs: 30,
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
+    model.applyDomainEvent({
+      t: 'session.summary',
+      sessionId: 's1',
+      rev: 1,
+      patch: { ...summary('s1'), status: 'idle' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(listSessions).toHaveBeenCalledTimes(1);
+
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    model.stop();
+  });
+
+  it('still reads when the row that came could not be applied', async () => {
+    const listSessions = vi.fn(() => Promise.resolve([summary('s1', { projectId: 'p1' })]));
+    const model = new SessionListModel({
+      client: clientFor(listSessions),
+      pollIntervalMs: 0,
+      followsLive: () => true,
+      rowWaitMs: 30,
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
+    // Not a row this app can read: ignored, and the wait goes on.
+    model.applyDomainEvent({
+      t: 'session.summary',
+      sessionId: 's1',
+      rev: 1,
+      patch: { ...summary('s1'), status: 42 },
+    });
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    model.stop();
+  });
+
+  // A kept row replayed after the hint predates it; the hint still waits.
+  it('does not take a row the list already held as the awaited one', async () => {
+    const listSessions = vi.fn(() =>
+      Promise.resolve([summary('s1', { projectId: 'p1', summaryRev: 5 })]),
+    );
+    const model = new SessionListModel({
+      client: clientFor(listSessions),
+      pollIntervalMs: 0,
+      followsLive: () => true,
+      rowWaitMs: 30,
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
+    model.applyDomainEvent({ t: 'session.summary', sessionId: 's1', rev: 5, patch: summary('s1') });
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    model.stop();
+  });
+
+  // A stream hints every moment; the wait must still end in a read.
+  it("reads by the first hint's deadline though hints keep coming without rows", async () => {
+    const listSessions = vi.fn(() => Promise.resolve([summary('s1', { projectId: 'p1' })]));
+    const model = new SessionListModel({
+      client: clientFor(listSessions),
+      pollIntervalMs: 0,
+      followsLive: () => true,
+      rowWaitMs: 50,
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let i = 0; i < 8; i += 1) {
+      model.applyHints([{ sessionId: 's1', topics: ['events'] }]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    // At least once within the stream, not only after it ends.
+    expect(listSessions.mock.calls.length).toBeGreaterThanOrEqual(2);
+    model.stop();
+  });
+});

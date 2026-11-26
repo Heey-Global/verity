@@ -1,5 +1,5 @@
-import type { DomainEvent } from '@verity/events';
-import type { SessionSummary } from '../api.js';
+import { SESSION_SUMMARY_FIELDS, type DomainEvent } from '@verity/events';
+import { sessionSummarySchema, type SessionSummary } from '../api.js';
 import { pullRequestSchema } from '../branch-api.js';
 
 /**
@@ -23,6 +23,22 @@ export function applyOverviewEvent(
 ): OverviewEventEffect {
   if (event.t === 'permission.requested' || event.t === 'choices.opened') {
     return { kind: 'reload' };
+  }
+  if (event.t === 'session.summary') {
+    const index = sessions.findIndex((session) => session.sessionId === event.sessionId);
+    if (index < 0) return { kind: 'none' };
+    const held = sessions[index]!;
+    // The held row is as new as this one or newer: a read that began after
+    // it was published, or a later row. Kept events replayed over a read that
+    // answered later end here.
+    if (held.summaryRev !== undefined && held.summaryRev >= event.rev) return { kind: 'none' };
+    const patched = withSummaryRow(held, event.patch, event.rev);
+    // A row this app cannot read is ignored: the list read carries the same
+    // fields and would fail on them too, so reading again only adds load.
+    if (patched === undefined) return { kind: 'none' };
+    const next = [...sessions];
+    next[index] = patched;
+    return { kind: 'local', sessions: next };
   }
   if (event.t === 'pr.status') {
     if (!sessions.some((session) => session.sessionId === event.sessionId)) return { kind: 'none' };
@@ -58,8 +74,29 @@ export function applyOverviewEvent(
  */
 export function appliesToEarlierReads(event: DomainEvent): boolean {
   return (
-    event.t === 'permission.decided' || event.t === 'choices.answered' || event.t === 'pr.status'
+    event.t === 'permission.decided' ||
+    event.t === 'choices.answered' ||
+    event.t === 'pr.status' ||
+    event.t === 'session.summary'
   );
+}
+
+/** The session with the overview fields of a `session.summary` row in place
+ * of its own: a field the row lacks is gone. The rest stays as read: what each
+ * viewer sees differently, and what other overview events own.
+ * Undefined when the result is not a row this app can read. */
+function withSummaryRow(
+  session: SessionSummary,
+  row: Readonly<Record<string, unknown>>,
+  rev: number,
+): SessionSummary | undefined {
+  const next: Record<string, unknown> = { ...session, summaryRev: rev };
+  for (const key of SESSION_SUMMARY_FIELDS) {
+    if (key in row) next[key] = row[key];
+    else delete next[key];
+  }
+  const parsed = sessionSummarySchema.safeParse(next);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /**
@@ -72,9 +109,10 @@ export function keptWithout<T extends { event: DomainEvent }>(
   kept: readonly T[],
   event: DomainEvent,
 ): T[] {
-  if (event.t !== 'pr.status') return [...kept];
+  // A newer status or whole row makes the session's older one moot.
+  if (event.t !== 'pr.status' && event.t !== 'session.summary') return [...kept];
   return kept.filter(
-    (entry) => entry.event.t !== 'pr.status' || entry.event.sessionId !== event.sessionId,
+    (entry) => entry.event.t !== event.t || entry.event.sessionId !== event.sessionId,
   );
 }
 

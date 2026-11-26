@@ -1,4 +1,6 @@
 import Fastify from 'fastify';
+import { SESSION_SUMMARY_FIELDS } from '@verity/events';
+import { sharedRow } from './live/summary-events.js';
 import { expect, it, vi } from 'vitest';
 import { registerSessionListRoute } from './session-list-route.js';
 import type { SessionSummary } from './server.js';
@@ -393,6 +395,73 @@ it('lists a submission for review to members with Code until one of them writes'
     writers = ['alex'];
     expect(await read('alex')).toMatchObject({ status: 'checking', addressedToViewer: true });
     expect((await read('kim'))?.addressedToViewer).toBe(false);
+  } finally {
+    await app.close();
+  }
+});
+
+// A row taken after a session.summary was published must say so, or a view
+// replays that older row over the newer read; one published while the read
+// is computed may be newer than it, so the revision is the one at the start.
+it('marks each row with the summary revision from before it was read', async () => {
+  const app = Fastify();
+  let revision = 5;
+  registerSessionListRoute(app, {
+    store: {
+      listSessions: async () => [{ sessionId: 's1' }, { sessionId: 's2' }] as never,
+      linkedSessionIds: async () => new Set(),
+      sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async () => new Map() } as never,
+    },
+    summaryRevision: (id) => (id === 's1' ? revision : undefined),
+    summarizeSessions: async (sessions) => {
+      // Published while the rows are being computed.
+      revision = 6;
+      return sessions.map(({ sessionId }) => ({ sessionId })) as unknown as SessionSummary[];
+    },
+    collectAttention: async () => [],
+    prunePrSummaryCache: () => {},
+    pruneBranchCache: () => {},
+  });
+  try {
+    const rows = (await app.inject({ url: '/sessions' })).json<
+      Array<{ sessionId: string; summaryRev?: number }>
+    >();
+    expect(rows.find((row) => row.sessionId === 's1')?.summaryRev).toBe(5);
+    expect(rows.find((row) => row.sessionId === 's2')).not.toHaveProperty('summaryRev');
+  } finally {
+    await app.close();
+  }
+});
+
+// `session.summary` carries the shared fields as `summarizeSessions` gives
+// them, and a view drops one its row lacks. Were this route to add or change a
+// shared field after summarizing, every event would undo it on Home.
+it('leaves every field session.summary carries as summarizeSessions gives it', async () => {
+  const app = Fastify();
+  const summary: Record<string, unknown> = { sessionId: 's1', planningPlan: 'plan text' };
+  for (const field of SESSION_SUMMARY_FIELDS) summary[field] = { marker: field };
+  summary.planning = 'active';
+  delete summary.planningPresented;
+  registerSessionListRoute(app, {
+    store: {
+      listSessions: async () => [{ sessionId: 's1' }] as never,
+      linkedSessionIds: async () => new Set(),
+      sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async () => new Map() } as never,
+    },
+    summarizeSessions: async () => [{ ...summary }] as unknown as SessionSummary[],
+    collectAttention: async () => [{ kind: 'server-level' }] as never,
+    prunePrSummaryCache: () => {},
+    pruneBranchCache: () => {},
+  });
+  try {
+    const [listed] = (await app.inject({ url: '/sessions?envelope=1' })).json<{
+      sessions: Record<string, unknown>[];
+    }>().sessions;
+    const row = sharedRow(summary as unknown as SessionSummary);
+    for (const field of SESSION_SUMMARY_FIELDS)
+      expect([field, listed![field]]).toEqual([field, row[field]]);
   } finally {
     await app.close();
   }

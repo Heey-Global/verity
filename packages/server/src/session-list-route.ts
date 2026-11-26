@@ -1,4 +1,5 @@
 import { conditionalJsonRoute } from './conditional-json.js';
+import { planningPresented } from './session-row.js';
 import { measureLatencyPhase, type EventStore, type SessionRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import type { AttentionSignal } from './attention.js';
@@ -26,6 +27,8 @@ export interface SessionListRouteDeps {
   pruneBranchCache: (liveWorktrees: ReadonlySet<string>) => void;
   summarizeSessions: (sessions: SessionRecord[]) => Promise<SessionSummary[]>;
   collectAttention: () => Promise<AttentionSignal[]>;
+  /** The revision each session's latest `session.summary` took. */
+  summaryRevision?: (sessionId: string) => number | undefined;
   /** Sessions the server runs for itself (Wiki maintenance); no list shows them. */
   hiddenSessionIds?: () => Promise<ReadonlySet<string>>;
   /**
@@ -98,9 +101,20 @@ export function registerSessionListRoute(
       deps.prunePrSummaryCache(liveWorktrees);
       deps.pruneBranchCache(liveWorktrees);
     }
+    // Taken before the rows are computed: the revision of the latest row whose
+    // computation began. A row that began later has a higher revision and may
+    // hold a later state, so views apply it; one that began before is dropped,
+    // and a change after it schedules a later row.
+    const revisions = new Map(
+      sessions.map((session) => [session.sessionId, deps.summaryRevision?.(session.sessionId)]),
+    );
     const summaries = await measureLatencyPhase('session_summaries', () =>
       deps.summarizeSessions(sessions),
     );
+    for (const summary of summaries) {
+      const revision = revisions.get(summary.sessionId);
+      if (revision !== undefined) summary.summaryRev = revision;
+    }
     const linked = await deps.store.linkedSessionIds();
     for (const summary of summaries) {
       if (linked.has(summary.sessionId)) summary.linked = true;
@@ -192,11 +206,7 @@ export function registerSessionListRoute(
           const view = views.get(summary.sessionId);
           return {
             ...summary,
-            // The plan text can run to pages and this route is polled by every
-            // device; an overview only needs to know that a plan waits for approval.
-            ...(summary.planning === 'active' && planningPlan != null
-              ? { planningPresented: true as const }
-              : {}),
+            ...planningPresented({ planning: summary.planning, planningPlan }),
             lastSeenEventCount: view?.lastSeenEventCount ?? null,
             inboxDismissed: view?.inboxDismissed ?? [],
             ...(await submissionFor(summary)),
