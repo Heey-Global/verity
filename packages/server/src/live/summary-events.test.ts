@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ServerContext } from '../server-context.js';
 import type { SessionSummary } from '../server-types.js';
 import { DomainEventBus, type DomainRecord } from './domain-events.js';
+import type { LiveHubChange } from './live-hub.js';
 import { installSummaryEvents, rowPatch, sharedRow } from './summary-events.js';
 
 function summary(extra: Partial<SessionSummary> = {}): SessionSummary {
@@ -18,16 +19,11 @@ function summary(extra: Partial<SessionSummary> = {}): SessionSummary {
 
 function setup(rows: SessionSummary[], maintenance: ReadonlySet<string> = new Set()) {
   const domainEvents = new DomainEventBus();
-  let observer: ((sessionId: string) => void) | undefined;
+  let observer: ((change: LiveHubChange) => void) | undefined;
+  let failing = 0;
   const closers: Array<() => void> = [];
   const ctx = {
     deps: {
-      bus: {
-        subscribeAll: (fn: (sessionId: string) => void) => {
-          observer = fn;
-          return () => (observer = undefined);
-        },
-      },
       eventStore: {
         getSession: async (id: string) =>
           ({ sessionId: id, projectId: 'p1' }) as unknown as SessionRecord,
@@ -36,9 +32,21 @@ function setup(rows: SessionSummary[], maintenance: ReadonlySet<string> = new Se
     },
     domainEvents,
     lifecycle: { onClose: (fn: () => void) => closers.push(fn) },
-  } as unknown as Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle'>;
+    liveHub: {
+      onNotify: (fn: (change: LiveHubChange) => void) => {
+        observer = fn;
+        return () => (observer = undefined);
+      },
+    },
+  } as unknown as Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle' | 'liveHub'>;
   let current = rows[0]!;
-  const summarize = vi.fn(async () => [current]);
+  const summarize = vi.fn(async () => {
+    if (failing > 0) {
+      failing -= 1;
+      throw new Error('store unavailable');
+    }
+    return [current];
+  });
   let now = 0;
   const timers: Array<{ at: number; run: () => void }> = [];
   installSummaryEvents({ log: { warn: () => undefined } }, ctx, summarize, {
@@ -60,7 +68,9 @@ function setup(rows: SessionSummary[], maintenance: ReadonlySet<string> = new Se
     published,
     record,
     summarize,
-    event: (sessionId = 's1') => observer?.(sessionId),
+    event: (topics: LiveHubChange['topics'] = ['events', 'status'], sessionId = 's1') =>
+      observer?.({ sessionId, topics }),
+    fail: (times: number) => (failing = times),
     set: (next: SessionSummary) => (current = next),
     advance: (ms: number) => {
       now += ms;
@@ -82,9 +92,11 @@ describe('session.summary', () => {
     w.advance(300);
     await vi.waitFor(() => expect(w.published).toHaveLength(1));
     expect(w.summarize).toHaveBeenCalledTimes(1);
+    // The first row is whole: views holding the session read it again.
     expect(w.published[0]!.event).toMatchObject({
       t: 'session.summary',
       sessionId: 's1',
+      full: true,
       patch: { status: 'running', eventCount: 1 },
     });
 
@@ -92,6 +104,7 @@ describe('session.summary', () => {
     w.event();
     w.advance(300);
     await vi.waitFor(() => expect(w.published).toHaveLength(2));
+    expect(w.published[1]!.event).not.toHaveProperty('full');
     expect((w.published[1]!.event as { patch: object }).patch).toEqual({
       status: 'idle',
       eventCount: 2,
@@ -136,9 +149,44 @@ describe('session.summary', () => {
     expect(row).toMatchObject({ planningPresented: true, status: 'running' });
   });
 
-  it('marks a field the row no longer has as null', () => {
-    expect(rowPatch({ a: 1, b: true }, { a: 1 })).toEqual({ b: null });
+  // `null` is a value some fields have; a field that is gone is named apart.
+  it('names the fields the row no longer has', () => {
+    expect(rowPatch({ a: 1, b: true }, { a: 1, c: null })).toEqual({
+      patch: { c: null },
+      unset: ['b'],
+    });
     expect(rowPatch({ a: 1 }, { a: 1 })).toBeUndefined();
+  });
+
+  // Home skips its list read for these hints, whatever raised them.
+  it('publishes for every status or transcript hint and for no other', async () => {
+    const w = setup([summary()]);
+    w.record('project:p1');
+    w.event(['session']);
+    w.event(['activity']);
+    w.advance(2_000);
+    // Time for a computation that should not run to have run.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(w.summarize).not.toHaveBeenCalled();
+    w.event(['status']);
+    w.advance(300);
+    await vi.waitFor(() => expect(w.published).toHaveLength(1));
+    w.close();
+  });
+
+  // The hint that scheduled the row may be the last one of the session.
+  it('tries a row again that could not be computed', async () => {
+    const w = setup([summary()]);
+    w.record('project:p1');
+    w.fail(1);
+    w.event();
+    w.advance(300);
+    await vi.waitFor(() => expect(w.summarize).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    await Promise.resolve();
+    w.advance(2_000);
+    await vi.waitFor(() => expect(w.published).toHaveLength(1));
+    w.close();
   });
 
   it('keeps Wiki maintenance sessions to their own topic', async () => {

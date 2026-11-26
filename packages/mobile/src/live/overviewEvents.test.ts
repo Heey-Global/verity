@@ -204,12 +204,10 @@ describe('RevisionGate', () => {
 });
 
 describe('applyOverviewEvent with session.summary', () => {
-  const summary = (patch: Record<string, unknown>): DomainEvent => ({
-    t: 'session.summary',
-    sessionId: 's1',
-    rev: 1,
-    patch,
-  });
+  const summary = (
+    patch: Record<string, unknown>,
+    more: { unset?: string[]; full?: true } = {},
+  ): DomainEvent => ({ t: 'session.summary', sessionId: 's1', rev: 1, patch, ...more });
 
   it("changes the session's overview fields and keeps what each viewer sees", () => {
     const session = { ...waiting(), lastActivityAt: 5, inboxDismissed: ['x'] } as SessionSummary;
@@ -223,11 +221,18 @@ describe('applyOverviewEvent with session.summary', () => {
     const session = { ...waiting(), backgroundWorking: true, lastActivityAt: 5 } as SessionSummary;
     const effect = applyOverviewEvent(
       [session],
-      summary({ backgroundWorking: null, lastActivityAt: null }),
+      summary({ lastActivityAt: null }, { unset: ['backgroundWorking'] }),
     );
     const [next] = (effect as { sessions: SessionSummary[] }).sessions;
     expect(next).not.toHaveProperty('backgroundWorking');
     expect(next!.lastActivityAt).toBeNull();
+  });
+
+  // A whole row cannot say which held fields are gone.
+  it('asks for a read for a whole row', () => {
+    expect(applyOverviewEvent([waiting()], summary({ status: 'idle' }, { full: true })).kind).toBe(
+      'reload',
+    );
   });
 
   it('asks for a read when the row is not one this app can read', () => {

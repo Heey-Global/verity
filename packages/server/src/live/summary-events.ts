@@ -10,8 +10,10 @@ import { createRevisions } from './revisions.js';
 const SETTLE_MS = 300;
 const MAX_WAIT_MS = 2_000;
 /** Sessions whose last published row is remembered. A forgotten session
- * publishes its whole row again, which views apply like any patch. */
+ * publishes its whole row again, marked `full`. */
 const MAX_REMEMBERED_SESSIONS = 4_096;
+/** Further attempts for a row that could not be computed. */
+const MAX_RETRIES = 2;
 
 /**
  * Fields of a row the summary event does not carry:
@@ -51,17 +53,20 @@ export function sharedRow(summary: SessionSummary): Row {
   return row;
 }
 
-/** Changed fields of `next`; a field it no longer has is `null`. */
-export function rowPatch(previous: Row | undefined, next: Row): Row | undefined {
+/** The changed fields of `next` and the fields it no longer has. Without a
+ * `previous` row, the whole of `next` marked `full`. */
+export function rowPatch(
+  previous: Row | undefined,
+  next: Row,
+): { patch: Row; unset?: string[]; full?: true } | undefined {
+  if (previous === undefined) return { patch: next, full: true };
   const patch: Row = {};
   for (const [key, value] of Object.entries(next)) {
-    if (previous === undefined || JSON.stringify(previous[key]) !== JSON.stringify(value))
-      patch[key] = value;
+    if (JSON.stringify(previous[key]) !== JSON.stringify(value)) patch[key] = value;
   }
-  if (previous !== undefined) {
-    for (const key of Object.keys(previous)) if (!(key in next)) patch[key] = null;
-  }
-  return Object.keys(patch).length > 0 ? patch : undefined;
+  const unset = Object.keys(previous).filter((key) => !(key in next));
+  if (Object.keys(patch).length === 0 && unset.length === 0) return undefined;
+  return unset.length > 0 ? { patch, unset } : { patch };
 }
 
 /**
@@ -71,14 +76,18 @@ export function rowPatch(previous: Row | undefined, next: Row): Row | undefined 
  * without reading the whole list again for each status change or each burst
  * of transcript.
  *
- * Every session event schedules the row; a burst becomes one patch after it
- * settles, and a long burst one patch at least every {@link MAX_WAIT_MS}.
+ * Every change hinted to the overview as `status` or `events` schedules the
+ * row, whatever raised it: a session event, a process that ended, a repair.
+ * Home skips its list read for those hints once it follows the project, so
+ * none may go without a row. A burst becomes one patch after it settles, and a
+ * long burst one patch at least every {@link MAX_WAIT_MS}; a row that could
+ * not be computed is tried again.
  * Wiki maintenance sessions, which the lists leave out, reach only their own
  * session topic.
  */
 export function installSummaryEvents(
   app: { log: { warn(obj: object, msg: string): void } },
-  ctx: Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle'>,
+  ctx: Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle' | 'liveHub'>,
   summarize: (sessions: SessionRecord[]) => Promise<SessionSummary[]>,
   timers: {
     setTimeout: (run: () => void, ms: number) => unknown;
@@ -103,8 +112,8 @@ export function installSummaryEvents(
     const [summary] = await summarize([session]);
     if (summary === undefined || closed) return;
     const row = sharedRow(summary);
-    const patch = rowPatch(published.get(sessionId), row);
-    if (patch === undefined) return;
+    const change = rowPatch(published.get(sessionId), row);
+    if (change === undefined) return;
     const topics: DomainTopic[] = [domainTopic('session', sessionId)];
     if (session.projectId !== null && !(await isMaintenanceSession(deps.eventStore, sessionId)))
       topics.push(domainTopic('project', session.projectId));
@@ -112,7 +121,7 @@ export function installSummaryEvents(
       t: 'session.summary' as const,
       sessionId,
       rev: revisions.next(sessionId),
-      patch,
+      ...change,
     };
     for (const topic of topics) domainEvents.publish(topic, event);
     published.delete(sessionId);
@@ -122,14 +131,19 @@ export function installSummaryEvents(
 
   // One computation per session at a time, in order, so patches build on the
   // row the previous one published.
-  const run = (sessionId: string): void => {
+  const run = (sessionId: string, attempt = 0): void => {
     scheduled.delete(sessionId);
     const previous = queues.get(sessionId) ?? Promise.resolve();
     const next = previous
       .then(() => publish(sessionId))
-      // A failed row leaves views on their next read; later events retry.
+      // The hint that scheduled this row may be the session's last; try again.
       .catch((error: unknown) => {
         app.log.warn({ err: error, sessionId }, 'verity: session summary not published');
+        if (attempt < MAX_RETRIES && !closed && !scheduled.has(sessionId))
+          scheduled.set(sessionId, {
+            timer: timers.setTimeout(() => run(sessionId, attempt + 1), MAX_WAIT_MS),
+            since: timers.now(),
+          });
       })
       .finally(() => {
         if (queues.get(sessionId) === next) queues.delete(sessionId);
@@ -147,7 +161,14 @@ export function installSummaryEvents(
     scheduled.set(sessionId, { timer: timers.setTimeout(() => run(sessionId), wait), since });
   };
 
-  const unsubscribe = deps.bus.subscribeAll((sessionId) => schedule(sessionId));
+  const unsubscribe = ctx.liveHub.onNotify((change) => {
+    if (change.deleted === true) {
+      published.delete(change.sessionId);
+      return;
+    }
+    if (change.topics.some((topic) => topic === 'status' || topic === 'events'))
+      schedule(change.sessionId);
+  });
   lifecycle.onClose(() => {
     closed = true;
     unsubscribe();

@@ -50,7 +50,17 @@ const rev = z.number().int().nonnegative();
 const patch = z.record(z.string(), z.unknown());
 
 export const domainEventSchema = z.discriminatedUnion('t', [
-  z.object({ t: z.literal('session.summary'), sessionId: id, rev, patch }),
+  z.object({
+    t: z.literal('session.summary'),
+    sessionId: id,
+    rev,
+    patch,
+    /** Fields the row no longer has. */
+    unset: z.array(id).max(100).optional(),
+    /** The whole row, for a session the server published nothing of before:
+     * fields it lacks may be gone, so a view that holds the row reads it. */
+    full: z.literal(true).optional(),
+  }),
   z.object({ t: z.literal('permission.requested'), sessionId: id, toolUseId: id, rev }),
   z.object({
     t: z.literal('permission.decided'),
