@@ -6,6 +6,7 @@ import {
   type BranchSwitchRequest,
   type SessionPullRequestStatus,
   publishPullRequestStatusMutation,
+  sameSnapshotValue,
   withPullRequest,
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
@@ -88,7 +89,7 @@ export interface UseBranches {
  * glue hook (no headless model) in the spirit of {@link useSession} /
  * {@link useSessionList}.
  */
-/** The status of a pull request, without what names it or its repository. */
+/** The status of a pull request, without what names it (number, title, link). */
 function pullRequestStatus(pr: NonNullable<BranchList['pullRequest']>) {
   const { number: _number, title: _title, url: _url, ...status } = pr;
   return status;
@@ -225,16 +226,23 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
                   : res.pullRequests;
               publishSnapshot(res);
               const listed = target.session(sessionId);
-              // A prefetch was asked before this read began, so an event since
-              // may be newer than it: the store's copy, which follows events,
-              // is shown rather than overwritten.
-              const applied =
-                listed !== undefined &&
-                (prefetched !== undefined ||
-                  (res.pullRequest !== undefined &&
-                    target.applySessions(storeRead, [withPullRequest(listed, res.pullRequest)], {
-                      covers: (session) => session.sessionId === sessionId,
-                    })));
+              let applied = false;
+              if (listed !== undefined && res.pullRequest !== undefined) {
+                if (prefetched === undefined) {
+                  applied = target.applySessions(
+                    storeRead,
+                    [withPullRequest(listed, res.pullRequest)],
+                    { covers: (session) => session.sessionId === sessionId },
+                  );
+                } else {
+                  // A prefetch was asked before this read began: an event
+                  // since may be newer, or the store may have missed one.
+                  // Where both agree the store speaks; otherwise a read of
+                  // its own decides, and until then the prefetch is shown.
+                  applied = sameSnapshotValue(listed.pullRequest ?? null, res.pullRequest);
+                  if (!applied) request.followup = true;
+                }
+              }
               setReadInStore(applied && target === storeRef.current);
               setCurrent(res.current);
               setSwitchable(res.switchable);

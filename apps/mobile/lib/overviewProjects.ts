@@ -47,5 +47,16 @@ export function useOverviewProjects(client: VerityClient, active: boolean): Proj
       current = false;
     };
   }, [client, active]);
-  return useMemo(() => (own.inStore ? held.filter(listedInOverview) : own.projects), [own, held]);
+  // In the order of the read, as `/projects` lists them; then the projects
+  // other views read since.
+  return useMemo(() => {
+    if (!own.inStore) return own.projects;
+    const byId = new Map(held.filter(listedInOverview).map((project) => [project.id, project]));
+    const shown = own.projects.flatMap((project) => {
+      const copy = byId.get(project.id);
+      byId.delete(project.id);
+      return copy === undefined ? [] : [copy];
+    });
+    return [...shown, ...byId.values()];
+  }, [own, held]);
 }

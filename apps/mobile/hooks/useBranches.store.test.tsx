@@ -113,9 +113,9 @@ describe('useBranches with the shared overview store', () => {
     shared.unmount();
   });
 
-  // Opening a session from Home prefetches its branches; a status the store
-  // took after that request is newer than the prefetch's answer.
-  it('keeps a newer status in the store over a prefetched read', async () => {
+  // Opening a session from Home prefetches its branches. Neither the prefetch
+  // nor the store's copy is known to be newer, so a read of its own decides.
+  it('reads again when a prefetch and the store disagree, and once when they agree', async () => {
     const shared = withListedSession();
     const store = shared.result.current;
     act(() => {
@@ -123,14 +123,27 @@ describe('useBranches with the shared overview store', () => {
         covers: (s) => s.sessionId === 's1',
       });
     });
-    const getBranches = jest.fn().mockResolvedValue(branches(pr(42, 'running')));
+    const getBranches = jest
+      .fn()
+      .mockResolvedValueOnce(branches(pr(42, 'running')))
+      .mockResolvedValue(branches(pr(42, 'failure')));
     const client = { getBranches } as unknown as VerityClient;
     prefetchBranches(client, 's1');
     const { result, unmount } = renderHook(() => useBranches(client, 's1'));
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(store.session('s1')?.pullRequest?.pipeline).toBe('success');
-    expect(result.current.pullRequest?.pipeline).toBe('success');
+    await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.pullRequest?.pipeline).toBe('failure'));
+    expect(store.session('s1')?.pullRequest?.pipeline).toBe('failure');
     unmount();
+
+    // Agreeing: the store speaks, without another read.
+    const agreeing = jest.fn().mockResolvedValue(branches(pr(42, 'failure')));
+    const other = { getBranches: agreeing } as unknown as VerityClient;
+    prefetchBranches(other, 's1');
+    const second = renderHook(() => useBranches(other, 's1'));
+    await waitFor(() => expect(second.result.current.loading).toBe(false));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(agreeing).toHaveBeenCalledTimes(1);
+    second.unmount();
     shared.unmount();
   });
 
