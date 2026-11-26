@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { VerityApiError } from './api.js';
 import { TaskQueue, type TaskQueueState } from './taskQueue.js';
-import { listTaskView } from './taskView.js';
+import { DONE_TASK_VIEW_WINDOW_MS, listTaskView } from './taskView.js';
 import type { Task } from './tasks.js';
 
 const base: Task = {
@@ -40,10 +40,13 @@ describe('listTaskView', () => {
     const listTasks = vi.fn(async (query?: string) =>
       query?.includes('origin=agent') ? [step] : [mine],
     );
-    expect(await listTaskView({ listTasks }, ['s1'])).toEqual([mine, step]);
+    const now = Date.parse('2026-11-26T12:00:00.000Z');
+    expect(await listTaskView({ listTasks }, ['s1'], () => now)).toEqual([mine, step]);
+    // Done tasks are bounded to the recent window; without it every closed task returns.
+    const since = encodeURIComponent(new Date(now - DONE_TASK_VIEW_WINDOW_MS).toISOString());
     expect(listTasks.mock.calls.map(([query]) => query)).toEqual([
-      '?origin=user&status=open,in_progress,done',
-      '?origin=agent&status=open,in_progress,done&sessionId=s1',
+      `?origin=user&status=open,in_progress,done&doneSince=${since}`,
+      `?origin=agent&status=open,in_progress,done&doneSince=${since}&sessionId=s1`,
     ]);
   });
 
