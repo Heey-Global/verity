@@ -248,14 +248,20 @@ describe('useOverviewTopics', () => {
     topics.unmount();
   });
 
-  // Nothing applies events to a store whose hub went idle; a page opened
-  // later would show a copy that stopped following them.
-  it('drops the store once no view follows its events', () => {
+  // A store nothing holds stopped following events; a page opened later
+  // would show a copy that missed them.
+  it('drops the store once nothing holds it', () => {
     const topics = renderHook(() =>
       useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()),
     );
-    const store = renderHook(() => useOverviewStore('https://core.example')).result.current;
+    const view = renderHook(() => useOverviewStore('https://core.example'));
+    const store = view.result.current;
     topics.unmount();
+    // The page still shows it; its next subscription brings it up to date.
+    const again = renderHook(() => useOverviewStore('https://core.example'));
+    expect(again.result.current).toBe(store);
+    again.unmount();
+    view.unmount();
     expect(renderHook(() => useOverviewStore('https://core.example')).result.current).not.toBe(
       store,
     );

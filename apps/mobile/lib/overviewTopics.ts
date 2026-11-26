@@ -197,11 +197,29 @@ class OverviewHub {
 const hubs = new Map<string, OverviewHub>();
 
 /** The stores of the servers and accounts in use, keyed like the hubs and
- * shared by every view of one. A store lives as long as its hub applies events
- * to it: once the hub goes idle, or its account is no longer signed in while no
- * hub holds it, it is dropped, so no view is ever shown a copy that stopped
- * following events. */
+ * shared by every view of one. A store lives while a hub or a view holds it, so
+ * a page that re-attaches (another project, a remount) keeps its copy and the
+ * new subscription's resync brings it up to date. Once nothing holds it, it is
+ * dropped: no later view is shown a copy that stopped following events. */
 const stores = new Map<string, OverviewStore>();
+/** Hubs and views holding each store. */
+const holds = new Map<string, number>();
+
+function hold(scope: string): () => void {
+  holds.set(scope, (holds.get(scope) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (holds.get(scope) ?? 1) - 1;
+    if (left > 0) {
+      holds.set(scope, left);
+      return;
+    }
+    holds.delete(scope);
+    dropStore(scope);
+  };
+}
 let pruneOnAccountChange: (() => void) | undefined;
 /** Views holding a store; told when one is dropped, so they move to the store
  * the next hub of their scope feeds. */
@@ -237,12 +255,13 @@ function storeFor(scope: string): OverviewStore {
   return store;
 }
 
-/** Drop the stores of accounts no longer signed in that no hub holds. */
+/** Drop the stores of accounts no longer signed in that nothing holds, such as
+ * one a render created that never committed. */
 function pruneStores(): void {
   const signedIn = taskAccountScope();
   for (const scope of stores.keys()) {
     const [, account] = JSON.parse(scope) as [string, string | null];
-    if (account !== signedIn && !hubs.has(scope)) dropStore(scope);
+    if (account !== signedIn && !holds.has(scope)) dropStore(scope);
   }
 }
 
@@ -266,14 +285,13 @@ function attachToHub(
     hub = new OverviewHub(baseUrl, storeFor(scope));
     hubs.set(scope, hub);
   }
+  const release = hold(scope);
   const detach = hub.attach(listener);
   const attached = hub;
   return () => {
     detach();
-    if (!attached.idle || hubs.get(scope) !== attached) return;
-    hubs.delete(scope);
-    // Nothing applies events to it any more.
-    dropStore(scope);
+    if (attached.idle && hubs.get(scope) === attached) hubs.delete(scope);
+    release();
   };
 }
 
@@ -323,8 +341,19 @@ export function useOverviewStore(baseUrl: string | null): OverviewStore {
   // A dropped store renders the view again, so it takes up the current one.
   useSyncExternalStore(subscribeStores, currentStoresGeneration, currentStoresGeneration);
   const [detached] = useState(() => new OverviewStore());
-  const store = baseUrl === null ? detached : storeFor(JSON.stringify([baseUrl, account]));
-  const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
+  const scope = baseUrl === null ? null : JSON.stringify([baseUrl, account]);
+  const store = scope === null ? detached : storeFor(scope);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const unsubscribe = store.subscribe(listener);
+      const release = scope === null ? undefined : hold(scope);
+      return () => {
+        unsubscribe();
+        release?.();
+      };
+    },
+    [store, scope],
+  );
   const version = useCallback(() => store.getVersion(), [store]);
   useSyncExternalStore(subscribe, version, version);
   return store;

@@ -169,7 +169,8 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
             covers: (s) => s.projectId === projectId,
           });
           setDetail(next);
-          setSessionsInStore(sessionsApplied);
+          // A store replaced while the read was out is not the one shown.
+          setSessionsInStore(sessionsApplied && target === storeRef.current);
           setSavedProfile(undefined);
           // Events this read would need replayed were dropped: read again.
           // A screen below the one on top reads again when it comes back.
