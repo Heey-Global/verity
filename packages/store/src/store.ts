@@ -1,3 +1,4 @@
+import { AttendeeStateStore } from './attendee-state.js';
 import { EventHistoryStore, type SequencedEvent } from './event-history.js';
 export type { SequencedEvent } from './event-history.js';
 import { EventSnapshotStore } from './event-snapshots.js';
@@ -609,34 +610,25 @@ export class EventStore implements EventSink {
   readonly changeSubmissions: ChangeSubmissionStore;
   readonly githubRepositories: GitHubRepositoryIdentityStore;
 
+  private readonly attendeeState = new AttendeeStateStore(
+    () => this.db,
+    () => this.cipher,
+  );
+
   async getAttendeeState<T>(id: string): Promise<T | undefined> {
-    const result = await sql<{
-      state_secret: string;
-    }>`select state_secret from attendee_state where id = ${id}`.execute(this.db);
-    const row = result.rows[0];
-    return row ? (JSON.parse(this.cipher.decrypt(row.state_secret)) as T) : undefined;
+    return this.attendeeState.getAttendeeState<T>(id);
   }
 
   async putAttendeeState(id: string, state: unknown): Promise<void> {
-    const encrypted = this.cipher.encrypt(JSON.stringify(state));
-    await sql`insert into attendee_state (id, state_secret) values (${id}, ${encrypted}) on conflict (id) do update set state_secret = excluded.state_secret`.execute(
-      this.db,
-    );
+    return this.attendeeState.putAttendeeState(id, state);
   }
 
   async listAttendeeState<T>(): Promise<Array<{ id: string; state: T }>> {
-    const result = await sql<{
-      id: string;
-      state_secret: string;
-    }>`select id, state_secret from attendee_state where id <> 'config'`.execute(this.db);
-    return result.rows.map((row) => ({
-      id: row.id,
-      state: JSON.parse(this.cipher.decrypt(row.state_secret)) as T,
-    }));
+    return this.attendeeState.listAttendeeState<T>();
   }
 
   async deleteAttendeeState(id: string): Promise<void> {
-    await sql`delete from attendee_state where id = ${id}`.execute(this.db);
+    return this.attendeeState.deleteAttendeeState(id);
   }
 
   async createSessionLink(leftId: string, rightId: string, requestId?: string): Promise<boolean> {
