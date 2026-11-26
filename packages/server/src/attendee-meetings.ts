@@ -221,6 +221,7 @@ export class AttendeeMeetings {
   private targetOrigin = '';
   private timer: NodeJS.Timeout | undefined;
   private tail: Promise<unknown> = Promise.resolve();
+  private participantTail: Promise<unknown> = Promise.resolve();
   private closed = false;
   private sharingGeneration = 0;
   private unsubscribeSharing: (() => void) | undefined;
@@ -395,14 +396,26 @@ export class AttendeeMeetings {
             .safeParse(event.data);
           if (participant.success) {
             const { participant_uuid: uuid, participant_name: name } = participant.data;
-            if (state.audio && !state.audio.disabled) {
+            await this.serializeParticipants(async () => {
+              const id = state.meeting.id;
+              const current = await this.options.store.getAttendeeState<OnlineMeeting>(
+                `meeting:${id}`,
+              );
+              if (
+                !current?.audio ||
+                current.audio.disabled ||
+                current.discarded ||
+                current.meeting.state === 'ended' ||
+                (current.botId && current.botId !== event.bot_id)
+              )
+                return;
               await this.options.store.putAttendeeState(
-                this.participantKey(state.meeting.id, event.bot_id, `participant:${uuid}`),
+                this.participantKey(id, event.bot_id, `participant:${uuid}`),
                 { name },
               );
-              if (!state.botId && state.botCreateAttempted)
+              if (!current.botId && current.botCreateAttempted)
                 await this.options.store.putAttendeeState(`event:${event.bot_id}`, event);
-            }
+            });
           }
         } else await this.options.store.putAttendeeState(`event:${event.bot_id}`, event);
         // Only a signed delivery describes the bot; probes never reach the log with content.
@@ -588,11 +601,19 @@ export class AttendeeMeetings {
       .digest('hex')}`;
   }
 
-  private async clearParticipants(meetingId: string) {
-    const prefix = `participant:${meetingId}:`;
-    for (const { id } of await this.options.store.listAttendeeState()) {
-      if (id.startsWith(prefix)) await this.options.store.deleteAttendeeState(id);
-    }
+  private serializeParticipants(run: () => Promise<void>) {
+    const work = this.participantTail.then(run);
+    this.participantTail = work.catch(() => undefined);
+    return work;
+  }
+
+  private clearParticipants(meetingId: string) {
+    return this.serializeParticipants(async () => {
+      const prefix = `participant:${meetingId}:`;
+      for (const { id } of await this.options.store.listAttendeeState()) {
+        if (id.startsWith(prefix)) await this.options.store.deleteAttendeeState(id);
+      }
+    });
   }
 
   private async closeAudio(id: string) {
@@ -1306,6 +1327,21 @@ export class AttendeeMeetings {
         ]
           .filter(Boolean)
           .join('\n');
+      const audioReceiver = this.audioConnections.get(state.meeting.id)?.receiver;
+      if (
+        state.audio &&
+        !final &&
+        !state.stopRequested &&
+        join.status === 'joined' &&
+        state.joinedAt !== undefined &&
+        Date.now() - state.joinedAt >= 30_000 &&
+        !state.audio.receivedAudio &&
+        !audioReceiver?.connected
+      ) {
+        normalized.transcript = [normalized.transcript, '[Waiting for meeting audio.]']
+          .filter(Boolean)
+          .join('\n');
+      }
       Object.assign(state.meeting, normalized, { speakerNames });
       state.meeting.captureStatus = (
         state.audio
@@ -1327,9 +1363,23 @@ export class AttendeeMeetings {
         state.pendingRequests ??= {};
         state.processedRequests ??= {};
         const current = new Set<string>();
-        for (const utterance of snapshot) {
-          const text = utterance.transcription.transcript;
+        const context = state.audio
+          ? [...snapshot].sort((a, b) => a.timestamp_ms - b.timestamp_ms)
+          : snapshot;
+        for (const [index, utterance] of context.entries()) {
+          let text = utterance.transcription.transcript;
           if (!/\bverity\b/iu.test(text)) continue;
+          if (state.audio && /\bverity[\s,.!?;:]*$/iu.test(text)) {
+            const following = context
+              .slice(index + 1)
+              .find((other) => other.speaker_uuid === utterance.speaker_uuid);
+            if (
+              following &&
+              following.timestamp_ms <= utterance.timestamp_ms + utterance.duration_ms + 2_000
+            )
+              text += ` ${following.transcription.transcript}`;
+            else if (!final) continue;
+          }
           const identity = createHash('sha256')
             .update(JSON.stringify([utterance.speaker_uuid, utterance.timestamp_ms, text]))
             .digest('hex');
