@@ -38,8 +38,17 @@ function noChecksSince(
 interface ReadOptions {
   background?: boolean;
   priority?: boolean;
+  /** Someone opened the session: read the forge now unless a read finished
+   * within {@link FRESH_MIN_MS}. Reads already on their way are shared, a
+   * failing forge keeps its backoff, and a merged PR, which no longer changes,
+   * keeps its slow cadence. */
+  fresh?: boolean;
   load?: () => Promise<PullRequestStatus | null>;
 }
+
+/** The shortest spacing of reads asked for fresh, so devices opening the same
+ * session at once, or one reopening it, cost one forge read. */
+export const FRESH_MIN_MS = 2_000;
 
 function foregroundInterval(entry: Entry): number {
   const { status } = entry;
@@ -129,7 +138,12 @@ export function createSessionPrCache(options: {
       return running.promise;
     }
     const previous = entries.get(key);
-    if (!isDue(session, readOptions.background)) return Promise.resolve(previous?.status ?? null);
+    const due =
+      readOptions.fresh === true &&
+      (previous === undefined || (previous.failures === 0 && previous.status?.phase !== 'merged'))
+        ? previous === undefined || now() - previous.at >= FRESH_MIN_MS
+        : isDue(session, readOptions.background);
+    if (!due) return Promise.resolve(previous?.status ?? null);
     let resolve!: (status: PullRequestStatus | null) => void;
     const token: PendingRead = {
       disowned: false,

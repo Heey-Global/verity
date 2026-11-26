@@ -6222,11 +6222,9 @@ export class VerityClient {
   }
 
   /** The current + switchable branches of a session's worktree (#91). */
-  async getBranches(id: string, signal?: AbortSignal): Promise<BranchList> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/branches`, {
-      method: 'GET',
-      ...(signal ? { signal } : {}),
-    });
+  async getBranches(id: string, signal?: AbortSignal, fresh = false): Promise<BranchList> {
+    const path = `/sessions/${encodeURIComponent(id)}/branches${fresh ? '?fresh=1' : ''}`;
+    const res = await this.request(path, { method: 'GET', ...(signal ? { signal } : {}) });
     return branchListSchema.parse(await res.json());
   }
 

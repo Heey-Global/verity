@@ -40,9 +40,9 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionLinkRoutes } from './session-link-routes.js';
 import { registerSessionMergeRoutes } from './session-merge-routes.js';
-import { unavailablePullRequestStatus } from './session-pr-cache.js';
+import { FRESH_MIN_MS, unavailablePullRequestStatus } from './session-pr-cache.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
-import { sessionParams } from './session-route-schemas.js';
+import { branchReadQuery, sessionParams } from './session-route-schemas.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
 import { legacyAdministratorId } from './view-state-routes.js';
 import {
@@ -139,6 +139,8 @@ export function installSessionRoutes(
     {
       read: Promise<Awaited<ReturnType<typeof resolvePullRequests>> | null>;
       expires: number;
+      /** Set when the read settles; a failed read keeps its TTL even when asked fresh. */
+      settled?: { at: number; failed: boolean };
       waitingForResult: boolean;
       invalidated: boolean;
     }
@@ -433,6 +435,9 @@ export function installSessionRoutes(
   registerSessionBranchReadRoute(app, {
     list: async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
+      // The app opened the session: its pull request is read from the forge
+      // now (see FRESH_MIN_MS), and the result reaches every device as an event.
+      const fresh = branchReadQuery.parse(request.query ?? {}).fresh === '1';
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
@@ -467,7 +472,12 @@ export function installSessionRoutes(
         readStage('pr', async () => {
           const key = encodeURIComponent(session.sessionId);
           let entry = repositoryPRReads.get(key);
-          if (!entry || entry.expires < Date.now()) {
+          const settled = entry?.settled;
+          if (
+            !entry ||
+            entry.expires < Date.now() ||
+            (fresh && settled?.failed === false && Date.now() - settled.at >= FRESH_MIN_MS)
+          ) {
             const started: NonNullable<ReturnType<typeof repositoryPRReads.get>> = {
               read: resolvePullRequests(session, pullRequest),
               expires: Infinity,
@@ -483,10 +493,12 @@ export function installSessionRoutes(
                   { err, sessionId: id },
                   'Session repository pull requests unavailable',
                 );
+                started.settled = { at: Date.now(), failed: true };
                 return null;
               })
               .finally(() => {
-                started.expires = Date.now() + 5000;
+                started.settled ??= { at: Date.now(), failed: false };
+                started.expires = started.settled.at + 5000;
                 if (repositoryPRReads.get(key) !== started) return;
                 if (started.invalidated) repositoryPRReads.delete(key);
                 if (started.invalidated || started.waitingForResult)
@@ -534,6 +546,7 @@ export function installSessionRoutes(
         deps.branchPrStatusForBranches !== undefined || deps.branchPrStatus !== undefined
           ? sessionPrCache.get(session, {
               priority: true,
+              fresh,
               load: () => sessionPrStatus(session, current),
             })
           : undefined;

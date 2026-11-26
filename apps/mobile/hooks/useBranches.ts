@@ -192,6 +192,8 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     promise: Promise<void>;
     followup: boolean;
     silent: boolean;
+    /** The next read asks for a fresh pull request status. */
+    fresh: boolean;
     controller: AbortController;
   } | null>(null);
 
@@ -224,12 +226,16 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   }
 
   const load = useCallback(
-    (opts: { silent?: boolean; force?: boolean } = {}) => {
+    // `fresh`: the operator opened, returned to or acted on the session, so
+    // the server reads its pull request from the forge now rather than from
+    // its cache. Hints and catch-up reads take the cached status.
+    (opts: { silent?: boolean; force?: boolean; fresh?: boolean } = {}) => {
       const existing = pending.current;
       if (existing?.client === client && existing.sessionId === sessionId) {
         if (opts.force !== false) {
           existing.followup = true;
           existing.silent = existing.silent && opts.silent === true;
+          existing.fresh = existing.fresh || opts.fresh === true;
         }
         return existing.promise;
       }
@@ -239,6 +245,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         promise: Promise.resolve(),
         followup: false,
         silent: opts.silent === true,
+        fresh: opts.fresh === true,
         controller: new AbortController(),
       };
       pending.current = request;
@@ -255,8 +262,10 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
           try {
             const publishSnapshot = branchesSnapshotWriter(client, sessionId);
             const prefetched = takePrefetchedBranches(client, sessionId, request.controller.signal);
+            const readFresh = request.fresh;
+            request.fresh = false;
             const res = await (prefetched ??
-              client.getBranches(sessionId, request.controller.signal));
+              client.getBranches(sessionId, request.controller.signal, readFresh));
             if (fresh()) {
               const pullRequests =
                 res.pullRequests === null
@@ -338,7 +347,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     useCallback(() => {
       setFocused(true);
       visible.current = appActive;
-      if (appActive && enabled) void load({ silent: true });
+      if (appActive && enabled) void load({ silent: true, fresh: true });
       return () => {
         setFocused(false);
         visible.current = false;
@@ -387,7 +396,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
 
   const refresh = useCallback(() => {
     // Focus always revalidates, so hidden refresh requests need no network work.
-    if (enabled && visible.current) void load();
+    if (enabled && visible.current) void load({ fresh: true });
   }, [load, enabled]);
 
   const switchTo = useCallback<UseBranches['switchTo']>(
@@ -396,7 +405,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         await client.switchBranch(sessionId, opts);
         invalidateBranches(client, sessionId);
         reqId.current += 1;
-        await load();
+        await load({ fresh: true });
         return { ok: true };
       } catch (err) {
         if (err instanceof VerityApiError) {
@@ -471,7 +480,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         } else {
           publishPullRequestStatusMutation({ sessionId });
         }
-        await load();
+        await load({ fresh: true });
         return { ok: true };
       } catch (err) {
         const retryable =

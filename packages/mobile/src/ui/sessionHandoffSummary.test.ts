@@ -18,6 +18,26 @@ import {
 } from './sessionHandoffSummary.js';
 
 describe('sessionHandoffSummary', () => {
+  // The panel draws the route from these halves; a project half that disagreed with the
+  // headline would show one destination next to a briefing bound for another.
+  it.each([
+    [{ newSession: { project: 'acme/site' } }, { project: 'acme/site', session: 'New session' }],
+    [{ project: 'acme/site' }, { project: 'acme/site', session: 'Its one open session' }],
+    [
+      {
+        sessionId: 's1',
+        sessionName: 'Release',
+        sessionProject: 'acme/site',
+        sessionLastActivityAt: null,
+      },
+      { project: 'acme/site', session: 'Session “Release”' },
+    ],
+  ])('splits the target %j into project and session', (target, destination) => {
+    const summary = sessionHandoffSummary({ target, title: 't', briefing: 'b' });
+    expect(summary?.destination).toEqual(destination);
+    expect(summary?.target).toContain(destination.project);
+  });
+
   it('names the target and carries the briefing verbatim, however long', () => {
     const briefing = `Digest sha256:abc\n\n${'x'.repeat(19_000)}\nlast line`;
     const summary = sessionHandoffSummary({
@@ -28,6 +48,7 @@ describe('sessionHandoffSummary', () => {
     expect(summary).toEqual({
       target: 'session sess-web',
       targetKind: 'session',
+      destination: { project: null, session: 'Session sess-web' },
       title: 'Overlay for the new site',
       // Not clamped, not squashed to one line: the card is the only place this is read
       // before it becomes a turn somewhere else.

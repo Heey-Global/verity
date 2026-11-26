@@ -14,6 +14,12 @@ Control (turning it on again recreates a deleted session); turning it off stops
 a running turn, keeps the session and its history, and refuses every assistant
 tool call until it is on again. Notes already queued still reach the session.
 
+While it is on, the session is not listed in Verity Control, on Home or in any
+other session list, and adds nothing to their "waiting for you" counts: the
+conversation, its questions and its approvals live behind the floating V, whose
+badge counts what waits. The panel's expand button opens the full session.
+Switched off, the session is listed again so its history stays reachable.
+
 Mail, calendar and contacts use the Google accounts assigned to the Verity
 Control project (Settings → Assistant → Mail and calendar). Sending mail and
 changing events keep their approval cards.
@@ -79,7 +85,8 @@ app help topic explains them too.
   session runs on Claude Sonnet 5.5; switching it to another backend makes its
   turns fail instead of running unrestricted.
 - The grant is the consent for `verity_assistant`; its calls run without a
-  separate approval card. The handoff keeps its approval card.
+  separate approval card. The handoff keeps its approval card, decided in the
+  Verity panel (see [Approvals in the panel](#approvals-in-the-panel)).
 
 ## Handoff results
 
@@ -153,6 +160,34 @@ message or mail. The meetings belong to the server's Google accounts, so these
 actions are limited to administrators, as the start screen is. A joined
 meeting, its transcript and its notes belong to the assistant session.
 
+## Approvals in the panel
+
+The conversation carries each waiting approval with its request (up to
+96 KiB for all of them together, `ASSISTANT_APPROVAL_INPUT_MAX_BYTES`), read from the approval's own
+event in the assistant session, so the panel decides it in place through the
+session's permission route; nothing jumps to the session.
+
+- **A handoff** is one card from request to result. Waiting, it is labelled
+  "Handoff to another project" and shows the route from Verity to the project
+  and session it goes to (a new session, a named one, or the project's one open
+  session), the task, the briefing folded with its size and the note that
+  Verity wrote it, and `Hand over to <project>` or `Don't hand over`. Opening the
+  briefing shows it in full, with invisible bidi controls spelled out; handing
+  over without opening it is the user's call. The gateway names the approval
+  with its own id, so the projection gives it to the newest still-pending
+  handoff with the same title.
+- Decided, the same card keeps its head, route and task, more compactly, and
+  shows `Handed over` while the session works, then `Done` or `Open` with the
+  result (see [Handoff results](#handoff-results)). `Don't hand over` denies
+  with a fixed message (`ASSISTANT_HANDOFF_DECLINED`) that the assistant reads
+  as the user's decision; the card then shows `Not handed over`, while any other
+  error, including a denial in the session's own card, shows `Failed`.
+- **Other approvals** (a mail to send, an event to change) are decided on their
+  own card when their summary carries the whole request, as on Home.
+- A request too large to carry, one that does not parse, or one from an older
+  server is not offered for approval in the panel: `Review in session` opens
+  the assistant session, where the full card is.
+
 ## Conversation on phone and Watch
 
 The floating V on the phone and the Watch app open one conversation with the
@@ -169,11 +204,12 @@ Both devices show it the same way:
   its newest entry, with earlier ones above it and day headings between them;
   replies render their Markdown as an agent's reply does in a session. Work the
   assistant hands to a project appears in the chat as a card with its state.
-- **Needs you** holds the open cases. On the phone they are Home's "For you"
-  items; the Watch lists the same items under its title and V button, as the
-  iPhone last read them, and says how old the list is once it is no longer
-  fresh. The assistant's own question is answered on either device; Home's other
-  items are decided on the phone.
+- **Needs you** holds the open cases. On the phone the assistant's question and
+  approvals wait in the panel, counted on the V; Home's "For you" holds the
+  projects' items. The Watch lists Home's items under its title and V button, as
+  the iPhone last read them, and says how old the list is once it is no longer
+  fresh. The assistant's own question is answered on either device; approvals
+  and Home's other items are decided on the phone.
 
 Requests are meant to be answered quickly:
 
