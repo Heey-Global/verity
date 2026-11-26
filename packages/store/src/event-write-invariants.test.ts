@@ -41,7 +41,7 @@ it('has no writer into `events` that sources `type` anywhere but the parsed payl
       )) {
         const initializer = binding[1]!.replace(/\s+/g, '');
         expect(initializer).toMatch(
-          /^(?:awaitthis.prepareEventRow\(event\)|frame.event!==undefined\?awaitthis.prepareEventRow\(frame.event\):undefined|event===undefined\?undefined:awaitthis.prepareEventRow\(event\))$/,
+          /^(?:awaitthis.prepareEventRow\(event\)|awaitthis.getEventWrites\(\).prepareEventRow\(event\)|frame.event!==undefined\?awaitthis.prepareEventRow\(frame.event\):undefined|event===undefined\?undefined:awaitthis.prepareEventRow\(event\))$/,
         );
       }
     }
