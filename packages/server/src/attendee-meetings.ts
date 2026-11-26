@@ -119,6 +119,7 @@ interface OnlineMeeting {
     binding?: NonNullable<OnlineMeeting['binding']>;
     token: string;
     segments: AttendeeUtterance[];
+    receivedAudio?: boolean;
     gap: boolean;
     disabled?: boolean;
   };
@@ -621,14 +622,17 @@ export class AttendeeMeetings {
     const received = connection.segments.slice();
     const previousGap = audio.gap;
     const previousLength = audio.segments.length;
+    const firstAudio = connection.receiver.hasAudio && !audio.receivedAudio;
     audio.gap ||= gap || connection.gap;
-    if (!received.length && previousGap === audio.gap) return;
+    if (!received.length && previousGap === audio.gap && !firstAudio) return;
+    if (firstAudio) audio.receivedAudio = true;
     audio.segments.push(...received);
     try {
       await this.save(state);
     } catch (error) {
       audio.segments.length = previousLength;
       audio.gap = previousGap;
+      if (firstAudio) delete audio.receivedAudio;
       throw error;
     }
     connection.segments.splice(0, received.length);
@@ -649,11 +653,11 @@ export class AttendeeMeetings {
         connection.gap ||
           (joined && missingAudio) ||
           (final &&
-            !connection.segments.length &&
-            !audio.segments.length &&
+            !connection.receiver.hasAudio &&
+            !audio.receivedAudio &&
             state.joinedAt !== undefined),
       );
-    } else if (state.joinedAt !== undefined && final) {
+    } else if (state.joinedAt !== undefined && final && !audio.receivedAudio) {
       audio.gap = true;
     }
     const names = new Map<string, string>();
@@ -1195,7 +1199,7 @@ export class AttendeeMeetings {
       else await this.publish(state);
       return;
     }
-    if (!discard && state.audio && !state.audio.disabled) {
+    if (!discard && !state.stopRequested && state.audio && !state.audio.disabled) {
       // Restore media transport even when Attendee's status API is unavailable.
       await this.persistAudio(state);
       try {

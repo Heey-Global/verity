@@ -95,6 +95,7 @@ export class AttendeeAudioReceiver {
   private readonly queued: AudioChunk[] = [];
   private readonly pending: Buffer[] = [];
   private pendingBytes = 0;
+  private receivedAudio = false;
   private readonly abort = new AbortController();
   private readonly reported = new Set<AttendeeAudioGap>();
   private socket: WebSocket | undefined;
@@ -146,6 +147,10 @@ export class AttendeeAudioReceiver {
         });
       });
     });
+  }
+
+  get hasAudio(): boolean {
+    return this.receivedAudio;
   }
 
   get connected(): boolean {
@@ -229,6 +234,7 @@ export class AttendeeAudioReceiver {
       this.gap('invalid_audio');
       return;
     }
+    this.receivedAudio = true;
     const track = this.tracks.get(participantId) ?? this.addTrack(participantId);
     if (!track) return;
     // Attendee timestamps each message at send time. Adjacent frames can have
