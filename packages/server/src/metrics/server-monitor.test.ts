@@ -1,6 +1,7 @@
 import compressPlugin from '@fastify/compress';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
+import { conditionalJsonRoute } from '../conditional-json.js';
 import { pairedRoutePolicy } from '../paired-route-policy.js';
 import { hashIdentifier } from './diagnostic-report.js';
 import { withExternalCause } from './external-calls.js';
@@ -35,6 +36,7 @@ async function serve(options: { store?: MonitoringSettingsStore; now?: () => Dat
   instance.get('/sessions/:id/history/v1', { compress: {} }, async (_request, reply) =>
     reply.type('text/plain').compress(BODY),
   );
+  instance.get('/sessions', conditionalJsonRoute, async () => ({ sessions: BODY }));
   await instance.ready();
   app = instance;
   return { app: instance, monitor };
@@ -98,6 +100,42 @@ describe('server monitoring', () => {
     const sent = report(monitor).traffic.topRoutes[0]!.bytesOut;
     expect(sent).toBe(response.rawPayload.byteLength);
     expect(sent).toBeLessThan(BODY.length / 10);
+  });
+
+  // An overview route's average size alone cannot say whether its bodies went
+  // out uncompressed or were diluted by bodiless revalidations; the report has
+  // to name both, or a broken conditional read stays invisible.
+  it('counts revalidated and compressed answers per route and client', async () => {
+    const { app, monitor } = await serve();
+    const headers = { 'x-verity-client': 'ios/1.95.7', 'accept-encoding': 'gzip' };
+    const first = await app.inject({ url: '/sessions', headers });
+    expect(first.headers['content-encoding']).toBe('gzip');
+    const again = await app.inject({
+      url: '/sessions',
+      headers: { ...headers, 'if-none-match': String(first.headers.etag) },
+    });
+    expect(again.statusCode).toBe(304);
+    await app.inject({ url: '/sessions', headers: { 'x-verity-client': 'ios/1.95.7' } });
+    expect(
+      report(monitor).traffic.topRoutes.find((route) => route.route === '/sessions'),
+    ).toMatchObject({ client: 'ios/1.95.7', requests: 3, notModified: 1, compressed: 1 });
+  });
+
+  // The live hub re-reads observed resources through `app.inject()`. Those reads
+  // never leave the process, so they must not pass for an unknown device.
+  it("labels the server's own injected reads as internal", async () => {
+    const { app, monitor } = await serve();
+    await app.inject({ url: '/sessions' });
+    // A network caller can copy inject's user agent, but not its request object.
+    const address = await app.listen({ port: 0, host: '127.0.0.1' });
+    await (
+      await fetch(`${address}/sessions`, { headers: { 'user-agent': 'lightMyRequest' } })
+    ).text();
+    expect(
+      report(monitor)
+        .traffic.byClient.map((entry) => entry.client)
+        .sort(),
+    ).toEqual(['internal', 'other']);
   });
 
   // A report leaves the server through the share sheet. Session IDs, query

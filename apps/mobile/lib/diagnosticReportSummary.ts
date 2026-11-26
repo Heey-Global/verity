@@ -31,6 +31,7 @@ const CLIENT_NAMES: Record<string, string> = {
   web: 'browser',
   cli: 'command line',
   agent: 'agents',
+  internal: 'the server itself',
   other: 'other clients',
 };
 
