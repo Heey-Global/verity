@@ -80,7 +80,7 @@ export function keptWithout<T extends { event: DomainEvent }>(
 
 /** The session with the pull request status the overview routes would now
  * show: the full status, and the compact one Home's markers read. */
-function withPullRequest(
+export function withPullRequest(
   session: SessionSummary,
   pullRequest: NonNullable<SessionSummary['pullRequest']> | null,
 ): SessionSummary {
