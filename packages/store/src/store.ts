@@ -1,3 +1,4 @@
+import { PackageProtectionStore } from './package-protection.js';
 import { AttendeeStateStore } from './attendee-state.js';
 import { EventHistoryStore, type SequencedEvent } from './event-history.js';
 export type { SequencedEvent } from './event-history.js';
@@ -2793,27 +2794,20 @@ export class EventStore implements EventSink {
     return this.projectSettings.getProjectSettings(projectId);
   }
 
+  private readonly packageProtection = new PackageProtectionStore(() => this.db);
+
   /** Missing rows keep existing projects undecided until their first installation. */
   async getPackageProtectionDecision(
     projectId: string,
   ): Promise<'protected' | 'skipped' | 'undecided'> {
-    const row = await this.db
-      .selectFrom('project_package_protection')
-      .select('decision')
-      .where('project_id', '=', projectId)
-      .executeTakeFirst();
-    return row?.decision ?? 'undecided';
+    return this.packageProtection.getPackageProtectionDecision(projectId);
   }
 
   async setPackageProtectionDecision(
     projectId: string,
     decision: 'protected' | 'skipped',
   ): Promise<void> {
-    await this.db
-      .insertInto('project_package_protection')
-      .values({ project_id: projectId, decision })
-      .onConflict((conflict) => conflict.column('project_id').doUpdateSet({ decision }))
-      .execute();
+    return this.packageProtection.setPackageProtectionDecision(projectId, decision);
   }
 
   async getProjectSettingsRaw(projectId: string): Promise<ProjectSettingsRecord | undefined> {
