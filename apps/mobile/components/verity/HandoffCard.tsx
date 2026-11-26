@@ -5,7 +5,7 @@ import {
   type AssistantConversationItem,
   type SessionHandoffSummary,
 } from '@verity/mobile';
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Alert, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -159,17 +159,26 @@ function Decision({
   onReview: (() => void) | null;
 }) {
   const [deciding, setDeciding] = useState<'allow' | 'deny' | null>(null);
+  // State re-renders too late to stop a fast double tap; a second decision would fail as
+  // already decided and report an approval that went through as "Not decided".
+  const running = useRef(false);
   const decide = (allow: boolean) => {
-    if (deciding !== null) return;
+    if (running.current) return;
+    running.current = true;
     setDeciding(allow ? 'allow' : 'deny');
     decideVerityApproval(approval, allow)
       .catch((error: unknown) => {
         Alert.alert('Not decided', error instanceof Error ? error.message : 'Try again');
       })
-      .finally(() => setDeciding(null));
+      .finally(() => {
+        running.current = false;
+        setDeciding(null);
+      });
   };
+  // Without Verity's session (onReview null) there is nothing to decide against either.
+  if (onReview === null) return null;
   if (!decidable)
-    return onReview === null ? null : (
+    return (
       <View style={styles.actions}>
         <Text variant="footnote" style={styles.flex}>
           Too much to show here; the full request is in Verity&apos;s session.

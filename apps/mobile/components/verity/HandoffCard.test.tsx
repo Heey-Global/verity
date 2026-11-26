@@ -182,11 +182,28 @@ it('names only the destination the request itself names', () => {
   expect(screen.getByText('Hand over')).toBeTruthy();
 });
 
-it('offers no way to the session when there is none to open', () => {
+it('offers neither answers nor a way to the session when there is no session', () => {
   const screen = show({
     sessionId: null,
     state: 'needs_you',
-    approvals: [{ id: 'p-1', tool: 'verity_gmail' }],
+    approvals: [
+      { id: 'p-1', tool: 'verity_gmail' },
+      { id: 'p-2', tool: 'WebFetch', input: { url: 'https://api.exa.ai' } },
+    ],
   });
   expect(screen.queryByText('Review in session')).toBeNull();
+  expect(screen.queryByText('Allow')).toBeNull();
+});
+
+it('sends one decision for a double tap', async () => {
+  let finish: () => void = () => undefined;
+  jest
+    .mocked(decideVerityApproval)
+    .mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)));
+  const screen = waiting();
+  const button = screen.getByText('Hand over to verity');
+  fireEvent.press(button);
+  fireEvent.press(button);
+  await act(async () => finish());
+  expect(decideVerityApproval).toHaveBeenCalledTimes(1);
 });
