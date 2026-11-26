@@ -89,8 +89,10 @@ export const LOG_PROJECTION_CACHE_MAX_SESSIONS = 2_048;
  * The newest event's time is part of it too: when the event table is emptied
  * with its identity restarted, as test fixtures do between cases, revision and
  * seq both start over and a reused session id could otherwise match.
- * Only log-derived values are kept, never event payload arrays. Least recently
- * used sessions leave first.
+ * Only log-derived values are kept, never the event tail. Besides permission
+ * requests (budgeted below) an entry holds small values: the newest rate-limit
+ * state per provider window, the token totals and at most one choices block.
+ * Least recently used sessions leave first.
  */
 export class SessionLogProjectionCache {
   private readonly entries = new Map<string, CachedLog>();
