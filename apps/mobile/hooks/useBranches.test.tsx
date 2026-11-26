@@ -79,6 +79,20 @@ describe('useBranches live updates', () => {
     jest.useRealTimers();
   });
 
+  // Opening the session asks the server to read the forge now; the reads a
+  // change announces take its cached status, so events keep the bar current.
+  it('reads fresh when the session opens, and from the cache for announced changes', async () => {
+    const getBranches = jest.fn().mockResolvedValue(branches());
+    const client = { getBranches } as unknown as VerityClient;
+    renderHook(() => useBranches(client, 'fresh-open'));
+    await act(async () => {});
+    expect(getBranches).toHaveBeenCalledTimes(1);
+    expect(getBranches.mock.calls[0]![2]).toBe(true);
+    await changed();
+    expect(getBranches).toHaveBeenCalledTimes(2);
+    expect(getBranches.mock.calls[1]![2]).toBe(false);
+  });
+
   it('receives delayed repository PRs without a primary checkout', async () => {
     const initial: BranchList = {
       current: '',
