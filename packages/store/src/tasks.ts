@@ -70,6 +70,7 @@ export interface TaskListFilter {
   projectId?: string | null | undefined;
   sessionId?: string | undefined;
   statuses?: readonly TaskStatus[] | undefined;
+  origin?: TaskOrigin | undefined;
 }
 
 export class TaskNotFoundError extends Error {
@@ -156,6 +157,7 @@ export class TaskStore {
     if (filter.sessionId !== undefined) query = query.where('session_id', '=', filter.sessionId);
     if (filter.statuses !== undefined && filter.statuses.length > 0)
       query = query.where('status', 'in', [...filter.statuses]);
+    if (filter.origin !== undefined) query = query.where('origin', '=', filter.origin);
     const rows = await query.orderBy('sort', 'asc').orderBy('created_at', 'asc').execute();
     return rows.map((row) => this.record(row));
   }

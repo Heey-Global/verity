@@ -177,6 +177,18 @@ describe('tasks routes', () => {
     expect((await app.inject({ method: 'GET', url: '/tasks' })).json().tasks).toHaveLength(2);
   });
 
+  it('lists the operator tasks apart from the steps agents recorded', async () => {
+    await store.tasks.upsert({ id: T1, ownerUserId: ADMIN, origin: 'user', title: 'Mine' });
+    await store.tasks.upsert({ id: T2, ownerUserId: ADMIN, origin: 'agent', title: 'Step' });
+    // Clients list their own tasks with `origin=user`; without the filter every
+    // step any agent ever recorded travels along with them.
+    const mine = await app.inject({ method: 'GET', url: '/tasks?origin=user' });
+    expect(ids(mine.json())).toEqual([T1]);
+    const steps = await app.inject({ method: 'GET', url: '/tasks?origin=agent&status=open' });
+    expect(ids(steps.json())).toEqual([T2]);
+    expect((await app.inject({ method: 'GET', url: '/tasks?origin=bot' })).statusCode).toBe(400);
+  });
+
   it('blocks edits to assigned tasks after project access is revoked', async () => {
     await grantMember({ read: true, execute: true });
     await store.tasks.upsert({
