@@ -46,7 +46,7 @@ export function useOverviewProjects(client: VerityClient, active: boolean): Proj
     return () => {
       current = false;
     };
-  }, [client, active]);
+  }, [client, active, store]);
   // In the order of the read, as `/projects` lists them; then the projects
   // other views read since.
   return useMemo(() => {

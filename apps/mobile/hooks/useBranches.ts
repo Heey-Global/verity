@@ -3,6 +3,7 @@ import {
   VerityApiError,
   type VerityClient,
   type BranchList,
+  type OverviewStore,
   type BranchSwitchRequest,
   type SessionPullRequestStatus,
   publishPullRequestStatusMutation,
@@ -145,8 +146,8 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   );
   const storeRef = useRef(store);
   storeRef.current = store;
-  /** The store took this hook's last read, so its status is at least as new. */
-  const [readInStore, setReadInStore] = useState(false);
+  /** The store that took this hook's last read; its status is at least as new. */
+  const [readStore, setReadStore] = useState<OverviewStore | undefined>(undefined);
   const [identity, setIdentity] = useState({ client, sessionId });
   const [current, setCurrent] = useState<string | undefined>(cached?.current);
   const [switchable, setSwitchable] = useState<string[]>(cached?.switchable ?? []);
@@ -196,7 +197,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   // one frame before focus effects run.
   if (identity.client !== client || identity.sessionId !== sessionId) {
     setIdentity({ client, sessionId });
-    setReadInStore(false);
+    setReadStore(undefined);
     reqId.current += 1;
     if (pending.current) {
       pending.current.followup = false;
@@ -277,7 +278,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
                   if (!applied) request.followup = true;
                 }
               }
-              setReadInStore(applied && target === storeRef.current);
+              setReadStore(applied ? target : undefined);
               setCurrent(res.current);
               setSwitchable(res.switchable);
               setPreviewable(res.previewable ?? []);
@@ -504,7 +505,8 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   // The store's status of the same pull request is at least as new as this
   // hook's read. Another pull request there (one opened or replaced since)
   // needs the branch read, which carries its number and repository rows.
-  const heldPr = readInStore ? heldPullRequest : undefined;
+  // Another store (an account change) never took this read.
+  const heldPr = readStore === store ? heldPullRequest : undefined;
   const otherPr =
     heldPr !== undefined && (heldPr?.number ?? null) !== (pullRequest?.number ?? null);
   // Once per pull request the store names, however often its status changes.
