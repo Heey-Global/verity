@@ -77,6 +77,7 @@ export function installSummaryEvents(
     const topics: DomainTopic[] = [domainTopic('session', sessionId)];
     if (session.projectId !== null && !(await isMaintenanceSession(deps.eventStore, sessionId)))
       topics.push(domainTopic('project', session.projectId));
+    if (closed) return;
     const event = {
       t: 'session.summary' as const,
       sessionId,

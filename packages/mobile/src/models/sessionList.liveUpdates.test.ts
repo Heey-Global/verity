@@ -307,4 +307,27 @@ describe("SessionListModel waiting for a skipped hint's row", () => {
     await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
     model.stop();
   });
+
+  it('still reads when the row that came could not be applied', async () => {
+    const listSessions = vi.fn(() => Promise.resolve([summary('s1', { projectId: 'p1' })]));
+    const model = new SessionListModel({
+      client: clientFor(listSessions),
+      pollIntervalMs: 0,
+      followsLive: () => true,
+      rowWaitMs: 30,
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
+    // Not a row this app can read: ignored, and the wait goes on.
+    model.applyDomainEvent({
+      t: 'session.summary',
+      sessionId: 's1',
+      rev: 1,
+      patch: { ...summary('s1'), status: 42 },
+    });
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    model.stop();
+  });
 });

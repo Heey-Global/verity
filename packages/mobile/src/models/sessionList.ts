@@ -641,8 +641,14 @@ export class SessionListModel {
    * `choices.opened` reload brings it back.
    */
   applyDomainEvent(event: DomainEvent): void {
-    if (event.t === 'session.summary') this.rowArrived(event.sessionId);
+    // A row the list already reflects counts as arrived; one it dropped as
+    // unreadable does not, so the wait still ends in a read.
+    const reflected =
+      event.t === 'session.summary' &&
+      (this._sessions.find((s) => s.sessionId === event.sessionId)?.summaryRev ?? -1) >= event.rev;
     const effect = applyOverviewEvent(this._sessions, event);
+    if (event.t === 'session.summary' && (reflected || effect.kind === 'local'))
+      this.rowArrived(event.sessionId);
     if (effect.kind === 'reload') {
       // `poll` coalesces: a burst of requests is one read in flight plus one.
       this.poll?.();
