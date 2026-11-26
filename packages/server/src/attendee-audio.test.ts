@@ -78,7 +78,7 @@ describe('Attendee audio receiver', () => {
     await pong;
     expect(transcribe).not.toHaveBeenCalled();
     binding.botId = 'bot_test';
-    client.send(frame({ participantId: 'speaker' }));
+    receiver.flushBoundAudio();
 
     await vi.waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1), { timeout: 2_000 });
     expect(transcribe).toHaveBeenCalledWith({
@@ -90,7 +90,7 @@ describe('Attendee audio receiver', () => {
     const wav = transcribe.mock.calls[0]?.[0].wav;
     expect(wav?.toString('ascii', 0, 4)).toBe('RIFF');
     expect(wav?.readUInt32LE(24)).toBe(16_000);
-    expect(wav?.subarray(44)).toEqual(Buffer.concat([pcm, pcm]));
+    expect(wav?.subarray(44)).toEqual(pcm);
     const disconnected = once(client, 'close');
     client.close(1000);
     await disconnected;

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   MeetingTranscriberUnavailableError,
   MeetingTranscriptionCancelledError,
@@ -34,15 +35,22 @@ export function configuredLiveAudioTranscription(
       throw new MeetingTranscriberUnavailableError();
     }
     endpoint.pathname = endpoint.pathname.replace(/\/+$/, '') + '/audio/transcriptions';
-    return { endpoint, model, token: settings?.transcribeApiKey?.trim() };
+    const target = createHash('sha256').update(endpoint.href).digest('hex');
+    return { endpoint, model, token: settings?.transcribeApiKey?.trim(), target };
   }
 
   return {
-    async checkAudioTranscription(): Promise<void> {
-      await configuration();
+    async checkAudioTranscription(): Promise<string> {
+      return (await configuration()).target;
     },
-    async transcribeAudio(wav: Buffer, signal: AbortSignal): Promise<string> {
-      const { endpoint, model, token } = await configuration();
+    async transcribeAudio(
+      wav: Buffer,
+      signal: AbortSignal,
+      expectedTarget?: string,
+    ): Promise<string> {
+      const { endpoint, model, token, target } = await configuration();
+      if (expectedTarget !== undefined && target !== expectedTarget)
+        throw new MeetingTranscriberUnavailableError();
       const form = new FormData();
       form.set('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'meeting.wav');
       form.set('model', model);

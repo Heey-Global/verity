@@ -204,6 +204,11 @@ export class AttendeeAudioReceiver {
     this.receiveBound(raw, expected);
   }
 
+  flushBoundAudio(): void {
+    const expected = this.options.botId();
+    if (expected && !this.stopping) this.flushPending(expected);
+  }
+
   private flushPending(expected: string): void {
     for (const raw of this.pending) this.receiveBound(raw, expected);
     this.pending.length = 0;

@@ -120,6 +120,7 @@ interface OnlineMeeting {
     token: string;
     segments: AttendeeUtterance[];
     receivedAudio?: boolean;
+    target?: string;
     gap: boolean;
     disabled?: boolean;
   };
@@ -242,8 +243,12 @@ export class AttendeeMeetings {
         utterance: string,
         requestId: string,
       ) => Promise<void>;
-      checkAudioTranscription?: () => Promise<void>;
-      transcribeAudio?: (wav: Buffer, signal: AbortSignal) => Promise<string>;
+      checkAudioTranscription?: () => Promise<string | void>;
+      transcribeAudio?: (
+        wav: Buffer,
+        signal: AbortSignal,
+        expectedTarget?: string,
+      ) => Promise<string>;
       client?: (key: string) => AttendeeClient;
       log?: AttendeeMeetingsLog;
     },
@@ -547,7 +552,7 @@ export class AttendeeMeetings {
         if (connection) connection.gap = true;
       },
       transcribe: async ({ wav, timestampMs, participantId, signal }) => {
-        const transcript = (await transcribe(wav, signal)).trim();
+        const transcript = (await transcribe(wav, signal, audio.target)).trim();
         if (!transcript || !connection || signal.aborted) return;
         if (connection.segments.length >= 256) {
           connection.gap = true;
@@ -665,6 +670,7 @@ export class AttendeeMeetings {
     const connection = this.audioConnections.get(state.meeting.id);
     if (connection) {
       connection.botId = state.botId;
+      connection.receiver.flushBoundAudio();
       if (final) await connection.receiver.finish();
       const missingAudio = !connection.receiver.connected && connection.receiver.streamClosed;
       await this.persistAudio(
@@ -716,9 +722,10 @@ export class AttendeeMeetings {
       if (!credentials) throw new Error('Configure Attendee in Connected services first.');
       if (sessionId !== null && (await this.activeIn(sessionId)))
         throw new Error('An online meeting is already active in this session.');
+      let audioTarget: string | void;
       if (this.options.transcribeAudio) {
         try {
-          await this.options.checkAudioTranscription?.();
+          audioTarget = await this.options.checkAudioTranscription?.();
         } catch {
           throw new OnlineMeetingStartError(
             'Configure and unlock your external transcription service in Transcription settings before starting an online meeting.',
@@ -746,7 +753,12 @@ export class AttendeeMeetings {
         identities: {},
         ...(this.options.transcribeAudio
           ? {
-              audio: { token: randomBytes(32).toString('hex'), segments: [], gap: false },
+              audio: {
+                token: randomBytes(32).toString('hex'),
+                segments: [],
+                gap: false,
+                ...(audioTarget ? { target: audioTarget } : {}),
+              },
             }
           : {}),
         phase: 'preparing',
@@ -864,7 +876,10 @@ export class AttendeeMeetings {
         );
         state.botId = bot.id;
         const audioConnection = this.audioConnections.get(id);
-        if (audioConnection) audioConnection.botId = bot.id;
+        if (audioConnection) {
+          audioConnection.botId = bot.id;
+          audioConnection.receiver.flushBoundAudio();
+        }
         state.phase = 'running';
         await this.publish(state);
         return { meetingId: id };
@@ -1336,7 +1351,7 @@ export class AttendeeMeetings {
         state.joinedAt !== undefined &&
         Date.now() - state.joinedAt >= 30_000 &&
         !state.audio.receivedAudio &&
-        !audioReceiver?.connected
+        !audioReceiver?.hasAudio
       ) {
         normalized.transcript = [normalized.transcript, '[Waiting for meeting audio.]']
           .filter(Boolean)
@@ -1346,7 +1361,9 @@ export class AttendeeMeetings {
       state.meeting.captureStatus = (
         state.audio
           ? join.status === 'joined' &&
-            this.audioConnections.get(state.meeting.id)?.receiver.connected
+            bot.state !== 'joined_recording_permission_denied' &&
+            audioReceiver?.connected &&
+            audioReceiver.hasAudio
           : bot.state === 'joined_recording'
       )
         ? 'listening'
