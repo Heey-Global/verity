@@ -26144,6 +26144,42 @@ var Handled = {
     return { handled: false, message, retry };
   }
 };
+var taskChannel;
+var tasksAwaited = [];
+function openTaskChannel() {
+  const { port1: receiver, port2: sender } = new MessageChannel();
+  const channel = { sender, receiver };
+  receiver.onmessage = () => {
+    tasksAwaited.shift()?.();
+    if (tasksAwaited.length > 0) {
+      return;
+    }
+    if (channel.receiver.unref) {
+      channel.receiver.unref();
+    } else {
+      channel.receiver.close();
+      taskChannel = void 0;
+    }
+  };
+  return channel;
+}
+function nextTask() {
+  return new Promise((resolve4) => {
+    if (typeof MessageChannel !== "function") {
+      if (typeof setImmediate === "function") {
+        setImmediate(resolve4);
+      } else {
+        setTimeout(resolve4, 0);
+      }
+      return;
+    }
+    taskChannel ??= openTaskChannel();
+    if (tasksAwaited.push(resolve4) === 1) {
+      taskChannel.receiver.ref?.();
+    }
+    taskChannel.sender.postMessage(void 0);
+  });
+}
 function rejectedPromise(error) {
   const promise = Promise.reject(error);
   promise.catch(() => {
@@ -26555,6 +26591,7 @@ var Connection = class {
     this.closedPromise = new Promise((resolve4) => {
       this.abortController.signal.addEventListener("abort", () => resolve4());
     });
+    void nextTask();
     void this.receive();
   }
   legacyHandler(requestHandler, notificationHandler) {
@@ -26585,6 +26622,7 @@ var Connection = class {
             break;
           }
           this.receiveUnvalidatedMessage(message);
+          await nextTask();
         }
       } finally {
         if (this.receiveReader === reader) {
@@ -27129,6 +27167,26 @@ function stripCarriageReturn(line) {
 }
 
 // node_modules/@agentclientprotocol/sdk/dist/core/stream.js
+function failureAfterQueued() {
+  let waiting;
+  return {
+    fail(controller, error) {
+      if (waiting) {
+        return;
+      }
+      if ((controller.desiredSize ?? 1) > 0) {
+        controller.error(error);
+      } else {
+        waiting = { error };
+      }
+    },
+    pull(controller) {
+      if (waiting) {
+        controller.error(waiting.error);
+      }
+    }
+  };
+}
 function ndJsonStream(output, input, options = {}) {
   const maxMessageBytes = resolveMaxMessageBytes(options.maxMessageBytes);
   const textEncoder = new TextEncoder();
@@ -27136,6 +27194,7 @@ function ndJsonStream(output, input, options = {}) {
   let cancelled = false;
   let inputReader;
   let outputWrite = Promise.resolve();
+  const failure = failureAfterQueued();
   const writeJson = (message) => {
     const content2 = JSON.stringify(message) + "\n";
     const write = outputWrite.then(async () => {
@@ -27205,7 +27264,7 @@ function ndJsonStream(output, input, options = {}) {
         if (cancelled) {
           return;
         }
-        controller.error(err);
+        failure.fail(controller, err);
         void reader.cancel(err).catch(() => {
         });
         return;
@@ -27220,6 +27279,9 @@ function ndJsonStream(output, input, options = {}) {
         return;
       }
       controller.close();
+    },
+    pull(controller) {
+      failure.pull(controller);
     },
     cancel(reason) {
       cancelled = true;
@@ -29626,7 +29688,7 @@ var agentRequestSpecs = {
   unstable_setProvider: requestSpec(AGENT_METHODS.providers_set, zSetProviderRequest, emptyObjectResponse),
   unstable_disableProvider: requestSpec(AGENT_METHODS.providers_disable, zDisableProviderRequest, emptyObjectResponse),
   logout: requestSpec(AGENT_METHODS.logout, zLogoutRequest, emptyObjectResponse),
-  unstable_authStatus: requestSpec(AGENT_METHODS.auth_status, zAuthStatusRequest),
+  unstable_authStatus: requestSpec(AGENT_METHODS.auth_status, zAuthStatusRequest, (response) => zAuthStatusResponse.parse(response)),
   prompt: requestSpec(AGENT_METHODS.session_prompt, zPromptRequest)
 };
 var agentNotificationSpecs = {
