@@ -99,7 +99,7 @@ export class AttendeeAudioReceiver {
   private readonly abort = new AbortController();
   private readonly reported = new Set<AttendeeAudioGap>();
   private socket: WebSocket | undefined;
-  private disconnectedNormally = false;
+  private disconnectedNormallyAt: number | undefined;
   private readonly working = new Set<Promise<void>>();
   private stopping = false;
   private shutdown: Promise<void> | undefined;
@@ -128,8 +128,8 @@ export class AttendeeAudioReceiver {
       }
       this.websocket.handleUpgrade(request, socket, head, (client) => {
         this.socket = client;
-        if (this.disconnectedNormally) {
-          this.disconnectedNormally = false;
+        if (this.disconnectedNormallyAt !== undefined) {
+          this.disconnectedNormallyAt = undefined;
           this.gap('interrupted');
         }
         client.on('message', (data: WebSocket.RawData, binary: boolean) => {
@@ -142,7 +142,7 @@ export class AttendeeAudioReceiver {
           this.socket = undefined;
           if (this.stopping) return;
           // The provider closes normally while its terminal state webhook is still in flight.
-          if (code === 1000) this.disconnectedNormally = true;
+          if (code === 1000) this.disconnectedNormallyAt = Date.now();
           else this.gap('interrupted');
         });
       });
@@ -158,7 +158,10 @@ export class AttendeeAudioReceiver {
   }
 
   get streamClosed(): boolean {
-    return this.disconnectedNormally;
+    return (
+      this.disconnectedNormallyAt !== undefined &&
+      Date.now() - this.disconnectedNormallyAt >= 30_000
+    );
   }
 
   listen(): Promise<number> {
