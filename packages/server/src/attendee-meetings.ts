@@ -1,4 +1,4 @@
-import { createHash, randomInt, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { PreviewConnector, hashPreviewPin } from '@verity/preview-tunnel';
 import type { EventStore, LiveMeetingSyncRecord } from '@verity/store';
@@ -13,6 +13,7 @@ import {
 import {
   ATTENDEE_WEBHOOK_PATH,
   AttendeeClient,
+  type AttendeeUtterance,
   AttendeeRequestRejected,
   normalizeAttendeeTranscript,
   verifyAttendeeSignature,
@@ -23,6 +24,7 @@ import {
   providerCode,
   type OnlineJoinStatus,
 } from './attendee-join-status.js';
+import { ATTENDEE_AUDIO_PATH, AttendeeAudioReceiver } from './attendee-audio.js';
 import { meetingCallKey, meetingPlatform, type MeetingPlatform } from './calendar-meeting-links.js';
 
 interface MeetingStartDiagnostic {
@@ -113,6 +115,14 @@ interface OnlineMeeting {
   botId?: string;
   binding?: Omit<PreviewEdgeBinding, 'expiresAt'> & { expiresAt: string };
   pin: string;
+  audio?: {
+    binding?: NonNullable<OnlineMeeting['binding']>;
+    token: string;
+    segments: AttendeeUtterance[];
+    gap: boolean;
+    disabled?: boolean;
+    names?: Record<string, string>;
+  };
   credentials: AttendeeConfig;
   identities: Record<string, number>;
   phase: 'preparing' | 'running' | 'stopping' | 'ended' | 'interrupted';
@@ -159,12 +169,21 @@ function failureFields(error: unknown) {
 function assigned(meeting: OwnedMeeting): LiveMeetingSyncRecord | undefined {
   return meeting.sessionId === null ? undefined : { ...meeting, sessionId: meeting.sessionId };
 }
+interface AudioConnection {
+  receiver: AttendeeAudioReceiver;
+  connector: PreviewConnector;
+  botId?: string;
+  segments: AttendeeUtterance[];
+  gap: boolean;
+  disconnected?: boolean;
+}
+
 const terminal = new Set(['ended', 'fatal_error']);
 const webhookSchema = z.object({
   idempotency_key: z.string().uuid(),
   bot_id: z.string().min(1).max(256),
   bot_metadata: z.record(z.string(), z.unknown()).nullable().optional(),
-  trigger: z.enum(['transcript.update', 'bot.state_change']),
+  trigger: z.enum(['transcript.update', 'bot.state_change', 'participant_events.join_leave']),
   data: z.unknown(),
 });
 
@@ -207,6 +226,7 @@ export class AttendeeMeetings {
   private unsubscribeSharing: (() => void) | undefined;
   private polling: Promise<void> | undefined;
   private readonly researchJobs = new Map<string, Promise<void>>();
+  private readonly audioConnections = new Map<string, AudioConnection>();
   private readonly connectors = new Map<string, PreviewConnector>();
   private readonly snapshotLogs = new Map<string, { utterances: number; at: number }>();
   /** Last logged reconciliation failure per meeting, so a stuck meeting warns once per kind. */
@@ -221,19 +241,26 @@ export class AttendeeMeetings {
         utterance: string,
         requestId: string,
       ) => Promise<void>;
+      checkAudioTranscription?: () => Promise<void>;
+      transcribeAudio?: (wav: Buffer, signal: AbortSignal) => Promise<string>;
       client?: (key: string) => AttendeeClient;
       log?: AttendeeMeetingsLog;
     },
   ) {
     this.unsubscribeSharing = options.edge?.onSharingDisabled?.(() => {
       this.sharingGeneration += 1;
+      for (const connection of this.audioConnections.values()) connection.connector.close();
       for (const connector of this.connectors.values()) connector.close();
       this.connectors.clear();
       // Provider recovery must not reopen a webhook after local authority loss.
       void this.serial(async () => {
         for (const row of await this.records()) {
           const state = row.state;
-          if (!state.binding) continue;
+          await this.releaseAudio(state).catch(() => undefined);
+          if (!state.binding) {
+            if (state.audio) await this.save(state);
+            continue;
+          }
           const shareId = state.binding.shareId;
           try {
             await this.revokeShare(shareId);
@@ -344,7 +371,33 @@ export class AttendeeMeetings {
         }
         // Delivery acknowledgment is independent of provider/model calls. The durable
         // marker is a wake-up hint; full snapshots supply idempotent transcript recovery.
-        await this.options.store.putAttendeeState(`event:${event.bot_id}`, event);
+        if (event.trigger === 'participant_events.join_leave' && state) {
+          const participant = z
+            .object({
+              participant_uuid: z.string().min(1).max(256),
+              participant_name: z.string().min(1).max(256),
+            })
+            .safeParse(event.data);
+          if (participant.success) {
+            const { participant_uuid: uuid, participant_name: name } = participant.data;
+            await this.serial(async () => {
+              const current = await this.options.store.getAttendeeState<OnlineMeeting>(
+                `meeting:${state.meeting.id}`,
+              );
+              if (!current?.audio || current.audio.disabled || current.botId !== event.bot_id)
+                return;
+              current.audio.names ??= {};
+              const speaker = `participant:${uuid}`;
+              if (
+                Object.hasOwn(current.audio.names, speaker) ||
+                Object.keys(current.audio.names).length < 256
+              ) {
+                current.audio.names[speaker] = name;
+                await this.save(current);
+              }
+            });
+          }
+        } else await this.options.store.putAttendeeState(`event:${event.bot_id}`, event);
         // Only a signed delivery describes the bot; probes never reach the log with content.
         answer(202, 'accepted', {
           ...entry,
@@ -379,6 +432,7 @@ export class AttendeeMeetings {
     await Promise.all(this.researchJobs.values());
     for (const connector of this.connectors.values()) connector.close();
     this.connectors.clear();
+    for (const id of this.audioConnections.keys()) await this.closeAudio(id);
     const receiver = this.receiver;
     if (receiver) {
       receiver.closeAllConnections();
@@ -428,6 +482,125 @@ export class AttendeeMeetings {
       .catch(() => undefined);
   }
 
+  private async connectAudio(state: OnlineMeeting): Promise<void> {
+    const audio = state.audio;
+    const binding = audio?.binding;
+    const transcribe = this.options.transcribeAudio;
+    const id = state.meeting.id;
+    const existing = this.audioConnections.get(id);
+    if (existing && !existing.disconnected) {
+      if (state.botId) existing.botId = state.botId;
+      return;
+    }
+    if (existing) await this.closeAudio(id);
+    if (!audio || !binding || audio.disabled || !transcribe) return;
+    if (Date.parse(binding.expiresAt) <= Date.now() || this.options.edge?.isAvailable?.() === false)
+      throw new Error('Audio share unavailable');
+    const generation = this.sharingGeneration;
+    let connection: AudioConnection | undefined;
+    const receiver = new AttendeeAudioReceiver({
+      token: audio.token,
+      botId: () => connection?.botId,
+      onGap: () => {
+        if (connection) connection.gap = true;
+      },
+      transcribe: async ({ wav, timestampMs, participantId, signal }) => {
+        const transcript = (await transcribe(wav, signal)).trim();
+        if (!transcript || !connection || signal.aborted) return;
+        if (connection.segments.length >= 256) {
+          connection.gap = true;
+          return;
+        }
+        connection.segments.push({
+          speaker_uuid: participantId ? `participant:${participantId}` : 'mixed',
+          timestamp_ms: timestampMs,
+          duration_ms: (wav.length - 44) / 32,
+          transcription: { transcript },
+        });
+      },
+    });
+    try {
+      const port = await receiver.listen();
+      const connector = new PreviewConnector({
+        shareId: binding.shareId,
+        edgeUrl: binding.edgeUrl,
+        connectorToken: binding.connectorToken,
+        targetOrigin: `http://127.0.0.1:${port}`,
+      });
+      connection = { receiver, connector, segments: [], gap: Boolean(state.botId) };
+      connection.botId = state.botId;
+      await connector.connect();
+      if (generation !== this.sharingGeneration || this.options.edge?.isAvailable?.() === false)
+        throw new Error('Online sharing authority lost during audio connection');
+      this.audioConnections.set(id, connection);
+      const active = connection;
+      void connector
+        .waitForDisconnect()
+        .then(() => {
+          if (this.audioConnections.get(id) !== active) return;
+          active.gap = true;
+          active.disconnected = true;
+        })
+        .catch(() => undefined);
+    } catch (error) {
+      connection?.connector.close();
+      await receiver.close();
+      throw error;
+    }
+  }
+
+  private async closeAudio(id: string) {
+    const connection = this.audioConnections.get(id);
+    if (!connection) return;
+    this.audioConnections.delete(id);
+    connection.connector.close();
+    await connection.receiver.close();
+  }
+
+  private async releaseAudio(state: OnlineMeeting) {
+    const audio = state.audio;
+    if (!audio) return;
+    audio.disabled = true;
+    audio.token = '';
+    await this.closeAudio(state.meeting.id);
+    if (audio.binding) {
+      await this.revokeShare(audio.binding.shareId);
+      delete audio.binding;
+    }
+  }
+
+  private async audioSnapshot(state: OnlineMeeting, final: boolean) {
+    const audio = state.audio;
+    if (!audio) return [];
+    const connection = this.audioConnections.get(state.meeting.id);
+    if (connection) {
+      connection.botId = state.botId;
+      if (final) await connection.receiver.finish();
+      const received = connection.segments.splice(0);
+      audio.segments.push(...received);
+      const previousGap = audio.gap;
+      audio.gap ||=
+        connection.gap || (final && audio.segments.length === 0 && state.joinedAt !== undefined);
+      if (received.length || previousGap !== audio.gap) await this.save(state);
+    } else if (state.joinedAt !== undefined && final) {
+      audio.gap = true;
+    }
+    if (!final && !audio.disabled && (!connection || connection.disconnected)) {
+      try {
+        await this.connectAudio(state);
+      } catch {
+        if (!audio.gap) {
+          audio.gap = true;
+          await this.save(state);
+        }
+      }
+    }
+    return audio.segments.map((segment) => ({
+      ...segment,
+      speaker_name: audio.names?.[segment.speaker_uuid],
+    }));
+  }
+
   /** Starts a bot for `sessionId`, or unassigned when `sessionId` is null. */
   async start(
     sessionId: string | null,
@@ -447,6 +620,15 @@ export class AttendeeMeetings {
       if (!credentials) throw new Error('Configure Attendee in Connected services first.');
       if (sessionId !== null && (await this.activeIn(sessionId)))
         throw new Error('An online meeting is already active in this session.');
+      if (this.options.transcribeAudio) {
+        try {
+          await this.options.checkAudioTranscription?.();
+        } catch {
+          throw new OnlineMeetingStartError(
+            'Configure and unlock your external transcription service in Transcription settings before starting an online meeting.',
+          );
+        }
+      }
       const id = randomUUID();
       const state: OnlineMeeting = {
         meeting: {
@@ -466,6 +648,11 @@ export class AttendeeMeetings {
         meetingUrl,
         credentials,
         identities: {},
+        ...(this.options.transcribeAudio
+          ? {
+              audio: { token: randomBytes(32).toString('hex'), segments: [], gap: false },
+            }
+          : {}),
         phase: 'preparing',
         stopRequested: false,
         listenForVerity,
@@ -519,6 +706,25 @@ export class AttendeeMeetings {
         code = 'pending';
         emit('progress');
         await this.connect(state);
+        let audioUrl: URL | undefined;
+        if (state.audio) {
+          const audioPin = String(randomInt(100_000, 1_000_000));
+          const audioBinding = await this.options.edge.create({
+            durationSeconds: 8 * 60 * 60,
+            pinHash: hashPreviewPin(audioPin),
+          });
+          state.audio.binding = {
+            ...audioBinding,
+            expiresAt: audioBinding.expiresAt.toISOString(),
+          };
+          await this.save(state);
+          await this.connectAudio(state);
+          audioUrl = new URL(ATTENDEE_AUDIO_PATH, audioBinding.publicOrigin);
+          if (audioUrl.protocol !== 'https:') throw new Error('Invalid public audio origin');
+          audioUrl.protocol = 'wss:';
+          audioUrl.searchParams.set('pin', audioPin);
+          audioUrl.searchParams.set('token', state.audio.token);
+        }
         phase = 'connector_ready';
         code = 'ready';
         emit('progress');
@@ -541,12 +747,28 @@ export class AttendeeMeetings {
             bot_name: 'Verity — Meeting notes',
             deduplication_key: id,
             metadata: { verityMeetingId: id },
+            ...(audioUrl
+              ? {
+                  transcription_settings: { enabled: false },
+                  recording_settings: { format: 'none' },
+                  websocket_settings: {
+                    per_participant_audio: { url: audioUrl.toString(), sample_rate: 16000 },
+                  },
+                }
+              : {}),
             webhooks: [
-              { url: webhookUrl.toString(), triggers: ['bot.state_change', 'transcript.update'] },
+              {
+                url: webhookUrl.toString(),
+                triggers: audioUrl
+                  ? ['bot.state_change', 'participant_events.join_leave']
+                  : ['bot.state_change', 'transcript.update'],
+              },
             ],
           }),
         );
         state.botId = bot.id;
+        const audioConnection = this.audioConnections.get(id);
+        if (audioConnection) audioConnection.botId = bot.id;
         state.phase = 'running';
         await this.publish(state);
         return { meetingId: id };
@@ -556,6 +778,10 @@ export class AttendeeMeetings {
         if (code === 'pending' || code === 'ready') code = 'failed';
         emit('failed');
         if (error instanceof AttendeeRequestRejected) state.botCreateAttempted = false;
+        if (state.audio) {
+          state.audio.gap = true;
+          await this.releaseAudio(state).catch(() => undefined);
+        }
         if (!state.botCreateAttempted) {
           if (state.binding) {
             try {
@@ -567,7 +793,7 @@ export class AttendeeMeetings {
           }
           this.connectors.get(id)?.close();
           this.connectors.delete(id);
-          state.phase = state.binding ? 'stopping' : 'ended';
+          state.phase = state.binding || state.audio?.binding ? 'stopping' : 'ended';
           state.meeting.state = 'ended';
           state.meeting.endedAt = Date.now();
           state.credentials = { apiKey: '', webhookSecret: '' };
@@ -744,6 +970,11 @@ export class AttendeeMeetings {
   /** Ends the provider side of a discarded meeting; deletes the state once it has ended.
    * A failure leaves the state for the reconcile loop to finish. */
   private async finishDiscard(state: OnlineMeeting) {
+    if (state.audio && !state.audio.disabled) {
+      await this.releaseAudio(state);
+      state.audio.segments = [];
+      await this.save(state);
+    }
     if (state.phase !== 'ended') await this.reconcileOne(state, true);
     if (state.phase !== 'ended') return;
     await this.options.store.deleteAttendeeState(`meeting:${state.meeting.id}`);
@@ -870,6 +1101,7 @@ export class AttendeeMeetings {
       `event:${state.botId ?? ''}`,
     );
     if (!state.botId && !state.botCreateAttempted) {
+      await this.releaseAudio(state);
       // A restart before provider submission must not leave a phantom active meeting.
       if (state.binding) {
         if (!this.options.edge) throw new Error('Uplink cleanup is unavailable');
@@ -946,7 +1178,11 @@ export class AttendeeMeetings {
       await this.save(state);
     }
     const final = terminal.has(bot.state);
-    const snapshot = discard ? [] : await client.transcript(state.botId);
+    const snapshot = discard
+      ? []
+      : state.audio
+        ? await this.audioSnapshot(state, final)
+        : await client.transcript(state.botId);
     if (!discard) this.logSnapshot(state, bot.state, snapshot, final);
     if (!discard) {
       if (state.timeOriginMs === undefined && snapshot.length) {
@@ -963,8 +1199,19 @@ export class AttendeeMeetings {
       );
       const previous = JSON.stringify(state.meeting);
       const speakerNames = { ...normalized.speakerNames, ...state.speakerNameOverrides };
+      if (state.audio?.gap)
+        normalized.transcript = [
+          normalized.transcript,
+          '[Audio gap: some speech could not be transcribed.]',
+        ]
+          .filter(Boolean)
+          .join('\n');
       Object.assign(state.meeting, normalized, { speakerNames });
-      state.meeting.captureStatus = bot.state === 'joined_recording' ? 'listening' : 'preparing';
+      state.meeting.captureStatus = (
+        state.audio ? join.status === 'joined' : bot.state === 'joined_recording'
+      )
+        ? 'listening'
+        : 'preparing';
       state.meeting.state = final ? 'ended' : 'active';
       state.phase = final ? 'stopping' : state.stopRequested ? 'stopping' : 'running';
       if (final) state.meeting.endedAt ??= Date.now();
@@ -993,6 +1240,7 @@ export class AttendeeMeetings {
       }
     }
     if (final) {
+      await this.releaseAudio(state);
       if (state.binding) await this.revokeShare(state.binding.shareId);
       this.connectors.get(state.meeting.id)?.close();
       this.connectors.delete(state.meeting.id);
@@ -1010,7 +1258,9 @@ export class AttendeeMeetings {
       }
     } else if (!final) {
       state.phase = 'interrupted';
-      state.error = 'Webhook share expired; recovering transcript through Attendee.';
+      state.error = state.audio
+        ? 'Webhook share expired; checking meeting status through Attendee.'
+        : 'Webhook share expired; recovering transcript through Attendee.';
       await this.save(state);
     }
     if (event) await this.options.store.deleteAttendeeState(`event:${state.botId}`);
