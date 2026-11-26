@@ -6,6 +6,22 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.108.0](https://github.com/Heey-Global/verity/compare/v4.107.0...v4.108.0) (2026-11-26)
+
+
+### Features
+
+* **live:** list Home's sessions from the shared overview store ([#2961](https://github.com/Heey-Global/verity/issues/2961)) ([575a33c](https://github.com/Heey-Global/verity/commit/575a33c16b2d47217e69046cac437907785f16d5))
+* **live:** publish session status as session.summary events ([#2972](https://github.com/Heey-Global/verity/issues/2972)) ([5d958b7](https://github.com/Heey-Global/verity/commit/5d958b7a6a3f0b0c8b880d346d93145fc2677efd))
+* **live:** show the session's pull request and project list from the shared overview store ([#2969](https://github.com/Heey-Global/verity/issues/2969)) ([a29c729](https://github.com/Heey-Global/verity/commit/a29c72908932bbdc0923aafec3b40265009c727e))
+* **meetings:** transcribe Attendee audio through Uplink ([110dadf](https://github.com/Heey-Global/verity/commit/110dadfbe4107684624a87b006ee0f53ac2b5b91))
+
+
+### Bug Fixes
+
+* **secrets:** diagnose failed reusable approvals ([#2960](https://github.com/Heey-Global/verity/issues/2960)) ([92ea475](https://github.com/Heey-Global/verity/commit/92ea475fdf90d17a5355844ead2f365ab6105a99))
+* **server:** surface project inquiry refusals ([#2962](https://github.com/Heey-Global/verity/issues/2962)) ([13e063a](https://github.com/Heey-Global/verity/commit/13e063af82dc0535b02768471e73df1a2f66fd35))
+
 ## [4.107.0](https://github.com/Heey-Global/verity/compare/v4.106.0...v4.107.0) (2026-11-26)
 
 
