@@ -241,4 +241,30 @@ describe('SessionListModel with the shared overview store', () => {
     expect(changes).toHaveBeenCalledTimes(1);
     expect(['s1', 's2', 's3'].map((id) => store.session(id)?.sortOrder)).toEqual([1, 0, null]);
   });
+
+  it('keeps the name the server stored when a later rename of it fails', async () => {
+    const answers: Array<{ resolve: (name: string) => void; reject: () => void }> = [];
+    const { model, store, shown } = harness(() => Promise.resolve([summary('s1')]), {
+      renameSession: vi.fn(
+        () =>
+          new Promise<{ sessionId: string; name: string }>((resolve, reject) =>
+            answers.push({
+              resolve: (name) => resolve({ sessionId: 's1', name }),
+              reject: () => reject(new Error('refused')),
+            }),
+          ),
+      ),
+    });
+    await model.refresh();
+    model.start();
+    const first = model.rename('s1', 'First');
+    const second = model.rename('s1', 'Second');
+    answers[0]!.resolve('First');
+    await first;
+    answers[1]!.reject();
+    await second;
+    expect(store.session('s1')?.name).toBe('First');
+    expect(shown('s1')?.name).toBe('First');
+    model.stop();
+  });
 });

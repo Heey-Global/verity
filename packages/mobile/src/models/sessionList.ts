@@ -160,6 +160,10 @@ export class SessionListModel {
   /** Names being saved, shown over the store's copy until the answer. */
   private pendingNames = new Map<string, { name: string | null; mutation: number }>();
   private nameMutations = 0;
+  /** The newest rename of each session; older answers stay out of the store. */
+  private latestRenames = new Map<string, number>();
+  /** Names the server stored while a later rename of the session was out. */
+  private confirmedNames = new Map<string, string | null>();
   /** The store that took the last read; the list shows its copies while it
    * is the current one. */
   private readStore: OverviewStore | undefined;
@@ -179,7 +183,14 @@ export class SessionListModel {
   get state(): SessionListState {
     const store = this.currentStore();
     const version = store === undefined ? -1 : store.getVersion();
-    if (this.orderedSource !== this._sessions || this.orderedVersion !== version) {
+    // From the store, Home's pending changes are laid on at each read of the
+    // state, since they change without a new `_sessions`; row identities
+    // still hold through `reuseSnapshotRecords`.
+    if (
+      store !== undefined ||
+      this.orderedSource !== this._sessions ||
+      this.orderedVersion !== version
+    ) {
       this.shownSessions = store === undefined ? this._sessions : this.shownFrom(store);
       this.publishedSessions = reuseSnapshotRecords(
         this.publishedSessions,
@@ -412,20 +423,29 @@ export class SessionListModel {
     this.applyName(sessionId, name); // optimistic — don't wait for the next poll
     const mutation = ++this.nameMutations;
     this.pendingNames.set(sessionId, { name, mutation });
+    this.latestRenames.set(sessionId, mutation);
     this.emit();
+    // An older rename answering late must not replace a newer one in the store.
+    const superseded = () => (this.latestRenames.get(sessionId) ?? 0) > mutation;
     const settled = () => {
-      if (this.pendingNames.get(sessionId)?.mutation === mutation)
-        this.pendingNames.delete(sessionId);
+      if (this.pendingNames.get(sessionId)?.mutation !== mutation) return;
+      this.pendingNames.delete(sessionId);
+      this.confirmedNames.delete(sessionId);
     };
     try {
       const { name: stored } = await this.opts.client.renameSession(sessionId, name);
       this.applyName(sessionId, stored);
-      // An older rename answering late must not replace a newer one.
-      if (this.pendingNames.get(sessionId)?.mutation === mutation)
-        this.adopt(sessionId, (session) => ({ ...session, name: stored }));
+      if (!superseded()) this.adopt(sessionId, (session) => ({ ...session, name: stored }));
+      // Kept for a later rename still out, should that one fail.
+      else if (this.pendingNames.has(sessionId)) this.confirmedNames.set(sessionId, stored);
       settled();
       this._error = undefined;
     } catch (error) {
+      // An earlier rename the server stored while this one was out is the
+      // name now, which the store has not taken yet.
+      const confirmed = this.confirmedNames.get(sessionId);
+      if (!superseded() && confirmed !== undefined)
+        this.adopt(sessionId, (session) => ({ ...session, name: confirmed }));
       settled();
       this.applyName(sessionId, previousName); // revert just this name
       this._error = error instanceof VerityApiError ? error.message : 'failed to rename session';
