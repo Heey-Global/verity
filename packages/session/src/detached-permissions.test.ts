@@ -143,7 +143,7 @@ it('closes exact consent before saving reusable scope and never resumes a failed
     resume,
   });
   expect(order).toEqual(['close-once', 'save-scope']);
-  expect(onScopeSaved).toHaveBeenCalledWith(false);
+  expect(onScopeSaved).toHaveBeenCalledWith(false, false);
   expect(notice).toHaveBeenCalledWith(expect.stringContaining('Nothing ran'));
   expect(resume).not.toHaveBeenCalled();
 });
@@ -179,7 +179,7 @@ it('reports an active saved grant if continuation bookkeeping fails without deny
     resume,
   });
   expect(persistScoped).toHaveBeenCalledOnce();
-  expect(onScopeSaved).toHaveBeenCalledWith(true);
+  expect(onScopeSaved).toHaveBeenCalledWith(true, false);
   expect(failScoped).not.toHaveBeenCalled();
   expect(resume).not.toHaveBeenCalled();
   expect(notice).toHaveBeenCalledWith(expect.stringContaining('saved and remains active'));

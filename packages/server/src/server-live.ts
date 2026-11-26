@@ -104,9 +104,17 @@ export function createServerLiveHub(
             (!identity.credential || !deps.authRegistry.verify(identity.credential))
           )
             return { statusCode: 401, body: '' };
+          let url = target.path;
+          const [path, query] = url.split(/\?(.*)/su);
+          if (path === '/tasks') {
+            // The observer hashes the result and sends only an invalidation.
+            const params = new URLSearchParams(query);
+            params.set('view', 'revisions');
+            url = `/tasks?${params.toString()}`;
+          }
           const response = await app.inject({
             method: 'GET',
-            url: target.path,
+            url,
             headers: {
               ...(identity.credential ? { authorization: `Bearer ${identity.credential}` } : {}),
               ...(target.ownerToken ? { 'x-meeting-owner-token': target.ownerToken } : {}),

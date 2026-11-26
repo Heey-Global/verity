@@ -37,6 +37,9 @@ import { useTaskCaptureGesture } from '../hooks/useTaskCaptureGesture';
 const BUBBLE = 52;
 /** Distance from the screen edge it docks to. */
 const INSET = 12;
+/** The highest it rests or is dragged: below a screen's header row and the bars
+ *  under it, such as a linked session or an error, so it never covers them. */
+const TOP_CLEARANCE = 56 + 44 + 40;
 
 /**
  * The V: the one way to reach Verity from any screen (docs/assistant.md). A tap
@@ -84,7 +87,7 @@ export function VerityBubble() {
     (conversation.conversation?.question ? 1 : 0) +
     (conversation.conversation?.approvals.length ?? 0) +
     conversation.outbox.filter((entry) => entry.held === true).length;
-  const top = insets.top + 52;
+  const top = insets.top + TOP_CLEARANCE;
   const bottom = height - insets.bottom - 100;
   useEffect(() => {
     const next = {

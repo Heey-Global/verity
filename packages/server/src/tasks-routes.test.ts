@@ -177,6 +177,33 @@ describe('tasks routes', () => {
     expect((await app.inject({ method: 'GET', url: '/tasks' })).json().tasks).toHaveLength(2);
   });
 
+  it('observes task revisions without serializing the task payload', async () => {
+    const detail = 'Long task description. '.repeat(500);
+    await store.tasks.upsert({ id: T1, ownerUserId: ADMIN, origin: 'user', title: 'Task', detail });
+    const full = await app.inject({ url: '/tasks?origin=user' });
+    const sample = () => app.inject({ url: '/tasks?origin=user&view=revisions' });
+    const before = await sample();
+    expect(full.json().tasks[0]?.detail).toBe(detail.trim());
+    expect(before.json().tasks).toEqual([
+      {
+        id: T1,
+        revision: 1,
+        createdAt: full.json().tasks[0]?.createdAt,
+        projectId: null,
+        sessionId: null,
+        sourceSessionId: null,
+      },
+    ]);
+    expect(Buffer.byteLength(before.body)).toBeLessThan(Buffer.byteLength(full.body) / 50);
+    const edited = await app.inject({
+      method: 'PATCH',
+      url: `/tasks/${T1}`,
+      payload: { detail: 'Changed' },
+    });
+    expect(edited.statusCode).toBe(200);
+    expect((await sample()).json().tasks[0]?.revision).toBe(2);
+  });
+
   it('lists the operator tasks apart from the steps agents recorded', async () => {
     await store.tasks.upsert({ id: T1, ownerUserId: ADMIN, origin: 'user', title: 'Mine' });
     await store.tasks.upsert({ id: T2, ownerUserId: ADMIN, origin: 'agent', title: 'Step' });

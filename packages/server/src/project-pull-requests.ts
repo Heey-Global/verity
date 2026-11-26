@@ -137,25 +137,32 @@ const STATE_ORDER: Record<PullRequestState, number> = {
 };
 
 /** Each repository answers on its own: one slow or failing host marks only itself. */
+type HostListing = {
+  read: ReturnType<ProjectPullRequestBackend['list']>;
+  timedOut: boolean;
+  completed: boolean;
+};
+
 async function readProjectPullRequests(input: {
   store: Pick<EventStore, 'listProjectRepositories'> & {
     repairs: Pick<EventStore['repairs'], 'sessionOrigins'>;
   };
   project: ProjectRecord;
-  backend: ProjectPullRequestBackend;
+  list: (project: ProjectRecord, repositoryId: string) => HostListing;
   links: readonly SessionPullRequestLink[];
-  timeoutMs?: number;
+  measure: <T>(stage: string, read: () => Promise<T>) => Promise<T>;
+  timeoutMs: number;
 }): Promise<ProjectRepositoryPullRequests[]> {
-  const { project, backend, links } = input;
-  const repositories = (await input.store.listProjectRepositories(project.id)).filter(
+  const { project, list, links, measure } = input;
+  const [rows, repairOrigins] = await measure('database', async () => {
+    const rows = await input.store.listProjectRepositories(project.id);
+    const origins = await input.store.repairs.sessionOrigins(project.id);
+    return [rows, origins] as const;
+  });
+  const repositories = rows.filter(
     (repository) => repository.kind === 'github' || repository.kind === 'forgejo',
   );
-  const origins = new Map(
-    (await input.store.repairs.sessionOrigins(project.id)).map((row) => [
-      row.resource,
-      row.sessionId,
-    ]),
-  );
+  const origins = new Map(repairOrigins.map((row) => [row.resource, row.sessionId]));
   // An origin whose session was deleted names nobody; only live sessions count.
   const names = new Map(links.map((link) => [link.sessionId, link.name]));
   return Promise.all(
@@ -174,8 +181,12 @@ async function readProjectPullRequests(input: {
         webUrl: null,
         pullRequests: [] as [],
       };
+      let listing: HostListing | undefined;
       const read = async (): Promise<ProjectRepositoryPullRequests> => {
-        const listed = await backend.list(projectForRepository(project, repository));
+        const listed = await measure('code-host', () => {
+          listing = list(projectForRepository(project, repository), repository.id);
+          return listing.read;
+        });
         const pullRequests = listed.pulls
           .map((pull): ProjectPullRequest => ({
             number: pull.number,
@@ -202,7 +213,10 @@ async function readProjectPullRequests(input: {
         return await Promise.race([
           read(),
           new Promise<ProjectRepositoryPullRequests>((resolve) => {
-            timer = setTimeout(() => resolve(unavailable), input.timeoutMs ?? 20_000);
+            timer = setTimeout(() => {
+              if (listing !== undefined) listing.timedOut = true;
+              resolve(unavailable);
+            }, input.timeoutMs);
           }),
         ]);
       } catch {
@@ -310,6 +324,7 @@ export interface ProjectPullRequestRouteDeps {
   startFix?: (input: PullRequestFixInput) => Promise<{ sessionId: string; created: boolean }>;
   /** How long a computed list is served before the code host is asked again. */
   cacheMs?: number;
+  listTimeoutMs?: number;
   now?: () => number;
 }
 
@@ -330,7 +345,23 @@ export function registerProjectPullRequestRoutes(
 ): void {
   const now = deps.now ?? Date.now;
   const cacheMs = deps.cacheMs ?? 20_000;
-  const cache = new Map<string, { at: number; value: Promise<ProjectRepositoryPullRequests[]> }>();
+  const listTimeoutMs = deps.listTimeoutMs ?? 20_000;
+  const cache = new Map<
+    string,
+    { at: number; pending: boolean; value: Promise<ProjectRepositoryPullRequests[]> }
+  >();
+  const hostReads = new Map<string, HostListing>();
+  const projectReads = new Map<string, Promise<ProjectRecord | undefined>>();
+  const hostKey = (projectId: string, repositoryId: string, remote: ProjectRecord) =>
+    JSON.stringify([
+      projectId,
+      repositoryId,
+      remote.kind,
+      remote.owner,
+      remote.repo,
+      remote.forgeConnectionId,
+      remote.githubRepositoryId,
+    ]);
   const invalidate = (projectId: string) => cache.delete(projectId);
 
   const resolve = async (projectId: string, repositoryId: string) => {
@@ -350,25 +381,114 @@ export function registerProjectPullRequestRoutes(
   app.get('/projects/:id/pull-requests', async (request, reply) => {
     const { id } = params.parse(request.params);
     const refresh = (request.query as { refresh?: string } | undefined)?.refresh === '1';
-    const project = await deps.store.getProject(id);
+    const measure = async <T>(stage: string, read: () => Promise<T>): Promise<T> => {
+      const started = performance.now();
+      try {
+        return await read();
+      } finally {
+        const elapsedMs = Math.round(performance.now() - started);
+        if (elapsedMs >= 3_000)
+          request.log.info({ stage, elapsedMs }, 'verity: slow project pull request read stage');
+      }
+    };
+    let projectRead = projectReads.get(id);
+    if (!projectRead) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      projectRead = Promise.race([
+        measure('project', () => deps.store.getProject(id)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => {
+              reject(Object.assign(new Error('Project lookup timed out'), { statusCode: 503 }));
+            },
+            Math.max(100, listTimeoutMs * 2),
+          );
+        }),
+      ]).finally(() => {
+        clearTimeout(timer);
+        projectReads.delete(id);
+      });
+      projectReads.set(id, projectRead);
+    }
+    const project = await projectRead;
     if (!project) return reply.code(404).send({ error: 'project not found' });
     reply.header('cache-control', 'no-store');
     const backend = deps.backend;
     if (!backend) return { repositories: [] };
+    const list = (remote: ProjectRecord, repositoryId: string) => {
+      const key = hostKey(id, repositoryId, remote);
+      const existing = hostReads.get(key);
+      if (existing !== undefined) {
+        if (existing.completed) hostReads.delete(key);
+        return existing;
+      }
+      const entry: HostListing = { read: backend.list(remote), timedOut: false, completed: false };
+      hostReads.set(key, entry);
+      const remove = () => {
+        if (hostReads.get(key) === entry) hostReads.delete(key);
+      };
+      // Allow retries after a stalled transport outlives several response budgets.
+      const deadline = setTimeout(remove, Math.max(100, listTimeoutMs * 3)).unref();
+      void entry.read.then(
+        () => {
+          clearTimeout(deadline);
+          entry.completed = true;
+          if (entry.timedOut && hostReads.get(key) === entry) setTimeout(remove, cacheMs).unref();
+          else remove();
+        },
+        () => {
+          clearTimeout(deadline);
+          remove();
+        },
+      );
+      return entry;
+    };
     const cached = cache.get(id);
     // A pull-to-refresh still joins a list started moments ago (or still being
     // read): repeated refreshes must not multiply requests against the code
     // host's rate limit, which CI repair shares. Merge and fix clear the cache.
-    if (cached && now() - cached.at < (refresh ? MIN_REFRESH_MS : cacheMs))
+    if (cached && (cached.pending || now() - cached.at < (refresh ? MIN_REFRESH_MS : cacheMs)))
       return { repositories: await cached.value };
-    const value = deps
-      .sessionLinks(id)
-      .then((links) => readProjectPullRequests({ store: deps.store, project, backend, links }));
-    cache.set(id, { at: now(), value });
-    // A failed computation is not served from the cache to the next request.
-    value.catch(() => {
-      if (cache.get(id)?.value === value) cache.delete(id);
+    let expired = false;
+    const timeoutError = Object.assign(new Error('Pull request listing timed out'), {
+      statusCode: 503,
     });
+    const compute = measure('session-links', () => deps.sessionLinks(id)).then((links) =>
+      readProjectPullRequests({
+        store: deps.store,
+        project,
+        list: (remote, repositoryId) => {
+          if (expired) throw timeoutError;
+          return list(remote, repositoryId);
+        },
+        links,
+        measure,
+        timeoutMs: listTimeoutMs,
+      }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const value = Promise.race([
+      compute,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => {
+            expired = true;
+            reject(timeoutError);
+          },
+          Math.max(100, listTimeoutMs * 2),
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
+    const entry = { at: now(), pending: true, value };
+    cache.set(id, entry);
+    void value.then(
+      () => {
+        entry.pending = false;
+      },
+      () => {
+        if (cache.get(id) === entry) cache.delete(id);
+      },
+    );
     return { repositories: await value };
   });
 
@@ -390,12 +510,13 @@ export function registerProjectPullRequestRoutes(
     try {
       merged = await deps.backend.merge(target.remote, number, parsed.data.expectedHeadSha);
     } catch (error) {
-      invalidate(id);
       if (error instanceof ForgeMergePermissionError)
         return reply.code(403).send({ error: error.message, code: 'merge_permission_denied' });
       merged = false;
+    } finally {
+      invalidate(id);
+      hostReads.delete(hostKey(id, repositoryId, target.remote));
     }
-    invalidate(id);
     if (!merged)
       return reply.code(409).send({
         error: `pull request #${String(number)} could not be merged`,

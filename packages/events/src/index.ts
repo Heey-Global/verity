@@ -334,3 +334,8 @@ export {
   managedServerProviderSnapshotSchema,
   type ManagedServerProviderSnapshot,
 } from './managed-server-provider.js';
+export {
+  formatProjectInquiryAnswerTurn,
+  parseProjectInquiryAnswerTurn,
+  type ProjectInquiryAnswerTurn,
+} from './project-inquiry-answer.js';

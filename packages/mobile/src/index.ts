@@ -12,10 +12,18 @@ export { publishSettledPermission, subscribeSettledPermissions } from './permiss
 export { clearConditionalReads } from './conditionalReads.js';
 export {
   applyOverviewEvent,
+  appliesToEarlierReads,
+  keptWithout,
   RevisionGate,
   type OverviewEventEffect,
 } from './live/overviewEvents.js';
 export { projectEventUpdate, type ProjectEventUpdate } from './live/projectEvents.js';
+export {
+  OverviewStore,
+  type OverviewEventOutcome,
+  type OverviewRead,
+  type OverviewReadScope,
+} from './live/overviewStore.js';
 export type { LiveTopicSink } from './live/topics.js';
 export type { DomainEvent } from '@verity/events';
 export {
@@ -25,12 +33,10 @@ export {
 } from './pullRequestStatusMutation.js';
 export {
   publishDevServerStatusMutation,
-  publishProjectStatusMutation,
   publishSessionStatusMutation,
   publishServerUpdateStatusMutation,
   publishSessionAutomationMutation,
   subscribeDevServerStatusMutations,
-  subscribeProjectStatusMutations,
   subscribeSessionAutomationMutations,
   subscribeSessionStatusMutations,
   subscribeServerUpdateStatusMutations,
@@ -504,6 +510,7 @@ export type {
   UserTextMessage,
 } from './happy/message.js';
 export { formatChoiceAnswer, type ChoicesOption, type RiskClass } from '@verity/events';
+export { parseProjectInquiryAnswerTurn } from '@verity/events';
 export type { PlanDecision } from '@verity/events';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 export { END_PLANNING_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';

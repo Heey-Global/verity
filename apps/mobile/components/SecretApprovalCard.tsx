@@ -10,13 +10,14 @@ import {
   type PendingPermission,
   type StandingSecretGrantScope,
 } from '@verity/mobile';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from './Icon';
 import { PermissionRequestDetails } from './session/PermissionRequestDetails';
-import { Button, Card, StatusTag, Text } from './ui';
+import type { ReopenableStatus } from '../hooks/useReopenableSecretApprovals';
+import { Button, Card, IconButton, PinnedScroll, StatusTag, Text } from './ui';
 
 type Request = Pick<PendingPermission, 'tool' | 'input' | 'secretSource'>;
 
@@ -40,6 +41,8 @@ export function SecretApprovalCard({
   request,
   decision,
   actions,
+  reopen,
+  onDismiss,
 }: {
   request: Request;
   decision?: Decision;
@@ -49,6 +52,19 @@ export function SecretApprovalCard({
     allow: (scope?: StandingSecretGrantScope) => void;
     deny: () => void;
   };
+  /** Offered only for a request the server reports as reopenable: a denied one,
+   *  or an approval that was not used in time. */
+  reopen?:
+    | {
+        status: ReopenableStatus;
+        working: boolean;
+        disabled: boolean;
+        error: string | undefined;
+        onPress: () => void;
+      }
+    | undefined;
+  /** Hides a waiting request from above the composer. It decides nothing. */
+  onDismiss?: (() => void) | undefined;
 }) {
   const { theme } = useUnistyles();
   const [expanded, setExpanded] = useState(false);
@@ -65,7 +81,7 @@ export function SecretApprovalCard({
   const detailsLabel = isHttp ? 'View request' : 'View command';
   const transfer = http?.auth.kind === 'jwt' ? 'Signed JWT' : 'For authentication';
   return (
-    <Card stacked attention={pending}>
+    <Card stacked attention={pending} pinned={actions !== undefined}>
       <View
         style={styles.heading}
         accessibilityRole={pending ? 'alert' : undefined}
@@ -99,120 +115,133 @@ export function SecretApprovalCard({
                 ? 'needsSetup'
                 : 'ready'
             }
-            label={pending ? 'Approval required' : labels[decision]}
+            label={
+              pending
+                ? 'Approval required'
+                : reopen?.status === 'expired'
+                  ? 'Not used in time'
+                  : labels[decision]
+            }
           />
         </View>
+        {onDismiss ? (
+          <IconButton
+            icon="x"
+            accessibilityLabel="Hide request. It stays open in the chat."
+            onPress={onDismiss}
+          />
+        ) : null}
       </View>
-      {destination === undefined ? (
-        <>
-          {source ? (
-            <Text variant="footnote" tone="muted" selectable>
-              {spellOutBidiControls(dopplerSourceLabel(source))}
-            </Text>
-          ) : null}
-          <PermissionRequestDetails input={request.input} />
-        </>
-      ) : (
-        <View style={styles.flow}>
-          <View style={styles.flowNode}>
-            <View style={styles.tile}>
-              <Icon name="key" size={18} color={theme.colors.text} />
-            </View>
-            <View style={styles.nodeText}>
-              <Text variant="bodySmall" style={styles.emphasis} selectable numberOfLines={2}>
-                {spellOutBidiControls(aliases.join(', '))}
+      <Body pinned={actions !== undefined}>
+        {destination === undefined ? (
+          <>
+            {source ? (
+              <Text variant="footnote" tone="muted" selectable>
+                {spellOutBidiControls(dopplerSourceLabel(source))}
               </Text>
-              <Text variant="footnote" tone="muted" selectable numberOfLines={2}>
-                {source && !pending ? spellOutBidiControls(dopplerSourceLabel(source)) : 'Doppler'}
-              </Text>
-            </View>
-          </View>
-          <Icon name="arrow-right" color={theme.colors.textMuted} />
-          <View style={styles.flowNode}>
-            <View style={styles.tile}>
-              <Icon name={isHttp ? 'globe' : 'terminal'} size={18} color={theme.colors.text} />
-            </View>
-            <View style={styles.nodeText}>
-              <Text
-                variant={isHttp ? 'bodySmall' : 'code'}
-                style={isHttp ? styles.emphasis : styles.compactCode}
-                selectable
-                numberOfLines={2}
-              >
-                {spellOutBidiControls(destination)}
-              </Text>
-              {http ? (
+            ) : null}
+            <PermissionRequestDetails input={request.input} inline={actions !== undefined} />
+          </>
+        ) : (
+          <View style={styles.flow}>
+            <View style={styles.flowNode}>
+              <View style={styles.tile}>
+                <Icon name="key" size={18} color={theme.colors.text} />
+              </View>
+              <View style={styles.nodeText}>
+                <Text variant="bodySmall" style={styles.emphasis} selectable numberOfLines={2}>
+                  {spellOutBidiControls(aliases.join(', '))}
+                </Text>
                 <Text variant="footnote" tone="muted" selectable numberOfLines={2}>
-                  {transfer}
+                  {source && !pending
+                    ? spellOutBidiControls(dopplerSourceLabel(source))
+                    : 'Doppler'}
                 </Text>
-              ) : null}
+              </View>
+            </View>
+            <Icon name="arrow-right" color={theme.colors.textMuted} />
+            <View style={styles.flowNode}>
+              <View style={styles.tile}>
+                <Icon name={isHttp ? 'globe' : 'terminal'} size={18} color={theme.colors.text} />
+              </View>
+              <View style={styles.nodeText}>
+                <Text
+                  variant={isHttp ? 'bodySmall' : 'code'}
+                  style={isHttp ? styles.emphasis : styles.compactCode}
+                  selectable
+                  numberOfLines={2}
+                >
+                  {spellOutBidiControls(destination)}
+                </Text>
+                {http ? (
+                  <Text variant="footnote" tone="muted" selectable numberOfLines={2}>
+                    {transfer}
+                  </Text>
+                ) : null}
+              </View>
             </View>
           </View>
-        </View>
-      )}
-      {destination !== undefined ? (
-        <View style={styles.details}>
-          {pending ? null : (
-            <Button
-              label={expanded ? 'Hide details' : detailsLabel}
-              variant="text"
-              size="small"
-              icon={expanded ? 'chevron-up' : 'chevron-down'}
-              onPress={() => setExpanded(!expanded)}
-            />
-          )}
-          {expanded || pending ? (
-            <ScrollView
-              nestedScrollEnabled
-              style={styles.detailScroll}
-              contentContainerStyle={styles.detailContent}
-            >
-              {http ? (
-                <>
-                  <Text variant="code" style={styles.compactCode} selectable>
-                    {http.method} {http.host}
-                    {http.path}
-                  </Text>
-                  {http.body !== null ? (
+        )}
+        {destination !== undefined ? (
+          <View style={styles.details}>
+            {pending ? null : (
+              <Button
+                label={expanded ? 'Hide details' : detailsLabel}
+                variant="text"
+                size="small"
+                icon={expanded ? 'chevron-up' : 'chevron-down'}
+                onPress={() => setExpanded(!expanded)}
+              />
+            )}
+            {expanded || pending ? (
+              <DetailsBox pinned={actions !== undefined}>
+                {http ? (
+                  <>
                     <Text variant="code" style={styles.compactCode} selectable>
-                      {spellOutBidiControls(http.body)}
+                      {http.method} {http.host}
+                      {http.path}
                     </Text>
-                  ) : null}
-                  <Text variant="subtitle" tone="default" selectable>
-                    {brokeredAuthSentence(http)}
-                  </Text>
-                </>
-              ) : cli ? (
-                <>
-                  <Text variant="code" style={styles.compactCode} selectable>
-                    {trustedCliCommandLine(cli)}
-                  </Text>
-                  <Text variant="subtitle" tone="default" selectable>
-                    {spellOutBidiControls(trustedCliInjectionSummary(cli))}
-                  </Text>
-                  {cli.entryScript ? (
+                    {http.body !== null ? (
+                      <Text variant="code" style={styles.compactCode} selectable>
+                        {spellOutBidiControls(http.body)}
+                      </Text>
+                    ) : null}
                     <Text variant="subtitle" tone="default" selectable>
-                      {spellOutBidiControls(
-                        `Entry script: ${cli.entryScript.path} (SHA-256 ${cli.entryScript.sha256}, ${cli.entryScript.loading} loading)`,
-                      )}
+                      {brokeredAuthSentence(http)}
                     </Text>
-                  ) : null}
-                </>
-              ) : null}
-              {source ? (
-                <Text variant="footnote" tone="muted" selectable>
-                  {spellOutBidiControls(dopplerSourceLabel(source))}
-                </Text>
-              ) : null}
-            </ScrollView>
-          ) : null}
-        </View>
-      ) : null}
-      {pending && cli ? (
-        <Text variant="subtitle" tone="muted">
-          The command can read and share the full secret.
-        </Text>
-      ) : null}
+                  </>
+                ) : cli ? (
+                  <>
+                    <Text variant="code" style={styles.compactCode} selectable>
+                      {trustedCliCommandLine(cli)}
+                    </Text>
+                    <Text variant="subtitle" tone="default" selectable>
+                      {spellOutBidiControls(trustedCliInjectionSummary(cli))}
+                    </Text>
+                    {cli.entryScript ? (
+                      <Text variant="subtitle" tone="default" selectable>
+                        {spellOutBidiControls(
+                          `Entry script: ${cli.entryScript.path} (SHA-256 ${cli.entryScript.sha256}, ${cli.entryScript.loading} loading)`,
+                        )}
+                      </Text>
+                    ) : null}
+                  </>
+                ) : null}
+                {source ? (
+                  <Text variant="footnote" tone="muted" selectable>
+                    {spellOutBidiControls(dopplerSourceLabel(source))}
+                  </Text>
+                ) : null}
+              </DetailsBox>
+            ) : null}
+          </View>
+        ) : null}
+        {pending && cli ? (
+          <Text variant="subtitle" tone="muted">
+            The command can read and share the full secret.
+          </Text>
+        ) : null}
+      </Body>
       {actions ? (
         <>
           <View style={styles.actions}>
@@ -257,6 +286,21 @@ export function SecretApprovalCard({
           ) : null}
         </>
       ) : null}
+      {reopen ? (
+        <View style={styles.reopen}>
+          <Button
+            label="Review again"
+            accessibilityHint="Asks you to decide again. It does not run the action."
+            variant="secondary"
+            size="small"
+            icon="rotate-ccw"
+            loading={reopen.working}
+            disabled={reopen.disabled}
+            onPress={reopen.onPress}
+          />
+          {reopen.error ? <Text tone="attention">{reopen.error}</Text> : null}
+        </View>
+      ) : null}
       {pending && !cli ? (
         <View style={styles.note}>
           <Icon name="shield" size={14} color={theme.colors.textMuted} />
@@ -267,6 +311,28 @@ export function SecretApprovalCard({
       ) : null}
     </Card>
   );
+}
+
+// Only the card with actions is pinned above the composer; the transcript's copy scrolls
+// with the transcript and keeps its plain layout.
+// Pinned, the whole body already scrolls: a second scroll box inside it would trap the
+// swipe meant for the buttons below.
+function DetailsBox({ pinned, children }: { pinned: boolean; children: ReactNode }) {
+  return pinned ? (
+    <View style={[styles.detailInline, styles.detailContent]}>{children}</View>
+  ) : (
+    <ScrollView
+      nestedScrollEnabled
+      style={styles.detailScroll}
+      contentContainerStyle={styles.detailContent}
+    >
+      {children}
+    </ScrollView>
+  );
+}
+
+function Body({ pinned, children }: { pinned: boolean; children: ReactNode }) {
+  return pinned ? <PinnedScroll testID="secret-approval-body">{children}</PinnedScroll> : children;
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -311,7 +377,9 @@ const styles = StyleSheet.create((theme) => ({
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   details: { alignItems: 'flex-start', gap: theme.spacing.sm },
   detailScroll: { alignSelf: 'stretch', maxHeight: 220 },
+  detailInline: { alignSelf: 'stretch' },
   detailContent: { gap: theme.spacing.sm },
+  reopen: { alignItems: 'flex-start', gap: theme.spacing.xs },
   note: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.xs },
   noteText: { flexShrink: 1 },
 }));

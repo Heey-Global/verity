@@ -222,4 +222,32 @@ describe('SessionListModel.applyDomainEvent', () => {
     expect(listSessions).toHaveBeenCalledTimes(2);
     model.stop();
   });
+
+  it('shows a pull request status at once and keeps it over a read already on its way', async () => {
+    const green = {
+      number: 7,
+      title: 'Add live status',
+      url: 'https://example.test/pr/7',
+      phase: 'open',
+      pipeline: 'success',
+      mergeable: true,
+      checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+    } as const;
+    let release: (sessions: SessionSummary[]) => void = () => undefined;
+    const listSessions = vi
+      .fn<() => Promise<SessionSummary[]>>()
+      .mockResolvedValueOnce([summary('s1', { pr: null, pullRequest: null })])
+      .mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    const model = new SessionListModel({ client: clientFor(listSessions) });
+    await model.refresh();
+    const stale = model.refresh();
+    model.applyDomainEvent({ t: 'pr.status', sessionId: 's1', rev: 4, pr: green });
+    expect(model.state.sessions[0]).toMatchObject({
+      pullRequest: { number: 7, pipeline: 'success' },
+      pr: { phase: 'open', pipeline: 'success', mergeable: true },
+    });
+    release([summary('s1', { pr: null, pullRequest: null })]);
+    await stale;
+    expect(model.state.sessions[0]?.pr).toMatchObject({ pipeline: 'success' });
+  });
 });

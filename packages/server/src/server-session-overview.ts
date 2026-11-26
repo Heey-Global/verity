@@ -65,6 +65,8 @@ export interface ServerSessionOverviewOptions {
   pushFirePoints: PushFirePoints | undefined;
   describePushSession: (session: SessionRecord) => Promise<PushSessionContext>;
   vulnerabilitySessions: Pick<ReturnType<typeof createVulnerabilitySessionMonitor>, 'attention'>;
+  /** Told every pull request status the session cache presents (ADR 0033). */
+  onPrStatus?: (session: SessionRecord, status: PullRequestStatus | null) => void;
 }
 
 export interface ServerSessionOverview {
@@ -139,6 +141,7 @@ export function createServerSessionOverview({
   pushFirePoints,
   describePushSession,
   vulnerabilitySessions,
+  onPrStatus,
 }: ServerSessionOverviewOptions): ServerSessionOverview {
   // A session's live status badge. The event log lags the conductor: between a
   // turn being dispatched and claude emitting its first `status: running` event,
@@ -516,7 +519,10 @@ export function createServerSessionOverview({
     );
     if (observedPullRequests.get(session.worktree) !== snapshot) {
       observedPullRequests.set(session.worktree, snapshot);
-      resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(session.sessionId)}/branches`,
+        'pr-status',
+      );
     }
     return rows;
   };
@@ -568,6 +574,7 @@ export function createServerSessionOverview({
     now: deps.pullRequestCacheNow,
     onChange: (session, status) => {
       prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
+      onPrStatus?.(session, status);
       // A merged change is when the product changed. The occasion is recorded once
       // per pull request; a cache refilled after a restart reports it again. It
       // names the pull request only: the session's conversation is kept for the
@@ -586,7 +593,10 @@ export function createServerSessionOverview({
         );
       // Cache completion is not an HTTP mutation; without this the overview waits
       // for a later observation even though the opened session already knows the PR.
-      resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(session.sessionId)}/branches`,
+        'pr-status',
+      );
     },
   });
   const backgroundPr = createPrBackgroundPolicy({
