@@ -77,8 +77,6 @@
     "getSessionEventStats": "6c3134ef 6ab8b6aa 8d7e3ffa a5fb6ce3 01b83956 2b91a01b aa8da2bd 2e4463aa",
     "latestEventSeq": "0ee232b3 dbfd9e5c a9a505a4 81283887 931d3100 4cefb96f 23a91954 8cdc80f5",
     "finishSessionDeletionCleanup": "f6e98a4d adb2142a ec69ba7f 85562774 0dbfc9bc 7a63cd2a 7922dce3 0adb0cba",
-    "reserveBackgroundDispatch": "dab6e624 aa951f64 e4003e5f 9b2da64b 6a9ae83b dc7c8298 e8619d46 f9260425",
-    "admitBackgroundDispatch": "cbb46fba 52e75ad1 b534c6f2 7088fc7e a259dd1c c5101bac 3cd1c1d3 7e954732",
     "externalizeToolResult": "d9c8e657 473da598 2cf8ba0f 24c1379b 78401a94 6a89369c c72549ff 43c90c01",
     "getEvents": "5e61366b 965fb5d4 b620aa76 85608365 9349c338 d07f89f1 d40c2cb7 d2a81015",
     "getBoundedHistory": "cbce3e9a 0a1a79d2 2e9e8003 ff3ed5be a5976c20 6b80eb8e 7a34ddcc 6383d3dd",
