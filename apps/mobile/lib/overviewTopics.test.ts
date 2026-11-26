@@ -250,6 +250,22 @@ describe('useOverviewTopics', () => {
     expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(held);
   });
 
+  it("drops a signed-out account's store once no view holds it", () => {
+    const account = mockAccount;
+    const view = renderHook(() => useOverviewStore('https://core.example'));
+    const store = view.result.current;
+    view.unmount();
+    act(() => {
+      mockAccount += 1;
+      for (const listener of mockAccountListeners) listener();
+    });
+    mockAccount = account;
+    // Signing back in must not show the sessions kept from before.
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).not.toBe(
+      store,
+    );
+  });
+
   it('subscribes nothing without a server or projects', () => {
     renderHook(() =>
       useOverviewTopics(

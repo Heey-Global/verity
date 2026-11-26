@@ -196,22 +196,32 @@ class OverviewHub {
 /** One hub per server and account while any view uses it. */
 const hubs = new Map<string, OverviewHub>();
 
-/** The stores of the servers and accounts in use. A store outlives the views,
- * so a page opened again starts from what the app already knows. A store is
- * dropped when its hub goes idle while another server or account is in use, so
- * a returning account starts empty. Nothing is dropped during a render. */
+/** The stores of the servers and accounts in use, keyed like the hubs. A
+ * store outlives the views, so a page opened again starts from what the app
+ * already knows. Once its account is no longer signed in and no hub holds it,
+ * it is dropped, so a returning account starts empty. */
 const stores = new Map<string, OverviewStore>();
-let latestScope: string | undefined;
+let pruneOnAccountChange: (() => void) | undefined;
 
 function storeFor(scope: string): OverviewStore {
-  latestScope = scope;
   let store = stores.get(scope);
   if (store === undefined) {
     // Gated per topic by the hub, so one topic's resync does not open another's.
     store = new OverviewStore({ gated: false });
     stores.set(scope, store);
   }
+  // Installed once; the account modules outlive every view.
+  pruneOnAccountChange ??= subscribeAccount(pruneStores);
   return store;
+}
+
+/** Drop the stores of accounts no longer signed in that no hub holds. */
+function pruneStores(): void {
+  const signedIn = taskAccountScope();
+  for (const scope of stores.keys()) {
+    const [, account] = JSON.parse(scope) as [string, string | null];
+    if (account !== signedIn && !hubs.has(scope)) stores.delete(scope);
+  }
 }
 
 function subscribeAccount(listener: () => void): () => void {
@@ -240,7 +250,7 @@ function attachToHub(
     detach();
     if (!attached.idle || hubs.get(scope) !== attached) return;
     hubs.delete(scope);
-    if (scope !== latestScope) stores.delete(scope);
+    pruneStores();
   };
 }
 

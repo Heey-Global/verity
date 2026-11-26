@@ -61,6 +61,7 @@ const setupMigrations = new Set<string>();
 /** A project an action or another screen returned is newer than any read
  * still on its way, so it is applied as the newest read of that project. */
 function adoptProject(store: OverviewStore, project: ProjectRecord): void {
+  // `applyProjects` ends the read it is given; no `endRead` is needed.
   store.applyProjects(store.beginRead(), [project], { covers: (p) => p.id === project.id });
 }
 
@@ -174,7 +175,9 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
           // A screen below the one on top reads again when it comes back.
           if ((!projectApplied || !sessionsApplied) && focusedRef.current && !isRetry) {
             retryRef.current = true;
-            queueMicrotask(() => void loadRef.current(true));
+            queueMicrotask(() => {
+              if (focusedRef.current) void loadRef.current(true);
+            });
           }
           // A fetch result deliberately stays off the status bus. Only an
           // action's response is published (see `onProjectUpdated`): with the
@@ -275,7 +278,14 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     (event) => {
       const update = projectEventUpdate(event);
       if (update !== undefined) {
-        if (update.projectId === projectId && update.reload && focusedRef.current) void load(true);
+        if (update.projectId !== projectId) return;
+        // Without a copy in the store (it refused the last read) the page
+        // keeps the change itself.
+        if (storeRef.current.project(projectId) === undefined)
+          setDetail((latest) =>
+            latest === undefined ? latest : { ...latest, project: update.patch(latest.project) },
+          );
+        if (update.reload && focusedRef.current) void load(true);
         return;
       }
       const current = shownRef.current;
