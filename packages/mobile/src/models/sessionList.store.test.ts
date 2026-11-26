@@ -296,4 +296,18 @@ describe('SessionListModel with the shared overview store', () => {
     expect(onChange.mock.calls[0]![0].sessions[0].status).toBe('idle');
     model.stop();
   });
+
+  // Before the shared store Home showed only its own read; now a confirmed
+  // favorite laid on top would hide a later change made elsewhere.
+  it('shows a favorite changed elsewhere after its own was confirmed', async () => {
+    const { model, store, shown } = harness(() => Promise.resolve([summary('s1')]), {
+      setSessionFavorite: vi.fn(() => Promise.resolve({ sessionId: 's1', favorite: true })),
+    });
+    await model.refresh();
+    model.start();
+    await model.setFavorite('s1', true);
+    projectPageRead(store, [summary('s1')]);
+    expect(shown('s1')?.favorite).toBeUndefined();
+    model.stop();
+  });
 });

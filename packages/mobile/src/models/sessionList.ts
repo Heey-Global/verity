@@ -248,17 +248,20 @@ export class SessionListModel {
     return shown;
   }
 
+  /** Only writes still out: a confirmed one is in the store, which keeps it
+   * from older reads, and laying it on would hide a newer change from
+   * elsewhere. */
   private withOwnChanges(session: SessionSummary): SessionSummary {
     let next = session;
     const name = this.pendingNames.get(session.sessionId);
     if (name !== undefined && next.name !== name.name) next = { ...next, name: name.name };
     const favorite = this.pendingFavorites.get(session.sessionId);
-    if (favorite !== undefined && (session.favorite === true) !== favorite.favorite) {
+    if (favorite?.maxRequest === Infinity && (session.favorite === true) !== favorite.favorite) {
       next = { ...next, favorite: true };
       if (!favorite.favorite) delete next.favorite;
     }
     const order = this.pendingOrders.get(session.projectId ?? null);
-    if (order !== undefined) {
+    if (order?.maxRequest === Infinity) {
       const position = order.ids.indexOf(session.sessionId);
       const sortOrder = position < 0 ? null : position;
       if (next.sortOrder !== sortOrder) next = { ...next, sortOrder };
