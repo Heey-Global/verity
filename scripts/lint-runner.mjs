@@ -101,16 +101,17 @@ export function workerHeapLimit(probe = {}) {
  * @param {number} heapMiB
  * @param {boolean} cache
  * @param {boolean} ambientCache
+ * @param {boolean} [lite]
  * @returns {WorkerResult}
  */
-function executeLint(files, heapMiB, cache, ambientCache) {
+function executeLint(files, heapMiB, cache, ambientCache, lite = false) {
   // Disable core dumps before Node starts: an expected heap abort must not write
   // a potentially large dump. File names are positional arguments, never shell code.
   return spawnSync(
     'bash',
     [
       resolve(import.meta.dirname, 'lint-worker.sh'),
-      ...lintWorkerArguments(files, heapMiB, cache, ambientCache),
+      ...lintWorkerArguments(files, heapMiB, cache, ambientCache, lite),
     ],
     { encoding: 'utf8', maxBuffer: 16 * MiB },
   );
@@ -121,10 +122,16 @@ function executeLint(files, heapMiB, cache, ambientCache) {
  * @param {number} heapMiB
  * @param {boolean} cache
  * @param {boolean} ambientCache
+ * @param {boolean} [lite]
  */
-export function lintWorkerArguments(files, heapMiB, cache, ambientCache) {
+export function lintWorkerArguments(files, heapMiB, cache, ambientCache, lite = false) {
   return [
     process.execPath,
+    // Measured: test files that import the whole server graph peak near 560 MiB
+    // with optimized code, and near 505 MiB without it. Lite mode keeps the heap
+    // budget and every rule, but runs about four times slower, so only a single
+    // file that already exhausted its budget uses it.
+    ...(lite ? ['--lite-mode'] : []),
     `--max-old-space-size=${heapMiB}`,
     '--expose-gc',
     resolve(import.meta.dirname, 'lint-files.mjs'),
@@ -141,7 +148,7 @@ export function lintWorkerArguments(files, heapMiB, cache, ambientCache) {
 
 /**
  * @param {string[]} files
- * @param {{ cache?: boolean, ambientCache?: boolean, heapMiB?: number, groupFiles?: number, groupBytes?: number, execute?: (files: string[], heapMiB: number, ambientCache: boolean) => WorkerResult,
+ * @param {{ cache?: boolean, ambientCache?: boolean, liteRetry?: boolean, heapMiB?: number, groupFiles?: number, groupBytes?: number, execute?: (files: string[], heapMiB: number, ambientCache: boolean, lite: boolean) => WorkerResult,
  * output?: (text: string) => void, error?: (text: string) => void }} [options]
  */
 export function runLint(files, options = {}) {
@@ -152,13 +159,13 @@ export function runLint(files, options = {}) {
   const groupBytes = options.groupBytes ?? limits.bytes;
   const execute =
     options.execute ??
-    ((batch, heap, ambientCache) =>
-      executeLint(batch, heap, ambientCache && (options.cache ?? false), ambientCache));
+    ((batch, heap, ambientCache, lite) =>
+      executeLint(batch, heap, ambientCache && (options.cache ?? false), ambientCache, lite));
   const output = options.output ?? ((text) => process.stdout.write(text));
   const error = options.error ?? ((text) => process.stderr.write(text));
-  /** @param {string[]} batch @param {boolean} [ambientCache] @returns {number} */
-  function check(batch, ambientCache = options.ambientCache ?? true) {
-    const result = execute(batch, heapMiB, ambientCache);
+  /** @param {string[]} batch @param {boolean} [ambientCache] @param {boolean} [lite] @returns {number} */
+  function check(batch, ambientCache = options.ambientCache ?? true, lite = false) {
+    const result = execute(batch, heapMiB, ambientCache, lite);
     if (result.status === 0 && !result.error) {
       output(result.stdout ?? '');
       error(result.stderr ?? '');
@@ -177,6 +184,14 @@ export function runLint(files, options = {}) {
             `Lint worker reached its memory budget; retrying ${batch[0]} without optional lint caches.\n`,
           );
           return check(batch, false);
+        }
+        if (!lite && (options.liteRetry ?? true)) {
+          // Optimized machine code shares the heap budget with the type graph.
+          // Retry once without the optimizing compilers; rules, roots and heap stay unchanged.
+          error(
+            `Lint worker reached its memory budget; retrying ${batch[0]} without optimized code.\n`,
+          );
+          return check(batch, false, true);
         }
         error(`Lint could not check ${batch[0]} within the ${heapMiB} MiB heap budget.\n`);
         error('No successful lint result was accepted for this file.\n');
