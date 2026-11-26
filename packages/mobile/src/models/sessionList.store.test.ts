@@ -310,4 +310,29 @@ describe('SessionListModel with the shared overview store', () => {
     expect(shown('s1')?.favorite).toBeUndefined();
     model.stop();
   });
+
+  // The store takes the server's rows, never Home's own copy with unconfirmed
+  // writes laid on, so a write that fails after a read leaves nothing behind.
+  it('keeps the server rows in the store when a read lands during a write that fails', async () => {
+    const fails: Array<() => void> = [];
+    const pending = <T>() =>
+      new Promise<T>((_resolve, reject) => fails.push(() => reject(new Error('no'))));
+    const { model, store, shown } = harness(() => Promise.resolve([summary('s1'), summary('s2')]), {
+      setSessionFavorite: vi.fn(() => pending<never>()),
+      deleteSession: vi.fn(() => pending<never>()),
+    });
+    await model.refresh();
+    model.start();
+    const favorite = model.setFavorite('s1', true);
+    const deletion = model.delete('s2').catch(() => undefined);
+    await model.refresh();
+    expect(store.session('s1')?.favorite).toBeUndefined();
+    expect(store.session('s2')).toBeDefined();
+    for (const fail of fails) fail();
+    await favorite;
+    await deletion;
+    expect(shown('s1')?.favorite).toBeUndefined();
+    expect(shown('s2')).toBeDefined();
+    model.stop();
+  });
 });
