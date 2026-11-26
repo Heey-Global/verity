@@ -46,7 +46,7 @@ started before the audio path was added, Core continues to reconcile transcript
 snapshots through Attendee's API.
 
 A bot creation timeout remains interrupted until signed metadata identifies
-the bot. The audio share is revoked on failed startup. Starting again is
+the bot. The audio share is revoked when startup is known to have failed. Starting again is
 permitted when preparation fails before bot creation was attempted.
 
 Hosted Uplink must explicitly advertise compatible deployed `webhook-v1`

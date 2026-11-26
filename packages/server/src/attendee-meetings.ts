@@ -634,16 +634,6 @@ export class AttendeeMeetings {
     } else if (state.joinedAt !== undefined && final) {
       audio.gap = true;
     }
-    if (!final && !audio.disabled && (!connection || connection.disconnected)) {
-      try {
-        await this.connectAudio(state);
-      } catch {
-        if (!audio.gap) {
-          audio.gap = true;
-          await this.save(state);
-        }
-      }
-    }
     return audio.segments.map((segment) => ({
       ...segment,
       speaker_name: audio.names?.[segment.speaker_uuid],
@@ -827,8 +817,7 @@ export class AttendeeMeetings {
         if (code === 'pending' || code === 'ready') code = 'failed';
         emit('failed');
         if (error instanceof AttendeeRequestRejected) state.botCreateAttempted = false;
-        if (state.audio) {
-          state.audio.gap = true;
+        if (state.audio && !state.botCreateAttempted) {
           await this.releaseAudio(state).catch(() => undefined);
         }
         if (!state.botCreateAttempted) {
@@ -1168,6 +1157,18 @@ export class AttendeeMeetings {
       else await this.publish(state);
       return;
     }
+    if (!discard && state.audio && !state.audio.disabled) {
+      // Restore media transport even when Attendee's status API is unavailable.
+      await this.persistAudio(state);
+      try {
+        await this.connectAudio(state);
+      } catch {
+        if (!state.audio.gap) {
+          state.audio.gap = true;
+          await this.save(state);
+        }
+      }
+    }
     if (!state.botId) {
       // A webhook can arrive before create returns; recover the provider ID from its signed metadata.
       const rows = await this.options.store.listAttendeeState<z.infer<typeof webhookSchema>>();
@@ -1236,10 +1237,9 @@ export class AttendeeMeetings {
     if (!discard) this.logSnapshot(state, bot.state, snapshot, final);
     if (!discard) {
       if (state.timeOriginMs === undefined && snapshot.length) {
-        state.timeOriginMs = snapshot.reduce(
-          (earliest, item) => Math.min(earliest, item.timestamp_ms),
-          Infinity,
-        );
+        state.timeOriginMs = state.audio
+          ? state.meeting.startedAt
+          : snapshot.reduce((earliest, item) => Math.min(earliest, item.timestamp_ms), Infinity);
         await this.save(state);
       }
       const normalized = normalizeAttendeeTranscript(
