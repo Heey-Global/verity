@@ -77,6 +77,15 @@ it('checks decorators and computed names on fields without initializers', () => 
   expect(Object.keys(facadeImplementations(source))).toEqual(['lookup', '[registerField()]']);
 });
 
+it('allows the Workspace store to resolve the current Google account store', () => {
+  const source = (accounts: string) =>
+    'class EventStore { workspace = new GoogleWorkspaceStore(() => this.db, ' + accounts + '); }';
+  expect(facadeImplementations(source('() => this.googleAccounts'))).toEqual({});
+  expect(Object.keys(facadeImplementations(source('() => this.googleAccounts.get(id)')))).toEqual([
+    'workspace',
+  ]);
+});
+
 it.each([
   'class EventStore { [register()] = new EventSnapshotStore(() => this.db); }',
   'class EventStore { @register field = new EventSnapshotStore(() => this.db); }',
