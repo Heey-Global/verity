@@ -38,7 +38,11 @@ export function facadeImplementations(text) {
           : undefined
         : undefined;
     const initializer = ts.isPropertyDeclaration(member) ? member.initializer : undefined;
-    if (!body && !initializer && member.parent === facade) continue;
+    const decorators = ts.canHaveDecorators(member) ? ts.getDecorators(member) : undefined;
+    const computedName = 'name' in member && member.name && ts.isComputedPropertyName(member.name);
+    if (!body && !initializer && !decorators?.length && !computedName && member.parent === facade) {
+      continue;
+    }
     const name =
       ('name' in member && member.name ? member.name.getText(source) : undefined) ??
       (ts.isConstructorDeclaration(member)
@@ -57,7 +61,7 @@ export function facadeImplementations(text) {
     const forwarded =
       ts.isMethodDeclaration(member) &&
       ts.isIdentifier(member.name) &&
-      !member.modifiers?.some(ts.isDecorator) &&
+      !decorators?.length &&
       parameterNodes.every(
         (parameter) =>
           !parameter.initializer &&

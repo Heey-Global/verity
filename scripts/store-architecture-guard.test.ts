@@ -71,6 +71,12 @@ it('checks computed method names and rest forwarding', () => {
   ).toEqual(['[registerLookup()]']);
 });
 
+it('checks decorators and computed names on fields without initializers', () => {
+  const source =
+    'class EventStore { @registerLookup accessor lookup!: Lookup; [registerField()]!: string; }';
+  expect(Object.keys(facadeImplementations(source))).toEqual(['lookup', '[registerField()]']);
+});
+
 it('detects executable defaults in forwarding methods and fingerprints retained defaults', () => {
   const source = (value: string) =>
     'class EventStore { read(id = ' + value + ') { return this.events.read(id); } }';
