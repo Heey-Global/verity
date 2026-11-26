@@ -52,8 +52,31 @@ const listQuery = z
       .optional(),
     /** The operator's own tasks, or the steps agents recorded while working. */
     origin: z.enum(['user', 'agent']).optional(),
+    /** Leave out done tasks completed before this instant; other statuses are unaffected. */
+    doneSince: z
+      .string()
+      .datetime({ offset: true })
+      .transform((value) => new Date(value))
+      .optional(),
   })
   .strict();
+
+/** How far back the default `GET /tasks` list reaches for done tasks. */
+export const DONE_TASK_LIST_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Without a `status` filter the list is what clients show: no dropped tasks, and done ones
+ * only from the recent window. Every client re-reads the whole list on each task change and
+ * the live observer re-reads it every 15 seconds, so returning all history made each refresh
+ * pay for every task ever closed. An explicit `status` returns full history unless the caller
+ * also passes `doneSince`.
+ */
+function defaultTaskListWindow(now: number) {
+  return {
+    statuses: TASK_STATUSES.filter((status) => status !== 'dropped'),
+    doneSince: new Date(now - DONE_TASK_LIST_WINDOW_MS),
+  };
+}
 
 const taskParams = z.object({ id: z.string().regex(/^[0-9a-f-]{36}$/i, 'invalid task id') });
 
@@ -275,7 +298,10 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
             ? null
             : query.projectId,
       sessionId: query.sessionId,
-      statuses: query.status as TaskRecord['status'][] | undefined,
+      ...(query.status === undefined
+        ? defaultTaskListWindow(Date.now())
+        : { statuses: query.status as TaskRecord['status'][] }),
+      ...(query.doneSince === undefined ? {} : { doneSince: query.doneSince }),
       origin: query.origin,
     });
     const readable = new Set<string | null>();

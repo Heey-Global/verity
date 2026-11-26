@@ -118,10 +118,14 @@ it('follows task updates only while a view is open, also across a restart', asyn
     [{ path: '/tasks' }],
   );
   await waitFor(() =>
-    expect(mockClient.listTasks).toHaveBeenCalledWith('?origin=user&status=open,in_progress,done'),
+    expect(mockClient.listTasks).toHaveBeenCalledWith(
+      expect.stringMatching(/^\?origin=user&status=open,in_progress,done&doneSince=/),
+    ),
   );
   expect(mockClient.listTasks).toHaveBeenCalledWith(
-    '?origin=agent&status=open,in_progress,done&sessionId=s1',
+    expect.stringMatching(
+      /^\?origin=agent&status=open,in_progress,done&doneSince=[^&]+&sessionId=s1$/,
+    ),
   );
   const detach = jest.mocked(subscribeLiveRefresh).mock.results[0]!.value;
   stop();

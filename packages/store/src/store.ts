@@ -78,14 +78,12 @@ import { ProjectAccessStore } from './project-access.js';
 import { ProjectLifecycleStore } from './project-lifecycle.js';
 import { ProjectChangeFeed } from './project-changes.js';
 import {
-  projectRowToRecord,
   type ProjectState,
   type ProjectSetupState,
   type ProjectKind,
   type ProjectRecord,
   type ProjectReleaseStatus,
   type ProjectUpsertInput,
-  defaultProjectName,
 } from './project-record.js';
 export {
   type ProjectState,
@@ -210,7 +208,7 @@ export {
 import { KnowledgeStore } from './knowledge.js';
 import { IntegrationStore } from './integrations.js';
 import { LiveMeetingStore } from './live-meetings.js';
-import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
+import { StarterProjectStore } from './starter-projects.js';
 import { scrubNulEscapes } from './nul-scrub.js';
 import { redactSecrets } from './redact.js';
 import {
@@ -1115,6 +1113,7 @@ export class EventStore implements EventSink {
     );
   }
 
+  private readonly starterProjects = new StarterProjectStore(() => this.db);
   private readonly projectLifecycle = new ProjectLifecycleStore(
     () => this.db,
     (id) => this.getProject(id),
@@ -1890,103 +1889,24 @@ export class EventStore implements EventSink {
    * deleted (projects are soft-deleted), so it is never recreated.
    */
   async recordStarterProject(projectId: string): Promise<boolean> {
-    const result = await this.db
-      .insertInto('starter_project')
-      .values({ singleton: true, project_id: projectId })
-      .onConflict((oc) => oc.column('singleton').doNothing())
-      .executeTakeFirst();
-    return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+    return this.starterProjects.recordStarterProject(projectId);
   }
 
   /** Explicit tour replay restores only the recorded starter, never a name match. */
   async ensureReplayStarterProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
-    const row = await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const recorded = await tx
-        .selectFrom('starter_project')
-        .select('project_id')
-        .executeTakeFirst();
-      if (recorded) {
-        const existing = await tx
-          .selectFrom('projects')
-          .selectAll()
-          .where('id', '=', recorded.project_id)
-          .forUpdate()
-          .executeTakeFirst();
-        if (existing) {
-          if (existing.hidden_at === null) return existing;
-          const restored = await tx
-            .updateTable('projects')
-            .set({
-              hidden_at: null,
-              archived: false,
-              overview_visible: true,
-              state: 'absent',
-              provision_error: null,
-              provision_warning: null,
-              sleep_compatibility_fingerprint: null,
-              sleeping_since: null,
-              wake_started_at: null,
-              state_changed_at: sql`now()`,
-              updated_at: sql`now()`,
-            })
-            .where('id', '=', existing.id)
-            .returningAll()
-            .executeTakeFirstOrThrow();
-          await ensureProjectKnowledgeSpace(tx, restored.id, restored.repo);
-          return restored;
-        }
-      }
-      // A unique replay identity cannot claim a user's similarly named project.
-      await tx
-        .insertInto('project_identity_claims')
-        .values({ owner: input.owner, repo: input.repo, project_id: input.id })
-        .execute();
-      const created = await tx
-        .insertInto('projects')
-        .values({
-          id: input.id,
-          name: input.name ?? defaultProjectName(input),
-          owner: input.owner,
-          repo: input.repo,
-          container_name: input.containerName,
-          kind: 'local',
-          clone_dir: input.cloneDir ?? null,
-          state: 'absent',
-          overview_visible: true,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      await tx
-        .insertInto('starter_project')
-        .values({ singleton: true, project_id: created.id })
-        .onConflict((oc) => oc.column('singleton').doUpdateSet({ project_id: created.id }))
-        .execute();
-      await ensureProjectKnowledgeSpace(tx, created.id, created.repo);
-      return created;
-    });
-    return projectRowToRecord(row);
+    return this.starterProjects.ensureReplayStarterProject(input);
   }
 
   async getStarterWelcomeSessionId(): Promise<string | undefined> {
-    const row = await this.db
-      .selectFrom('starter_project')
-      .select('welcome_session_id')
-      .executeTakeFirst();
-    return row?.welcome_session_id ?? undefined;
+    return this.starterProjects.getStarterWelcomeSessionId();
   }
 
   async recordStarterWelcomeSession(sessionId: string): Promise<void> {
-    await this.db
-      .updateTable('starter_project')
-      .set({ welcome_session_id: sessionId })
-      .where('singleton', '=', true)
-      .execute();
+    return this.starterProjects.recordStarterWelcomeSession(sessionId);
   }
 
   async getStarterProjectId(): Promise<string | undefined> {
-    const row = await this.db.selectFrom('starter_project').select('project_id').executeTakeFirst();
-    return row?.project_id;
+    return this.starterProjects.getStarterProjectId();
   }
 
   /**

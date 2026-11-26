@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.95.6](https://github.com/Heey-Global/verity/compare/mobile-v1.95.5...mobile-v1.95.6) (2026-11-26)
+
+
+### Features
+
+* **live:** domain-event topics on the live connection (protocol 2) ([#2915](https://github.com/Heey-Global/verity/issues/2915)) ([c72309b](https://github.com/Heey-Global/verity/commit/c72309bfbb84e407d3e88cc51d12ce1a1c36a59a))
+* **live:** publish answered requests and Quick Actions as domain events ([#2923](https://github.com/Heey-Global/verity/issues/2923)) ([e113832](https://github.com/Heey-Global/verity/commit/e113832566aaddbb110917efad5ef4c8be9d3616))
+* **live:** publish sandbox lifecycle, update and project changes as domain events ([#2930](https://github.com/Heey-Global/verity/issues/2930)) ([c5c3e10](https://github.com/Heey-Global/verity/commit/c5c3e10f68b3e20d8b112972ea4295001c94cfd0))
+
+
+### Bug Fixes
+
+* **mobile:** stop hidden session screens from polling secret approvals ([#2925](https://github.com/Heey-Global/verity/issues/2925)) ([413427a](https://github.com/Heey-Global/verity/commit/413427a8c0cdd5ef945b2ce5f00c6746d2eaf2a3))
+* **tasks:** load only the tasks a view shows, and only while it is open ([#2928](https://github.com/Heey-Global/verity/issues/2928)) ([b44359b](https://github.com/Heey-Global/verity/commit/b44359b9977a2d26dcd778520294816634bd1e26))
+
 ## [1.95.5](https://github.com/Heey-Global/verity/compare/mobile-v1.95.4...mobile-v1.95.5) (2026-11-25)
 
 

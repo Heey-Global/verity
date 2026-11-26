@@ -186,7 +186,8 @@ describe('project state writers', () => {
   const exempt: Record<string, string> = {
     // Restores a hidden starter project, which views receive as a new entry of
     // the project list rather than as a change of a project they show.
-    'packages/store/src/store.ts ensureReplayStarterProject': 'restores a hidden project',
+    'packages/store/src/starter-projects.ts ensureReplayStarterProject':
+      'restores a hidden project',
     // The in-transaction writer; its callers are checked below.
     'packages/server/src/project-persistence.ts': 'updateProjectStateInTx',
   };

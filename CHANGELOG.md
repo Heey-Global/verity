@@ -6,6 +6,22 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.105.0](https://github.com/Heey-Global/verity/compare/v4.104.0...v4.105.0) (2026-11-26)
+
+
+### Features
+
+* **live:** domain-event topics on the live connection (protocol 2) ([#2915](https://github.com/Heey-Global/verity/issues/2915)) ([c72309b](https://github.com/Heey-Global/verity/commit/c72309bfbb84e407d3e88cc51d12ce1a1c36a59a))
+* **live:** publish answered requests and Quick Actions as domain events ([#2923](https://github.com/Heey-Global/verity/issues/2923)) ([e113832](https://github.com/Heey-Global/verity/commit/e113832566aaddbb110917efad5ef4c8be9d3616))
+* **live:** publish sandbox lifecycle, update and project changes as domain events ([#2930](https://github.com/Heey-Global/verity/issues/2930)) ([c5c3e10](https://github.com/Heey-Global/verity/commit/c5c3e10f68b3e20d8b112972ea4295001c94cfd0))
+
+
+### Bug Fixes
+
+* **dependencies:** reuse bounded activation inventory ([#2924](https://github.com/Heey-Global/verity/issues/2924)) ([c0f08ce](https://github.com/Heey-Global/verity/commit/c0f08cec4119c9fbd36dd2fc70ae55d3bc28a9d3))
+* **server:** bound pool waits and log MCP gateway tool calls ([#2929](https://github.com/Heey-Global/verity/issues/2929)) ([8962765](https://github.com/Heey-Global/verity/commit/8962765d9aec038797495db7812112304a794b84))
+* **tasks:** load only the tasks a view shows, and only while it is open ([#2928](https://github.com/Heey-Global/verity/issues/2928)) ([b44359b](https://github.com/Heey-Global/verity/commit/b44359b9977a2d26dcd778520294816634bd1e26))
+
 ## [4.104.0](https://github.com/Heey-Global/verity/compare/v4.103.1...v4.104.0) (2026-11-25)
 
 

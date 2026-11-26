@@ -24,7 +24,7 @@ interface Dependencies {
   load: () => Promise<string | null>;
   persist: (data: string) => Promise<void>;
   api: {
-    listTasks(): Promise<Task[]>;
+    listTasks(query?: string): Promise<Task[]>;
     saveTask(id: string, body: TaskCapture): Promise<Task>;
     updateTask(id: string, body: TaskPatch): Promise<Task>;
     deleteTask(id: string): Promise<void>;
@@ -155,7 +155,10 @@ export class TaskQueue {
   /** The user chooses whether the remote copy or their retained edit wins. */
   async resolve(id: string, keepLocal: boolean): Promise<void> {
     if (!this.deps.active()) return;
-    const remote = (await this.deps.api.listTasks()).find((task) => task.id === id);
+    // The default list leaves out dropped and older done tasks; a conflict can be about either.
+    const remote = (await this.deps.api.listTasks('?status=open,in_progress,done,dropped')).find(
+      (task) => task.id === id,
+    );
     if (!this.deps.active()) return;
     await this.serial(async () => {
       if (!this.deps.active()) return;
