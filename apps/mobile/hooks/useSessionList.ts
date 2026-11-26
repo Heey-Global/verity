@@ -14,7 +14,7 @@ import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getVerityBaseUrl } from '../lib/client';
-import { useLiveHints } from '../lib/liveConnection';
+import { liveConnectionFor, useLiveHints } from '../lib/liveConnection';
 import { useOverviewStore, useOverviewTopics } from '../lib/overviewTopics';
 
 export interface UseSessionList extends SessionListState {
@@ -55,6 +55,12 @@ export function useSessionList(client: VerityClient): UseSessionList {
         client: contextOverviewClient(client),
         pollIntervalMs: 0,
         store: () => storeRef.current,
+        followsLive: (projectId) => {
+          const baseUrl = getVerityBaseUrl();
+          return (
+            baseUrl !== null && liveConnectionFor(baseUrl).followsTopic(`project:${projectId}`)
+          );
+        },
         onChange: (s) => {
           const finish = beginClientActivity('session-list-publish');
           try {

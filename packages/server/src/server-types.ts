@@ -375,6 +375,9 @@ export interface SessionSummary extends SessionRecord {
   /** The session's recurring automation, so the overview can mark sessions with
    * scheduled work. Absent when the session has none. */
   automation?: { status: SessionAutomationStatus };
+  /** The revision of the last `session.summary` published before this row was
+   * read; a view applies only newer ones over it. Absent when none is known. */
+  summaryRev?: number;
 }
 
 /**

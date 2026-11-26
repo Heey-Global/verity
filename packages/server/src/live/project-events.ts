@@ -64,7 +64,7 @@ export function installProjectEvents(
       publish(projectId, {
         t: 'sandbox.lifecycle',
         projectId,
-        rev: revisions.next(projectId),
+        rev: revisions.next(),
         state,
         ...(lifecycleState === undefined ? {} : { lifecycleState }),
         warning: project.provisionWarning,
@@ -79,7 +79,7 @@ export function installProjectEvents(
       publish(projectId, {
         t: 'project.changed',
         projectId,
-        rev: revisions.next(projectId),
+        rev: revisions.next(),
         patch,
       });
     }
@@ -143,7 +143,7 @@ export function installProjectEvents(
     publish(projectId, {
       t: 'sandbox.update',
       projectId,
-      rev: revisions.next(projectId),
+      rev: revisions.next(),
       available,
     });
   });

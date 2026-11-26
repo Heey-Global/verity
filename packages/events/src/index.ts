@@ -239,6 +239,7 @@ export {
   DOMAIN_TOPIC_KINDS,
   LIVE_MAX_TOPIC_SUBSCRIPTIONS,
   TOPIC_ENDED_REASONS,
+  SESSION_SUMMARY_FIELDS,
   domainEventSchema,
   domainTopic,
   domainTopicSchema,

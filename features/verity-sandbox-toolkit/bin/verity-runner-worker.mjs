@@ -25189,6 +25189,8 @@ var id2 = import_zod9.z.string().min(1).max(200);
 var rev = import_zod9.z.number().int().nonnegative();
 var patch = import_zod9.z.record(import_zod9.z.string(), import_zod9.z.unknown());
 var domainEventSchema = import_zod9.z.discriminatedUnion("t", [
+  /** The session's whole {@link SESSION_SUMMARY_FIELDS} row; a field it
+   * lacks is one the session no longer has. */
   import_zod9.z.object({ t: import_zod9.z.literal("session.summary"), sessionId: id2, rev, patch }),
   import_zod9.z.object({ t: import_zod9.z.literal("permission.requested"), sessionId: id2, toolUseId: id2, rev }),
   import_zod9.z.object({

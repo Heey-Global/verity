@@ -1,6 +1,6 @@
-import type { DomainEvent } from '@verity/events';
+import { SESSION_SUMMARY_FIELDS, type DomainEvent } from '@verity/events';
 import { describe, expect, it } from 'vitest';
-import type { SessionSummary } from '../api.js';
+import { sessionSummarySchema, type SessionSummary } from '../api.js';
 import { inboxItems } from '../ui/inbox.js';
 import { applyOverviewEvent, keptWithout, RevisionGate } from './overviewEvents.js';
 
@@ -200,5 +200,103 @@ describe('RevisionGate', () => {
       if (i === 1_000) gate.accept(answered('busy', 2));
     }
     expect(gate.accept(answered('busy', 2))).toBe(false);
+  });
+});
+
+describe('applyOverviewEvent with session.summary', () => {
+  /** The whole shared row a server publishes for `session`, changed by `change`. */
+  const summary = (session: SessionSummary, change: Record<string, unknown>): DomainEvent => {
+    const row: Record<string, unknown> = {};
+    for (const key of SESSION_SUMMARY_FIELDS) if (key in session) row[key] = session[key];
+    return { t: 'session.summary', sessionId: 's1', rev: 1, patch: { ...row, ...change } };
+  };
+
+  it("replaces the session's shared fields and keeps what each viewer sees", () => {
+    const session = { ...waiting(), lastActivityAt: 5, inboxDismissed: ['x'] } as SessionSummary;
+    const effect = applyOverviewEvent(
+      [session],
+      summary(session, { status: 'idle', eventCount: 9 }),
+    );
+    expect(effect.kind).toBe('local');
+    const [next] = (effect as { sessions: SessionSummary[] }).sessions;
+    expect(next).toMatchObject({ status: 'idle', eventCount: 9, inboxDismissed: ['x'] });
+    // Owned by permission events, not by the row.
+    expect(next!.pendingPermissions).toEqual(['tool-1']);
+  });
+
+  it('drops a shared field the row lacks, and keeps null where null is a value', () => {
+    const session = { ...waiting(), backgroundWorking: true, lastActivityAt: 5 } as SessionSummary;
+    const event = summary(session, { lastActivityAt: null });
+    delete (event as { patch: Record<string, unknown> }).patch.backgroundWorking;
+    const effect = applyOverviewEvent([session], event);
+    const [next] = (effect as { sessions: SessionSummary[] }).sessions;
+    expect(next).not.toHaveProperty('backgroundWorking');
+    expect(next!.lastActivityAt).toBeNull();
+  });
+
+  // The list read carries the same fields; reading it for every row of a
+  // streaming session would only add load.
+  it('ignores a row this app cannot read', () => {
+    expect(applyOverviewEvent([waiting()], summary(waiting(), { status: 42 })).kind).toBe('none');
+  });
+
+  // Kept rows are replayed over reads that answered later; a read that began
+  // after a row was published already shows it, or something newer.
+  it('applies a row only over an older one', () => {
+    const read = { ...waiting(), summaryRev: 5 } as SessionSummary;
+    const replayed = { ...summary(read, { status: 'running' }), rev: 5 };
+    expect(applyOverviewEvent([read], replayed).kind).toBe('none');
+    const newer = { ...summary(read, { status: 'idle' }), rev: 6 };
+    const effect = applyOverviewEvent([read], newer);
+    const [next] = (effect as { sessions: SessionSummary[] }).sessions;
+    expect(next).toMatchObject({ status: 'idle', summaryRev: 6 });
+  });
+
+  it('leaves sessions it does not list to their list read', () => {
+    expect(applyOverviewEvent([], summary(waiting(), { status: 'idle' })).kind).toBe('none');
+  });
+
+  // An unclassified field would either never reach Home live, or reach every
+  // viewer of the project although it is someone's own: each must be decided.
+  it('classifies every overview field as shared or as kept from the read', () => {
+    const kept = new Set([
+      // Identity and placement; a move or rename is hinted as `session`.
+      'sessionId',
+      'worktree',
+      'projectId',
+      // What each person sees differently.
+      'favorite',
+      'lastSeenEventCount',
+      'inboxDismissed',
+      'addressedToViewer',
+      'changeSubmission',
+      'linked',
+      'sortOrder',
+      // Owned by `permission.*`, `choices.*` and `pr.status`.
+      'pendingPermissions',
+      'permissionAwaitingInput',
+      'pendingPermissionRequests',
+      'openChoices',
+      'pr',
+      'pullRequest',
+      // The revision of the row itself, set by the read and by each event.
+      'summaryRev',
+    ]);
+    const shared = new Set<string>(SESSION_SUMMARY_FIELDS);
+    const fields = Object.keys(sessionSummarySchema.shape);
+    expect(fields.filter((field) => !kept.has(field) && !shared.has(field))).toEqual([]);
+    expect([...shared].filter((field) => kept.has(field))).toEqual([]);
+  });
+});
+
+describe('keptWithout with session.summary', () => {
+  // A streaming session publishes a row every two seconds; only the newest
+  // one matters to a read still on its way.
+  it("keeps only a session's newest row", () => {
+    const row = (sessionId: string, rev: number) => ({
+      event: { t: 'session.summary', sessionId, rev, patch: {} } as DomainEvent,
+    });
+    const kept = keptWithout([row('s1', 1), row('s2', 1)], row('s1', 2).event);
+    expect(kept.map(({ event }) => 'sessionId' in event && event.sessionId)).toEqual(['s2']);
   });
 });
