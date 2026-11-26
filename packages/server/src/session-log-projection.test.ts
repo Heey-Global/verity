@@ -38,11 +38,10 @@ describe('SessionLogProjectionCache', () => {
   it('bounds the permission requests it holds across sessions', () => {
     const cache = new SessionLogProjectionCache(2_048);
     for (let at = 0; at < 9; at += 1) cache.set(`s${String(at)}`, facts('1'), withPermissions(64));
-    expect(cache.heldPermissionRequests).toBeLessThanOrEqual(512);
-    expect(cache.get('s0', stats)).toBeUndefined();
-    expect(cache.get('s8', stats)).toBeDefined();
+    expect(cache.heldPermissionRequests).toBe(512);
+    expect(cache.get('s8', stats)).toBeUndefined();
 
-    cache.set('s8', facts('1'), withPermissions(0));
+    cache.set('s7', facts('1'), withPermissions(0));
     expect(cache.heldPermissionRequests).toBe(64 * 7);
   });
 
@@ -51,5 +50,31 @@ describe('SessionLogProjectionCache', () => {
     cache.set('s1', facts('1'), withPermissions(65));
     expect(cache.get('s1', stats)).toBeUndefined();
     expect(cache.heldPermissionRequests).toBe(0);
+  });
+
+  // The list reads every session in the same order on each poll. Evicting the
+  // least recently used entry to admit the next one would evict exactly the one
+  // the following poll needs, so a cache one entry too small would never hit.
+  it('keeps serving the sessions it holds when more are polled than fit', () => {
+    const cache = new SessionLogProjectionCache(3);
+    const ids = ['a', 'b', 'c', 'd', 'e'];
+    for (const id of ids)
+      if (cache.get(id, stats) === undefined) cache.set(id, facts('1'), withPermissions(0));
+    const hits = ids.filter((id) => cache.get(id, stats) !== undefined);
+    expect(hits).toEqual(['a', 'b', 'c']);
+  });
+
+  it('gives up entries nobody has read for a while, such as deleted sessions', () => {
+    let now = 0;
+    const cache = new SessionLogProjectionCache(2, () => now);
+    cache.set('gone', facts('1'), withPermissions(0));
+    cache.set('kept', facts('1'), withPermissions(0));
+    now = 4 * 60_000;
+    expect(cache.get('kept', stats)).toBeDefined();
+    now = 6 * 60_000;
+    cache.set('new', facts('1'), withPermissions(0));
+    expect(cache.get('gone', stats)).toBeUndefined();
+    expect(cache.get('kept', stats)).toBeDefined();
+    expect(cache.get('new', stats)).toBeDefined();
   });
 });

@@ -56,15 +56,15 @@ interface CachedLog {
   lastActivityAt: number | null;
   facts: SummaryLogFacts;
   projection: SessionLogProjection;
+  usedAt: number;
 }
 
 /**
  * Permission requests are the one part of an entry that can be large: each
  * carries up to `PERMISSION_INPUT_MAX_BYTES` of tool input, and an idle session
  * keeps its last turn's requests. The cache as a whole holds at most this many,
- * about 2 MiB of input, evicting least recently used sessions to stay within it;
- * a single projection with more than {@link MAX_SESSION_PERMISSION_REQUESTS} is
- * not kept at all and is simply read again.
+ * about 2 MiB of input; a single projection with more than
+ * {@link MAX_SESSION_PERMISSION_REQUESTS} is not kept at all and is simply read again.
  */
 const MAX_CACHED_PERMISSION_REQUESTS = 512;
 const MAX_SESSION_PERMISSION_REQUESTS = 64;
@@ -72,6 +72,16 @@ const MAX_SESSION_PERMISSION_REQUESTS = 64;
 /** Apart from permission requests an entry holds a handful of small derived
  *  values; this bound keeps sessions that no longer exist from accumulating. */
 export const LOG_PROJECTION_CACHE_MAX_SESSIONS = 2_048;
+
+/**
+ * How long an entry nobody read may hold its place in a full cache. The list
+ * reads every session in the same order on each poll, so evicting the least
+ * recently used entry to admit a new one would evict exactly the entry the next
+ * poll needs, and a full cache would miss on every session. A full cache
+ * therefore turns new entries away and only gives up entries that have not been
+ * read for this long, such as those of deleted sessions.
+ */
+const IDLE_ENTRY_MS = 5 * 60_000;
 
 /**
  * Projections of unchanged session logs, so the overview reads and derives only
@@ -92,13 +102,16 @@ export const LOG_PROJECTION_CACHE_MAX_SESSIONS = 2_048;
  * Only log-derived values are kept, never the event tail. Besides permission
  * requests (budgeted below) an entry holds small values: the newest rate-limit
  * state per provider window, the token totals and at most one choices block.
- * Least recently used sessions leave first.
+ * When the cache is full it keeps what it holds; see {@link IDLE_ENTRY_MS}.
  */
 export class SessionLogProjectionCache {
   private readonly entries = new Map<string, CachedLog>();
   private permissionRequests = 0;
 
-  constructor(private readonly maxSessions: number) {}
+  constructor(
+    private readonly maxSessions: number,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   private delete(sessionId: string): void {
     const cached = this.entries.get(sessionId);
@@ -122,6 +135,7 @@ export class SessionLogProjectionCache {
       this.delete(sessionId);
       return undefined;
     }
+    cached.usedAt = this.now();
     this.entries.delete(sessionId);
     this.entries.set(sessionId, cached);
     return cached;
@@ -140,15 +154,20 @@ export class SessionLogProjectionCache {
       lastActivityAt: facts.lastActivityAt,
       facts: summaryFacts,
       projection,
+      usedAt: this.now(),
     });
     this.permissionRequests += projection.permissionRequests.size;
+    // Entries are kept in order of last use, so the first one is the idlest.
     while (
       this.entries.size > this.maxSessions ||
       this.permissionRequests > MAX_CACHED_PERMISSION_REQUESTS
     ) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest === undefined) break;
-      this.delete(oldest);
+      const [oldest, entry] = this.entries.entries().next().value!;
+      // Turn the newcomer away rather than evict an entry still in use.
+      this.delete(
+        oldest === sessionId || this.now() - entry.usedAt < IDLE_ENTRY_MS ? sessionId : oldest,
+      );
+      if (!this.entries.has(sessionId)) break;
     }
   }
 
