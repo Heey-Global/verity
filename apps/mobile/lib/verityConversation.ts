@@ -1,5 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { VerityApiError, type AssistantConversation } from '@verity/mobile';
+import {
+  ASSISTANT_HANDOFF_DECLINED,
+  VerityApiError,
+  type AssistantConversation,
+} from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
 import { useEffect, useSyncExternalStore } from 'react';
 import { AppState } from 'react-native';
@@ -209,6 +213,34 @@ export async function refreshVerity(): Promise<void> {
       access: error instanceof VerityApiError && error.status === 403 ? 'denied' : 'offline',
     });
   }
+}
+
+/**
+ * Decides one of Verity's approvals from the panel, through the same route the session's
+ * own card uses. Declining a handoff sends {@link ASSISTANT_HANDOFF_DECLINED}, which the
+ * conversation reads back as "Not handed over" rather than as a failure.
+ */
+export async function decideVerityApproval(
+  approval: { id: string; tool: string },
+  allow: boolean,
+): Promise<void> {
+  const client = createVerityClient();
+  const sessionId = state.conversation?.sessionId;
+  if (client === null || !sessionId) throw new Error('Verity is not reachable right now.');
+  await client.decidePermission(
+    sessionId,
+    approval.id,
+    allow
+      ? { behavior: 'allow' }
+      : {
+          behavior: 'deny',
+          ...(approval.tool === 'verity_session_handoff' ||
+          approval.tool.endsWith('__verity_session_handoff')
+            ? { message: ASSISTANT_HANDOFF_DECLINED }
+            : {}),
+        },
+  );
+  await refreshVerity();
 }
 
 async function enqueue(entry: Outgoing): Promise<void> {

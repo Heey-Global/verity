@@ -3,6 +3,7 @@ import { sql } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assistantConversationSchema,
+  ASSISTANT_HANDOFF_DECLINED,
   assistantMessagePrompt,
   type AgentEvent,
   type AssistantConversation,
@@ -651,5 +652,175 @@ describe('assistant handoff cards', () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe('assistant handoff approvals in the conversation', () => {
+  const handoff = (title: string, briefing = 'Check #2965.'): Record<string, unknown> => ({
+    target: { newSession: { project: 'heey-global/verity' } },
+    title,
+    briefing,
+  });
+  const waiting = (input: Record<string, unknown>): AgentEvent[] => [
+    { t: 'prompt', text: 'kein breaking change', initiatedBy: { userId: 'u1' } },
+    { t: 'tool_call', id: 'call-1', name: 'mcp__verity__verity_session_handoff', input },
+    // The gateway mints its own approval id; the tool call's id never names it.
+    { t: 'permission', id: 'gw-1', tool: 'verity_session_handoff', input, riskClass: 'ask' },
+  ];
+  const pendingOn = (id: string): AssistantSessionFacts => ({
+    ...idle,
+    approvals: [{ toolUseId: id, tool: 'verity_session_handoff' }],
+  });
+
+  it('carries the request and puts the approval on its handoff card', () => {
+    const input = handoff(' #2965 must not be breaking ');
+    const projection = projectAssistantConversation(sequenced(waiting(input)), pendingOn('gw-1'));
+    // The panel decides from this input; without it the card could only send the user away.
+    expect(projection.approvals).toEqual([{ id: 'gw-1', tool: 'verity_session_handoff', input }]);
+    expect(projection.items.at(-1)).toMatchObject({
+      kind: 'assignment',
+      state: 'pending',
+      approvalId: 'gw-1',
+    });
+  });
+
+  it('leaves a decided or unrelated approval off the card', () => {
+    const events = sequenced(waiting(handoff('One title')));
+    // Decided: the summary no longer reports it, so the card must not offer it again.
+    expect(projectAssistantConversation(events, idle).items.at(-1)).not.toHaveProperty(
+      'approvalId',
+    );
+    const other = sequenced([
+      ...waiting(handoff('One title')),
+      {
+        t: 'permission',
+        id: 'gw-2',
+        tool: 'verity_session_handoff',
+        input: handoff('Another title'),
+        riskClass: 'ask',
+      },
+    ]);
+    expect(projectAssistantConversation(other, pendingOn('gw-2')).items.at(-1)).not.toHaveProperty(
+      'approvalId',
+    );
+  });
+
+  it('keeps two waiting handoffs with one title on their own cards', () => {
+    const first = handoff('Same', 'first');
+    const second = handoff('Same', 'second');
+    const events = sequenced([
+      { t: 'prompt', text: 'two', initiatedBy: { userId: 'u1' } },
+      { t: 'tool_call', id: 'c-1', name: 'verity_session_handoff', input: first },
+      { t: 'tool_call', id: 'c-2', name: 'verity_session_handoff', input: second },
+      {
+        t: 'permission',
+        id: 'gw-1',
+        tool: 'verity_session_handoff',
+        input: first,
+        riskClass: 'ask',
+      },
+      {
+        t: 'permission',
+        id: 'gw-2',
+        tool: 'verity_session_handoff',
+        input: second,
+        riskClass: 'ask',
+      },
+    ]);
+    const projection = projectAssistantConversation(events, {
+      ...idle,
+      approvals: [
+        { toolUseId: 'gw-1', tool: 'verity_session_handoff' },
+        { toolUseId: 'gw-2', tool: 'verity_session_handoff' },
+      ],
+    });
+    expect(
+      projection.items.flatMap((item) => (item.kind === 'assignment' ? [item.approvalId] : [])),
+    ).toEqual(['gw-1', 'gw-2']);
+  });
+
+  it('leaves a card a crashed turn left pending to itself', () => {
+    const stale: AgentEvent[] = [
+      { t: 'prompt', text: 'earlier', initiatedBy: { userId: 'u1' } },
+      { t: 'tool_call', id: 'old', name: 'verity_session_handoff', input: handoff('T') },
+      { t: 'error', kind: 'spawn', message: 'turn crashed' },
+    ];
+    const projection = projectAssistantConversation(
+      sequenced([...stale, ...waiting(handoff('T'))]),
+      pendingOn('gw-1'),
+    );
+    expect(
+      projection.items.flatMap((item) => (item.kind === 'assignment' ? [item.approvalId] : [])),
+    ).toEqual([undefined, 'gw-1']);
+  });
+
+  it('drops a request too large to carry, so the device opens the session instead', () => {
+    const input = handoff('Long', 'x'.repeat(100 * 1_024));
+    const projection = projectAssistantConversation(sequenced(waiting(input)), pendingOn('gw-1'));
+    expect(projection.approvals).toEqual([{ id: 'gw-1', tool: 'verity_session_handoff' }]);
+    // Still its card's approval: one card that sends the user to the session, not two.
+    expect(projection.items.at(-1)).toMatchObject({ approvalId: 'gw-1' });
+  });
+
+  it('holds all approval inputs to one budget, so several cannot multiply the read', () => {
+    const big = handoff('Big', 'x'.repeat(60 * 1_024));
+    const second = handoff('Second', 'y'.repeat(60 * 1_024));
+    const events = sequenced([
+      ...waiting(big),
+      {
+        t: 'permission',
+        id: 'gw-2',
+        tool: 'verity_session_handoff',
+        input: second,
+        riskClass: 'ask',
+      },
+    ]);
+    const projection = projectAssistantConversation(events, {
+      ...idle,
+      approvals: [
+        { toolUseId: 'gw-1', tool: 'verity_session_handoff' },
+        { toolUseId: 'gw-2', tool: 'verity_session_handoff' },
+      ],
+    });
+    expect(projection.approvals.map((approval) => 'input' in approval)).toEqual([true, false]);
+  });
+
+  it('serves a handoff from the budget before a larger approval asked earlier', () => {
+    const mail = { to: 'a@b.c', body: 'm'.repeat(90 * 1_024) };
+    const events = sequenced([
+      { t: 'permission', id: 'mail', tool: 'verity_gmail', input: mail, riskClass: 'ask' },
+      ...waiting(handoff('T', 'b'.repeat(20 * 1_024))),
+    ]);
+    const projection = projectAssistantConversation(events, {
+      ...idle,
+      approvals: [
+        { toolUseId: 'mail', tool: 'verity_gmail' },
+        { toolUseId: 'gw-1', tool: 'verity_session_handoff' },
+      ],
+    });
+    expect(projection.approvals.map((approval) => [approval.id, 'input' in approval])).toEqual([
+      ['mail', false],
+      ['gw-1', true],
+    ]);
+  });
+
+  it('tells a handoff declined on its card from one that failed', () => {
+    const result = (text: string): AgentEvent => ({
+      t: 'tool_result',
+      id: 'call-1',
+      isError: true,
+      output: [{ type: 'text', text }],
+    });
+    const declined = projectAssistantConversation(
+      sequenced([...waiting(handoff('T')), result(ASSISTANT_HANDOFF_DECLINED)]),
+      idle,
+    );
+    expect(declined.items.at(-1)).toMatchObject({ state: 'failed', declined: true });
+    const failed = projectAssistantConversation(
+      sequenced([...waiting(handoff('T')), result('Project access changed.')]),
+      idle,
+    );
+    expect(failed.items.at(-1)).toMatchObject({ state: 'failed' });
+    expect(failed.items.at(-1)).not.toHaveProperty('declined');
   });
 });

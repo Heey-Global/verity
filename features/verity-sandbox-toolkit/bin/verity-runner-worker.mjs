@@ -25607,6 +25607,11 @@ var assistantConversationItemSchema = import_zod14.z.discriminatedUnion("kind", 
     state: import_zod14.z.enum(["pending", "sent", "failed"]),
     /** The session the work went to, once the handoff answered. */
     sessionId: import_zod14.z.string().optional(),
+    /** The {@link AssistantApproval.id} this handoff waits on while it is `pending`;
+     *  the card is decided in place. Absent from older servers and once decided. */
+    approvalId: import_zod14.z.string().optional(),
+    /** The user chose not to hand it over (state `failed`); nothing was sent. */
+    declined: import_zod14.z.literal(true).optional(),
     /** The result that session published for this handoff, written by that session. */
     result: import_zod14.z.object({
       delivered: import_zod14.z.boolean(),
@@ -25642,7 +25647,14 @@ var assistantQuestionSchema = import_zod14.z.object({
   options: import_zod14.z.array(import_zod14.z.object({ label: import_zod14.z.string(), recommended: import_zod14.z.boolean().optional() })).min(1),
   multiSelect: import_zod14.z.boolean()
 });
-var assistantApprovalSchema = import_zod14.z.object({ id: id3, tool: import_zod14.z.string() });
+var assistantApprovalSchema = import_zod14.z.object({
+  id: id3,
+  tool: import_zod14.z.string(),
+  /** The request as the tool received it, absent once the conversation's approvals
+   *  together pass {@link ASSISTANT_APPROVAL_INPUT_MAX_BYTES} or from an older server; the
+   *  device then sends the user to the session instead of deciding blind. */
+  input: import_zod14.z.unknown().optional()
+});
 var assistantConversationSchema = import_zod14.z.object({
   /** `disabled`: switched off in system settings. `unavailable`: on, but its session is gone. */
   availability: import_zod14.z.enum(["ready", "disabled", "unavailable"]),
@@ -25654,6 +25666,7 @@ var assistantConversationSchema = import_zod14.z.object({
   question: assistantQuestionSchema.nullable(),
   approvals: import_zod14.z.array(assistantApprovalSchema)
 });
+var ASSISTANT_APPROVAL_INPUT_MAX_BYTES = 96 * 1024;
 
 // node_modules/@verity/events/dist/storage-reclamation.js
 var import_zod15 = __toESM(require_zod(), 1);

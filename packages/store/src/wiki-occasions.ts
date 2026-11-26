@@ -238,6 +238,26 @@ export class WikiMaintenanceStore {
     return new Set(result.rows.map((row) => row.session_id));
   }
 
+  /** Internal sessions omitted from the session list, loaded in one database round trip. */
+  async sessionListExclusions(): Promise<{
+    wikiSessionIds: Set<string>;
+    assistantSessionId: string | null;
+  }> {
+    const result = await sql<{ session_id: string; assistant: boolean }>`
+      select session_id, false as assistant from wiki_maintenance where session_id is not null
+      union all
+      select session_id, true as assistant from assistant_settings
+      where id = 1 and enabled and session_id is not null
+    `.execute(this.db);
+    const wikiSessionIds = new Set<string>();
+    let assistantSessionId: string | null = null;
+    for (const row of result.rows) {
+      if (row.assistant) assistantSessionId = row.session_id;
+      else wikiSessionIds.add(row.session_id);
+    }
+    return { wikiSessionIds, assistantSessionId };
+  }
+
   async isSession(sessionId: string): Promise<boolean> {
     const result = await sql`select 1 from wiki_maintenance
       where session_id=${sessionId}`.execute(this.db);

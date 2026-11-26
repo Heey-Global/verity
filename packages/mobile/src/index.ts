@@ -258,6 +258,7 @@ export {
   type GmailSendAttachment,
   type GmailSendSummary,
 } from './ui/gmailSendSummary.js';
+export { permissionOverview, type PermissionOverview } from './ui/permissionOverview.js';
 export {
   briefingExtent,
   listSessionsSentence,
@@ -514,6 +515,7 @@ export { formatChoiceAnswer, type ChoicesOption, type RiskClass } from '@verity/
 export { parseProjectInquiryAnswerTurn } from '@verity/events';
 export type { PlanDecision } from '@verity/events';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
+export { ASSISTANT_HANDOFF_DECLINED } from '@verity/events';
 export { END_PLANNING_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 export {
   reprovisionActiveProjects,
@@ -837,6 +839,7 @@ export {
 export { projectEgressPolicySchema, type ProjectEgressPolicy } from './projectEgress.js';
 export type {
   AssistantConversation,
+  AssistantApproval,
   AssistantConversationItem,
   AssistantDelivery,
   AssistantQuestion,
