@@ -249,14 +249,29 @@ export class AttendeeMeetings {
   ) {
     this.unsubscribeSharing = options.edge?.onSharingDisabled?.(() => {
       this.sharingGeneration += 1;
-      for (const connection of this.audioConnections.values()) connection.connector.close();
+      for (const connection of this.audioConnections.values()) {
+        connection.gap = true;
+        connection.disconnected = true;
+        connection.connector.close();
+        void connection.receiver.close().catch(() => undefined);
+      }
       for (const connector of this.connectors.values()) connector.close();
       this.connectors.clear();
       // Provider recovery must not reopen a webhook after local authority loss.
       void this.serial(async () => {
         for (const row of await this.records()) {
           const state = row.state;
-          await this.releaseAudio(state).catch(() => undefined);
+          if (state.audio && !state.audio.disabled) {
+            try {
+              await this.audioSnapshot(state, true);
+              state.audio.gap = true;
+              await this.save(state);
+              await this.releaseAudio(state);
+              await this.save(state);
+            } catch {
+              // Keep the durable binding and any uncommitted segments for reconciliation.
+            }
+          }
           if (!state.binding) {
             if (state.audio) await this.save(state);
             continue;
@@ -384,8 +399,16 @@ export class AttendeeMeetings {
               const current = await this.options.store.getAttendeeState<OnlineMeeting>(
                 `meeting:${state.meeting.id}`,
               );
-              if (!current?.audio || current.audio.disabled || current.botId !== event.bot_id)
+              if (
+                !current?.audio ||
+                current.audio.disabled ||
+                (current.botId
+                  ? current.botId !== event.bot_id
+                  : !current.botCreateAttempted ||
+                    event.bot_metadata?.verityMeetingId !== current.meeting.id)
+              )
                 return;
+              current.botId ??= event.bot_id;
               current.audio.names ??= {};
               const speaker = `participant:${uuid}`;
               if (
@@ -576,12 +599,15 @@ export class AttendeeMeetings {
     if (connection) {
       connection.botId = state.botId;
       if (final) await connection.receiver.finish();
-      const received = connection.segments.splice(0);
+      const received = connection.segments.slice();
       audio.segments.push(...received);
       const previousGap = audio.gap;
       audio.gap ||=
         connection.gap || (final && audio.segments.length === 0 && state.joinedAt !== undefined);
-      if (received.length || previousGap !== audio.gap) await this.save(state);
+      if (received.length || previousGap !== audio.gap) {
+        await this.save(state);
+        connection.segments.splice(0, received.length);
+      }
     } else if (state.joinedAt !== undefined && final) {
       audio.gap = true;
     }
