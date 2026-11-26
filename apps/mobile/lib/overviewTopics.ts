@@ -20,6 +20,7 @@ interface OverviewListener {
 /** Topics only views of a few projects (a project page) may take, so Home's
  * long list never leaves an opened project without live events. */
 const FOCUSED_RESERVE = 8;
+const SHARED_TOPICS = MAX_PROJECT_TOPICS - FOCUSED_RESERVE;
 /** A view showing at most this many projects counts as focused. */
 const FOCUSED_VIEW_PROJECTS = 4;
 
@@ -31,6 +32,8 @@ interface TopicEntry {
   detach?: () => void;
   /** Revisions seen on this topic; only its own resync resets them. */
   gate?: RevisionGate;
+  /** Live through the reserve rather than the shared part. */
+  reserved?: boolean;
 }
 
 /**
@@ -43,7 +46,9 @@ class OverviewHub {
   readonly store = new OverviewStore();
   private readonly topics = new Map<string, TopicEntry>();
   private readonly listeners = new Set<OverviewListener>();
-  private live = 0;
+  /** Live topics within the share every view may use, and from the reserve. */
+  private sharedLive = 0;
+  private reservedLive = 0;
 
   constructor(private readonly baseUrl: string) {}
 
@@ -96,45 +101,56 @@ class OverviewHub {
     if (entry === undefined) return false;
     entry.count -= 1;
     if (focused) entry.focused -= 1;
-    if (entry.count > 0) {
-      // A topic the reserve gave a page goes back once only Home shows it and
-      // Home is past its share; Home keeps following hints and reads.
-      if (
-        entry.focused === 0 &&
-        entry.detach !== undefined &&
-        this.live > MAX_PROJECT_TOPICS - FOCUSED_RESERVE
-      ) {
-        entry.detach();
-        entry.detach = undefined;
-        entry.gate = undefined;
-        this.live -= 1;
-      }
-      return false;
+    if (entry.count === 0) {
+      this.topics.delete(projectId);
+      return this.unsubscribe(entry);
     }
-    this.topics.delete(projectId);
+    // A topic the reserve gave a page goes back once only Home shows it; Home
+    // keeps following hints and reads for it.
+    return entry.focused === 0 && entry.reserved === true && this.unsubscribe(entry);
+  }
+
+  private unsubscribe(entry: TopicEntry): boolean {
     if (entry.detach === undefined) return false;
     entry.detach();
-    this.live -= 1;
+    if (entry.reserved === true) this.reservedLive -= 1;
+    else this.sharedLive -= 1;
+    entry.detach = undefined;
+    entry.gate = undefined;
+    entry.reserved = undefined;
     return true;
   }
 
   /** Freed topics go to waiting focused views first, then to the longest
    * waiting projects. */
   private promoteWaiting(): void {
+    // A reserved topic moves into a freed share, which frees the reserve.
+    for (const entry of this.topics.values()) {
+      if (entry.reserved !== true || this.sharedLive >= SHARED_TOPICS) continue;
+      entry.reserved = false;
+      this.reservedLive -= 1;
+      this.sharedLive += 1;
+    }
     const waiting = [...this.topics].filter(([, entry]) => entry.detach === undefined);
     for (const [projectId, entry] of waiting) {
       if (entry.focused > 0) this.subscribeIfRoom(projectId, entry);
     }
     for (const [projectId, entry] of waiting) {
-      if (this.live >= MAX_PROJECT_TOPICS - FOCUSED_RESERVE) break;
+      if (this.sharedLive >= SHARED_TOPICS) break;
       if (entry.detach === undefined) this.subscribeIfRoom(projectId, entry);
     }
   }
 
   private subscribeIfRoom(projectId: string, entry: TopicEntry): void {
-    const room = entry.focused > 0 ? MAX_PROJECT_TOPICS : MAX_PROJECT_TOPICS - FOCUSED_RESERVE;
-    if (this.live >= room) return;
-    this.live += 1;
+    if (this.sharedLive < SHARED_TOPICS) {
+      this.sharedLive += 1;
+      entry.reserved = false;
+    } else if (entry.focused > 0 && this.reservedLive < FOCUSED_RESERVE) {
+      this.reservedLive += 1;
+      entry.reserved = true;
+    } else {
+      return;
+    }
     entry.gate = new RevisionGate();
     entry.detach = liveConnectionFor(this.baseUrl).subscribeTopic(
       `project:${projectId}`,

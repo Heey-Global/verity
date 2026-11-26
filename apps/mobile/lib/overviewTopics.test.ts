@@ -122,6 +122,18 @@ describe('useOverviewTopics', () => {
     expect(mockUnsubscribed).toEqual(['project:p47']);
   });
 
+  it("keeps a topic within Home's share when a page of that project leaves", () => {
+    const many = Array.from({ length: 48 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    renderHook(() => useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()));
+    renderHook(() => useOverviewTopics('https://core.example', ['p47'], jest.fn(), jest.fn()));
+    const page = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p00'], jest.fn(), jest.fn()),
+    );
+    page.unmount();
+    // p00 was Home's own, not the reserve's.
+    expect(mockUnsubscribed).toEqual([]);
+  });
+
   it('gives a freed topic to a project that waited past the cap', () => {
     const many = Array.from({ length: 41 }, (_, i) => `p${String(i).padStart(2, '0')}`);
     const first = renderHook(() =>
