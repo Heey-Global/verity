@@ -100,13 +100,8 @@ export {
   defaultProjectName,
   InvalidProjectNameError,
 } from './project-record.js';
-import {
-  storedMockupScreens,
-  type SessionMockupReview,
-  type SessionMockups,
-  storedMockupState,
-  mockupReview,
-} from './session-mockups.js';
+import { type SessionMockupReview, type SessionMockups, mockupReview } from './session-mockups.js';
+import { SessionPlanningStore, type SessionPlanning } from './session-planning.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 import {
@@ -281,11 +276,6 @@ export interface SessionRecord {
   favorite?: boolean;
 }
 
-/** `active`: turns run without permission to change files until the operator
- *  ends planning. `implemented` / `discarded`: how the last planning round ended,
- *  which tells the app whether the newest plan was carried out. */
-export type SessionPlanning = 'active' | 'implemented' | 'discarded';
-
 export type {
   SessionLinkRecord,
   SessionLinkReservation,
@@ -338,6 +328,7 @@ export type SessionInput = Omit<
 };
 
 export type { SessionBackendStateRecord } from './session-backend-state.js';
+export type { SessionPlanning } from './session-planning.js';
 
 export { isInstallationPlaceholder } from './installation-placeholders.js';
 
@@ -720,6 +711,7 @@ export class EventStore implements EventSink {
     this.githubRepositories = new GitHubRepositoryIdentityStore(db);
   }
 
+  private readonly sessionPlanning = new SessionPlanningStore(() => this.db);
   private readonly sessionPullRequests = new SessionPullRequestStore(() => this.db);
   private readonly sessionAutomations: SessionAutomationStore;
   private readonly veritySettings: VeritySettingsStore;
@@ -1802,56 +1794,15 @@ export class EventStore implements EventSink {
     from?: readonly (SessionPlanning | null)[],
     expectedRevision?: number,
   ): Promise<boolean> {
-    let query = this.db
-      .updateTable('sessions')
-      .set({ planning })
-      .where('session_id', '=', sessionId);
-    if (from !== undefined) {
-      const states = from.filter((state): state is SessionPlanning => state !== null);
-      query = query.where((eb) =>
-        eb.or([
-          ...(states.length > 0 ? [eb('planning', 'in', states)] : []),
-          ...(from.includes(null) ? [eb('planning', 'is', null)] : []),
-        ]),
-      );
-    }
-    // A device can approve an old card while another device is publishing its revision.
-    // Checking in this UPDATE prevents the read-before-write race from accepting it.
-    if (expectedRevision !== undefined) {
-      query = query.where('planning_revision', '=', expectedRevision);
-      if (planning !== 'discarded') query = query.where('planning_plan', 'is not', null);
-    }
-    const result = await query.executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionPlanning.setSessionPlanning(sessionId, planning, from, expectedRevision);
   }
 
   async startSessionPlanning(sessionId: string): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({
-        planning: 'active',
-        // A new plan revokes reviews belonging to the previous accepted work.
-        mockup_review: null,
-        mockup_screens: '[]',
-        mockup_revision: sql`mockup_revision + 1`,
-        planning_plan: null,
-        planning_revision: sql`planning_revision + 1`,
-      })
-      .where('session_id', '=', sessionId)
-      .where((eb) => eb.or([eb('planning', 'is', null), eb('planning', '!=', 'active')]))
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionPlanning.startSessionPlanning(sessionId);
   }
 
   async presentSessionPlan(sessionId: string, plan: string): Promise<number | undefined> {
-    const row = await this.db
-      .updateTable('sessions')
-      .set({ planning_plan: plan, planning_revision: sql`planning_revision + 1` })
-      .where('session_id', '=', sessionId)
-      .where('planning', '=', 'active')
-      .returning('planning_revision')
-      .executeTakeFirst();
-    return row?.planning_revision;
+    return this.sessionPlanning.presentSessionPlan(sessionId, plan);
   }
 
   /**
@@ -1865,36 +1816,7 @@ export class EventStore implements EventSink {
     change: (current: SessionMockups) => SessionMockups | undefined,
     expectedPlanningRevision?: number,
   ): Promise<SessionMockups | undefined> {
-    return this.db.transaction().execute(async (tx) => {
-      const row = await tx
-        .selectFrom('sessions')
-        .select(['mockup_review', 'mockup_revision', 'mockup_screens', 'planning_revision'])
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!row) return undefined;
-      if (
-        expectedPlanningRevision !== undefined &&
-        row.planning_revision !== expectedPlanningRevision
-      )
-        return undefined;
-      const next = change({
-        state: storedMockupState(row.mockup_review),
-        revision: row.mockup_revision,
-        screens: storedMockupScreens(row.mockup_screens),
-      });
-      if (next === undefined) return undefined;
-      await tx
-        .updateTable('sessions')
-        .set({
-          mockup_review: next.state,
-          mockup_revision: next.revision,
-          mockup_screens: JSON.stringify(next.screens),
-        })
-        .where('session_id', '=', sessionId)
-        .execute();
-      return next;
-    });
+    return this.sessionPlanning.updateSessionMockups(sessionId, change, expectedPlanningRevision);
   }
 
   async getSessionBackendState(
