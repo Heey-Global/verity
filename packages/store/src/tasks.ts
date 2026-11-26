@@ -148,11 +148,8 @@ export class TaskStore {
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {}
 
-  async list(filter: TaskListFilter): Promise<TaskRecord[]> {
-    let query = this.db
-      .selectFrom('tasks')
-      .selectAll()
-      .where('owner_user_id', '=', filter.ownerUserId);
+  private listQuery(filter: TaskListFilter) {
+    let query = this.db.selectFrom('tasks').where('owner_user_id', '=', filter.ownerUserId);
     if (filter.projectId === null) query = query.where('project_id', 'is', null);
     else if (filter.projectId !== undefined)
       query = query.where('project_id', '=', filter.projectId);
@@ -170,8 +167,25 @@ export class TaskStore {
           eb('completed_at', 'is', null),
         ]),
       );
-    const rows = await query.orderBy('sort', 'asc').orderBy('created_at', 'asc').execute();
+    return query.orderBy('sort', 'asc').orderBy('created_at', 'asc');
+  }
+
+  async list(filter: TaskListFilter): Promise<TaskRecord[]> {
+    const rows = await this.listQuery(filter).selectAll().execute();
     return rows.map((row) => this.record(row));
+  }
+
+  async listRevisions(filter: TaskListFilter) {
+    return this.listQuery(filter)
+      .select([
+        'id',
+        'revision',
+        'created_at as createdAt',
+        'project_id as projectId',
+        'session_id as sessionId',
+        'source_session_id as sourceSessionId',
+      ])
+      .execute();
   }
 
   /** Open and in-progress tasks assigned to a session, in list order. Not owner

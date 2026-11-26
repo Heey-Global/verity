@@ -1,12 +1,20 @@
 import { type VerityClient, VerityApiError } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
 import { Button, Card, Text } from './ui';
 import { Disclosure } from './ui/Disclosure';
 
 type Requests = Awaited<ReturnType<VerityClient['secretApprovals']['list']>>;
+const POLL_INTERVAL_MS = 10_000;
+const REFRESH_INTERVAL_MS = 1_000;
+
+function canReadHistory(): boolean {
+  if (Platform.OS === 'web' && typeof document !== 'undefined')
+    return document.visibilityState === 'visible';
+  return AppState.currentState !== 'background';
+}
 
 /** Reconsideration is an explicit user action, never an agent's automatic retry. */
 export function SecretApprovalHistory({
@@ -23,17 +31,26 @@ export function SecretApprovalHistory({
   const [working, setWorking] = useState(false);
   const [index, setIndex] = useState(0);
   const busy = useRef(false);
+  const historyVersion = useRef(0);
   const generation = useRef(0);
-  const refresh = useRef<(() => Promise<void>) | undefined>(undefined);
+  const refresh = useRef<(() => void) | undefined>(undefined);
+  const previousRefreshKey = useRef(refreshKey);
+  const refreshPending = useRef(false);
+  const activeReads = useRef(new WeakMap<VerityClient, Set<string>>());
+  const onReadFinished = useRef<(() => void) | undefined>(undefined);
+  const lastRead = useRef<
+    { client: VerityClient; sessionId: string; at: number; finishedAt?: number } | undefined
+  >(undefined);
 
   useEffect(() => {
     ++generation.current;
     busy.current = false;
+    refreshPending.current = false;
     setWorking(false);
     setIndex(0);
     setError(undefined);
     setSnapshot(undefined);
-  }, [client, sessionId, refreshKey]);
+  }, [client, sessionId]);
 
   // Polls only while this session's screen is focused. Session screens stay
   // mounted beneath the ones pushed over them, so an unscoped timer keeps one
@@ -42,42 +59,88 @@ export function SecretApprovalHistory({
     useCallback(() => {
       const current = generation.current;
       let stopped = false;
-      let loading = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let reads = activeReads.current.get(client);
+      if (!reads) {
+        reads = new Set<string>();
+        activeReads.current.set(client, reads);
+      }
+      const pending = reads;
+      const isLoading = () => pending.has(sessionId);
+      const schedule = (): void => {
+        clearTimeout(timer);
+        if (stopped || isLoading() || busy.current || !canReadHistory()) return;
+        const previous = lastRead.current;
+        const interval = refreshPending.current ? REFRESH_INTERVAL_MS : POLL_INTERVAL_MS;
+        const remaining =
+          previous?.client === client && previous.sessionId === sessionId
+            ? Math.max(
+                0,
+                (refreshPending.current ? previous.at : (previous.finishedAt ?? previous.at)) +
+                  interval -
+                  Date.now(),
+              )
+            : 0;
+        timer = setTimeout(() => void load(), remaining);
+      };
       const load = async (): Promise<void> => {
-        if (stopped || loading || busy.current || AppState.currentState === 'background') return;
-        loading = true;
+        if (stopped || isLoading() || busy.current || !canReadHistory()) return;
+        refreshPending.current = false;
+        const timing: NonNullable<typeof lastRead.current> = { client, sessionId, at: Date.now() };
+        lastRead.current = timing;
+        const readVersion = historyVersion.current;
+        pending.add(sessionId);
         try {
           const requests = await client.secretApprovals.list(sessionId);
-          if (!stopped) setSnapshot({ sessionId, requests });
+          if (!stopped && readVersion === historyVersion.current)
+            setSnapshot({ sessionId, requests });
         } catch {
+          timing.at = Date.now();
           // Older servers have no history endpoint. Never offer an unverified reopen action.
-          if (!stopped) setSnapshot(undefined);
+          if (!stopped && readVersion === historyVersion.current) setSnapshot(undefined);
         } finally {
-          loading = false;
+          timing.finishedAt = Date.now();
+          pending.delete(sessionId);
+          onReadFinished.current?.();
         }
       };
-      refresh.current = load;
-      const poll = async (): Promise<void> => {
-        await load();
-        if (!stopped) timer = setTimeout(() => void poll(), 10000);
+      const requestRefresh = () => {
+        refreshPending.current = true;
+        schedule();
       };
-      void poll();
+      refresh.current = requestRefresh;
+      onReadFinished.current = schedule;
+      requestRefresh();
       const subscription = AppState.addEventListener('change', (state) => {
-        if (state === 'active') void load();
+        if (state === 'active') requestRefresh();
       });
+      const webDocument =
+        Platform.OS === 'web' && typeof document !== 'undefined' ? document : undefined;
+      const refreshWhenVisible = () => requestRefresh();
+      webDocument?.addEventListener('visibilitychange', refreshWhenVisible);
       return () => {
         stopped = true;
         if (generation.current === current) refresh.current = undefined;
+        if (onReadFinished.current === schedule) onReadFinished.current = undefined;
         clearTimeout(timer);
         subscription.remove();
+        webDocument?.removeEventListener('visibilitychange', refreshWhenVisible);
       };
-    }, [client, sessionId, refreshKey]),
+    }, [client, sessionId]),
   );
+
+  useEffect(() => {
+    if (previousRefreshKey.current === refreshKey) return;
+    previousRefreshKey.current = refreshKey;
+    historyVersion.current += 1;
+    refreshPending.current = true;
+    refresh.current?.();
+  }, [refreshKey]);
 
   const reopen = async (id: string): Promise<void> => {
     if (busy.current) return;
     busy.current = true;
+    historyVersion.current += 1;
     const current = generation.current;
     setWorking(true);
     setError(undefined);
@@ -99,7 +162,7 @@ export function SecretApprovalHistory({
       if (generation.current === current) {
         busy.current = false;
         setWorking(false);
-        await refresh.current?.();
+        refresh.current?.();
       }
     }
   };

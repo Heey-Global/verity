@@ -34,21 +34,76 @@ const historySchema = z.object({
 
 /** Use the client's authenticated transport; history never includes credentials or request bodies. */
 export function createSecretApprovalsClient(
-  request: (path: string, init: { method: 'GET' | 'POST' }) => Promise<Response>,
+  request: (
+    path: string,
+    init: { method: 'GET' | 'POST'; signal?: AbortSignal },
+  ) => Promise<Response>,
+  authScope: () => string | undefined = () => '',
 ) {
+  type Requests = z.infer<typeof historySchema>['requests'];
+  const pending = new Map<string, { read: Promise<Requests>; outdated: boolean }>();
+  const fetchHistory = async (sessionId: string): Promise<Requests> => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        request(`/sessions/${encodeURIComponent(sessionId)}/secret-approvals`, {
+          method: 'GET',
+          signal: controller.signal,
+        })
+          .then((response) => response.json())
+          .then((body) => historySchema.parse(body).requests),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error('Approval history request timed out'));
+            controller.abort();
+          }, 15_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const list = (sessionId: string): Promise<Requests> => {
+    const scope = authScope();
+    const checkScope = (history: Requests): Requests => {
+      if (authScope() !== scope) throw new Error('Approval history identity changed');
+      return history;
+    };
+    if (scope === undefined) return fetchHistory(sessionId).then(checkScope);
+    const key = JSON.stringify([scope, sessionId]);
+    const existing = pending.get(key);
+    if (existing !== undefined) return existing.read;
+    const entry: { read: Promise<Requests>; outdated: boolean } = {
+      outdated: false,
+      read: fetchHistory(sessionId)
+        .finally(() => pending.delete(key))
+        .then(
+          (history) => (entry.outdated ? refresh() : checkScope(history)),
+          (error: unknown) => {
+            if (entry.outdated) return refresh();
+            throw error;
+          },
+        ),
+    };
+    function refresh(): Promise<Requests> {
+      if (authScope() !== scope) throw new Error('Approval history identity changed');
+      return list(sessionId);
+    }
+    pending.set(key, entry);
+    return entry.read;
+  };
   return {
-    async list(sessionId: string) {
-      const response = await request(
-        `/sessions/${encodeURIComponent(sessionId)}/secret-approvals`,
-        { method: 'GET' },
-      );
-      return historySchema.parse(await response.json()).requests;
-    },
+    list,
     async reopen(sessionId: string, approvalId: string): Promise<void> {
+      const scope = authScope();
       await request(
         `/sessions/${encodeURIComponent(sessionId)}/secret-approvals/${encodeURIComponent(approvalId)}/reopen`,
         { method: 'POST' },
       );
+      const existing =
+        scope === undefined ? undefined : pending.get(JSON.stringify([scope, sessionId]));
+      if (existing !== undefined) existing.outdated = true;
     },
   };
 }

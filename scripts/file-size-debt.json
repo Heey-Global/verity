@@ -7,7 +7,7 @@
   "apps/mobile/lib/remoteControlTransport.test.ts": 1848,
   "apps/mobile/tests/live-meeting-screen.test.tsx": 2859,
   "packages/mobile/src/api.test.ts": 5241,
-  "packages/mobile/src/api.ts": 7099,
+  "packages/mobile/src/api.ts": 7084,
   "packages/mobile/src/models/session.test.ts": 3723,
   "packages/mobile/src/models/session.ts": 1567,
   "packages/mobile/src/models/sessionList.test.ts": 1689,

@@ -42,6 +42,7 @@ const sessionIdSchema = z.string().trim().min(1).max(128);
 
 const listQuery = z
   .object({
+    view: z.literal('revisions').optional(),
     /** `general` selects the bucket without a project. */
     projectId: z.string().trim().min(1).max(128).optional(),
     sessionId: sessionIdSchema.optional(),
@@ -289,7 +290,7 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
 
   app.get('/tasks', async (request) => {
     const query = listQuery.parse(request.query);
-    const list = await tasks.list({
+    const filter = {
       ownerUserId: ownerId(request),
       projectId:
         query.projectId === undefined
@@ -303,12 +304,31 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
         : { statuses: query.status as TaskRecord['status'][] }),
       ...(query.doneSince === undefined ? {} : { doneSince: query.doneSince }),
       origin: query.origin,
-    });
-    const readable = new Set<string | null>();
-    for (const projectId of new Set(list.map((task) => task.projectId))) {
-      if (await canUseProject(request.localUserId, projectId, 'read')) readable.add(projectId);
+    };
+    const visible = async <T extends { projectId: string | null }>(list: T[]): Promise<T[]> => {
+      const readable = new Set<string | null>();
+      for (const projectId of new Set(list.map((task) => task.projectId))) {
+        if (await canUseProject(request.localUserId, projectId, 'read')) readable.add(projectId);
+      }
+      return list.filter((task) => readable.has(task.projectId));
+    };
+    if (query.view === 'revisions') {
+      const revisions = await visible(await tasks.listRevisions(filter));
+      return {
+        tasks: revisions.map(
+          ({ id, revision, createdAt, projectId, sessionId, sourceSessionId }) => ({
+            id,
+            revision,
+            createdAt: createdAt.toISOString(),
+            // Foreign-key cleanup can change these fields without editing the task.
+            projectId,
+            sessionId,
+            sourceSessionId,
+          }),
+        ),
+      };
     }
-    return { tasks: list.filter((task) => readable.has(task.projectId)).map(taskResponse) };
+    return { tasks: (await visible(await tasks.list(filter))).map(taskResponse) };
   });
 
   app.put('/tasks/:id', { bodyLimit: 48 * 1024 * 1024 }, async (request, reply) => {
