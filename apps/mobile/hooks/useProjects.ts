@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
   VerityApiError,
+  projectEventUpdate,
   subscribeProjectStatusMutations,
   type VerityClient,
   type ProjectRecord,
@@ -13,6 +14,8 @@ import {
   type DevServerDetection,
 } from '@verity/mobile';
 import { liveConnectionFor, subscribeLiveRefresh } from '../lib/liveConnection';
+import { getVerityBaseUrl } from '../lib/client';
+import { useOverviewTopics } from '../lib/overviewTopics';
 import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
 import {
@@ -253,6 +256,30 @@ export function useProjects(client: VerityClient) {
         (path) => path.split('?')[0] === '/projects',
       ),
     [client, load],
+  );
+
+  // A sandbox that starts, fails, sleeps or needs an update shows at once
+  // (ADR 0033); the read that follows adds what the event does not carry. A
+  // hidden list keeps the change and reads again when it is shown.
+  const listedProjectIds = useMemo(() => projects.map((project) => project.id), [projects]);
+  const readWhenShown = useCallback(() => {
+    if (focused.current) void load({ silent: true });
+    else projectsDirty.current = true;
+  }, [load]);
+  useOverviewTopics(
+    getVerityBaseUrl(),
+    listedProjectIds,
+    (event) => {
+      const update = projectEventUpdate(event);
+      if (update === undefined) return;
+      setProjects((current) =>
+        current.map((project) =>
+          project.id === update.projectId ? update.patch(project) : project,
+        ),
+      );
+      if (update.reload) readWhenShown();
+    },
+    readWhenShown,
   );
 
   const activeProjectIds = JSON.stringify(

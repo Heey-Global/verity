@@ -118,7 +118,7 @@ complete.
 ## Copy capacity and recovery admission
 
 Managed activation measures the complete root and workspace installation before
-creating another tree. It walks at most 250,000 entries for 20 seconds, never
+creating another tree. It walks at most 250,000 entries for 60 seconds, never
 follows symlinks, and refuses an incomplete or unreadable inventory. The measured
 full-copy bound includes files that may subsequently be shared. Both root and
 hard-link fallback paths must retain the configured build reserve (by default

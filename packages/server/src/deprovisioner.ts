@@ -18,7 +18,7 @@ import type { ClaudeEgressIdentityService } from './claude-egress-identity.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { Database, EventStore, ProjectRecord } from '@verity/store';
 import { DockerError, type DockerClient } from './docker.js';
-import { getProjectInTx, updateProjectStateInTx, withProjectLock } from './project-persistence.js';
+import { getProjectInTx, updateProjectStateInTx, withProjectWrite } from './project-persistence.js';
 import { ProvisioningError, projectClonePath, type ProjectRelayControl } from './provisioner.js';
 
 /** Deprovision a project (§19.8): stop + remove the container, transition the
@@ -130,7 +130,7 @@ export class DeprovisionerImpl implements Deprovisioner {
     opts: { purge: boolean },
   ): Promise<ProjectRecord> {
     // A failed or interrupted deletion must never look like an accidentally lost container.
-    await withProjectLock(this.db, projectId, async (tx) => {
+    await withProjectWrite(this.store, this.db, projectId, async (tx) => {
       await updateProjectStateInTx(tx, projectId, 'failed', PROJECT_TEARDOWN_REASON);
       await tx.deleteFrom('sandbox_repair_intents').where('project_id', '=', projectId).execute();
     });
@@ -331,7 +331,7 @@ export class DeprovisionerImpl implements Deprovisioner {
 
     // Only the state-machine transition runs under the row lock — a short
     // critical section with no external I/O, so it cannot hang the pool.
-    return withProjectLock(this.db, projectId, async (tx) => {
+    return withProjectWrite(this.store, this.db, projectId, async (tx) => {
       const current = await getProjectInTx(tx, projectId);
       if (current === undefined) {
         throw new ProvisioningError('project gone mid-deprovision');

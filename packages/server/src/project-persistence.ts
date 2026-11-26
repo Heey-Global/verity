@@ -3,6 +3,7 @@ import { type Kysely, sql } from 'kysely';
 import {
   defaultProjectName,
   type Database,
+  type ProjectChangeFeed,
   type ProjectKind,
   type ProjectRecord,
   type ProjectState,
@@ -133,7 +134,7 @@ export async function updateProjectStateInTx(
  *  wrapper gives a tx-scoped connection; the SELECT … FOR UPDATE runs through
  *  raw `sql` (kysely's typed query DSL doesn't expose `FOR UPDATE` on a
  *  `selectFrom`). */
-export async function withProjectLock<T>(
+async function withProjectLock<T>(
   db: Kysely<Database>,
   projectId: string,
   work: (tx: Kysely<Database>) => Promise<T>,
@@ -147,4 +148,21 @@ export async function withProjectLock<T>(
     await sql`select id from projects where id = ${projectId} for update`.execute(tx);
     return work(tx);
   });
+}
+
+/**
+ * {@link withProjectLock} for work that changes the project row: once the
+ * lock's transaction has committed, the project is announced to live views
+ * (ADR 0033). Announcing inside the transaction would let a listener read the
+ * row before the change is visible and miss it.
+ */
+export async function withProjectWrite<T>(
+  store: { readonly projectChanges?: ProjectChangeFeed },
+  db: Kysely<Database>,
+  projectId: string,
+  work: (tx: Kysely<Database>) => Promise<T>,
+): Promise<T> {
+  const result = await withProjectLock(db, projectId, work);
+  store.projectChanges?.announce(projectId);
+  return result;
 }

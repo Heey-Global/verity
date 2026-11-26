@@ -15,6 +15,7 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getVerityBaseUrl } from '../lib/client';
 import { useLiveHints } from '../lib/liveConnection';
+import { useOverviewTopics } from '../lib/overviewTopics';
 
 export interface UseSessionList extends SessionListState {
   /** Force an immediate reload (e.g. pull-to-refresh / retry button). `silent`
@@ -78,6 +79,18 @@ export function useSessionList(client: VerityClient): UseSessionList {
     [model],
   );
   useLiveHints(getVerityBaseUrl(), onHints);
+  // Answered requests and questions leave every view at once, even while Home
+  // is not on screen (ADR 0033). Project-less sessions still follow hints.
+  const projectIds = useMemo(
+    () => state.sessions.flatMap((session) => (session.projectId ? [session.projectId] : [])),
+    [state.sessions],
+  );
+  useOverviewTopics(
+    getVerityBaseUrl(),
+    projectIds,
+    (event) => model.applyDomainEvent(event),
+    () => model.applyHints([]),
+  );
   useEffect(
     () =>
       subscribeLiveRefresh(

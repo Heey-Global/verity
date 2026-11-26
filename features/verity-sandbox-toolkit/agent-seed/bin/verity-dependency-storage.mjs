@@ -21,6 +21,9 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { capacityPreloadPath } from './verity-dependency-storage-preload.mjs';
 
+// A complete 87k-entry inventory takes about 34 seconds on sandbox storage.
+const INVENTORY_MILLISECONDS = 60_000;
+
 // Every activated tree is a verbatim copy of a central installation. Without this
 // record a later identity change could not tell such a copy from one carrying
 // local edits once its central identity was retired, so each change kept another
@@ -171,7 +174,7 @@ export function measureTrees(trees, limits = {}) {
     [
       '--signal=KILL',
       '--kill-after=1s',
-      `${((limits.milliseconds ?? 20_000) + 1000) / 1000}s`,
+      `${((limits.milliseconds ?? INVENTORY_MILLISECONDS) + 1000) / 1000}s`,
       process.execPath,
       fileURLToPath(import.meta.url),
       '--measure-trees',
@@ -195,7 +198,7 @@ export function measureTrees(trees, limits = {}) {
 
 async function scanTrees(trees, limits, started) {
   const maximum = limits.entries ?? 250_000;
-  const milliseconds = limits.milliseconds ?? 20_000;
+  const milliseconds = limits.milliseconds ?? INVENTORY_MILLISECONDS;
   const phase = limits.phase ?? 'dependency trees';
   let entries = 0;
   let bytes = 0;
@@ -358,15 +361,18 @@ function recoveryBudgetError(held, { added, budget }, lowerBound = false) {
   );
 }
 
-/** At most one measured full installation may accumulate in recovery before replacement pauses. */
-export function recoveryBudget(gitDir, replacementTrees, newlyPreservedTrees) {
+/** At most one measured full installation may accumulate in recovery before replacement pauses.
+ * A supplied footprint must measure replacementTrees under the caller's installation locks.
+ */
+export function recoveryBudget(gitDir, replacementTrees, newlyPreservedTrees, footprint) {
   if (newlyPreservedTrees.length === 0) return;
   const preserved = join(gitDir, 'verity-dependencies-preserved');
   const exists = lstatSync(preserved, { throwIfNoEntry: false });
   if (exists && (!exists.isDirectory() || realpathSync(preserved) !== preserved))
     throw new Error('Dependency recovery directory is unsafe; no replacement admitted.');
   const added = measureTrees(newlyPreservedTrees, { phase: 'new recovery trees' }).allocatedBytes;
-  const replacement = measureTrees(replacementTrees, { phase: 'replacement trees' }).bytes;
+  const replacement = (footprint ?? measureTrees(replacementTrees, { phase: 'replacement trees' }))
+    .bytes;
   const budget = Math.max(replacement, added);
   // Determine the allowance before traversing recovery: a history larger than
   // one installation can exceed the traversal limits before its final size is known.

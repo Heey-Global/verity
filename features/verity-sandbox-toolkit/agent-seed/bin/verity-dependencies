@@ -1008,7 +1008,7 @@ async function main() {
     }
     const gitDir = git('rev-parse', '--absolute-git-dir');
     capacity = await lock(join(cacheRoot, 'preparation.lock'));
-    const checkRecovery = (replacements) =>
+    const checkRecovery = (replacements, footprint) =>
       recoveryBudget(
         gitDir,
         replacements,
@@ -1016,6 +1016,7 @@ async function main() {
           const record = activationRecord(gitDir, root, tree);
           return record === undefined || !unchangedSince(tree, record, true);
         }),
+        footprint,
       );
     const preserve = (directory = modules) => {
       if (!readlinkExists(directory)) return;
@@ -1069,8 +1070,8 @@ async function main() {
       try {
         // Root ignores permission bits, so its writes would reach every session;
         // an inventory this process cannot seal is copied as before.
-        checkRecovery(ownTrees(cache));
         const footprint = measureTrees(ownTrees(cache), { phase: 'cache activation' });
+        checkRecovery(ownTrees(cache), footprint);
         const admission = admitCopyDestinations(
           [
             gitDir,
@@ -1155,7 +1156,6 @@ async function main() {
     // Only the requested inventory establishes its allowance; the current tree
     // may be smaller. Unknown identities must be measured after preparation.
     const prepared = cachedReady(root, cache, currentIdentity);
-    if (prepared) checkRecovery(ownTrees(cache));
     if (!prepared) {
       if (!cacheable(root))
         throw new Error(

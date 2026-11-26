@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
-import { captureTask, startTasksStore, useTasks } from './tasksStore';
+import { captureTask, startTasksStore, useTaskView, useTasks } from './tasksStore';
 import Storage from 'expo-sqlite/kv-store';
 import { subscribeLiveRefresh } from './liveConnection';
 jest.mock('./liveConnection', () => ({ subscribeLiveRefresh: jest.fn(() => jest.fn()) }));
@@ -41,6 +41,7 @@ jest.mock('./browserSession', () => ({
 jest.mock('expo-crypto', () => ({ randomUUID: () => '11111111-1111-4111-8111-111111111111' }));
 it('hides the previous credential cache immediately and keeps its outbox isolated', async () => {
   await Storage.clear();
+  jest.mocked(subscribeLiveRefresh).mockClear();
   const stop = startTasksStore();
   const { result } = renderHook(() => useTasks());
   await act(async () => {
@@ -56,12 +57,9 @@ it('hides the previous credential cache immediately and keeps its outbox isolate
     detail: 'Full original description',
     titleGenerationStatus: 'pending',
   });
-  expect(subscribeLiveRefresh).toHaveBeenCalledWith(
-    mockClient,
-    expect.any(Function),
-    expect.any(Function),
-    [{ path: '/tasks' }],
-  );
+  // Nothing shows tasks here: the capture is delivered, the list is not read.
+  expect(subscribeLiveRefresh).not.toHaveBeenCalled();
+  expect(mockClient.listTasks).not.toHaveBeenCalled();
   const calls = mockClient.saveTask.mock.calls.length;
   act(() => {
     mockCredential = 'second';
@@ -105,16 +103,32 @@ it('rejects a projectless capture before it enters the offline outbox', async ()
   stop();
 });
 
-it('reattaches task updates after cleanup and restart with unchanged credentials', () => {
+it('follows task updates only while a view is open, also across a restart', async () => {
   mockCredential = 'restart';
   mockUrl = 'https://restart.test';
   jest.mocked(subscribeLiveRefresh).mockClear();
+  mockClient.listTasks.mockClear();
   const stop = startTasksStore();
-  expect(subscribeLiveRefresh).toHaveBeenCalledTimes(1);
+  expect(subscribeLiveRefresh).not.toHaveBeenCalled();
+  const view = renderHook(() => useTaskView('s1'));
+  expect(subscribeLiveRefresh).toHaveBeenCalledWith(
+    mockClient,
+    expect.any(Function),
+    expect.any(Function),
+    [{ path: '/tasks' }],
+  );
+  await waitFor(() =>
+    expect(mockClient.listTasks).toHaveBeenCalledWith('?origin=user&status=open,in_progress,done'),
+  );
+  expect(mockClient.listTasks).toHaveBeenCalledWith(
+    '?origin=agent&status=open,in_progress,done&sessionId=s1',
+  );
   const detach = jest.mocked(subscribeLiveRefresh).mock.results[0]!.value;
   stop();
   expect(detach).toHaveBeenCalledTimes(1);
   const stopAgain = startTasksStore();
   expect(subscribeLiveRefresh).toHaveBeenCalledTimes(2);
+  view.unmount();
+  expect(jest.mocked(subscribeLiveRefresh).mock.results[1]!.value).toHaveBeenCalledTimes(1);
   stopAgain();
 });
