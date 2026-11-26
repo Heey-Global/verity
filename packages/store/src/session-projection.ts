@@ -8,6 +8,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import { sequencedEvent, type SequencedEvent } from './event-history.js';
 import { idChunks } from './message-projection.js';
 import type { Database } from './schema.js';
+import type { SessionEventStats } from './store.js';
 import { readSessionProjectionActivity } from './session-projection-activity.js';
 
 /**
@@ -40,6 +41,11 @@ export interface SessionProjectionFacts {
   eventCount: number;
   /** Highest event seq visible in the snapshot; bounds a later fallback read. */
   lastEventSeq: number;
+  /** The log's `session_event_stats` revision in the same snapshot, which every
+   *  insert, update and delete of one of its events advances. Together with
+   *  {@link lastEventSeq} it names this exact log state, so a derivation of it can
+   *  be reused until either moves. Empty for a session without a log. */
+  revision: string;
   /** `created_at` of the newest event in epoch ms; null for an empty log. */
   lastActivityAt: number | null;
   /** Newest user prompt or top-level agent text; excludes technical events. */
@@ -132,6 +138,7 @@ export class SessionProjectionStore {
         {
           eventCount: 0,
           lastEventSeq: 0,
+          revision: '',
           lastActivityAt: null,
           lastMessageAt: null,
           events: [],
@@ -172,6 +179,33 @@ export class SessionProjectionStore {
         }
       });
     return facts;
+  }
+
+  /**
+   * The constant-size log marker of each listed session that has a log — the
+   * batched counterpart of `EventStore.getSessionEventStats`. One primary-key
+   * read per chunk, so a caller can tell which logs moved before deciding which
+   * of them to read at all.
+   */
+  async listSessionEventStats(
+    sessionIds: readonly string[],
+  ): Promise<Map<string, SessionEventStats>> {
+    const stats = new Map<string, SessionEventStats>();
+    for (const ids of idChunks([...new Set(sessionIds)])) {
+      const rows = await this.getDb()
+        .selectFrom('session_event_stats')
+        .selectAll()
+        .where('session_id', 'in', ids)
+        .execute();
+      for (const row of rows)
+        stats.set(row.session_id, {
+          eventCount: Number(row.event_count),
+          lastEventSeq: Number(row.last_event_seq),
+          lastActivityAt: row.last_activity_at?.getTime() ?? null,
+          revision: String(row.revision),
+        });
+    }
+    return stats;
   }
 
   /**

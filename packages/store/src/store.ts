@@ -913,7 +913,7 @@ export class EventStore implements EventSink {
     () => this.db,
     () => this.googleAccounts,
   );
-  private readonly sessionProjections = new SessionProjectionStore(() => this.db);
+  readonly sessionProjections = new SessionProjectionStore(() => this.db);
   private readonly eventHistory = new EventHistoryStore(() => this.db);
   private readonly eventSnapshots = new EventSnapshotStore(() => this.db);
   private readonly starterProjects = new StarterProjectStore(() => this.db);

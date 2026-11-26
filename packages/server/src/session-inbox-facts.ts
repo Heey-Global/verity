@@ -57,7 +57,23 @@ export function openChoicesFromProjection(
   status: SessionStatus,
   busy: boolean,
 ): OpenChoices | undefined {
-  if (busy || ACTIVE.has(status)) return undefined;
+  return liveOpenChoices(unansweredChoicesFromProjection(events), status, busy);
+}
+
+/** The live half of {@link openChoicesFromProjection}, for a log-derived block. */
+export function liveOpenChoices(
+  choices: OpenChoices | undefined,
+  status: SessionStatus,
+  busy: boolean,
+): OpenChoices | undefined {
+  return busy || ACTIVE.has(status) ? undefined : choices;
+}
+
+/** The log half of {@link openChoicesFromProjection}: the current turn's
+ *  unanswered choices block, whatever the session is doing now. */
+export function unansweredChoicesFromProjection(
+  events: readonly AgentEvent[],
+): OpenChoices | undefined {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (event === undefined) continue;
@@ -91,13 +107,20 @@ export function pendingPermissionRequestsFromProjection(
   pendingIds: readonly string[],
 ): PendingPermissionRequest[] {
   if (pendingIds.length === 0) return [];
-  const wanted = new Set(pendingIds);
+  return pickPermissionRequests(currentTurnPermissionRequests(events), pendingIds);
+}
+
+/** The log half of {@link pendingPermissionRequestsFromProjection}: every
+ *  permission the current turn raised, by tool-use id, newest event winning. */
+export function currentTurnPermissionRequests(
+  events: readonly AgentEvent[],
+): Map<string, PendingPermissionRequest> {
   const found = new Map<string, PendingPermissionRequest>();
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (event === undefined) continue;
     if (event.t === 'prompt' && event.steered !== true) break;
-    if (event.t !== 'permission' || !wanted.has(event.id) || found.has(event.id)) continue;
+    if (event.t !== 'permission' || found.has(event.id)) continue;
     found.set(event.id, {
       toolUseId: event.id,
       tool: event.tool,
@@ -105,6 +128,14 @@ export function pendingPermissionRequestsFromProjection(
       ...(inputFits(event.input) ? { input: event.input } : {}),
     });
   }
+  return found;
+}
+
+/** The live half: the requests among `found` the conductor still holds open. */
+export function pickPermissionRequests(
+  found: ReadonlyMap<string, PendingPermissionRequest>,
+  pendingIds: readonly string[],
+): PendingPermissionRequest[] {
   return pendingIds.flatMap((id) => {
     const request = found.get(id);
     return request === undefined ? [] : [request];

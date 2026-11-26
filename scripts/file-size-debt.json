@@ -30,7 +30,7 @@
   "packages/server/src/self-update/managed-server-owner.test.ts": 1726,
   "packages/server/src/self-update/updater-status.test.ts": 1908,
   "packages/server/src/self-update/updater-status.ts": 1683,
-  "packages/server/src/server-activity.test.ts": 1624,
+  "packages/server/src/server-activity.test.ts": 1559,
   "packages/server/src/server-branches.test.ts": 3148,
   "packages/server/src/server-infrastructure.test.ts": 2148,
   "packages/server/src/server-mcp-routes.ts": 2161,
