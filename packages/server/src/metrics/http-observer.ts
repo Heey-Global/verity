@@ -1,5 +1,10 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { clientLabel, identifyClient } from './client-identity.js';
+import {
+  clientLabel,
+  identifyClient,
+  INTERNAL_CLIENT,
+  isInjectedRequest,
+} from './client-identity.js';
 import { createCause, runInCause, type ExternalCause } from './external-calls.js';
 import type { MonitoringControl } from './monitoring-control.js';
 import type { ServerMetrics } from './server-metrics.js';
@@ -98,6 +103,8 @@ export function observeHttp(
     if (state.external !== undefined) state.external.ended = true;
     const route = request.routeOptions.url ?? UNMATCHED_ROUTE;
     const length = Number(request.headers['content-length']);
+    const identity = identifyClient(request.headers);
+    const encoding = reply.getHeader('content-encoding');
     metrics.recordHttp(
       {
         method: request.method,
@@ -106,13 +113,16 @@ export function observeHttp(
         // the client kind, so unauthenticated callers cannot fill the series
         // cap with invented versions and push real traffic into the overflow.
         client:
-          reply.statusCode < 400
-            ? clientLabel(identifyClient(request.headers))
-            : identifyClient(request.headers).kind,
+          identity.kind === 'other' && isInjectedRequest(request.raw)
+            ? INTERNAL_CLIENT
+            : reply.statusCode < 400
+              ? clientLabel(identity)
+              : identity.kind,
         status: reply.statusCode,
         durationMs: Number(process.hrtime.bigint() - state.startedAt) / 1e6,
         bytesIn: Number.isFinite(length) && length > 0 ? length : 0,
         bytesOut: state.bytesOut,
+        compressed: encoding !== undefined && encoding !== 'identity',
         // Only a session the server served: a rejected or unknown ID is the
         // caller's text, not a session, and must not fill the session list.
         sessionId: reply.statusCode < 400 ? sessionIdOf(request, route) : null,

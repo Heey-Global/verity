@@ -27,6 +27,8 @@ export interface HttpObservation {
   durationMs: number;
   bytesIn: number;
   bytesOut: number;
+  /** Whether the response body went out with a `content-encoding`. */
+  compressed?: boolean | undefined;
   sessionId: string | null;
   requestId: string;
   /** Outbound calls this request made, for detail mode. */
@@ -41,6 +43,10 @@ export interface HttpSeries {
   requests: number;
   bytesIn: number;
   bytesOut: number;
+  /** `304 Not Modified` answers: a conditional read the client already held. */
+  notModified: number;
+  /** Responses sent with a `content-encoding`. */
+  compressed: number;
   latency: LatencyHistogram;
 }
 
@@ -145,6 +151,8 @@ export class ServerMetrics {
         requests: 0,
         bytesIn: 0,
         bytesOut: 0,
+        notModified: 0,
+        compressed: 0,
         latency: new LatencyHistogram(),
       };
       this.http.set(key, series);
@@ -152,6 +160,8 @@ export class ServerMetrics {
     series.requests += 1;
     series.bytesIn += observation.bytesIn;
     series.bytesOut += observation.bytesOut;
+    if (observation.status === 304) series.notModified += 1;
+    if (observation.compressed === true) series.compressed += 1;
     series.latency.observe(observation.durationMs);
 
     if (observation.sessionId !== null)

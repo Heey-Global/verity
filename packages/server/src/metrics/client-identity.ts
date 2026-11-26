@@ -47,6 +47,21 @@ export function identifyClient(
   return { kind: 'other', version: null };
 }
 
+/**
+ * The server's own reads through `app.inject()`, such as the live hub re-reading
+ * an observed resource. They never cross the network, so counting them as an
+ * unknown client made in-process work look like device traffic. Told apart by
+ * the request object `light-my-request` builds, not by a header: a network
+ * caller can send any header, but cannot make Node attach this property. An
+ * injected request that declares a client (as tests simulating a device do)
+ * keeps that label.
+ */
+export function isInjectedRequest(raw: object): boolean {
+  return '_lightMyRequest' in raw;
+}
+
+export const INTERNAL_CLIENT = 'internal';
+
 /** The counter label: kind plus version when known, e.g. `ios/1.95.4`. */
 export function clientLabel(identity: ClientIdentity): string {
   return identity.version === null ? identity.kind : `${identity.kind}/${identity.version}`;

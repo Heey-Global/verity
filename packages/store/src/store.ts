@@ -110,8 +110,12 @@ export type { PlanningConsent } from './plan-implementation.js';
 import { SessionPlanningStore, type SessionPlanning } from './session-planning.js';
 import { SESSION_COLUMNS, sessionFromRow } from './session-rows.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
-import { SessionProjectionStore, type SessionProjectionFacts } from './session-projection.js';
-export type { SessionProjectionFacts } from './session-projection.js';
+import {
+  SessionProjectionStore,
+  type SessionEventStats,
+  type SessionProjectionFacts,
+} from './session-projection.js';
+export type { SessionEventStats, SessionProjectionFacts } from './session-projection.js';
 import {
   SessionLinkStore,
   type SessionLinkRecord,
@@ -870,7 +874,7 @@ export class EventStore implements EventSink {
     () => this.db,
     () => this.googleAccounts,
   );
-  private readonly sessionProjections = new SessionProjectionStore(() => this.db);
+  readonly sessionProjections = new SessionProjectionStore(() => this.db);
   private readonly eventHistory = new EventHistoryStore(() => this.db);
   private readonly eventSnapshots = new EventSnapshotStore(() => this.db);
   private readonly starterProjects = new StarterProjectStore(() => this.db);

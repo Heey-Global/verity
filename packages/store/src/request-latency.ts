@@ -6,6 +6,7 @@ export type LatencyPhase =
   | 'request_authorization'
   | 'pool_generation_verify'
   | 'session_list'
+  | 'session_log_stats'
   | 'session_projection'
   | 'session_links'
   | 'session_automations'

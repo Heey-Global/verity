@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.96.1](https://github.com/Heey-Global/verity/compare/mobile-v1.96.0...mobile-v1.96.1) (2026-11-26)
+
+
+### Features
+
+* **live:** publish session status as session.summary events ([#2972](https://github.com/Heey-Global/verity/issues/2972)) ([5d958b7](https://github.com/Heey-Global/verity/commit/5d958b7a6a3f0b0c8b880d346d93145fc2677efd))
+
 ## [1.95.8](https://github.com/Heey-Global/verity/compare/mobile-v1.95.7...mobile-v1.95.8) (2026-11-26)
 
 
