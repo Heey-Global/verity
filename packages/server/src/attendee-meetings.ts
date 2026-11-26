@@ -645,9 +645,7 @@ export class AttendeeMeetings {
     if (connection) {
       connection.botId = state.botId;
       if (final) await connection.receiver.finish();
-      const missingAudio =
-        !connection.receiver.connected &&
-        (connection.receiver.streamClosed || Date.now() - (state.joinedAt ?? Date.now()) >= 30_000);
+      const missingAudio = !connection.receiver.connected && connection.receiver.streamClosed;
       await this.persistAudio(
         state,
         connection.gap ||
@@ -1244,6 +1242,15 @@ export class AttendeeMeetings {
       await client.request(`bots/${encodeURIComponent(state.botId)}/leave`, 'POST');
     }
     const join = joinProgress(bot, state.joinedAt !== undefined);
+    if (
+      !discard &&
+      state.audio &&
+      state.stopRequested &&
+      !this.audioConnections.has(state.meeting.id) &&
+      join.status === 'joined'
+    ) {
+      state.audio.gap = true;
+    }
     if (join.status === 'joined' || bot.events?.some((event) => event.type === 'joined_meeting'))
       state.joinedAt ??= Date.now();
     if (
