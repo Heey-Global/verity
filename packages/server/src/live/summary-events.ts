@@ -69,7 +69,7 @@ export function installSummaryEvents(
   const publish = async (sessionId: string): Promise<void> => {
     // Taken before the row is computed, so a list read that took its revisions
     // after this one began holds a later state and views keep it.
-    const rev = revisions.next(sessionId);
+    const rev = revisions.next();
     // Reads stamped from now on hold a state at least as new as this row.
     lastRevisions.delete(sessionId);
     lastRevisions.set(sessionId, rev);

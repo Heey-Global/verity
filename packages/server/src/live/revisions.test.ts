@@ -8,10 +8,10 @@ describe('createRevisions', () => {
   it('issues every revision above all earlier ones, also within one millisecond', () => {
     let now = 1_000;
     const revisions = createRevisions(() => now);
-    const issued = ['s1', 's1', 's2', 's3', 's1'].map((id) => revisions.next(id));
+    const issued = Array.from({ length: 5 }, () => revisions.next());
     expect(issued).toEqual([...issued].sort((a, b) => a - b));
     expect(new Set(issued).size).toBe(issued.length);
     now += 1;
-    expect(revisions.next('s4')).toBeGreaterThan(Math.max(...issued));
+    expect(revisions.next()).toBeGreaterThan(Math.max(...issued));
   });
 });

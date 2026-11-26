@@ -9,7 +9,7 @@
 export function createRevisions(now: () => number = Date.now) {
   let highest = 0;
   return {
-    next(_entityId: string): number {
+    next(): number {
       highest = Math.max(now(), highest + 1);
       return highest;
     },

@@ -56,7 +56,7 @@ export function createPrEvents(
     const event: DomainEvent = {
       t: 'pr.status',
       sessionId: session.sessionId,
-      rev: revisions.next(session.sessionId),
+      rev: revisions.next(),
       pr: status === null ? null : { ...status },
     };
     for (const topic of topics) domainEvents.publish(topic, event);

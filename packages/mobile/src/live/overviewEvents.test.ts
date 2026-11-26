@@ -244,9 +244,9 @@ describe('applyOverviewEvent with session.summary', () => {
   // after a row was published already shows it, or something newer.
   it('applies a row only over an older one', () => {
     const read = { ...waiting(), summaryRev: 5 } as SessionSummary;
-    const replayed = { ...summary(read, { status: 'running' }), rev: 5 } as DomainEvent;
+    const replayed = { ...summary(read, { status: 'running' }), rev: 5 };
     expect(applyOverviewEvent([read], replayed).kind).toBe('none');
-    const newer = { ...summary(read, { status: 'idle' }), rev: 6 } as DomainEvent;
+    const newer = { ...summary(read, { status: 'idle' }), rev: 6 };
     const effect = applyOverviewEvent([read], newer);
     const [next] = (effect as { sessions: SessionSummary[] }).sessions;
     expect(next).toMatchObject({ status: 'idle', summaryRev: 6 });
