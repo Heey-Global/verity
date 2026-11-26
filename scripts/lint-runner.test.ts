@@ -150,6 +150,12 @@ it('runs a lite-mode worker with the same heap budget and file arguments', () =>
   expect(args.slice(0, 3)).toEqual([process.execPath, '--lite-mode', '--max-old-space-size=512']);
   expect(args).toContain('--no-ambient-cache');
   expect(args.slice(args.indexOf('--') + 1)).toEqual(['large.ts']);
+  // An unknown V8 flag would turn every lite retry into a worker failure.
+  const node = spawnSync(process.execPath, ['--lite-mode', '-e', 'process.exit(0)'], {
+    encoding: 'utf8',
+  });
+  expect(node.stderr).toBe('');
+  expect(node.status).toBe(0);
 });
 
 it('separates large sources before starting workers and still checks oversized files', () => {
