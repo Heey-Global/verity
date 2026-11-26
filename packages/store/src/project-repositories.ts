@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Selectable } from 'kysely';
 import type { Database } from './schema.js';
 import type { ProjectRepositoriesTable } from './schema-project-repositories.js';
-import type { ProjectKind, ProjectRecord } from './store.js';
+import type { ProjectKind, ProjectRecord } from './project-record.js';
 
 export interface ProjectRepositoryRecord {
   id: string;

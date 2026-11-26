@@ -135,7 +135,6 @@
   "imports": [
     "packages/store/src/db.ts -> packages/store/src/migrations.ts",
     "packages/store/src/migrations.ts -> packages/store/src/store.ts",
-    "packages/store/src/pglite-template.ts -> packages/store/src/migrations.ts",
-    "packages/store/src/project-repositories.ts -> packages/store/src/store.ts"
+    "packages/store/src/pglite-template.ts -> packages/store/src/migrations.ts"
   ]
 }
