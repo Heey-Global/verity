@@ -173,4 +173,27 @@ describe('SessionListModel with the shared overview store', () => {
     expect(statuses[0]).toBe('idle');
     model.stop();
   });
+
+  // Home hides its own unconfirmed changes on top of the store; once the
+  // server confirmed them, the project page reads the same store.
+  it('puts a confirmed favorite, order and deletion in the store for the other views', async () => {
+    const { model, store } = harness(() => Promise.resolve([summary('s1'), summary('s2')]), {
+      setSessionFavorite: vi.fn(() => Promise.resolve({ sessionId: 's1', favorite: true })),
+      deleteSession: vi.fn(() => Promise.resolve({ sessionId: 's2' })),
+      listSessionOverview: () =>
+        Promise.resolve({
+          sessions: [summary('s1'), summary('s2')],
+          attention: [],
+          sessionReordering: true,
+        }),
+      reorderSessions: vi.fn((_project: string | null, ids: string[]) => Promise.resolve(ids)),
+    });
+    await model.refresh();
+    await model.setFavorite('s1', true);
+    expect(store.session('s1')?.favorite).toBe(true);
+    await model.reorder('p1', ['s2', 's1']);
+    expect([store.session('s2')?.sortOrder, store.session('s1')?.sortOrder]).toEqual([0, 1]);
+    await model.delete('s2');
+    expect(store.session('s2')).toBeUndefined();
+  });
 });

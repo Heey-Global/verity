@@ -76,8 +76,13 @@ export function useSessionList(client: VerityClient): UseSessionList {
     setState({ ...model.state, loading: true });
   }, [model]);
 
+  // Set while Home is focused; it gates reads nobody asked for.
+  const focused = useRef(false);
+  const firstStore = useRef(store);
   useEffect(() => {
-    // A replaced store (another account) shows nothing of the old one.
+    // A replaced store (another account) holds none of the list's sessions:
+    // the list shows its own last read until it has read into the new one.
+    if (store !== firstStore.current && focused.current) void model.refresh({ silent: true });
     model.storeChanged();
     return store.subscribe(() => model.storeChanged());
   }, [model, store]);
@@ -115,7 +120,6 @@ export function useSessionList(client: VerityClient): UseSessionList {
 
   // Focus only gates background requests; React state would redraw the entire
   // overview and embedded transcript during each navigation transition.
-  const focused = useRef(false);
   useFocusEffect(
     useCallback(() => {
       focused.current = true;

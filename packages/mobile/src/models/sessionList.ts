@@ -253,6 +253,15 @@ export class SessionListModel {
     });
   }
 
+  /** A deleted session leaves the store, so no other view lists it either. */
+  private forget(sessionId: string): void {
+    const store = this.opts.store?.();
+    if (store?.session(sessionId) === undefined) return;
+    store.applySessions(store.beginRead(), [], {
+      covers: (session) => session.sessionId === sessionId,
+    });
+  }
+
   /** The store changed (an event, another view's read). Shown only while the
    * list runs; {@link start} catches up. */
   storeChanged(): void {
@@ -414,6 +423,11 @@ export class SessionListModel {
       try {
         const { favorite: stored } = await this.opts.client.setSessionFavorite(sessionId, favorite);
         this.confirmedFavorites.set(sessionId, stored);
+        this.adopt(sessionId, (session) => {
+          const next: SessionSummary = { ...session, favorite: true };
+          if (!stored) delete next.favorite;
+          return next;
+        });
         if (this.favoriteMutations.get(sessionId) !== mutation) return;
         this.pendingFavorites.set(sessionId, { favorite: stored, maxRequest: this.reqSeq });
         this.applyFavorite(sessionId, stored);
@@ -456,6 +470,9 @@ export class SessionListModel {
       try {
         const stored = await this.opts.client.reorderSessions!(projectId, ids);
         this.confirmedOrders.set(projectId, new Map(stored.map((id, index) => [id, index])));
+        stored.forEach((id, index) =>
+          this.adopt(id, (session) => ({ ...session, sortOrder: index })),
+        );
         if (this.orderMutations.get(projectId) !== mutation) return;
         this.pendingOrders.set(projectId, { ids: stored, maxRequest: this.reqSeq });
         this.applyOrder(projectId, stored);
@@ -623,6 +640,7 @@ export class SessionListModel {
       else await this.opts.client.deleteSession(sessionId);
       deletion.active -= 1;
       deletion.succeeded = true;
+      this.forget(sessionId);
       this._error = undefined;
     } catch (error) {
       deletion.active -= 1;
@@ -678,6 +696,7 @@ export class SessionListModel {
         };
         deletion.succeeded = true;
         this.pendingDeletes.set(hint.sessionId, deletion);
+        this.forget(hint.sessionId);
         this._sessions = this._sessions.filter((s) => s.sessionId !== hint.sessionId);
       }
     }
@@ -719,6 +738,7 @@ export class SessionListModel {
    * so a double `start()` can't leak a timer. */
   start(): void {
     this.stop();
+    this.refusedReads = 0;
     // Changes the store took while the list was hidden show at once.
     if ((this.currentStore()?.getVersion() ?? -1) !== this.orderedVersion) this.emit();
     const intervalMs = this.opts.pollIntervalMs ?? 30_000;
