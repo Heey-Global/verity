@@ -335,4 +335,18 @@ describe('SessionListModel with the shared overview store', () => {
     expect(shown('s2')).toBeDefined();
     model.stop();
   });
+
+  it('publishes a read once, from the store it went into', async () => {
+    const onChange = vi.fn();
+    const { model, client } = harness(() => Promise.resolve([summary('s1')]), {}, onChange);
+    model.start();
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+    onChange.mockClear();
+    // A read that changes the store, which notifies its listeners.
+    client.listSessions.mockResolvedValueOnce([summary('s1', { status: 'idle' })]);
+    await model.refresh({ silent: true });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0]![0].sessions[0].status).toBe('idle');
+    model.stop();
+  });
 });

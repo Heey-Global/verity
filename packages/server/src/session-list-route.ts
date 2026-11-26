@@ -157,11 +157,11 @@ export function registerSessionListRoute(
         ? { holdsCode: viewerCodeRights(deps.requestAddressing, viewer) }
         : undefined;
     const reviewers = new Map<string | null, Promise<boolean>>();
-    const reviewerRights = (store: ChangeSubmissionStore, projectId: string | null) => {
-      let held = reviewers.get(projectId);
+    const reviewerRights = (store: ChangeSubmissionStore, sessionProject: string | null) => {
+      let held = reviewers.get(sessionProject);
       if (held === undefined) {
-        held = holdsCode(store, viewer, projectId).catch(() => false);
-        reviewers.set(projectId, held);
+        held = holdsCode(store, viewer, sessionProject).catch(() => false);
+        reviewers.set(sessionProject, held);
       }
       return held;
     };

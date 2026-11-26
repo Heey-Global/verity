@@ -164,7 +164,8 @@ export class SessionListModel {
    * which the store has not taken. */
   private favoritesStored = new Set<string>();
   private ordersStored = new Set<string | null>();
-  /** The newest rename of each session; older answers stay out of the store. */
+  /** The newest rename of each session; older answers stay out of the store.
+   * Kept after it settles, since an older answer may still arrive. */
   private latestRenames = new Map<string, number>();
   /** Names the server stored while a later rename of the session was out. */
   private confirmedNames = new Map<string, string | null>();
@@ -410,7 +411,14 @@ export class SessionListModel {
       this._providerLimits = providerLimits;
       this._error = undefined;
       if (target !== undefined && read !== undefined) {
-        const applied = target.applySessions(read, sessions, EVERY_SESSION);
+        // Announced once by the `emit` below, with `readStore` already set.
+        this.writingStore = true;
+        let applied: boolean;
+        try {
+          applied = target.applySessions(read, sessions, EVERY_SESSION);
+        } finally {
+          this.writingStore = false;
+        }
         this.readStore = applied ? target : undefined;
         // Events this read would need replayed were dropped: read once more.
         if (applied) this.refusedReads = 0;
