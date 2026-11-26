@@ -1448,12 +1448,7 @@ export class EventStore implements EventSink {
    * attempts for the same `(session, marker)` return `false`.
    */
   async markSessionAutomation(sessionId: string, marker: string): Promise<boolean> {
-    const result = await this.db
-      .insertInto('session_automation_marker')
-      .values({ session_id: sessionId, marker })
-      .onConflict((oc) => oc.columns(['session_id', 'marker']).doNothing())
-      .executeTakeFirst();
-    return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+    return this.sessionAutomations.markSessionAutomation(sessionId, marker);
   }
 
   /** Keep a terminal PR hidden after the workspace first changes, across restarts. */
@@ -1513,22 +1508,11 @@ export class EventStore implements EventSink {
   }
 
   async hasSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {
-    const row = await this.db
-      .selectFrom('session_automation_marker')
-      .select('session_id')
-      .where('session_id', '=', sessionId)
-      .where('marker', '=', marker)
-      .executeTakeFirst();
-    return row !== undefined;
+    return this.sessionAutomations.hasSessionAutomationMarker(sessionId, marker);
   }
 
   async deleteSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('session_automation_marker')
-      .where('session_id', '=', sessionId)
-      .where('marker', '=', marker)
-      .executeTakeFirst();
-    return result.numDeletedRows > 0n;
+    return this.sessionAutomations.deleteSessionAutomationMarker(sessionId, marker);
   }
 
   /** Constant-size log marker; a never-written session has no stats row. */
