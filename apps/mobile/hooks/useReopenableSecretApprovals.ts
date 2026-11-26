@@ -126,5 +126,8 @@ export function useReopenableSecretApprovals(
         : new Map(requests.map((request) => [request.id, request.status] as const)),
     [requests],
   );
-  return { statuses, reopening, error, reopen };
+  return useMemo(
+    () => ({ statuses, reopening, error, reopen }),
+    [statuses, reopening, error, reopen],
+  );
 }

@@ -236,7 +236,11 @@ export function SessionInquiryRow({
       : hidesError
         ? 'Loads once the server is back'
         : 'Could not load project requests';
-  if (waiting.length === 0 && !resource.error && !visible) return null;
+  // Deciding the last waiting request closes its sheet rather than leaving it empty.
+  if (waiting.length === 0 && !resource.error) {
+    if (openSession !== undefined) setOpenSession(undefined);
+    return null;
+  }
   return (
     <>
       {waiting.length > 0 || resource.error ? (

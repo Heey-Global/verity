@@ -325,6 +325,11 @@ describe('the decision notice', () => {
     act(() => result.current[1]());
     expect(result.current[0]).toBeUndefined();
 
+    // Each decision clears the message first; the same words again are a new failure.
+    rerender({ message: undefined, pending: 'p1' });
+    rerender({ message: 'Not run: saved failed.', pending: 'p1' });
+    expect(result.current[0]).toBe('Not run: saved failed.');
+
     rerender({ message: 'Decision failed: boom', pending: 'p1' });
     expect(result.current[0]).toBe('Decision failed: boom');
     rerender({ message: 'Decision failed: boom', pending: 'p2' });

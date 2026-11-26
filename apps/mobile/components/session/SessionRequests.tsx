@@ -70,15 +70,21 @@ export function useSessionRequests(
 
 /**
  * Shows a decision's outcome until the user dismisses it or a different
- * request starts waiting; a message for a prompt still waiting stays up.
+ * request starts waiting; a message for a prompt still waiting stays up. Each
+ * decision clears the model's message first, so a repeated failure with the
+ * same words is a new message here and shows again after an earlier X.
  */
 export function useDecisionNotice(
   message: string | undefined,
   pendingId: string | undefined,
 ): [string | undefined, () => void] {
   const [seen, setSeen] = useState<{ message: string; pendingId?: string; hidden: boolean }>();
-  if (message !== undefined && seen?.message !== message)
-    setSeen({ message, ...(pendingId === undefined ? {} : { pendingId }), hidden: false });
+  if (message === undefined ? seen !== undefined : seen?.message !== message)
+    setSeen(
+      message === undefined
+        ? undefined
+        : { message, ...(pendingId === undefined ? {} : { pendingId }), hidden: false },
+    );
   const visible =
     message !== undefined &&
     seen?.message === message &&
@@ -91,9 +97,17 @@ export function useDecisionNotice(
   return [visible ? message : undefined, dismiss];
 }
 
-const SessionRequestsContext = createContext<
-  { requests: SessionRequests; tail: ReactNode } | undefined
->(undefined);
+/** What transcript rows read. Kept apart from the composer-side state, and
+ *  memoised on its parts, so streaming does not re-render every row. */
+interface RowRequests {
+  sessionId: string;
+  inquiries: readonly ProjectInquiry[] | undefined;
+  secrets: ReopenableSecretApprovals;
+}
+const RowRequestsContext = createContext<RowRequests | undefined>(undefined);
+const TailContext = createContext<{ requests: SessionRequests; tail: ReactNode } | undefined>(
+  undefined,
+);
 
 /** Makes the requests readable to the transcript's rows and its end. */
 export function SessionRequestsProvider({
@@ -106,9 +120,13 @@ export function SessionRequestsProvider({
   tail: ReactNode;
   children: ReactNode;
 }) {
-  const value = useMemo(() => ({ requests, tail }), [requests, tail]);
+  const { sessionId, secrets } = requests;
+  const inquiries = requests.inquiries.data;
+  const rows = useMemo(() => ({ sessionId, inquiries, secrets }), [sessionId, inquiries, secrets]);
   return (
-    <SessionRequestsContext.Provider value={value}>{children}</SessionRequestsContext.Provider>
+    <RowRequestsContext.Provider value={rows}>
+      <TailContext.Provider value={{ requests, tail }}>{children}</TailContext.Provider>
+    </RowRequestsContext.Provider>
   );
 }
 
@@ -127,7 +145,7 @@ export function PinnedProjectRequests({ requests }: { requests: SessionRequests 
 
 /** The newest end of the transcript: requests hidden from above the composer. */
 export function TranscriptRequestTail({ style }: { style: StyleProp<ViewStyle> }) {
-  const context = useContext(SessionRequestsContext);
+  const context = useContext(TailContext);
   if (context === undefined) return null;
   const { requests, tail } = context;
   const inquiries = (
@@ -153,7 +171,7 @@ type SecretRequest = ComponentProps<typeof SecretApprovalCard>['request'] & {
 
 /** A decided secret request in the transcript, reopenable where the server allows it. */
 export function TranscriptSecretApproval({ request }: { request: SecretRequest }) {
-  const secrets = useContext(SessionRequestsContext)?.requests.secrets;
+  const secrets = useContext(RowRequestsContext)?.secrets;
   const status = secrets?.statuses.get(request.id);
   return (
     <SecretApprovalCard
@@ -181,12 +199,12 @@ export function TranscriptSecretApproval({ request }: { request: SecretRequest }
  * prompt, including one that only quotes the format, stays the bubble given.
  */
 export function InquiryAnswerTurn({ text, children }: { text: string; children: ReactNode }) {
-  const requests = useContext(SessionRequestsContext)?.requests;
+  const requests = useContext(RowRequestsContext);
   const turn = parseProjectInquiryAnswerTurn(text);
   const inquiry =
     turn === null
       ? undefined
-      : requests?.inquiries.data?.find(
+      : requests?.inquiries?.find(
           (item) =>
             item.id === turn.inquiryId &&
             item.title === turn.title &&
