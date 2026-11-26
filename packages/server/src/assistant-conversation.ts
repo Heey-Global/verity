@@ -148,20 +148,27 @@ export function projectAssistantConversation(
         }
       : null;
   // One budget for all of them: the conversation is read on every change, and several
-  // waiting approvals must not multiply it. One that no longer fits goes without its input,
-  // and the device sends the user to the session for it.
+  // waiting approvals must not multiply it. Handoffs are served first, since their briefing
+  // is what the budget is sized for; one that no longer fits goes without its input, and
+  // the device sends the user to the session for it.
   let budget = ASSISTANT_APPROVAL_INPUT_MAX_BYTES;
-  const approvals = facts.approvals.map((approval): AssistantApproval => {
-    const input = requested.get(approval.toolUseId)?.input;
-    const size = inputBytes(input);
-    const carried = size !== undefined && size <= budget;
-    if (carried) budget -= size;
-    return {
-      id: approval.toolUseId,
-      tool: approval.tool,
-      ...(carried ? { input } : {}),
-    };
-  });
+  const carried = new Set<string>();
+  const byPriority = [...facts.approvals].sort(
+    (a, b) =>
+      Number(!isTool(a.tool, 'verity_session_handoff')) -
+      Number(!isTool(b.tool, 'verity_session_handoff')),
+  );
+  for (const approval of byPriority) {
+    const size = inputBytes(requested.get(approval.toolUseId)?.input);
+    if (size === undefined || size > budget) continue;
+    budget -= size;
+    carried.add(approval.toolUseId);
+  }
+  const approvals = facts.approvals.map((approval): AssistantApproval => ({
+    id: approval.toolUseId,
+    tool: approval.tool,
+    ...(carried.has(approval.toolUseId) ? { input: requested.get(approval.toolUseId)?.input } : {}),
+  }));
   linkHandoffApprovals(items, approvals, requested, cardSeq);
   const working = facts.busy || facts.status === 'running';
   return {
