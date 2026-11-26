@@ -1198,35 +1198,13 @@ export class EventStore implements EventSink {
     next: string,
     note: string,
   ): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      const project = await tx
-        .selectFrom('projects')
-        .select(['kind', 'hidden_at'])
-        .where('id', '=', projectId)
-        .forShare()
-        .executeTakeFirstOrThrow();
-      if (project.kind !== 'local' || project.hidden_at !== null)
-        throw new Error('Local project is unavailable');
-      const session = await tx
-        .selectFrom('sessions')
-        .select(['worktree', 'project_id'])
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!session) return;
-      if (session.project_id !== projectId)
-        throw new Error('Session changed project during migration');
-      if (session.worktree === next) return;
-      if (session.worktree !== previous)
-        throw new Error('Session changed workspace during migration');
-      await tx
-        .updateTable('sessions')
-        .set({ worktree: next })
-        .where('session_id', '=', sessionId)
-        .execute();
-      await tx.deleteFrom('session_backend_state').where('session_id', '=', sessionId).execute();
-      await tx.insertInto('session_pending_note').values({ session_id: sessionId, note }).execute();
-    });
+    return this.sessionMoves.replaceLocalSessionWorkspace(
+      sessionId,
+      projectId,
+      previous,
+      next,
+      note,
+    );
   }
 
   /**
