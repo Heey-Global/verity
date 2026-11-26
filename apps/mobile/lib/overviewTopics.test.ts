@@ -224,30 +224,41 @@ describe('useOverviewTopics', () => {
     expect(events).toEqual([answered(5), answered(5)]);
   });
 
-  it('keeps one store per server and account beyond the views using it', () => {
-    const first = renderHook(() => useOverviewStore('https://core.example'));
-    const store = first.result.current;
-    first.unmount();
-    // A page opened again starts from what the app already knows.
-    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(store);
-    const mounted = renderHook(() => useOverviewStore('https://core.example'));
+  const switchAccount = (to: number) =>
     act(() => {
-      mockAccount += 1;
+      mockAccount = to;
       for (const listener of mockAccountListeners) listener();
     });
+
+  it('shares one store per server and account, and starts empty after a switch', () => {
+    const account = mockAccount;
+    const topics = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()),
+    );
+    const store = renderHook(() => useOverviewStore('https://core.example')).result.current;
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(store);
+    const mounted = renderHook(() => useOverviewStore('https://core.example'));
+    switchAccount(account + 1);
     // Another account never sees the previous one's sessions.
     expect(mounted.result.current).not.toBe(store);
+    // The view moved to the other account, so nothing kept following the
+    // first one's events: coming back starts empty.
+    switchAccount(account);
+    expect(mounted.result.current).not.toBe(store);
+    topics.unmount();
   });
 
-  it('keeps the store a live view holds when its account comes back', () => {
-    const account = mockAccount;
-    renderHook(() => useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()));
-    const held = renderHook(() => useOverviewStore('https://core.example')).result.current;
-    mockAccount += 1;
-    renderHook(() => useOverviewStore('https://core.example'));
-    mockAccount = account;
-    // The hub still applies events to this store; a new one would never see them.
-    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(held);
+  // Nothing applies events to a store whose hub went idle; a page opened
+  // later would show a copy that stopped following them.
+  it('drops the store once no view follows its events', () => {
+    const topics = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], jest.fn(), jest.fn()),
+    );
+    const store = renderHook(() => useOverviewStore('https://core.example')).result.current;
+    topics.unmount();
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).not.toBe(
+      store,
+    );
   });
 
   it("drops a signed-out account's store once no view holds it", () => {

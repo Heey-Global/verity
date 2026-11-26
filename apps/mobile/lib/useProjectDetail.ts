@@ -191,6 +191,8 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
           setError(caught instanceof VerityApiError ? caught.message : 'Could not load project');
         }
       } finally {
+        // Ends reads that failed or were superseded; after an `apply…` it
+        // changes nothing.
         target.endRead(projectRead);
         target.endRead(sessionsRead);
         if (!silent && generation === loadGeneration.current) setLoading(false);

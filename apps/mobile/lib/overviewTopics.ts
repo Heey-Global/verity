@@ -196,10 +196,11 @@ class OverviewHub {
 /** One hub per server and account while any view uses it. */
 const hubs = new Map<string, OverviewHub>();
 
-/** The stores of the servers and accounts in use, keyed like the hubs. A
- * store outlives the views, so a page opened again starts from what the app
- * already knows. Once its account is no longer signed in and no hub holds it,
- * it is dropped, so a returning account starts empty. */
+/** The stores of the servers and accounts in use, keyed like the hubs and
+ * shared by every view of one. A store lives as long as its hub applies events
+ * to it: once the hub goes idle, or its account is no longer signed in while no
+ * hub holds it, it is dropped, so no view is ever shown a copy that stopped
+ * following events. */
 const stores = new Map<string, OverviewStore>();
 let pruneOnAccountChange: (() => void) | undefined;
 
@@ -250,7 +251,8 @@ function attachToHub(
     detach();
     if (!attached.idle || hubs.get(scope) !== attached) return;
     hubs.delete(scope);
-    pruneStores();
+    // Nothing applies events to it any more.
+    stores.delete(scope);
   };
 }
 
