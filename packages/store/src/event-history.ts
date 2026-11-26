@@ -1,4 +1,5 @@
-import type { Kysely } from 'kysely';
+import type { SessionEventStats } from './session-projection.js';
+import { sql, type Kysely } from 'kysely';
 import { parseAgentEvent, type AgentEvent } from '@verity/events';
 import type { Database } from './schema.js';
 
@@ -90,5 +91,53 @@ export class EventHistoryStore {
     if (limit !== undefined) query = query.limit(limit);
     const rows = await query.execute();
     return rows.map((row) => sequencedEvent(sessionId, row.id, row.payload, row.created_at));
+  }
+
+  async getSessionEventStats(sessionId: string): Promise<SessionEventStats | undefined> {
+    const row = await this.getDb()
+      .selectFrom('session_event_stats')
+      .selectAll()
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    if (row === undefined) return undefined;
+    return {
+      eventCount: Number(row.event_count),
+      lastEventSeq: Number(row.last_event_seq),
+      lastActivityAt: row.last_activity_at?.getTime() ?? null,
+      revision: String(row.revision),
+    };
+  }
+
+  async latestEventSeq(sessionId: string): Promise<number> {
+    const row = await this.getDb()
+      .selectFrom('events')
+      .select((eb) => eb.fn.max('id').as('seq'))
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return Number(row?.seq ?? 0);
+  }
+
+  async latestPromptInitiator(sessionId: string): Promise<{ userId: string } | undefined> {
+    const row = await this.getDb()
+      .selectFrom('events')
+      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
+      .where('session_id', '=', sessionId)
+      .where(sql<boolean>`payload->>'t' = 'prompt'`)
+      .where(sql<boolean>`payload->'initiatedBy'->>'userId' is not null`)
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    return row?.userId ? { userId: row.userId } : undefined;
+  }
+
+  async promptInitiatorAt(sessionId: string, seq: number): Promise<{ userId: string } | undefined> {
+    const row = await this.getDb()
+      .selectFrom('events')
+      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
+      .where('session_id', '=', sessionId)
+      .where('id', '=', seq)
+      .where(sql<boolean>`payload->>'t' = 'prompt'`)
+      .executeTakeFirst();
+    return row?.userId ? { userId: row.userId } : undefined;
   }
 }
