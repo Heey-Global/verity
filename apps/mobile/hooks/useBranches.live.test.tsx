@@ -9,6 +9,8 @@ import { useBranches } from './useBranches';
 jest.mock('../lib/socket', () => ({ createWebSocket: jest.fn() }));
 jest.mock('../lib/client', () => ({
   createVerityClient: () => ({ createLiveTicket: async () => ({ ticket: 'ticket' }) }),
+  // No overview store: this suite exercises the branch read's own live path.
+  getVerityBaseUrl: () => null,
 }));
 jest.mock('expo-router', () => ({
   useFocusEffect: (callback: () => (() => void) | undefined) => {
