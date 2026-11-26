@@ -1,5 +1,5 @@
 import { OverviewStore, RevisionGate, type DomainEvent, type LiveTopicSink } from '@verity/mobile';
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { subscribeAuthToken } from './authToken';
 import { subscribeBrowserSession } from './browserSession';
 import { liveConnectionFor } from './liveConnection';
@@ -43,15 +43,16 @@ interface TopicEntry {
  * topic's revision gate once before it reaches the views of its project.
  */
 class OverviewHub {
-  /** Gated per topic here, so one topic's resync does not open another's. */
-  readonly store = new OverviewStore({ gated: false });
   private readonly topics = new Map<string, TopicEntry>();
   private readonly listeners = new Set<OverviewListener>();
   /** Live topics within the share every view may use, and from the reserve. */
   private sharedLive = 0;
   private reservedLive = 0;
 
-  constructor(private readonly baseUrl: string) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly store: OverviewStore,
+  ) {}
 
   get idle(): boolean {
     return this.listeners.size === 0;
@@ -195,6 +196,17 @@ class OverviewHub {
 /** One hub per server and account while any view uses it. */
 const hubs = new Map<string, OverviewHub>();
 
+/** The store of the server and account in use. It outlives the views, so a
+ * page opened again starts from what the app already knows; another server or
+ * account replaces it with an empty one. */
+let current: { scope: string; store: OverviewStore } | undefined;
+
+function storeFor(scope: string): OverviewStore {
+  // Gated per topic by the hub, so one topic's resync does not open another's.
+  if (current?.scope !== scope) current = { scope, store: new OverviewStore({ gated: false }) };
+  return current.store;
+}
+
 function subscribeAccount(listener: () => void): () => void {
   const detach = [subscribeAuthToken(listener), subscribeBrowserSession(listener)];
   return () => {
@@ -212,7 +224,7 @@ function attachToHub(
   const scope = JSON.stringify([baseUrl, account]);
   let hub = hubs.get(scope);
   if (hub === undefined) {
-    hub = new OverviewHub(baseUrl);
+    hub = new OverviewHub(baseUrl, storeFor(scope));
     hubs.set(scope, hub);
   }
   const detach = hub.attach(listener);
@@ -257,4 +269,19 @@ export function useOverviewTopics(
       disposed: false,
     });
   }, [baseUrl, key, account]);
+}
+
+/**
+ * The shared copy of sessions and projects (ADR 0033) for this server and the
+ * signed-in account. Components re-render whenever an entity in it changes;
+ * without a server they get a store of their own.
+ */
+export function useOverviewStore(baseUrl: string | null): OverviewStore {
+  const account = useSyncExternalStore(subscribeAccount, taskAccountScope, taskAccountScope);
+  const [detached] = useState(() => new OverviewStore());
+  const store = baseUrl === null ? detached : storeFor(JSON.stringify([baseUrl, account]));
+  const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
+  const version = useCallback(() => store.getVersion(), [store]);
+  useSyncExternalStore(subscribe, version, version);
+  return store;
 }

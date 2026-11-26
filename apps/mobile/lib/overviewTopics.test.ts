@@ -1,6 +1,6 @@
 import type { DomainEvent, LiveTopicSink } from '@verity/mobile';
 import { act, renderHook } from '@testing-library/react-native';
-import { useOverviewTopics } from './overviewTopics';
+import { useOverviewStore, useOverviewTopics } from './overviewTopics';
 
 const mockSinks = new Map<string, LiveTopicSink>();
 const mockUnsubscribed: string[] = [];
@@ -222,6 +222,21 @@ describe('useOverviewTopics', () => {
     expect(mockSinks.get('project:p1')).not.toBe(before);
     mockSinks.get('project:p1')!.event(answered(5));
     expect(events).toEqual([answered(5), answered(5)]);
+  });
+
+  it('keeps one store per server and account beyond the views using it', () => {
+    const first = renderHook(() => useOverviewStore('https://core.example'));
+    const store = first.result.current;
+    first.unmount();
+    // A page opened again starts from what the app already knows.
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(store);
+    const mounted = renderHook(() => useOverviewStore('https://core.example'));
+    act(() => {
+      mockAccount += 1;
+      for (const listener of mockAccountListeners) listener();
+    });
+    // Another account never sees the previous one's sessions.
+    expect(mounted.result.current).not.toBe(store);
   });
 
   it('subscribes nothing without a server or projects', () => {
