@@ -4479,20 +4479,11 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {voice.error ? <SessionBanner tone="danger" text={`Voice: ${voice.error}`} /> : null}
       {!loaded && !locallyCreated && messages.length === 0 && !streamError && !historyError ? (
-        // Still coming up: transcript hasn't drained yet and nothing has streamed in.
-        // Show the loading animation inside the real chat body (header + composer
-        // already rendered) rather than a blank pane. Locally-created sessions
-        // deliberately skip this branch because their empty start is already known.
-        // Suppressed on `streamError` so the spinner never contradicts the error
-        // banner rendered above.
         <View style={styles.centered}>
           <ActivityIndicator color={theme.colors.textMuted} />
           <Text style={styles.emptySubtitle}>Opening session…</Text>
         </View>
       ) : (loaded || locallyCreated) && messages.length === 0 ? (
-        // Existing sessions wait for their backlog before claiming to be empty.
-        // A locally-created session is already known to start empty, so show the
-        // usable chat state immediately while provisioning continues behind it.
         <ScrollView
           contentContainerStyle={styles.starterScreen}
           keyboardShouldPersistTaps="handled"
@@ -4558,6 +4549,13 @@ export const SessionChat = memo(function SessionChat({
           </SessionPeopleProvider>
         </SessionActionsContext.Provider>
       )}
+      {messages.length === 0 &&
+      (loaded || locallyCreated || (!streamError && !historyError)) &&
+      requests.dismissed.size > 0 ? (
+        <Requests.SessionRequestsProvider requests={requests} tail={requestTail}>
+          <Requests.TranscriptRequestTail style={undefined} />
+        </Requests.SessionRequestsProvider>
+      ) : null}
       {messages.length > 0 ? (
         // Gate on the transcript existing, NOT on a `user-text` row being loaded: with
         // one opening prompt + a very long agent turn, that row sits above the first
