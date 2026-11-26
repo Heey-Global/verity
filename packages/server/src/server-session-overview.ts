@@ -41,6 +41,7 @@ import {
 import type { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import {
   BRANCH_TTL_MS,
+  IDLE_KNOWN_LIST_BRANCH_TTL_MS,
   IDLE_LIST_BRANCH_TTL_MS,
   NO_DISCONNECTED_SANDBOXES,
   isControlPlaneProject,
@@ -236,8 +237,9 @@ export function createServerSessionOverview({
    */
   const branchTtlMs = deps.branchCacheTtlMs ?? BRANCH_TTL_MS;
   const branchCache = new Map<string, { branch: string; at: number }>();
-  // A fleet-wide list must not launch one Docker exec per retained worktree at once.
-  // The list's speculative refreshes get their own lane: sharing one queue put the
+  // A fleet-wide list must not launch one Docker exec per retained worktree at once:
+  // each lane runs at most two git reads. The list's speculative refreshes get their
+  // own lane, so at most four run in total; sharing one queue put the
   // branch menu of the session someone is looking at behind every retained
   // worktree's refresh, and it waited up to a minute for its turn.
   const branchReadLanes = {
@@ -398,8 +400,8 @@ export function createServerSessionOverview({
   };
   /**
    * The branch for the session LIST, answered from {@link branchCache} only.
-   * Idle summaries with a known label are not re-read, idle ones without retry at
-   * most once a minute; active sessions keep the header cadence. These reads run
+   * Idle summaries with a known label are re-read every 15 minutes, idle ones
+   * without one at most once a minute; active sessions keep the header cadence. These reads run
    * in the background lane and never wake a sleeping sandbox: such a session's
    * label fills in when it is opened or its sandbox runs again.
    *
@@ -421,13 +423,16 @@ export function createServerSessionOverview({
     if (!exists || deps.branches === undefined) return undefined;
     if (deps.projectWorktreeBranchesOnly === true && session.projectId === null) return undefined;
     const cached = branchCache.get(worktree);
-    const ttlMs = active ? branchTtlMs : Math.max(branchTtlMs, IDLE_LIST_BRANCH_TTL_MS);
-    // An idle session's branch only moves through a turn's tool activity or an
-    // explicit switch, and both invalidate this entry; opening the session also
-    // refreshes it through the header. Re-reading a known label here only cost a
-    // git call per retained worktree and minute.
-    const settled = !active && cached !== undefined && cached.branch !== '';
-    if (!settled && (cached === undefined || Date.now() - cached.at >= ttlMs)) {
+    // An idle session's branch moves through a turn's tool activity or an explicit
+    // switch, both of which invalidate this entry, and opening the session refreshes
+    // it through the header. A known label is therefore only re-read on a long
+    // backstop for changes nothing here sees, such as git run from a terminal;
+    // re-reading it every minute cost a git call per retained worktree.
+    const known = cached !== undefined && cached.branch !== '';
+    const ttlMs = active
+      ? branchTtlMs
+      : Math.max(branchTtlMs, known ? IDLE_KNOWN_LIST_BRANCH_TTL_MS : IDLE_LIST_BRANCH_TTL_MS);
+    if (cached === undefined || Date.now() - cached.at >= ttlMs) {
       void branchesForSession(session)
         .then((branches) => {
           // A project without branch reads (control plane) is stamped empty too,

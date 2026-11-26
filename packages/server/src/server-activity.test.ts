@@ -1313,7 +1313,7 @@ describe('GET /sessions', () => {
       await poll();
       expect(current.mock.calls).toEqual([[join(worktreeRoot, 'active')]]);
       current.mockClear();
-      now = 120_001; // An idle branch moves only through invalidated turns or switches.
+      now = 120_001; // A known idle branch waits for the 15-minute backstop.
       await poll();
       expect(current.mock.calls).toEqual([[join(worktreeRoot, 'active')]]);
     } finally {

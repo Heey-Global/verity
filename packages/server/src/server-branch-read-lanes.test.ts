@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertQuerySandboxAllowed } from './query-sandbox-policy.js';
 import { branchSvc, bus, conductor, ctx, worktreeRoot } from './server-fixture.test-helper.js';
 import { buildServer } from './server.js';
+import { IDLE_KNOWN_LIST_BRANCH_TTL_MS } from './server-support.js';
 
 type Branches = NonNullable<Parameters<typeof buildServer>[0]['branches']>;
 type Listed = { sessionId: string; branch?: string };
@@ -79,5 +80,30 @@ describe('session branch reads', () => {
     const res = await server.inject({ method: 'GET', url: '/sessions/asleep/branches' });
     expect(res.json()).toMatchObject({ current: 'feat/asleep' });
     expect(await branchOf()).toBe('feat/asleep');
+  });
+
+  // Nothing invalidates a branch switched from a terminal while no turn runs.
+  it('re-reads a known idle branch only on its long backstop', async () => {
+    await session('idle');
+    const current = vi.fn(async () => 'feat/idle');
+    const server = serve(current);
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const poll = async () => {
+        await server.inject({ method: 'GET', url: '/sessions' });
+        await new Promise((resolve) => setImmediate(resolve));
+      };
+      await poll();
+      expect(current).toHaveBeenCalledOnce();
+      now = IDLE_KNOWN_LIST_BRANCH_TTL_MS - 1;
+      await poll();
+      expect(current).toHaveBeenCalledOnce();
+      now = IDLE_KNOWN_LIST_BRANCH_TTL_MS + 1;
+      await poll();
+      expect(current).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
   });
 });
