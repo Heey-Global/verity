@@ -62,6 +62,9 @@ export class OverviewStore {
   private version = 0;
   private sessionList: SessionSummary[] | undefined;
   private projectList: ProjectRecord[] | undefined;
+  /** Which kinds changed since listeners were last told, so the other list
+   * keeps its identity. */
+  private readonly dirty = { s: false, p: false };
 
   /** `gated: false` leaves revision checks to the caller, which must then
    * pass each event once per revision between its own resyncs. */
@@ -83,24 +86,26 @@ export class OverviewStore {
   }
 
   /** Apply a session list read. Entities a newer read already spoke for keep
-   * that read's state. */
+   * that read's state. False when the read cannot be applied any more (it
+   * ended, or events it would need replayed were dropped): read again. */
   applySessions(
     read: OverviewRead,
     sessions: readonly SessionSummary[],
     scope: OverviewReadScope<SessionSummary>,
-  ): void {
-    this.applySnapshot(read, () =>
+  ): boolean {
+    return this.applySnapshot(read, () =>
       this.replaceCovered(read, 's', this.sessionMap, sessions, (s) => s.sessionId, scope),
     );
   }
 
-  /** Apply a project read, of the list or of one project. */
+  /** Apply a project read, of the list or of one project; returns like
+   * {@link applySessions}. */
   applyProjects(
     read: OverviewRead,
     projects: readonly ProjectRecord[],
     scope: OverviewReadScope<ProjectRecord>,
-  ): void {
-    this.applySnapshot(read, () =>
+  ): boolean {
+    return this.applySnapshot(read, () =>
       this.replaceCovered(read, 'p', this.projectMap, projects, (p) => p.id, scope),
     );
   }
@@ -158,13 +163,16 @@ export class OverviewStore {
     };
   }
 
-  private applySnapshot(read: OverviewRead, replace: () => boolean): void {
-    this.openReads.delete(read.seq);
+  /** False when the read was ignored and the caller should read again. */
+  private applySnapshot(read: OverviewRead, replace: () => boolean): boolean {
+    // A read that ended (failed, abandoned or already applied) has no kept
+    // events any more; its answer could only bring back an older state.
+    if (!this.openReads.delete(read.seq)) return false;
     // Events this read missed were dropped, so its answer cannot be brought
     // up to date; the next read speaks instead.
     if (read.seq < this.lostAt) {
       this.prune();
-      return;
+      return false;
     }
     let changed = replace();
     for (const { event, at } of this.kept) {
@@ -176,6 +184,7 @@ export class OverviewStore {
     }
     this.prune();
     if (changed) this.changed();
+    return true;
   }
 
   /** Replace what `scope` covers with `next`, keeping unchanged entities and
@@ -200,12 +209,14 @@ export class OverviewStore {
       const held = map.get(key);
       if (held !== undefined && sameSnapshotValue(held, entity)) continue;
       map.set(key, entity);
+      this.dirty[kind] = true;
       changed = true;
     }
     for (const [key, held] of map) {
       if (returned.has(key) || !scope.covers(held) || newer(key)) continue;
       spokeFor(key);
       map.delete(key);
+      this.dirty[kind] = true;
       changed = true;
     }
     return changed;
@@ -220,7 +231,10 @@ export class OverviewStore {
       const project = this.projectMap.get(update.projectId);
       const next = project === undefined ? undefined : update.patch(project);
       const changed = next !== undefined && next !== project;
-      if (changed) this.projectMap.set(update.projectId, next);
+      if (changed) {
+        this.projectMap.set(update.projectId, next);
+        this.dirty.p = true;
+      }
       return update.reload ? { changed, reload: { projectId: update.projectId } } : { changed };
     }
     if (!('sessionId' in event)) return { changed: false };
@@ -231,6 +245,7 @@ export class OverviewStore {
       if (next === undefined || (session !== undefined && sameSnapshotValue(session, next)))
         return { changed: false };
       this.sessionMap.set(event.sessionId, next);
+      this.dirty.s = true;
       return { changed: true };
     }
     // A new request or question is announced for any session, held or not:
@@ -256,8 +271,10 @@ export class OverviewStore {
 
   private changed(): void {
     this.version += 1;
-    this.sessionList = undefined;
-    this.projectList = undefined;
+    if (this.dirty.s) this.sessionList = undefined;
+    if (this.dirty.p) this.projectList = undefined;
+    this.dirty.s = false;
+    this.dirty.p = false;
     for (const listener of [...this.listeners]) listener();
   }
 }

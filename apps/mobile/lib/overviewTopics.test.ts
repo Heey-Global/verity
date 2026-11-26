@@ -1,5 +1,5 @@
 import type { DomainEvent, LiveTopicSink } from '@verity/mobile';
-import { renderHook } from '@testing-library/react-native';
+import { act, renderHook } from '@testing-library/react-native';
 import { useOverviewTopics } from './overviewTopics';
 
 const mockSinks = new Map<string, LiveTopicSink>();
@@ -16,6 +16,14 @@ jest.mock('./liveConnection', () => ({
 }));
 // Each test signs in to its own account, so it starts from an empty store.
 let mockAccount = 0;
+const mockAccountListeners = new Set<() => void>();
+jest.mock('./authToken', () => ({
+  subscribeAuthToken: (listener: () => void) => {
+    mockAccountListeners.add(listener);
+    return () => mockAccountListeners.delete(listener);
+  },
+}));
+jest.mock('./browserSession', () => ({ subscribeBrowserSession: () => () => undefined }));
 jest.mock('./tasksStore', () => ({ taskAccountScope: () => `account-${mockAccount}` }));
 
 const answered = (rev: number): DomainEvent => ({ t: 'choices.answered', sessionId: 's1', rev });
@@ -194,6 +202,24 @@ describe('useOverviewTopics', () => {
       useOverviewTopics('https://core.example', ['p1'], (e) => events.push(e), jest.fn()),
     );
     // The other account's gate never saw revision 5.
+    mockSinks.get('project:p1')!.event(answered(5));
+    expect(events).toEqual([answered(5), answered(5)]);
+  });
+
+  it('moves a view that stays mounted to the new account', () => {
+    const events: DomainEvent[] = [];
+    renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1'], (e) => events.push(e), jest.fn()),
+    );
+    const before = mockSinks.get('project:p1')!;
+    before.event(answered(5));
+    act(() => {
+      mockAccount += 1;
+      for (const listener of mockAccountListeners) listener();
+    });
+    // The old account's topic is released and the new account subscribes its own.
+    expect(mockUnsubscribed).toEqual(['project:p1']);
+    expect(mockSinks.get('project:p1')).not.toBe(before);
     mockSinks.get('project:p1')!.event(answered(5));
     expect(events).toEqual([answered(5), answered(5)]);
   });

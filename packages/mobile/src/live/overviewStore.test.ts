@@ -156,8 +156,29 @@ describe('OverviewStore', () => {
     store.applyEvent(decided(2));
     for (let i = 0; i < 256; i += 1)
       store.applyEvent({ t: 'choices.answered', sessionId: `other-${i}`, rev: 1 });
-    store.applySessions(late, [waiting()], allSessions);
+    expect(store.applySessions(late, [waiting()], allSessions)).toBe(false);
     expect(store.session('s1')?.pendingPermissionRequests).toEqual([]);
+  });
+
+  // With no read open nothing is kept, so a late answer would overwrite the
+  // answered card with nothing to replay on top.
+  it('ignores a read that already ended', () => {
+    const store = new OverviewStore();
+    readSessions(store, [waiting()]);
+    const abandoned = store.beginRead();
+    store.endRead(abandoned);
+    store.applyEvent(decided(2));
+    expect(store.applySessions(abandoned, [waiting()], allSessions)).toBe(false);
+    expect(store.session('s1')?.pendingPermissionRequests).toEqual([]);
+  });
+
+  it('keeps the project list when only a session changes', () => {
+    const store = new OverviewStore();
+    readSessions(store, [waiting()]);
+    store.applyProjects(store.beginRead(), [project('p1')], allProjects);
+    const projects = store.projects();
+    store.applyEvent(decided(2));
+    expect(store.projects()).toBe(projects);
   });
 
   it('leaves revision checks to a caller that gates events itself', () => {

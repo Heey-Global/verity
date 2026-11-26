@@ -230,6 +230,10 @@ function attachToHub(
  * requests once each subscription is live and whenever it cannot replay what
  * was missed.
  *
+ * A view whose projects all wait for a free topic gets no `onResync` until
+ * one is subscribed; views read on mount themselves and follow live hints
+ * meanwhile.
+ *
  * Callbacks are read through refs, so passing new functions does not
  * resubscribe; only a changed set of projects does.
  */
