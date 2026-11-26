@@ -1,5 +1,6 @@
 import { installOverviewEvents } from './live/overview-events.js';
 import { installProjectEvents } from './live/project-events.js';
+import { createPrEvents } from './live/pr-events.js';
 import { DomainEventBus } from './live/domain-events.js';
 import { installAssistantHandoffNotices } from './assistant-handoff-notify.js';
 import { installChangeSubmissions } from './change-submissions.js';
@@ -283,6 +284,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     pushFirePoints,
     describePushSession,
     vulnerabilitySessions,
+    onPrStatus: createPrEvents(app, ctx),
   });
 
   const { readSecretStatus } = installSessionList(app, ctx, {

@@ -122,10 +122,18 @@ than the stored one; a snapshot read replaces the entity and its revision.
 
 ### Forge status without webhooks
 
-Webhooks are deferred. The server keeps polling forges, but only for observed
-branches — those of an open session, of open pull requests in a project
-someone is viewing, and those the pull-request-ready monitor needs — and
-publishes the result as `pr.status`. Several viewers share one read.
+Webhooks are deferred. The server keeps polling forges and publishes every
+change the session pull request cache observes as `pr.status`, whichever read
+observed it. Several viewers share one read.
+
+Background reads are not limited to branches someone is viewing. The
+background sweep drives automatic pull request repairs, which start a repair
+turn when a session's checks fail, and the pull-request-ready monitor sends its
+notification without a viewer; both need every open pull request. Sessions
+without a pull request and those whose pull request is merged or closed are
+already read at most every five minutes in the background, so limiting them to
+viewed branches would save little. Revisit this with counts of forge calls per
+cause before narrowing background reads.
 
 ## Consequences
 
