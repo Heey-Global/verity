@@ -59,7 +59,7 @@ describe('Session control routes', () => {
   it('returns scope persistence and signals a resolved permission', async () => {
     vi.mocked(deps.conductor.decidePermission).mockImplementationOnce(
       async (_id, _toolUseId, _decision, options) => {
-        options?.onScopeSaved?.(false);
+        options?.onScopeSaved?.(false, false);
         return true;
       },
     );
@@ -68,7 +68,11 @@ describe('Session control routes', () => {
       url: '/sessions/s1/permissions/tool-1',
       payload: { behavior: 'allow', scope: 'project' },
     });
-    expect(response.json()).toMatchObject({ decided: true, scopeSaved: false });
+    expect(response.json()).toMatchObject({
+      decided: true,
+      scopeSaved: false,
+      actionContinued: false,
+    });
     expect(deps.permissionResolved).toHaveBeenCalledWith('s1', 'tool-1');
   });
 

@@ -159,7 +159,9 @@ export async function decideDetachedPermission(input: {
     | {
         scope?: 'once' | 'session' | 'project' | 'forever';
         actorId?: string;
-        onScopeSaved?: (saved: boolean) => void;
+        /** Whether the reusable scope was saved, and whether the allowed action
+         *  goes on: an unsaved scope or unrecorded continuation stops it here. */
+        onScopeSaved?: (saved: boolean, actionContinued: boolean) => void;
       }
     | undefined;
   persistScoped: (request: DetachedPermission, scope: 'session' | 'project') => Promise<void>;
@@ -191,11 +193,10 @@ export async function decideDetachedPermission(input: {
       await permissions.completeScoped(sessionId, toolUseId);
       await input.persistScoped(request, options.scope);
       reusableScopeSaved = true;
-      options.onScopeSaved?.(true);
     } catch {
       await permissions.failScoped(sessionId, toolUseId);
       continuationAllowed = false;
-      options.onScopeSaved?.(false);
+      options.onScopeSaved?.(false, false);
     }
   }
   if (reusableScopeSaved) {
@@ -204,6 +205,7 @@ export async function decideDetachedPermission(input: {
     } catch {
       continuationAllowed = false;
     }
+    options?.onScopeSaved?.(true, continuationAllowed);
   }
   const outcome =
     decision.behavior === 'deny'

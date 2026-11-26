@@ -2,9 +2,8 @@ import { PermissionRequestDetails } from '../../components/session/PermissionReq
 import { TranscriptPositionCover } from '../../components/TranscriptPositionCover';
 import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
 import { SessionRepositories } from '../../components/project/SessionRepositories';
-import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { NetworkApprovalPrompt } from '../../components/NetworkApprovalPrompt';
-import { SecretApprovalHistory } from '../../components/SecretApprovalHistory';
+import * as Requests from '../../components/session/SessionRequests';
 import { SecretApprovalCard } from '../../components/SecretApprovalCard';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
 import { connectionFailureKind, projectTitle } from '@verity/mobile';
@@ -40,6 +39,7 @@ import {
 } from '../../components/settings/GoogleAccountPicker';
 import { MatrixSendPreview } from '../../components/ui/MatrixSendPreview';
 import { Button } from '../../components/ui/Button';
+import { SessionBanner } from '../../components/session/SessionBanner';
 import { useDeferredSessionWork } from '../../hooks/useDeferredSessionWork';
 import { meetingSavedCard, latestMeetingCards } from '../../lib/meetingSavedCard';
 import { SavedMeetingCard } from '../../components/meeting/SavedMeetingCard';
@@ -3939,6 +3939,7 @@ export const SessionChat = memo(function SessionChat({
         // The spinner belongs to the OLDEST end, which in the newest-first
         // list is the footer. It sits behind the viewport, so unlike the
         // former header spinner it cannot shift a single visible row.
+        ListHeaderComponent={<Requests.TranscriptRequestTail style={styles.invertedItem} />}
         ListFooterComponent={
           <View style={[styles.olderSpinner, styles.invertedItem]}>
             <ActivityIndicator
@@ -3983,6 +3984,33 @@ export const SessionChat = memo(function SessionChat({
     ],
   );
 
+  const waiting = session.pendingPermission;
+  const pendingId = waiting?.toolUseId;
+  const requests = Requests.useSessionRequests(
+    client,
+    sessionId,
+    !!projectId,
+    pendingId,
+    permissionError,
+  );
+  // A hidden waiting request leaves the composer for the end of the chat, still open.
+  const hidden = pendingId !== undefined && requests.dismissed.has(pendingId);
+  const permissionPrompt =
+    waiting &&
+    !(planning === 'active' && planningPlan != null && isPlanImplementationPermission(waiting)) ? (
+      <PermissionPrompt
+        sessionId={sessionId}
+        pending={waiting}
+        deciding={decidingPermission === waiting.toolUseId}
+        dead={dead && !pendingLinkedMessages.some((item) => item.id === waiting.toolUseId)}
+        approvedForDelivery={pendingLinkedMessages.some(
+          (item) => item.id === waiting.toolUseId && item.approved,
+        )}
+        onDecide={decidePermission}
+        onDismiss={hidden ? undefined : () => requests.dismiss([waiting.toolUseId])}
+      />
+    ) : null;
+  const requestTail = hidden ? permissionPrompt : null;
   finishChatWork();
   return (
     <Reanimated.View
@@ -4378,13 +4406,13 @@ export const SessionChat = memo(function SessionChat({
         />
       ) : null}
       {dead ? (
-        <Banner
+        <SessionBanner
           tone="attention"
           text="This session's workspace was cleaned up. The transcript stays available, but new turns need a new agent."
         />
       ) : null}
       {rateNotice ? (
-        <Banner
+        <SessionBanner
           tone={rateLimitNoticeTone(rateNotice)}
           text={rateLimitNoticeText(
             rateNotice,
@@ -4394,7 +4422,7 @@ export const SessionChat = memo(function SessionChat({
       ) : null}
       {historyError && !hidesHistoryError ? (
         <>
-          <Banner tone="attention" text={historyError} />
+          <SessionBanner tone="attention" text={historyError} />
           <Button
             label="Retry history"
             variant="secondary"
@@ -4405,14 +4433,17 @@ export const SessionChat = memo(function SessionChat({
         </>
       ) : null}
       {streamError && !hidesStreamError ? (
-        <Banner tone="attention" text={`Stream: ${streamError}`} />
+        <SessionBanner tone="attention" text={`Stream: ${streamError}`} />
       ) : null}
-      {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
+      {sendError ? <SessionBanner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
-        <Banner tone="danger" text={`Model switch failed: ${switchModelError}`} />
+        <SessionBanner tone="danger" text={`Model switch failed: ${switchModelError}`} />
       ) : null}
       {modelSwitchPending ? (
-        <Banner tone="attention" text="Switching model — handing over from the running agent…" />
+        <SessionBanner
+          tone="attention"
+          text="Switching model — handing over from the running agent…"
+        />
       ) : null}
       {/* Busy for a reason nothing else on this screen explains: the worktree stays
           reserved until the previous agent process is confirmed gone. Nothing is
@@ -4422,18 +4453,18 @@ export const SessionChat = memo(function SessionChat({
           plane never produces any, so this state can outlast every automatic path.
           Hence the escape hatch: waiting is the advice, not the only option. */}
       {terminationUnconfirmed ? (
-        <Banner
+        <SessionBanner
           tone="attention"
           text="Waiting for the previous agent to exit — the session stays reserved until it does."
           action={{ label: 'Release', onPress: onForceRelease }}
         />
       ) : null}
-      {cancelError ? <Banner tone="danger" text={`Stop failed: ${cancelError}`} /> : null}
-      {permissionError ? (
-        <Banner tone="danger" text={`Decision failed: ${permissionError}`} />
+      {cancelError ? <SessionBanner tone="danger" text={`Stop failed: ${cancelError}`} /> : null}
+      {requests.notice ? (
+        <SessionBanner tone="danger" text={requests.notice} onDismiss={requests.dismissNotice} />
       ) : null}
       {voice.preparation ? (
-        <Banner
+        <SessionBanner
           tone="attention"
           text={
             voice.preparation === 'downloading'
@@ -4442,7 +4473,7 @@ export const SessionChat = memo(function SessionChat({
           }
         />
       ) : null}
-      {voice.error ? <Banner tone="danger" text={`Voice: ${voice.error}`} /> : null}
+      {voice.error ? <SessionBanner tone="danger" text={`Voice: ${voice.error}`} /> : null}
       {!loaded && !locallyCreated && messages.length === 0 && !streamError && !historyError ? (
         // Still coming up: transcript hasn't drained yet and nothing has streamed in.
         // Show the loading animation inside the real chat body (header + composer
@@ -4506,7 +4537,9 @@ export const SessionChat = memo(function SessionChat({
                       sessionId={sessionId}
                       projectId={projectId}
                     >
-                      {transcriptList}
+                      <Requests.SessionRequestsProvider requests={requests} tail={requestTail}>
+                        {transcriptList}
+                      </Requests.SessionRequestsProvider>
                       <TranscriptPositionCover
                         restoring={restoring}
                         finding={pendingUserJump !== null}
@@ -4607,34 +4640,7 @@ export const SessionChat = memo(function SessionChat({
       {projectId && !session.pendingPermission ? (
         <NetworkApprovalPrompt key={projectId} client={client} projectId={projectId} />
       ) : null}
-      {projectId ? (
-        <SecretApprovalHistory
-          key={sessionId}
-          client={client}
-          sessionId={sessionId}
-          refreshKey={session.pendingPermission?.toolUseId}
-        />
-      ) : null}
-      {session.pendingPermission &&
-      !(
-        planning === 'active' &&
-        planningPlan != null &&
-        isPlanImplementationPermission(session.pendingPermission)
-      ) ? (
-        <PermissionPrompt
-          sessionId={sessionId}
-          pending={session.pendingPermission}
-          deciding={decidingPermission === session.pendingPermission.toolUseId}
-          dead={
-            dead &&
-            !pendingLinkedMessages.some((item) => item.id === session.pendingPermission?.toolUseId)
-          }
-          approvedForDelivery={pendingLinkedMessages.some(
-            (item) => item.id === session.pendingPermission?.toolUseId && item.approved,
-          )}
-          onDecide={decidePermission}
-        />
-      ) : null}
+      {hidden ? null : permissionPrompt}
       {pendingLinkedMessages
         .filter((item) => item.id !== session.pendingPermission?.toolUseId)
         .slice(0, 1)
@@ -4656,7 +4662,7 @@ export const SessionChat = memo(function SessionChat({
             onDecide={decideLinkedMessage}
           />
         ))}
-      <ProjectInquiryCards client={client} sessionId={sessionId} />
+      <Requests.PinnedProjectRequests requests={requests} />
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
@@ -5011,7 +5017,11 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     );
   switch (item.message.kind) {
     case 'user-text':
-      return <UserBubble message={item.message} />;
+      return (
+        <Requests.InquiryAnswerTurn text={item.message.text}>
+          <UserBubble message={item.message} />
+        </Requests.InquiryAnswerTurn>
+      );
     case 'agent-text': {
       const saved = meetingSavedCard(item.message.text);
       if (saved) return <SavedMeetingNotice card={saved} />;
@@ -5022,10 +5032,9 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
     case 'agent-event':
       if (item.message.event.t === 'notice' && item.message.event.secretApproval)
         return (
-          <SecretApprovalCard
+          <Requests.TranscriptSecretApproval
             key={item.message.id}
             request={item.message.event.secretApproval}
-            decision={item.message.event.secretApproval.decision}
           />
         );
       if (item.message.event.t === 'mcp_app') return <McpAppCard event={item.message.event} />;
@@ -6778,9 +6787,12 @@ function PermissionPrompt({
   dead,
   approvedForDelivery = false,
   onDecide,
+  onDismiss,
 }: {
   sessionId: string;
   pending: PendingPermission;
+  /** Secret requests only: hides the waiting card from above the composer. */
+  onDismiss?: (() => void) | undefined;
   /** A decision POST for THIS prompt is in flight — disable the buttons + spin. */
   deciding: boolean;
   /** Session can't be resumed (worktree gone) — the prompt is inert. */
@@ -6949,6 +6961,7 @@ function PermissionPrompt({
           allow,
           deny: () => onDecide(pending.toolUseId, { behavior: 'deny' }),
         }}
+        onDismiss={onDismiss}
       />
     );
   }
@@ -7942,40 +7955,6 @@ function MicButton({
   );
 }
 
-/** A one-line status strip. `action` turns it into an offer rather than a statement —
- * only for states where the operator has a lever the app cannot pull for them. */
-function Banner({
-  tone,
-  text,
-  action,
-}: {
-  tone: 'attention' | 'danger';
-  text: string;
-  action?: { label: string; onPress: () => void };
-}) {
-  const { theme } = useUnistyles();
-  const color = toneColor(theme.colors, tone);
-  return (
-    <View style={[styles.banner, { borderLeftColor: color }]}>
-      <View style={styles.bannerRow}>
-        <Text style={[styles.bannerText, { color }]} numberOfLines={2}>
-          {text}
-        </Text>
-        {action ? (
-          <Pressable
-            onPress={action.onPress}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={action.label}
-          >
-            <Text style={[styles.bannerAction, { color }]}>{action.label}</Text>
-          </Pressable>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
 function CenteredMessage({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <View style={styles.centered}>
@@ -8459,29 +8438,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.footnote.fontSize,
     fontFamily: theme.fonts.semibold,
     textAlign: 'right',
-  },
-  banner: {
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.sm,
-    backgroundColor: theme.colors.surfaceAlt,
-    borderLeftWidth: 3,
-  },
-  bannerText: {
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-    // Takes the row's slack so long copy wraps to its two lines instead of pushing
-    // the action off the edge.
-    flex: 1,
-  },
-  bannerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-  },
-  bannerAction: {
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-    textDecorationLine: 'underline',
   },
   // The transcript is stored newest-first and flipped: history then APPENDS at the
   // data end, behind the viewport, instead of being inserted in front of the reader.

@@ -16,7 +16,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from './Icon';
 import { PermissionRequestDetails } from './session/PermissionRequestDetails';
-import { Button, Card, StatusTag, Text } from './ui';
+import { Button, Card, IconButton, StatusTag, Text } from './ui';
+import type { ReopenableStatus } from '../hooks/useReopenableSecretApprovals';
 
 type Request = Pick<PendingPermission, 'tool' | 'input' | 'secretSource'>;
 
@@ -40,6 +41,8 @@ export function SecretApprovalCard({
   request,
   decision,
   actions,
+  reopen,
+  onDismiss,
 }: {
   request: Request;
   decision?: Decision;
@@ -49,6 +52,19 @@ export function SecretApprovalCard({
     allow: (scope?: StandingSecretGrantScope) => void;
     deny: () => void;
   };
+  /** Offered only for a request the server reports as reopenable: a denied one,
+   *  or an approval that was not used in time. */
+  reopen?:
+    | {
+        status: ReopenableStatus;
+        working: boolean;
+        disabled: boolean;
+        error: string | undefined;
+        onPress: () => void;
+      }
+    | undefined;
+  /** Hides a waiting request from above the composer. It decides nothing. */
+  onDismiss?: (() => void) | undefined;
 }) {
   const { theme } = useUnistyles();
   const [expanded, setExpanded] = useState(false);
@@ -99,9 +115,22 @@ export function SecretApprovalCard({
                 ? 'needsSetup'
                 : 'ready'
             }
-            label={pending ? 'Approval required' : labels[decision]}
+            label={
+              pending
+                ? 'Approval required'
+                : reopen?.status === 'expired'
+                  ? 'Not used in time'
+                  : labels[decision]
+            }
           />
         </View>
+        {onDismiss ? (
+          <IconButton
+            icon="x"
+            accessibilityLabel="Hide request. It stays open in the chat."
+            onPress={onDismiss}
+          />
+        ) : null}
       </View>
       {destination === undefined ? (
         <>
@@ -257,6 +286,21 @@ export function SecretApprovalCard({
           ) : null}
         </>
       ) : null}
+      {reopen ? (
+        <View style={styles.reopen}>
+          <Button
+            label="Review again"
+            accessibilityHint="Asks you to decide again. It does not run the action."
+            variant="secondary"
+            size="small"
+            icon="rotate-ccw"
+            loading={reopen.working}
+            disabled={reopen.disabled}
+            onPress={reopen.onPress}
+          />
+          {reopen.error ? <Text tone="attention">{reopen.error}</Text> : null}
+        </View>
+      ) : null}
       {pending && !cli ? (
         <View style={styles.note}>
           <Icon name="shield" size={14} color={theme.colors.textMuted} />
@@ -312,6 +356,7 @@ const styles = StyleSheet.create((theme) => ({
   details: { alignItems: 'flex-start', gap: theme.spacing.sm },
   detailScroll: { alignSelf: 'stretch', maxHeight: 220 },
   detailContent: { gap: theme.spacing.sm },
+  reopen: { alignItems: 'flex-start', gap: theme.spacing.xs },
   note: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.xs },
   noteText: { flexShrink: 1 },
 }));

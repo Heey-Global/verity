@@ -1,4 +1,8 @@
-import { reconcileSessionPermissions } from './sessionPermissions.js';
+import {
+  permissionDecisionFailure,
+  reconcileSessionPermissions,
+  scopedDecisionNotice,
+} from './sessionPermissions.js';
 import { normalizeDetailRateLimit, toDisplayAttachment } from './sessionDetailNormalize.js';
 import {
   markSessionSwitch,
@@ -1517,10 +1521,7 @@ export class SessionModel {
         decision,
         ...(allowTiming ? ([{ trace: allowTiming }] as const) : []),
       );
-      if (result.scopeSaved === false) {
-        this._permissionError =
-          'Request allowed, but the reusable permission could not be saved. Future requests will ask again.';
-      }
+      this._permissionError = scopedDecisionNotice(result);
       markSessionSwitch(allowTiming, 'allow-model-response');
       this.stream.resolvePermission(toolUseId);
       this.opts.onPermissionSettled?.(toolUseId, true);
@@ -1534,8 +1535,7 @@ export class SessionModel {
         this.stream.resolvePermission(toolUseId);
         this.opts.onPermissionSettled?.(toolUseId, false);
       } else {
-        this._permissionError =
-          error instanceof VerityApiError ? error.message : 'failed to send the decision';
+        this._permissionError = permissionDecisionFailure(error);
       }
     } finally {
       this._decidingPermission = undefined;
