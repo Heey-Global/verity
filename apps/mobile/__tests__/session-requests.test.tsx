@@ -135,8 +135,9 @@ describe('Review again on a decided secret card', () => {
       </Screen>,
     );
     expect(client.secretApprovals.reopen).not.toHaveBeenCalled();
+    const reviewAgain = await screen.findByRole('button', { name: 'Review again' });
     client.secretApprovals.list.mockResolvedValue([]);
-    fireEvent.press(await screen.findByRole('button', { name: 'Review again' }));
+    fireEvent.press(reviewAgain);
     await waitFor(() => expect(client.secretApprovals.reopen).toHaveBeenCalledWith('s1', 'a1'));
     expect(client.decidePermission).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Review again' })).toBeNull());
@@ -185,6 +186,7 @@ describe('reopenable secret approvals', () => {
         useReopenableSecretApprovals(client as unknown as VerityClient, sessionId, true),
       { initialProps: { sessionId: 's1' } },
     );
+    await waitFor(() => expect(client.secretApprovals.list).toHaveBeenCalledWith('s1'));
     rerender({ sessionId: 's2' });
     await act(async () => finish([history('a1', 'denied')]));
     expect(result.current.statuses.size).toBe(0);
@@ -219,6 +221,56 @@ describe('reopenable secret approvals', () => {
     rerender(props);
     await act(async () => jest.advanceTimersByTime(0));
     expect(client.secretApprovals.list).toHaveBeenCalledTimes(whileFocused + 1);
+  });
+
+  it('coalesces rapid approval updates and discards the superseded history response', async () => {
+    jest.useFakeTimers();
+    const client = clientMock();
+    let finish!: (value: ReturnType<typeof history>[]) => void;
+    client.secretApprovals.list.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { result, rerender } = renderHook(
+      ({ refreshKey }: { refreshKey: string }) =>
+        useReopenableSecretApprovals(client as unknown as VerityClient, 's1', true, refreshKey),
+      { initialProps: { refreshKey: 'first' } },
+    );
+    await act(async () => jest.advanceTimersByTime(0));
+    rerender({ refreshKey: 'second' });
+    rerender({ refreshKey: 'third' });
+    await act(async () => finish([history('a1', 'denied')]));
+    expect(result.current.statuses.size).toBe(0);
+    await act(async () => jest.advanceTimersByTime(999));
+    expect(client.secretApprovals.list).toHaveBeenCalledTimes(1);
+    await act(async () => jest.advanceTimersByTime(1));
+    expect(client.secretApprovals.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for a pending history read when switching away and back', async () => {
+    jest.useFakeTimers();
+    const client = clientMock();
+    let finish!: (value: ReturnType<typeof history>[]) => void;
+    client.secretApprovals.list.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { rerender } = renderHook(
+      ({ sessionId }: { sessionId: string }) =>
+        useReopenableSecretApprovals(client as unknown as VerityClient, sessionId, true),
+      { initialProps: { sessionId: 's1' } },
+    );
+    await act(async () => jest.advanceTimersByTime(0));
+    rerender({ sessionId: 's2' });
+    await act(async () => jest.advanceTimersByTime(0));
+    rerender({ sessionId: 's1' });
+    await act(async () => jest.advanceTimersByTime(1_000));
+    expect(client.secretApprovals.list.mock.calls).toEqual([['s1'], ['s2']]);
+    await act(async () => finish([]));
+    await act(async () => jest.advanceTimersByTime(0));
+    expect(client.secretApprovals.list.mock.calls).toEqual([['s1'], ['s2'], ['s1']]);
   });
 
   it('does not ask outside a project session', async () => {

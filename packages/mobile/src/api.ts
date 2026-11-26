@@ -54,6 +54,12 @@ import {
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
 import { repositoryPullRequestsSchema } from './projectPullRequests.js';
+import {
+  schedulingRequestsSchema,
+  schedulingRequestViewSchema,
+  type SchedulingRequestView,
+} from './scheduling-api.js';
+export type { SchedulingRequestView } from './scheduling-api.js';
 import { createSecretApprovalsClient, pendingPermissionRequestSchema } from './secretApprovals.js';
 import { createSessionCollaborationClient } from './sessionCollaboration.js';
 import { serverMonitoringClient } from './server-monitoring-api.js';
@@ -2567,33 +2573,8 @@ export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
 export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
-const schedulingRequestViewSchema = z.object({
-  id: z.string(),
-  sessionId: z.string(),
-  /** The project the request was prepared in; older servers omit it. */
-  projectId: z.string().nullable().optional(),
-  state: z.enum(['draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed']),
-  title: z.string(),
-  durationMinutes: z.number(),
-  addGoogleMeet: z.boolean(),
-  timeZone: z.string(),
-  guest: z.object({ email: z.string(), name: z.string().nullable() }),
-  colleagues: z.array(z.object({ email: z.string(), name: z.string().optional() })),
-  closesAt: z.string(),
-  windows: z.array(z.object({ start: z.string(), end: z.string(), state: z.string() })),
-  emailSentAt: z.string().nullable(),
-  booked: z.object({ start: z.string(), end: z.string() }).nullable(),
-  failure: z.string().nullable(),
-  pendingCleanups: z.number(),
-  link: z.string().nullable(),
-  createdAt: z.string(),
-});
-const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestViewSchema) });
-/** A scheduling request as the app shows it: its state, windows and the guest's link. */
-export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
-
 export class VerityClient {
-  readonly secretApprovals = createSecretApprovalsClient((path, init) => this.request(path, init));
+  readonly secretApprovals: ReturnType<typeof createSecretApprovalsClient>;
   readonly sessionCollaboration = createSessionCollaborationClient((path, init) =>
     this.request(path, init),
   );
@@ -3120,6 +3101,10 @@ export class VerityClient {
     this.recordingFetchImpl = opts.recordingFetch ?? this.fetchImpl;
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
+    this.secretApprovals = createSecretApprovalsClient(
+      (path, init) => this.request(path, init),
+      () => this.getToken() || undefined,
+    );
     this.onUnauthorized = opts.onUnauthorized;
     this.connection = opts.connection;
   }
