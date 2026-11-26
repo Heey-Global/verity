@@ -350,4 +350,25 @@ describe("SessionListModel waiting for a skipped hint's row", () => {
     await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
     model.stop();
   });
+
+  // A stream hints every moment; the wait must still end in a read.
+  it("reads by the first hint's deadline though hints keep coming without rows", async () => {
+    const listSessions = vi.fn(() => Promise.resolve([summary('s1', { projectId: 'p1' })]));
+    const model = new SessionListModel({
+      client: clientFor(listSessions),
+      pollIntervalMs: 0,
+      followsLive: () => true,
+      rowWaitMs: 50,
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    for (let i = 0; i < 8; i += 1) {
+      model.applyHints([{ sessionId: 's1', topics: ['events'] }]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    // At least once within the stream, not only after it ends.
+    expect(listSessions.mock.calls.length).toBeGreaterThanOrEqual(2);
+    model.stop();
+  });
 });

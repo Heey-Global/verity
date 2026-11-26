@@ -52,7 +52,7 @@ function setup(rows: SessionSummary[], maintenance: ReadonlySet<string> = new Se
   });
   let now = 0;
   const timers: Array<{ at: number; run: () => void }> = [];
-  installSummaryEvents({ log: { warn: () => undefined } }, ctx, summarize, {
+  const installed = installSummaryEvents({ log: { warn: () => undefined } }, ctx, summarize, {
     setTimeout: (run, ms) => {
       const timer = { at: now + ms, run };
       timers.push(timer);
@@ -68,6 +68,7 @@ function setup(rows: SessionSummary[], maintenance: ReadonlySet<string> = new Se
   const record = (topic: `session:${string}` | `project:${string}`) =>
     domainEvents.subscribe(topic, undefined, (r) => published.push(r));
   return {
+    summaryRevision: installed.summaryRevision,
     published,
     record,
     summarize,
@@ -253,6 +254,26 @@ describe('session.summary', () => {
     finish();
     await vi.waitFor(() => expect(w.published).toHaveLength(1));
     expect((w.published[0]!.event as { rev: number }).rev).toBeLessThanOrEqual(computing);
+    w.close();
+  });
+
+  // A list read that begins while a row is computed is as new as that row; it
+  // must carry the row's revision so views drop the row over it.
+  it('stamps reads with the revision of a row still being computed', async () => {
+    const w = setup([summary()]);
+    w.record('project:p1');
+    let finish: () => void = () => undefined;
+    w.summarize.mockImplementationOnce(
+      () => new Promise((resolve) => (finish = () => resolve([summary()]))),
+    );
+    w.event();
+    w.advance(300);
+    await vi.waitFor(() => expect(w.summarize).toHaveBeenCalledTimes(1));
+    const stamped = w.summaryRevision('s1');
+    expect(stamped).toBeDefined();
+    finish();
+    await vi.waitFor(() => expect(w.published).toHaveLength(1));
+    expect((w.published[0]!.event as { rev: number }).rev).toBe(stamped);
     w.close();
   });
 });

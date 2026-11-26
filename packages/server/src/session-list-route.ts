@@ -27,7 +27,7 @@ export interface SessionListRouteDeps {
   pruneBranchCache: (liveWorktrees: ReadonlySet<string>) => void;
   summarizeSessions: (sessions: SessionRecord[]) => Promise<SessionSummary[]>;
   collectAttention: () => Promise<AttentionSignal[]>;
-  /** The revision of each session's last published `session.summary`. */
+  /** The revision each session's latest `session.summary` took. */
   summaryRevision?: (sessionId: string) => number | undefined;
   /** Sessions the server runs for itself (Wiki maintenance); no list shows them. */
   hiddenSessionIds?: () => Promise<ReadonlySet<string>>;
@@ -101,9 +101,10 @@ export function registerSessionListRoute(
       deps.prunePrSummaryCache(liveWorktrees);
       deps.pruneBranchCache(liveWorktrees);
     }
-    // Taken before the rows are computed. A row whose computation began after
-    // this has a higher revision and may hold a later state, so views apply
-    // it; one that began before holds no later state than these rows.
+    // Taken before the rows are computed: the revision of the latest row whose
+    // computation began. A row that began later has a higher revision and may
+    // hold a later state, so views apply it; one that began before is dropped,
+    // and a change after it schedules a later row.
     const revisions = new Map(
       sessions.map((session) => [session.sessionId, deps.summaryRevision?.(session.sessionId)]),
     );

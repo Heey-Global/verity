@@ -59,8 +59,8 @@ export function installSummaryEvents(
 ): { summaryRevision: (sessionId: string) => number | undefined } {
   const { deps, domainEvents, lifecycle } = ctx;
   const revisions = createRevisions();
-  /** The revision of each session's last published row; bounded like the
-   * revisions, so a forgotten session's list rows carry none. */
+  /** The revision each session's latest row took when its computation began;
+   * bounded, so a forgotten session's list rows carry none. */
   const lastRevisions = new Map<string, number>();
   const scheduled = new Map<string, { timer: unknown; since: number }>();
   const queues = new Map<string, Promise<void>>();
@@ -70,6 +70,11 @@ export function installSummaryEvents(
     // Taken before the row is computed, so a list read that took its revisions
     // after this one began holds a later state and views keep it.
     const rev = revisions.next(sessionId);
+    // Reads stamped from now on hold a state at least as new as this row.
+    lastRevisions.delete(sessionId);
+    lastRevisions.set(sessionId, rev);
+    if (lastRevisions.size > MAX_REMEMBERED_SESSIONS)
+      lastRevisions.delete(lastRevisions.keys().next().value!);
     const session = await deps.eventStore.getSession(sessionId);
     if (session === undefined || closed) return;
     const [summary] = await summarize([session]);
@@ -88,10 +93,6 @@ export function installSummaryEvents(
       patch: row,
     };
     for (const topic of topics) domainEvents.publish(topic, event);
-    lastRevisions.delete(sessionId);
-    lastRevisions.set(sessionId, event.rev);
-    if (lastRevisions.size > MAX_REMEMBERED_SESSIONS)
-      lastRevisions.delete(lastRevisions.keys().next().value!);
   };
 
   // One computation per session at a time, in order, so patches build on the

@@ -860,9 +860,15 @@ export class SessionListModel {
    * it) is made up for by a list read. */
   private awaitRow(sessionId: string): void {
     // Each hint waits for a row from after it, so a row of an earlier change
-    // cannot answer for a later one whose row then fails.
-    clearTimeout(this.awaitedRows.get(sessionId)?.timer);
+    // cannot answer for a later one whose row then fails. The deadline stays
+    // that of the first hint: a stream hints every moment and would otherwise
+    // never reach it.
     const after = this._sessions.find((s) => s.sessionId === sessionId)?.summaryRev ?? -1;
+    const pending = this.awaitedRows.get(sessionId);
+    if (pending !== undefined) {
+      pending.after = Math.max(pending.after, after);
+      return;
+    }
     const timer = setTimeout(() => {
       this.awaitedRows.delete(sessionId);
       this.poll?.();
