@@ -53,10 +53,12 @@ export function facadeImplementations(text) {
       statements.length === 1 && ts.isReturnStatement(statements[0])
         ? statements[0].expression
         : undefined;
-    const parameters = new Set(
-      (ts.isFunctionLike(member) ? member.parameters : []).map((p) => p.name.getText(source)),
-    );
+    const parameterNodes = ts.isFunctionLike(member) ? member.parameters : [];
+    const parameters = new Set(parameterNodes.map((p) => p.name.getText(source)));
     const forwarded =
+      parameterNodes.every(
+        (parameter) => !parameter.initializer && ts.isIdentifier(parameter.name),
+      ) &&
       expression &&
       ts.isCallExpression(expression) &&
       /^this\.[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*$/.test(expression.expression.getText(source)) &&
@@ -70,7 +72,7 @@ export function facadeImplementations(text) {
       ts.ScriptTarget.Latest,
       true,
       ts.LanguageVariant.Standard,
-      (body ?? initializer ?? member).getText(source),
+      member.getText(source),
     );
     const tokens = [];
     while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken) tokens.push(scanner.getTokenText());

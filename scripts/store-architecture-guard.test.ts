@@ -34,6 +34,14 @@ it('accepts parameter forwarding and detects logic hidden in a return expression
   }
 });
 
+it('detects executable defaults in forwarding methods and fingerprints retained defaults', () => {
+  const source = (value: string) =>
+    'class EventStore { read(id = ' + value + ') { return this.events.read(id); } }';
+  const original = facadeImplementations(source('this.db.selectFrom("events")'));
+  expect(Object.keys(original)).toEqual(['read']);
+  expect(compareImplementations(facadeImplementations(source('1')), original)).toHaveLength(1);
+});
+
 it('detects query closures in fields and top-level helpers', () => {
   const result = facadeImplementations(
     'function query() { return db.selectFrom("events"); } class EventStore { query = () => db.selectFrom("events"); }',
