@@ -305,7 +305,7 @@ export class AttendeeAudioReceiver {
     const chunk = track.chunk;
     delete track.chunk;
     if (!chunk) return;
-    if (this.queued.length >= MAX_QUEUE) {
+    if (!this.stopping && this.queued.length >= MAX_QUEUE) {
       this.gap('overloaded');
       return;
     }

@@ -545,6 +545,7 @@ export class AttendeeMeetings {
       return;
     }
     let connection: AudioConnection | undefined;
+    const speakerWork = new Map<string | undefined, Promise<void>>();
     const receiver = new AttendeeAudioReceiver({
       token: audio.token,
       botId: () => connection?.botId,
@@ -552,18 +553,28 @@ export class AttendeeMeetings {
         if (connection) connection.gap = true;
       },
       transcribe: async ({ wav, timestampMs, participantId, signal }) => {
-        const transcript = (await transcribe(wav, signal, audio.target)).trim();
-        if (!transcript || !connection || signal.aborted) return;
-        if (connection.segments.length >= 256) {
-          connection.gap = true;
-          return;
+        const previous = speakerWork.get(participantId);
+        const finished = Promise.withResolvers<void>();
+        const ordered = Promise.resolve(previous).then(() => finished.promise);
+        speakerWork.set(participantId, ordered);
+        try {
+          const transcript = (await transcribe(wav, signal, audio.target)).trim();
+          await previous;
+          if (!transcript || !connection || signal.aborted) return;
+          if (connection.segments.length >= 256) {
+            connection.gap = true;
+            return;
+          }
+          connection.segments.push({
+            speaker_uuid: participantId ? `participant:${participantId}` : 'mixed',
+            timestamp_ms: timestampMs,
+            duration_ms: (wav.length - 44) / 32,
+            transcription: { transcript },
+          });
+        } finally {
+          finished.resolve();
+          if (speakerWork.get(participantId) === ordered) speakerWork.delete(participantId);
         }
-        connection.segments.push({
-          speaker_uuid: participantId ? `participant:${participantId}` : 'mixed',
-          timestamp_ms: timestampMs,
-          duration_ms: (wav.length - 44) / 32,
-          transcription: { transcript },
-        });
       },
     });
     try {
