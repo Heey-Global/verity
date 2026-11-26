@@ -146,6 +146,10 @@ export class AttendeeAudioReceiver {
     });
   }
 
+  get connected(): boolean {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
+
   get streamClosed(): boolean {
     return this.disconnectedNormally;
   }

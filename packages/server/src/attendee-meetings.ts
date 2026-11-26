@@ -592,6 +592,26 @@ export class AttendeeMeetings {
     }
   }
 
+  private async persistAudio(state: OnlineMeeting, gap = false) {
+    const audio = state.audio;
+    const connection = this.audioConnections.get(state.meeting.id);
+    if (!audio || !connection) return;
+    const received = connection.segments.slice();
+    const previousGap = audio.gap;
+    const previousLength = audio.segments.length;
+    audio.gap ||= gap || connection.gap;
+    if (!received.length && previousGap === audio.gap) return;
+    audio.segments.push(...received);
+    try {
+      await this.save(state);
+    } catch (error) {
+      audio.segments.length = previousLength;
+      audio.gap = previousGap;
+      throw error;
+    }
+    connection.segments.splice(0, received.length);
+  }
+
   private async audioSnapshot(state: OnlineMeeting, final: boolean, joined = false) {
     const audio = state.audio;
     if (!audio) return [];
@@ -599,17 +619,18 @@ export class AttendeeMeetings {
     if (connection) {
       connection.botId = state.botId;
       if (final) await connection.receiver.finish();
-      const received = connection.segments.slice();
-      audio.segments.push(...received);
-      const previousGap = audio.gap;
-      audio.gap ||=
+      const missingAudio =
+        !connection.receiver.connected &&
+        (connection.receiver.streamClosed || Date.now() - (state.joinedAt ?? Date.now()) >= 30_000);
+      await this.persistAudio(
+        state,
         connection.gap ||
-        (joined && connection.receiver.streamClosed) ||
-        (final && audio.segments.length === 0 && state.joinedAt !== undefined);
-      if (received.length || previousGap !== audio.gap) {
-        await this.save(state);
-        connection.segments.splice(0, received.length);
-      }
+          (joined && missingAudio) ||
+          (final &&
+            !connection.segments.length &&
+            !audio.segments.length &&
+            state.joinedAt !== undefined),
+      );
     } else if (state.joinedAt !== undefined && final) {
       audio.gap = true;
     }
@@ -1166,6 +1187,7 @@ export class AttendeeMeetings {
         return;
       }
     }
+    if (!discard) await this.persistAudio(state);
     const client = this.client(state.credentials.apiKey);
     const bot = attendeeBotSchema.parse(
       await client.request(`bots/${encodeURIComponent(state.botId)}`),
@@ -1236,7 +1258,10 @@ export class AttendeeMeetings {
           .join('\n');
       Object.assign(state.meeting, normalized, { speakerNames });
       state.meeting.captureStatus = (
-        state.audio ? join.status === 'joined' : bot.state === 'joined_recording'
+        state.audio
+          ? join.status === 'joined' &&
+            this.audioConnections.get(state.meeting.id)?.receiver.connected
+          : bot.state === 'joined_recording'
       )
         ? 'listening'
         : 'preparing';
