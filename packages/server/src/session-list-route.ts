@@ -1,4 +1,5 @@
 import { conditionalJsonRoute } from './conditional-json.js';
+import { planningPresented } from './session-row.js';
 import { measureLatencyPhase, type EventStore, type SessionRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import type { AttentionSignal } from './attention.js';
@@ -192,11 +193,7 @@ export function registerSessionListRoute(
           const view = views.get(summary.sessionId);
           return {
             ...summary,
-            // The plan text can run to pages and this route is polled by every
-            // device; an overview only needs to know that a plan waits for approval.
-            ...(summary.planning === 'active' && planningPlan != null
-              ? { planningPresented: true as const }
-              : {}),
+            ...planningPresented({ planning: summary.planning, planningPlan }),
             lastSeenEventCount: view?.lastSeenEventCount ?? null,
             inboxDismissed: view?.inboxDismissed ?? [],
             ...(await submissionFor(summary)),

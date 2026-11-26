@@ -2,6 +2,7 @@ import { SESSION_SUMMARY_FIELDS, domainTopic, type DomainTopic } from '@verity/e
 import type { SessionRecord } from '@verity/store';
 import type { ServerContext } from '../server-context.js';
 import type { SessionSummary } from '../server-types.js';
+import { planningPresented } from '../session-row.js';
 import { isMaintenanceSession } from './pr-events.js';
 import { createRevisions } from './revisions.js';
 
@@ -17,12 +18,7 @@ type Row = Record<string, unknown>;
 /** The row every viewer's list shows alike ({@link SESSION_SUMMARY_FIELDS}),
  * with `planningPresented` derived as `/sessions` derives it. */
 export function sharedRow(summary: SessionSummary): Row {
-  const source: Record<string, unknown> = {
-    ...summary,
-    ...(summary.planning === 'active' && summary.planningPlan != null
-      ? { planningPresented: true }
-      : {}),
-  };
+  const source: Record<string, unknown> = { ...summary, ...planningPresented(summary) };
   const row: Row = {};
   for (const key of SESSION_SUMMARY_FIELDS) {
     if (source[key] !== undefined) row[key] = source[key];
