@@ -54,8 +54,6 @@
     "claimGoogleWorkspaceInvocation": "2b68e2e8 e5d8d21d 811c714e 1f4e2c34 aa12d729 c517ef1d 613fd724 db985f48",
     "completeGoogleWorkspaceInvocation": "7379571d b35cda8f d5b699dc 48439672 d120c24a 969e32e2 5d34746b efa2d118",
     "listSessions": "a13024ed ad8df962 6cbb4e4b 0d7eedaf 20060d3f ec688728 7faff615 4048be58",
-    "sessionSortOrders": "e4bdc733 c7b15ae1 c6034e71 34e8fe43 e5bb6d58 05545f86 e39c54f7 dd1d0cf2",
-    "reorderSessions": "ad3f7ba2 5dae707b a1e72969 4db7ca5f d921a80c fa911f27 d0db01d0 2c7a5810",
     "prepareSessionMove": "a1bf1a3f a5af37e4 5eeaed29 dc04b856 4502eec9 7da1c8a0 8a3adb68 ce8d6c3a",
     "commitSessionMove": "7bb04c0c 3ce86880 66fa3b17 c5793864 b6332d62 b7bb9143 66a31b7e 56f163f4",
     "sessionLifecycle": "f523b7d6 267756fb 2c043270 4deed3f4 c0d70ecd d8581455 dd5e3a28 62471bc9",
