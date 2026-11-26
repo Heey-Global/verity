@@ -30,7 +30,7 @@ export function scopedDecisionNotice(result: {
 }): string | undefined {
   if (result.actionContinued === false)
     return result.scopeSaved === false
-      ? 'Not run: the reusable approval could not be saved. The agent has to request it again.'
+      ? 'Not run: the reusable approval could not be saved. Choose Review again on the approval card, or ask the agent for a new request if that option is unavailable.'
       : 'Not run: the approval was saved, but the action could not continue. The agent has to request it again.';
   if (result.scopeSaved !== false) return undefined;
   // Older servers do not say whether the action went on; the chat records it.

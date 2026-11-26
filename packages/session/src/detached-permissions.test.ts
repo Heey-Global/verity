@@ -112,41 +112,56 @@ it.each([
   expect(first.prompt).toContain('untrusted reference material');
 });
 
-it('closes exact consent before saving reusable scope and never resumes a failed scope save', async () => {
-  const { decideDetachedPermission } = await import('./detached-permissions.js');
-  const permissions = new DetachedPermissions();
-  const order: string[] = [];
-  permissions.configure({
-    list: async () => [
-      { requestId: 'r', toolUseId: 'r', toolName: 'verity_secret_run', input: {} },
-    ],
-    decide: async () => true,
-    completeScoped: async () => {
-      order.push('close-once');
-    },
-  });
-  await permissions.refresh('s', async () => {});
-  const resume = vi.fn(async () => {});
-  const notice = vi.fn(async () => {});
-  const onScopeSaved = vi.fn();
-  await decideDetachedPermission({
-    permissions,
-    sessionId: 's',
-    toolUseId: 'r',
-    decision: { behavior: 'allow' },
-    options: { actorId: 'user', scope: 'project', onScopeSaved },
-    persistScoped: async () => {
-      order.push('save-scope');
-      throw new Error('database unavailable');
-    },
-    notice,
-    resume,
-  });
-  expect(order).toEqual(['close-once', 'save-scope']);
-  expect(onScopeSaved).toHaveBeenCalledWith(false, false);
-  expect(notice).toHaveBeenCalledWith(expect.stringContaining('Nothing ran'));
-  expect(resume).not.toHaveBeenCalled();
-});
+it.each(['retiring the approval receipt', 'saving the grant'])(
+  'stops continuation and reports a sanitized error while %s',
+  async (step) => {
+    const { decideDetachedPermission } = await import('./detached-permissions.js');
+    const permissions = new DetachedPermissions();
+    const order: string[] = [];
+    const databaseError = Object.assign(new Error('private SQL values'), { code: '23503' });
+    permissions.configure({
+      list: async () => [
+        { requestId: 'r', toolUseId: 'r', toolName: 'verity_secret_run', input: {} },
+      ],
+      decide: async () => true,
+      completeScoped: async () => {
+        order.push('close-once');
+        if (step === 'retiring the approval receipt') throw databaseError;
+      },
+    });
+    await permissions.refresh('s', async () => {});
+    const resume = vi.fn(async () => {});
+    const notice = vi.fn(async () => {});
+    const onScopeSaved = vi.fn();
+    const reportError = vi.fn<(error: Error) => void>();
+    await decideDetachedPermission({
+      permissions,
+      sessionId: 's',
+      toolUseId: 'r',
+      decision: { behavior: 'allow' },
+      options: { actorId: 'user', scope: 'project', onScopeSaved },
+      persistScoped: async () => {
+        order.push('save-scope');
+        throw databaseError;
+      },
+      reportError,
+      notice,
+      resume,
+    });
+    expect(order).toEqual(
+      step === 'retiring the approval receipt' ? ['close-once'] : ['close-once', 'save-scope'],
+    );
+    expect(onScopeSaved).toHaveBeenCalledWith(false, false);
+    expect(notice).toHaveBeenCalledWith(expect.stringContaining('Nothing ran'));
+    const diagnostic = reportError.mock.calls[0]?.[0];
+    expect(diagnostic?.message).toBe(
+      `Reusable secret approval failed while ${step} (database foreign key violation)`,
+    );
+    expect(diagnostic?.cause).toBeUndefined();
+    expect(diagnostic?.stack).not.toContain('private SQL values');
+    expect(resume).not.toHaveBeenCalled();
+  },
+);
 
 it('reports an active saved grant if continuation bookkeeping fails without denying consent', async () => {
   const { decideDetachedPermission } = await import('./detached-permissions.js');
@@ -168,6 +183,7 @@ it('reports an active saved grant if continuation bookkeeping fails without deny
   const notice = vi.fn(async () => {});
   const resume = vi.fn(async () => {});
   const onScopeSaved = vi.fn();
+  const reportError = vi.fn();
   await decideDetachedPermission({
     permissions,
     sessionId: 's',
@@ -175,9 +191,15 @@ it('reports an active saved grant if continuation bookkeeping fails without deny
     decision: { behavior: 'allow' },
     options: { actorId: 'user', scope: 'project', onScopeSaved },
     persistScoped,
+    reportError,
     notice,
     resume,
   });
+  expect(reportError).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: 'Reusable secret approval failed while recording continuation (unclassified error)',
+    }),
+  );
   expect(persistScoped).toHaveBeenCalledOnce();
   expect(onScopeSaved).toHaveBeenCalledWith(true, false);
   expect(failScoped).not.toHaveBeenCalled();

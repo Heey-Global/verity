@@ -1153,7 +1153,9 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
               decision: {
                 behavior: 'deny',
                 message:
-                  'You denied this exact secret request. Nothing ran. Do not retry without a new instruction.',
+                  detachedApproval.scope === 'session' || detachedApproval.scope === 'project'
+                    ? 'The reusable secret approval could not be saved. Nothing ran. Choose Review again on the original approval card to request a fresh decision.'
+                    : 'You denied this exact secret request. Nothing ran. Do not retry without a new instruction.',
               },
               decidedBy: 'card',
             };

@@ -287,7 +287,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     onPrStatus: createPrEvents(app, ctx),
   });
 
-  const { readSecretStatus } = installSessionList(app, ctx, {
+  const { readSecretStatus, listSessionsAs } = installSessionList(app, ctx, {
     codexUsage,
     wikiMaintenanceSessions,
     sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions, sessionPrCache },
@@ -349,7 +349,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     presentProject,
     projectActivity,
     hasMeetingJob,
-    summarizeSessions,
+    listSessionsAs,
     projectsBeingDeleted,
     sessionsBeingReaped,
     projectDeletesInFlight,
