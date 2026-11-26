@@ -401,9 +401,11 @@ export function createServerSessionOverview({
   /**
    * The branch for the session LIST, answered from {@link branchCache} only.
    * Idle summaries with a known label are re-read every 15 minutes, idle ones
-   * without one at most once a minute; active sessions keep the header cadence. These reads run
-   * in the background lane and never wake a sleeping sandbox: such a session's
-   * label fills in when it is opened or its sandbox runs again.
+   * without one at most once a minute; active sessions keep the header cadence.
+   * These reads run in the background lane and never wake a sleeping sandbox. A
+   * declined read keeps a known label as it was; a missing one is retried at the
+   * idle cadence (one container inspect, no git) and fills in once the sandbox
+   * runs, or at once when the session is opened.
    *
    * The overview derives a session's issue chip from it, but the list is polled
    * every 2 s for every session at once, so unlike the header it never awaits
