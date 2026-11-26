@@ -1,4 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { fireEvent, render, screen, within } from '@testing-library/react-native';
+import { ScrollView } from 'react-native';
 
 import { darkTheme } from '../theme/tokens';
 import { SecretApprovalCard } from './SecretApprovalCard';
@@ -86,3 +87,37 @@ it.each([undefined, 'once'] as const)(
     });
   },
 );
+
+// Pinned above the composer, the card grows with its request. If the buttons sat inside
+// the scrolling body (or the body did not scroll), a long request would push "Allow once"
+// below the screen edge, unreachable, while every other assertion here stays green.
+it('keeps the decision buttons outside the scrolling request body', () => {
+  render(
+    <SecretApprovalCard
+      request={{ ...request, input: { ...request.input, body: 'x'.repeat(20_000) } }}
+      actions={{ allow: jest.fn(), deny: jest.fn(), deciding: false, disabled: false }}
+    />,
+  );
+
+  const body = screen.getByTestId('secret-approval-body');
+  expect(within(body).getByText('GET staging.example.com/health')).toBeTruthy();
+  expect(within(body).queryByRole('button', { name: 'Allow once' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy();
+});
+
+it('leaves the answered transcript card unbounded', () => {
+  render(<SecretApprovalCard request={request} decision="once" />);
+
+  expect(screen.queryByTestId('secret-approval-body')).toBeNull();
+});
+
+it('does not nest a second scroll box inside the pinned body', () => {
+  const view = render(
+    <SecretApprovalCard
+      request={request}
+      actions={{ allow: jest.fn(), deny: jest.fn(), deciding: false, disabled: false }}
+    />,
+  );
+
+  expect(view.UNSAFE_getAllByType(ScrollView)).toHaveLength(1);
+});
