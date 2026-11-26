@@ -1,3 +1,4 @@
+import { EventSnapshotStore } from './event-snapshots.js';
 import {
   SessionBackendStateStore,
   type SessionBackendStateRecord,
@@ -1127,6 +1128,7 @@ export class EventStore implements EventSink {
     );
   }
 
+  private readonly eventSnapshots = new EventSnapshotStore(() => this.db);
   private readonly starterProjects = new StarterProjectStore(() => this.db);
   private readonly projectLifecycle = new ProjectLifecycleStore(
     () => this.db,
@@ -2413,20 +2415,7 @@ export class EventStore implements EventSink {
   async getLatestDevServersEvent(
     sessionId: string,
   ): Promise<Extract<AgentEvent, { t: 'dev_servers_changed' }> | undefined> {
-    const row = await this.db
-      .selectFrom('events')
-      .select('payload')
-      .where('session_id', '=', sessionId)
-      .where('type', '=', 'dev_servers_changed')
-      .orderBy('id', 'desc')
-      .limit(1)
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    const parsed = parseAgentEvent(row.payload);
-    if (!parsed.success || parsed.data.t !== 'dev_servers_changed') {
-      throw new Error(`corrupt listener snapshot in session ${sessionId}`);
-    }
-    return parsed.data;
+    return this.eventSnapshots.getLatestDevServersEvent(sessionId);
   }
 
   /** Fetch one app snapshot without hydrating the surrounding transcript. */
@@ -2434,19 +2423,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     appId: string,
   ): Promise<Extract<AgentEvent, { t: 'mcp_app' }> | undefined> {
-    const row = await this.db
-      .selectFrom('events')
-      .select('payload')
-      .where('session_id', '=', sessionId)
-      .where('type', '=', 'mcp_app')
-      .where(sql<string>`payload->>'appId'`, '=', appId)
-      .orderBy('id', 'desc')
-      .limit(1)
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    const parsed = parseAgentEvent(row.payload);
-    if (!parsed.success || parsed.data.t !== 'mcp_app') throw new Error('Corrupt MCP app snapshot');
-    return parsed.data;
+    return this.eventSnapshots.getMcpAppEvent(sessionId, appId);
   }
 
   /** Read a session's full event log in append order. Validates each payload. */
