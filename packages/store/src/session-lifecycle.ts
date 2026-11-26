@@ -1,3 +1,4 @@
+import { SESSION_COLUMNS, sessionFromRow, type SessionRecord } from './session-rows.js';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from './schema.js';
 import { resolve } from 'node:path';
@@ -22,6 +23,56 @@ export class SessionLifecycleStore {
   constructor(private readonly currentDb: () => Kysely<Database>) {}
   private get db(): Kysely<Database> {
     return this.currentDb();
+  }
+
+  /** The immutable model choice of the newest ordinary session in a scope.
+   * Legacy rows written before `initial_model` existed fall back to their current
+   * model. Used only to seed a subsequent session; runtime model switches never
+   * rewrite the remembered creation choice. */
+  async getLastCreatedSessionModel(projectId: string | null): Promise<string | undefined> {
+    let query = this.db.selectFrom('sessions').select(['initial_model', 'model']);
+    query =
+      projectId === null
+        ? query.where('project_id', 'is', null)
+        : query.where('project_id', '=', projectId);
+    const row = await query
+      .orderBy('created_at', 'desc')
+      .orderBy('session_id', 'desc')
+      .executeTakeFirst();
+    return row?.initial_model ?? row?.model;
+  }
+
+  getSession(sessionId: string): Promise<SessionRecord | undefined> {
+    return this.findSession('session_id', sessionId);
+  }
+
+  /** The session owning a primary worktree, without loading every session. */
+  getSessionByWorktree(worktree: string): Promise<SessionRecord | undefined> {
+    return this.findSession('worktree', worktree);
+  }
+
+  private async findSession(
+    column: 'session_id' | 'worktree',
+    value: string,
+  ): Promise<SessionRecord | undefined> {
+    const row = await this.db
+      .selectFrom('sessions')
+      .select(SESSION_COLUMNS)
+      .where(column, '=', value)
+      .executeTakeFirst();
+    return row && sessionFromRow(row);
+  }
+
+  async listSessions(): Promise<SessionRecord[]> {
+    const rows = await this.db
+      .selectFrom('sessions')
+      .select(SESSION_COLUMNS)
+      // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
+      // inserts can share a timestamp — without this the order is unspecified.
+      .orderBy('created_at', 'asc')
+      .orderBy('session_id', 'asc')
+      .execute();
+    return rows.map(sessionFromRow);
   }
 
   /**
