@@ -1016,10 +1016,10 @@ export function createServerSessionOverview({
     }
     const restorable = await deps.sessionStorage?.canRestoreMany(missing);
     for (const [id, value] of restorable ?? []) resumable.set(id, value);
-    const remember = (id: string, events: readonly AgentEvent[]): void => {
+    const remember = (id: string, events: readonly AgentEvent[], keep = true): void => {
       const read = facts.get(id) ?? emptyProjectionFacts();
       const projection = projectSessionLog(events, read);
-      logProjections.set(id, read, projection);
+      if (keep) logProjections.set(id, read, projection);
       logs.set(id, { facts: read, projection });
     };
     const fallbackIds = changed.filter((id) => {
@@ -1049,7 +1049,10 @@ export function createServerSessionOverview({
       await fallbackRead;
     }
     for (const id of changed) {
-      if (!logs.has(id)) remember(id, facts.get(id)?.events.map(({ event }) => event) ?? []);
+      // A fallback log the full read did not return is answered from its tail for
+      // this response only, as before; caching it would keep that answer.
+      if (!logs.has(id))
+        remember(id, facts.get(id)?.events.map(({ event }) => event) ?? [], !boundaries.has(id));
     }
     return Promise.all(
       sessions.map((session) => {

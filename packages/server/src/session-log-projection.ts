@@ -59,14 +59,18 @@ interface CachedLog {
 }
 
 /**
- * A turn can raise an unbounded run of permissions. Each carries at most
- * `PERMISSION_INPUT_MAX_BYTES` of input, but a projection holding hundreds of
- * them is not worth keeping: such a session is simply read again.
+ * Permission requests are the one part of an entry that can be large: each
+ * carries up to `PERMISSION_INPUT_MAX_BYTES` of tool input, and an idle session
+ * keeps its last turn's requests. The cache as a whole holds at most this many,
+ * about 2 MiB of input, evicting least recently used sessions to stay within it;
+ * a single projection with more than {@link MAX_SESSION_PERMISSION_REQUESTS} is
+ * not kept at all and is simply read again.
  */
-const MAX_CACHED_PERMISSION_REQUESTS = 64;
+const MAX_CACHED_PERMISSION_REQUESTS = 512;
+const MAX_SESSION_PERMISSION_REQUESTS = 64;
 
-/** Entries hold a few derived values each; the bound only keeps sessions that
- *  no longer exist from accumulating on a long-lived server. */
+/** Apart from permission requests an entry holds a handful of small derived
+ *  values; this bound keeps sessions that no longer exist from accumulating. */
 export const LOG_PROJECTION_CACHE_MAX_SESSIONS = 2_048;
 
 /**
@@ -90,8 +94,16 @@ export const LOG_PROJECTION_CACHE_MAX_SESSIONS = 2_048;
  */
 export class SessionLogProjectionCache {
   private readonly entries = new Map<string, CachedLog>();
+  private permissionRequests = 0;
 
   constructor(private readonly maxSessions: number) {}
+
+  private delete(sessionId: string): void {
+    const cached = this.entries.get(sessionId);
+    if (cached === undefined) return;
+    this.permissionRequests -= cached.projection.permissionRequests.size;
+    this.entries.delete(sessionId);
+  }
 
   get(
     sessionId: string,
@@ -105,7 +117,7 @@ export class SessionLogProjectionCache {
       cached.lastEventSeq !== stats.lastEventSeq ||
       cached.lastActivityAt !== stats.lastActivityAt
     ) {
-      this.entries.delete(sessionId);
+      this.delete(sessionId);
       return undefined;
     }
     this.entries.delete(sessionId);
@@ -114,10 +126,10 @@ export class SessionLogProjectionCache {
   }
 
   set(sessionId: string, facts: SessionProjectionFacts, projection: SessionLogProjection): void {
-    this.entries.delete(sessionId);
+    this.delete(sessionId);
     // A session without a log has no revision to recognise it by.
     if (facts.revision === '') return;
-    if (projection.permissionRequests.size > MAX_CACHED_PERMISSION_REQUESTS) return;
+    if (projection.permissionRequests.size > MAX_SESSION_PERMISSION_REQUESTS) return;
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure-omit
     const { events, eventsTruncated, ...summaryFacts } = facts;
     this.entries.set(sessionId, {
@@ -127,10 +139,19 @@ export class SessionLogProjectionCache {
       facts: summaryFacts,
       projection,
     });
-    while (this.entries.size > this.maxSessions) {
+    this.permissionRequests += projection.permissionRequests.size;
+    while (
+      this.entries.size > this.maxSessions ||
+      this.permissionRequests > MAX_CACHED_PERMISSION_REQUESTS
+    ) {
       const oldest = this.entries.keys().next().value;
       if (oldest === undefined) break;
-      this.entries.delete(oldest);
+      this.delete(oldest);
     }
+  }
+
+  /** How many permission requests the cache holds, for tests. */
+  get heldPermissionRequests(): number {
+    return this.permissionRequests;
   }
 }
