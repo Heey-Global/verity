@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
 import { inboxItems, inboxSummary, inboxView, MEETING_LEAD_MS, type InboxItem } from './inbox.js';
+import { sessionWorkSections } from './sessionWork.js';
 import { permissionSummary } from './permissionSummary.js';
 
 const ZERO_USAGE = {
@@ -347,6 +348,15 @@ describe('inboxItems', () => {
     // A dismissed round must come back once the agent presents a revised one.
     expect(item).toMatchObject({ kind: 'mockup_review', key: 'mockups:w:2', tone: 'action' });
     expect(item?.mockups?.map((entry) => entry.name)).toEqual(['Home', 'Spec']);
+    for (const activity of [{ status: 'running' as const }, { backgroundWorking: true }]) {
+      const working = { ...waiting, ...activity };
+      const items = inboxItems({ sessions: [working], projects: [project()], now: NOW });
+      expect(sessionWorkSections([working], items, new Set([working.sessionId]))).toEqual({
+        needsYou: [],
+        active: [working],
+        results: [],
+      });
+    }
     // Every screen marked still waits for the user to say in the chat how to go on.
     const marked = session('m', {
       mockupReview: {

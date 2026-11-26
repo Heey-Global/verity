@@ -13,6 +13,7 @@ import {
   sandboxUpdateNeedsAttention,
   sandboxUpdateSummary,
 } from './sandboxUpdate.js';
+import { sessionAgentWorking } from './sessionWork.js';
 import { sessionLabel } from './sessionLabel.js';
 import { permissionOverview } from './permissionOverview.js';
 import type { PermissionLine } from './permissionSummary.js';
@@ -360,9 +361,14 @@ function sessionItems(
   }
 
   // Mockups: open until the user tells the agent in the chat to build; marks alone
-  // never end the review.
+  // never end the review. While the agent works, the overview shows its activity.
   const review = session.mockupReview;
-  if (mine && review?.state === 'pending' && review.screens.length > 0) {
+  if (
+    mine &&
+    !sessionAgentWorking(session) &&
+    review?.state === 'pending' &&
+    review.screens.length > 0
+  ) {
     const undecided = review.screens.some((screen) => screen.verdict === 'open');
     items.push({
       ...base,
