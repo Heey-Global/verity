@@ -99,15 +99,27 @@ describe('useOverviewTopics', () => {
   });
 
   it('gives a freed topic to a project that waited past the cap', () => {
-    const many = Array.from({ length: 60 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    const many = Array.from({ length: 48 }, (_, i) => `p${String(i).padStart(2, '0')}`);
     const home = renderHook(() =>
       useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()),
     );
     renderHook(() => useOverviewTopics('https://core.example', ['zz'], jest.fn(), jest.fn()));
-    expect(mockSubscribed).toHaveLength(60);
+    expect(mockSubscribed).toHaveLength(48);
     expect(mockSubscribed).not.toContain('project:zz');
     home.unmount();
     expect(mockSubscribed).toContain('project:zz');
+  });
+
+  it('does not promote a waiting project of the view that detaches', () => {
+    // 49 projects: the last one waits. Unmounting must not subscribe it on its
+    // way out only to release it again.
+    const many = Array.from({ length: 49 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    const home = renderHook(() =>
+      useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()),
+    );
+    expect(mockSubscribed).not.toContain('project:p48');
+    home.unmount();
+    expect(mockSubscribed).not.toContain('project:p48');
   });
 
   it('starts from an empty store for another account', () => {

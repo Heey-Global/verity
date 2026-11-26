@@ -1,12 +1,14 @@
 import { OverviewStore, type DomainEvent, type LiveTopicSink } from '@verity/mobile';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { subscribeAuthToken } from './authToken';
+import { subscribeBrowserSession } from './browserSession';
 import { liveConnectionFor } from './liveConnection';
 import { taskAccountScope } from './tasksStore';
 
-/** Project topics the app subscribes at most, within the connection's 64. A
- * project past the cap waits for a free topic, and one the server ends with
- * `limit` keeps following live hints and reads. */
-const MAX_PROJECT_TOPICS = 60;
+/** Project topics the app subscribes at most, leaving room for session topics
+ * within the connection's 64. A project past the cap waits for a free topic,
+ * and one the server ends with `limit` keeps following live hints and reads. */
+const MAX_PROJECT_TOPICS = 48;
 
 interface OverviewListener {
   readonly projects: ReadonlySet<string>;
@@ -42,7 +44,13 @@ class OverviewHub {
     return () => {
       listener.disposed = true;
       this.listeners.delete(listener);
-      for (const projectId of listener.projects) this.release(projectId);
+      // Free all of the view's topics first, so none of them is promoted only
+      // to be released again a moment later.
+      let freed = false;
+      for (const projectId of listener.projects) {
+        if (this.release(projectId)) freed = true;
+      }
+      if (freed) this.promoteWaiting();
     };
   }
 
@@ -59,19 +67,24 @@ class OverviewHub {
     return false;
   }
 
-  private release(projectId: string): void {
+  /** Count one view less; true when this freed a live topic. */
+  private release(projectId: string): boolean {
     const held = this.topics.get(projectId);
-    if (held === undefined) return;
+    if (held === undefined) return false;
     held.count -= 1;
-    if (held.count > 0) return;
+    if (held.count > 0) return false;
     this.topics.delete(projectId);
-    if (held.detach === undefined) return;
+    if (held.detach === undefined) return false;
     held.detach();
-    // A freed topic goes to the longest waiting project.
+    return true;
+  }
+
+  /** Freed topics go to the longest waiting projects. */
+  private promoteWaiting(): void {
     for (const [waiting, entry] of this.topics) {
       if (entry.detach !== undefined) continue;
       this.subscribeIfRoom(waiting, entry);
-      break;
+      if (entry.detach === undefined) break;
     }
   }
 
@@ -117,6 +130,13 @@ class OverviewHub {
 
 let current: { scope: string; hub: OverviewHub } | undefined;
 
+function subscribeAccount(listener: () => void): () => void {
+  const detach = [subscribeAuthToken(listener), subscribeBrowserSession(listener)];
+  return () => {
+    for (const unsubscribe of detach) unsubscribe();
+  };
+}
+
 /** The hub of this server and the signed-in account; another account or
  * server starts from an empty store. */
 function hubFor(baseUrl: string): OverviewHub {
@@ -145,7 +165,7 @@ export function useOverviewTopics(
   handlers.current = { onEvent, onResync };
   const key = [...new Set(projectIds)].sort().join('\n');
   // A view that stays mounted across a sign-in moves to the new account's store.
-  const account = baseUrl === null ? null : taskAccountScope();
+  const account = useSyncExternalStore(subscribeAccount, taskAccountScope, taskAccountScope);
   useEffect(() => {
     if (baseUrl === null || key === '') return undefined;
     return hubFor(baseUrl).attach({

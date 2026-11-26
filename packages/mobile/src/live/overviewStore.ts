@@ -51,7 +51,8 @@ export class OverviewStore {
   private clock = 0;
   private readonly openReads = new Set<number>();
   private kept: { event: DomainEvent; at: number }[] = [];
-  /** The newest read that spoke for each entity, gone ones included. */
+  /** The newest read that spoke for each entity, gone ones included, while
+   * any read is open. */
   private readonly readAt = new Map<string, number>();
   private readonly listeners = new Set<() => void>();
   private version = 0;
@@ -204,8 +205,9 @@ export class OverviewStore {
     const session = this.sessionMap.get(event.sessionId);
     const effect = applyOverviewEvent(session === undefined ? [] : [session], event);
     if (effect.kind === 'local') {
-      const next = effect.sessions[0]!;
-      if (session !== undefined && sameSnapshotValue(session, next)) return { changed: false };
+      const next = effect.sessions[0];
+      if (next === undefined || (session !== undefined && sameSnapshotValue(session, next)))
+        return { changed: false };
       this.sessionMap.set(event.sessionId, next);
       return { changed: true };
     }
@@ -218,6 +220,13 @@ export class OverviewStore {
   }
 
   private prune(): void {
+    if (this.openReads.size === 0) {
+      // Every later read is newer than anything recorded, so neither the kept
+      // events nor which read spoke for an entity can matter any more.
+      this.kept = [];
+      this.readAt.clear();
+      return;
+    }
     const oldest = Math.min(...this.openReads);
     this.kept = this.kept.filter(({ at }) => at > oldest);
   }
