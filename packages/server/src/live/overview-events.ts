@@ -59,16 +59,16 @@ export function installOverviewEvents(
   const openQuestions = new Set<string>();
   const fromSessionEvent = (sessionId: string, event: AgentEvent): DomainEvent | undefined => {
     if (event.t === 'permission') {
-      const rev = revisions.next(sessionId);
+      const rev = revisions.next();
       return { t: 'permission.requested', sessionId, toolUseId: event.id, rev };
     }
     if (event.t === 'choices') {
       openQuestions.add(sessionId);
       if (openQuestions.size > 4_096) openQuestions.delete(openQuestions.values().next().value!);
-      return { t: 'choices.opened', sessionId, rev: revisions.next(sessionId) };
+      return { t: 'choices.opened', sessionId, rev: revisions.next() };
     }
     if (event.t === 'prompt' && event.steered !== true && openQuestions.delete(sessionId)) {
-      return { t: 'choices.answered', sessionId, rev: revisions.next(sessionId) };
+      return { t: 'choices.answered', sessionId, rev: revisions.next() };
     }
     return undefined;
   };
@@ -85,7 +85,7 @@ export function installOverviewEvents(
       t: 'permission.decided',
       sessionId,
       toolUseId,
-      rev: revisions.next(sessionId),
+      rev: revisions.next(),
       outcome: allowed ? 'allowed' : 'denied',
     });
   });

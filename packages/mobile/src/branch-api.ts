@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const mergeStateSchema = z
+const mergeStateSchema = z
   .enum(['clean', 'dirty', 'blocked', 'behind', 'unstable', 'draft', 'unknown'])
   .optional()
   .catch(undefined);
@@ -30,6 +30,29 @@ export const pullRequestSchema = z
     baseRef: z.string().min(1).optional(),
   })
   .nullable();
+
+/** Compact PR status for a session's CURRENT branch, carried on the session list so
+ * the overview can show merge-ready / merge-blocked / CI-failed markers without a
+ * per-session branch fetch. A projection of the richer `pullRequest` in
+ * {@link branchListSchema}. */
+/** GitHub's `mergeable_state`, when the server queried it. Unknown/absent values fall
+ * back to `undefined` rather than failing the parse, so a state GitHub adds later (or
+ * an older server that omits the field) degrades to "no conflict signal". */
+export const sessionPrSchema = z.object({
+  phase: z.enum(['open', 'merged', 'closed']),
+  pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
+  // Tri-state: true = mergeable, false = blocked/conflict, null = unknown (checks
+  // not green yet, or GitHub still computing mergeability just after a push).
+  // `.catch(null)` keeps an older server's bare boolean parseable during rollout.
+  viewerCanMerge: z.boolean().optional(),
+  mergeable: z.boolean().nullable().catch(null),
+  // GitHub's `mergeable_state`. `'dirty'` = the branch CONFLICTS with its base, which
+  // also means GitHub started no `pull_request` checks — the one state that must read
+  // as blocked even though `pipeline` is `unknown`. ABSENT = older server, or the
+  // server didn't query mergeability for this PR.
+  mergeState: mergeStateSchema,
+});
+export type SessionPr = z.infer<typeof sessionPrSchema>;
 
 /** Response of `GET /sessions/:id/branches`: the worktree's current branch, the
  * local branches it can switch to (#91), and the pushed `origin/*` branches it can

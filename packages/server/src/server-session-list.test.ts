@@ -19,6 +19,16 @@ import {
 } from './server-fixture.test-helper.js';
 import { buildServer } from './server.js';
 
+/** The rows without `summaryRev`. A row carries it once a `session.summary`
+ * began for its session id on this server, which outlives each test: events an
+ * earlier test appended for the same id schedule one after a short delay, so
+ * whether a read carries it depends on timing. */
+function withoutSummaryRevision(rows: Array<Record<string, unknown>>) {
+  return rows.map((row) =>
+    Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'summaryRev')),
+  );
+}
+
 /**
  * The attention envelope. `?envelope=1` is opt-in precisely so the shape of the
  * default response cannot change under an app that has not been updated — the
@@ -341,7 +351,7 @@ describe('GET /sessions', () => {
   it('returns an empty list when there are no sessions', async () => {
     const res = await app.inject({ method: 'GET', url: '/sessions' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual([]);
+    expect(withoutSummaryRevision(res.json())).toEqual([]);
   });
 
   it('reports resumable from whether the worktree exists on disk', async () => {
@@ -455,7 +465,7 @@ describe('GET /sessions', () => {
 
     const res = await app.inject({ method: 'GET', url: '/sessions' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual([
+    expect(withoutSummaryRevision(res.json())).toEqual([
       {
         sessionId: 's1',
         worktree: '/wt/s1',
@@ -642,7 +652,7 @@ describe('GET /sessions', () => {
 
     const res = await app.inject({ method: 'GET', url: '/sessions' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual([
+    expect(withoutSummaryRevision(res.json())).toEqual([
       {
         sessionId: 's1',
         worktree: '/wt/s1',

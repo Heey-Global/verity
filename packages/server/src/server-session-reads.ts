@@ -38,6 +38,8 @@ type HasMeetingJob = (sessionId: string) => boolean;
 export interface SessionListWiring {
   codexUsage: Pick<CodexUsageService, 'health'>;
   wikiMaintenanceSessions: Set<string>;
+  /** See `SessionListRouteDeps.summaryRevision`. */
+  summaryRevision: (sessionId: string) => number | undefined;
   sessionOverview: Pick<
     SessionOverview,
     'prunePrSummaryCache' | 'pruneBranchCache' | 'summarizeSessions' | 'sessionPrCache'
@@ -52,7 +54,7 @@ export interface SessionListWiring {
 export function installSessionList(
   app: FastifyInstance,
   ctx: ServerContext,
-  { codexUsage, wikiMaintenanceSessions, sessionOverview }: SessionListWiring,
+  { codexUsage, wikiMaintenanceSessions, sessionOverview, summaryRevision }: SessionListWiring,
 ): { readSecretStatus: () => Promise<SecretStatus>; listSessionsAs: SessionListReader } {
   const { deps } = ctx;
   const { prunePrSummaryCache, pruneBranchCache, summarizeSessions } = sessionOverview;
@@ -162,6 +164,7 @@ export function installSessionList(
   registerSessionOrderRoute(app, { store: deps.eventStore });
   const listSessionsAs = registerSessionListRoute(app, {
     store: deps.eventStore,
+    summaryRevision,
     visibleTo: async (viewer) => {
       if (await deps.eventStore.isActiveAdministrator(viewer)) return { all: true };
       return {
