@@ -739,10 +739,27 @@ describe('assistant handoff approvals in the conversation', () => {
     ).toEqual(['gw-1', 'gw-2']);
   });
 
+  it('leaves a card a crashed turn left pending to itself', () => {
+    const stale: AgentEvent[] = [
+      { t: 'prompt', text: 'earlier', initiatedBy: { userId: 'u1' } },
+      { t: 'tool_call', id: 'old', name: 'verity_session_handoff', input: handoff('T') },
+      { t: 'error', kind: 'spawn', message: 'turn crashed' },
+    ];
+    const projection = projectAssistantConversation(
+      sequenced([...stale, ...waiting(handoff('T'))]),
+      pendingOn('gw-1'),
+    );
+    expect(
+      projection.items.flatMap((item) => (item.kind === 'assignment' ? [item.approvalId] : [])),
+    ).toEqual([undefined, 'gw-1']);
+  });
+
   it('drops a request too large to carry, so the device opens the session instead', () => {
     const input = handoff('Long', 'x'.repeat(100 * 1_024));
     const projection = projectAssistantConversation(sequenced(waiting(input)), pendingOn('gw-1'));
     expect(projection.approvals).toEqual([{ id: 'gw-1', tool: 'verity_session_handoff' }]);
+    // Still its card's approval: one card that sends the user to the session, not two.
+    expect(projection.items.at(-1)).toMatchObject({ approvalId: 'gw-1' });
   });
 
   it('holds all approval inputs to one budget, so several cannot multiply the read', () => {

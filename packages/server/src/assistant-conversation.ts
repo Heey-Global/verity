@@ -49,7 +49,9 @@ export function projectAssistantConversation(
   let reply: { id: string; at: number; text: string } | undefined;
   let choices: { seq: number; event: Extract<AgentEvent, { t: 'choices' }> } | undefined;
   /** Each approval's request, from its `permission` event, by approval id. */
-  const requested = new Map<string, unknown>();
+  const requested = new Map<string, { input: unknown; seq: number }>();
+  /** Where each handoff card's tool call sits in the log. */
+  const cardSeq = new Map<AssistantConversationItem, number>();
   let failed = false;
   /** The user's latest message, timed until the turn it started ends. */
   let timed: Extract<AssistantConversationItem, { kind: 'message' }> | undefined;
@@ -93,6 +95,7 @@ export function projectAssistantConversation(
         if (item === undefined) break;
         closeReply();
         tools.set(event.id, items.length);
+        if (item.kind === 'assignment') cardSeq.set(item, seq);
         items.push(item);
         break;
       }
@@ -110,7 +113,7 @@ export function projectAssistantConversation(
         break;
       }
       case 'permission':
-        requested.set(event.id, event.input);
+        requested.set(event.id, { input: event.input, seq });
         break;
       case 'choices':
         choices = { seq, event };
@@ -149,7 +152,7 @@ export function projectAssistantConversation(
   // and the device sends the user to the session for it.
   let budget = ASSISTANT_APPROVAL_INPUT_MAX_BYTES;
   const approvals = facts.approvals.map((approval): AssistantApproval => {
-    const input = requested.get(approval.toolUseId);
+    const input = requested.get(approval.toolUseId)?.input;
     const size = inputBytes(input);
     const carried = size !== undefined && size <= budget;
     if (carried) budget -= size;
@@ -159,7 +162,7 @@ export function projectAssistantConversation(
       ...(carried ? { input } : {}),
     };
   });
-  linkHandoffApprovals(items, approvals);
+  linkHandoffApprovals(items, approvals, requested, cardSeq);
   const working = facts.busy || facts.status === 'running';
   return {
     revision: events.at(-1)?.seq ?? 0,
@@ -209,29 +212,39 @@ export function attachHandoffResults(
  * Hands each waiting handoff approval to its card, so the card is decided in place.
  *
  * The gateway mints its own approval id, so the tool call's id cannot name it. The
- * card is the oldest unlinked still-pending handoff with the approval's title: a handoff
- * waits on its approval before it can answer, and one turn rarely holds two
- * pending handoffs, let alone two with one title. Without a title match the
- * approval stays a card of its own rather than land on the wrong handoff.
+ * card is the newest unlinked still-pending handoff with the approval's title whose
+ * call came before the approval: a handoff waits on its approval before it can answer,
+ * and taking the approvals newest first keeps two with one title on their own cards,
+ * while a card a crashed turn left pending cannot claim a later approval. The title
+ * comes from the full request, so an approval too large to carry still finds its card.
+ * Without a match the approval stays a card of its own rather than land on the wrong one.
  */
 function linkHandoffApprovals(
   items: AssistantConversationItem[],
   approvals: readonly AssistantApproval[],
+  requested: ReadonlyMap<string, { input: unknown; seq: number }>,
+  cardSeq: ReadonlyMap<AssistantConversationItem, number>,
 ): void {
-  for (const approval of approvals) {
-    if (!isTool(approval.tool, 'verity_session_handoff')) continue;
+  const waiting = approvals
+    .filter((approval) => isTool(approval.tool, 'verity_session_handoff'))
+    .flatMap((approval) => {
+      const request = requested.get(approval.id);
+      return request === undefined ? [] : [{ approval, ...request }];
+    })
+    .sort((a, b) => b.seq - a.seq);
+  for (const { approval, input, seq } of waiting) {
     const title =
-      typeof approval.input === 'object' && approval.input !== null
-        ? (approval.input as { title?: unknown }).title
+      typeof input === 'object' && input !== null
+        ? (input as { title?: unknown }).title
         : undefined;
     if (typeof title !== 'string') continue;
-    // Oldest card first, as the approvals come oldest first: two handoffs with one title
-    // then keep their order instead of trading cards.
-    for (const item of items) {
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const item = items[i];
       if (
         item?.kind !== 'assignment' ||
         item.state !== 'pending' ||
         item.approvalId !== undefined ||
+        (cardSeq.get(item) ?? Infinity) > seq ||
         item.title.trim() !== title.trim()
       )
         continue;
