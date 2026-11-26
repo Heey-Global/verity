@@ -557,8 +557,11 @@ export class AttendeeMeetings {
       },
       transcribe: async ({ wav, timestampMs, participantId, signal }) => {
         const previous = speakerWork.get(participantId);
-        const finished = Promise.withResolvers<void>();
-        const ordered = Promise.resolve(previous).then(() => finished.promise);
+        let finish = () => {};
+        const finished = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        const ordered = Promise.resolve(previous).then(() => finished);
         speakerWork.set(participantId, ordered);
         try {
           const transcript = (await transcribe(wav, signal, audio.target)).trim();
@@ -575,7 +578,7 @@ export class AttendeeMeetings {
             transcription: { transcript },
           });
         } finally {
-          finished.resolve();
+          finish();
           await previous;
           if (speakerWork.get(participantId) === ordered) speakerWork.delete(participantId);
         }
@@ -1281,6 +1284,11 @@ export class AttendeeMeetings {
       );
       if (found) {
         state.botId = found.state.bot_id;
+        const audioConnection = this.audioConnections.get(state.meeting.id);
+        if (audioConnection) {
+          audioConnection.botId = state.botId;
+          audioConnection.receiver.flushBoundAudio();
+        }
         event = found.state;
         await this.save(state);
       } else {
