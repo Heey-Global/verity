@@ -10,6 +10,8 @@ describe('scopedDecisionNotice', () => {
     const text = scopedDecisionNotice({ scopeSaved: false, actionContinued: false });
     expect(text).toMatch(/^Not run: /);
     expect(text).toContain('could not be saved');
+    expect(text).toContain('Review again');
+    expect(text).toContain('ask the agent for a new request');
     expect(text).not.toContain('allowed');
     expect(scopedDecisionNotice({ scopeSaved: true, actionContinued: false })).toMatch(
       /^Not run: the approval was saved/,

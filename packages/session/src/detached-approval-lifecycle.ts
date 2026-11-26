@@ -119,7 +119,13 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
   async answer(
     input: Omit<
       Parameters<typeof decideDetachedPermission>[0],
-      'permissions' | 'notice' | 'resume' | 'persistScoped' | 'recordDecision' | 'options'
+      | 'permissions'
+      | 'notice'
+      | 'resume'
+      | 'persistScoped'
+      | 'recordDecision'
+      | 'reportError'
+      | 'options'
     > & {
       options?:
         | (Parameters<typeof decideDetachedPermission>[0]['options'] & {
@@ -140,6 +146,7 @@ export class DetachedApprovalLifecycle extends DetachedPermissions {
       },
       notice: (text) =>
         this.dependencies().emitEvent(input.sessionId, { t: 'notice', role: 'agent', text }),
+      reportError: (error) => this.dependencies().reportError(input.sessionId, error),
       recordDecision: async (event) => {
         const deps = this.dependencies();
         try {

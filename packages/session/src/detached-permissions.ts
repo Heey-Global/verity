@@ -150,6 +150,34 @@ export function detachedContinuation(request: PermissionRequest, actorId?: strin
   };
 }
 
+const scopedApprovalFailureReasons = new Map([
+  ['Doppler access changed before saving approval', 'Doppler binding changed or is unavailable'],
+  ['invalid brokered secret grant target', 'invalid grant target'],
+  ['invalid versioned trusted CLI grant target', 'invalid CLI grant target'],
+  ['brokered secret grant persistence is unavailable', 'grant persistence unavailable'],
+  ['brokered secret session has no project', 'session has no project'],
+  ['a standing grant needs the person granting it', 'approver identity unavailable'],
+  ['The approved request no longer exists.', 'approval receipt missing'],
+  ['the grant was revoked while it was being approved', 'grant revoked concurrently'],
+  ['23503', 'database foreign key violation'],
+  ['23505', 'database uniqueness violation'],
+  ['23514', 'database check constraint violation'],
+  ['40001', 'database serialization failure'],
+  ['40P01', 'database deadlock'],
+  ['42P01', 'database table missing'],
+  ['42703', 'database column missing'],
+]);
+
+function scopedApprovalFailure(step: string, error: unknown): Error {
+  const code = error instanceof Error && 'code' in error ? error.code : undefined;
+  const reason =
+    (typeof code === 'string' ? scopedApprovalFailureReasons.get(code) : undefined) ??
+    (error instanceof Error ? scopedApprovalFailureReasons.get(error.message) : undefined) ??
+    'unclassified error';
+  // The original message, stack and cause may contain SQL values or tool input.
+  return new Error(`Reusable secret approval failed while ${step} (${reason})`);
+}
+
 export async function decideDetachedPermission(input: {
   permissions: DetachedPermissions;
   sessionId: string;
@@ -165,6 +193,7 @@ export async function decideDetachedPermission(input: {
       }
     | undefined;
   persistScoped: (request: DetachedPermission, scope: 'session' | 'project') => Promise<void>;
+  reportError?: (error: Error) => void;
   recordDecision?: (event: Extract<AgentEvent, { t: 'notice' }>) => Promise<void>;
   notice: (text: string) => Promise<void>;
   resume: (request: DetachedPermission, actorId?: string) => Promise<void>;
@@ -187,13 +216,16 @@ export async function decideDetachedPermission(input: {
   let continuationAllowed = true;
   let reusableScopeSaved = false;
   if (decision.behavior === 'allow' && options?.scope && options.scope !== 'once') {
+    let step = 'retiring the approval receipt';
     try {
       // Retire exact once consent before saving reusable scope, so later grant
       // revocation cannot uncover a latent receipt for the same operation.
       await permissions.completeScoped(sessionId, toolUseId);
+      step = 'saving the grant';
       await input.persistScoped(request, options.scope);
       reusableScopeSaved = true;
-    } catch {
+    } catch (error) {
+      input.reportError?.(scopedApprovalFailure(step, error));
       await permissions.failScoped(sessionId, toolUseId);
       continuationAllowed = false;
       options.onScopeSaved?.(false, false);
@@ -202,7 +234,8 @@ export async function decideDetachedPermission(input: {
   if (reusableScopeSaved) {
     try {
       await permissions.markScopedSaved(sessionId, toolUseId);
-    } catch {
+    } catch (error) {
+      input.reportError?.(scopedApprovalFailure('recording continuation', error));
       continuationAllowed = false;
     }
     options?.onScopeSaved?.(true, continuationAllowed);
@@ -220,7 +253,7 @@ export async function decideDetachedPermission(input: {
     await input.notice(
       reusableScopeSaved
         ? 'The reusable secret approval was saved and remains active, but automatic continuation could not be recorded. Answering the card did not execute the action. If still needed, retry only the exact original authorized request once.'
-        : 'The requested reusable secret approval could not be saved. Nothing ran and this approval will not resume the action. Review and request the operation again if it is still needed.',
+        : 'The requested reusable secret approval could not be saved. Nothing ran and this approval will not resume the action. If the operation is still needed, choose Review again on the original approval card. If that option is unavailable, ask the agent to submit a new request for review.',
     );
   }
   if (decision.behavior === 'allow' && continuationAllowed)

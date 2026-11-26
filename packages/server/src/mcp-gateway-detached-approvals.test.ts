@@ -287,6 +287,42 @@ it('rechecks cancellation after consuming a detached receipt before dispatch', a
   expect(invokeTool).not.toHaveBeenCalled();
 });
 
+it.each([
+  [null, 'You denied this exact secret request'],
+  ['session', 'Choose Review again on the original approval card'],
+  ['project', 'Choose Review again on the original approval card'],
+] as const)(
+  'reports the outcome of a stopped secret request with scope %s',
+  async (scope, message) => {
+    const consume = vi.fn();
+    const { gateway, invokeTool } = harness({
+      authorizationSnapshot: async () => 'original',
+      detachedApprovals: {
+        createOrFindPending: async (input: BrokeredToolApprovalInput) => ({
+          ...input,
+          id: 'r',
+          status: 'denied',
+          scope,
+          decidedBy: 'user',
+          createdAt: '',
+          decidedAt: '',
+        }),
+        consume,
+      } as unknown as import('./brokered-tool-approval-store.js').BrokeredToolApprovalStore,
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    const result = resultOf(response.body);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain(message);
+    expect(consume).not.toHaveBeenCalled();
+    expect(invokeTool).not.toHaveBeenCalled();
+  },
+);
+
 it('names an expired granted receipt and asks for explicit review without executing', async () => {
   const consume = vi.fn();
   const { gateway, invokeTool } = harness({
