@@ -1,5 +1,5 @@
 import { OverviewStore, RevisionGate, type DomainEvent, type LiveTopicSink } from '@verity/mobile';
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { subscribeAuthToken } from './authToken';
 import { subscribeBrowserSession } from './browserSession';
 import { liveConnectionFor } from './liveConnection';
@@ -43,15 +43,16 @@ interface TopicEntry {
  * topic's revision gate once before it reaches the views of its project.
  */
 class OverviewHub {
-  /** Gated per topic here, so one topic's resync does not open another's. */
-  readonly store = new OverviewStore({ gated: false });
   private readonly topics = new Map<string, TopicEntry>();
   private readonly listeners = new Set<OverviewListener>();
   /** Live topics within the share every view may use, and from the reserve. */
   private sharedLive = 0;
   private reservedLive = 0;
 
-  constructor(private readonly baseUrl: string) {}
+  constructor(
+    private readonly baseUrl: string,
+    readonly store: OverviewStore,
+  ) {}
 
   get idle(): boolean {
     return this.listeners.size === 0;
@@ -195,6 +196,81 @@ class OverviewHub {
 /** One hub per server and account while any view uses it. */
 const hubs = new Map<string, OverviewHub>();
 
+/** The stores of the servers and accounts in use, keyed like the hubs and
+ * shared by every view of one. A store lives while a hub or a view holds it, so
+ * a page that re-attaches (another project, a remount) keeps its copy and the
+ * new subscription's resync brings it up to date. Once nothing holds it, it is
+ * dropped: no later view is shown a copy that stopped following events. */
+const stores = new Map<string, OverviewStore>();
+let pruneOnAccountChange: (() => void) | undefined;
+/** Hubs and views holding each store. */
+const holds = new Map<OverviewStore, number>();
+
+/** Hold `store`, the one `storeFor(scope)` returned. A view may take its hold
+ * just after the store was dropped (another screen released it in the same
+ * commit); while no newer store took the scope, it is reinstated rather than
+ * replaced, so views never chase a store that is dropped again. */
+function hold(scope: string, store: OverviewStore): () => void {
+  if (!stores.has(scope)) stores.set(scope, store);
+  holds.set(store, (holds.get(store) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (holds.get(store) ?? 1) - 1;
+    if (left > 0) {
+      holds.set(store, left);
+      return;
+    }
+    holds.delete(store);
+    if (stores.get(scope) === store) dropStore(scope);
+  };
+}
+
+/** Views holding a store; told when one is dropped, so they move to the store
+ * the next hub of their scope feeds. */
+const storeHolders = new Set<() => void>();
+let storesGeneration = 0;
+
+function subscribeStores(listener: () => void): () => void {
+  storeHolders.add(listener);
+  return () => {
+    storeHolders.delete(listener);
+  };
+}
+
+function currentStoresGeneration(): number {
+  return storesGeneration;
+}
+
+function dropStore(scope: string): void {
+  if (!stores.delete(scope)) return;
+  storesGeneration += 1;
+  for (const holder of [...storeHolders]) holder();
+}
+
+function storeFor(scope: string): OverviewStore {
+  let store = stores.get(scope);
+  if (store === undefined) {
+    // Gated per topic by the hub, so one topic's resync does not open another's.
+    store = new OverviewStore({ gated: false });
+    stores.set(scope, store);
+  }
+  // Installed once; the account modules outlive every view.
+  pruneOnAccountChange ??= subscribeAccount(pruneStores);
+  return store;
+}
+
+/** Drop the stores of accounts no longer signed in that nothing holds, such as
+ * one a render created that never committed. */
+function pruneStores(): void {
+  const signedIn = taskAccountScope();
+  for (const [scope, store] of stores) {
+    const [, account] = JSON.parse(scope) as [string, string | null];
+    if (account !== signedIn && !holds.has(store)) dropStore(scope);
+  }
+}
+
 function subscribeAccount(listener: () => void): () => void {
   const detach = [subscribeAuthToken(listener), subscribeBrowserSession(listener)];
   return () => {
@@ -212,14 +288,16 @@ function attachToHub(
   const scope = JSON.stringify([baseUrl, account]);
   let hub = hubs.get(scope);
   if (hub === undefined) {
-    hub = new OverviewHub(baseUrl);
+    hub = new OverviewHub(baseUrl, storeFor(scope));
     hubs.set(scope, hub);
   }
+  const release = hold(scope, hub.store);
   const detach = hub.attach(listener);
   const attached = hub;
   return () => {
     detach();
     if (attached.idle && hubs.get(scope) === attached) hubs.delete(scope);
+    release();
   };
 }
 
@@ -257,4 +335,32 @@ export function useOverviewTopics(
       disposed: false,
     });
   }, [baseUrl, key, account]);
+}
+
+/**
+ * The shared copy of sessions and projects (ADR 0033) for this server and the
+ * signed-in account. Components re-render whenever an entity in it changes;
+ * without a server they get a store of their own.
+ */
+export function useOverviewStore(baseUrl: string | null): OverviewStore {
+  const account = useSyncExternalStore(subscribeAccount, taskAccountScope, taskAccountScope);
+  // A dropped store renders the view again, so it takes up the current one.
+  useSyncExternalStore(subscribeStores, currentStoresGeneration, currentStoresGeneration);
+  const [detached] = useState(() => new OverviewStore());
+  const scope = baseUrl === null ? null : JSON.stringify([baseUrl, account]);
+  const store = scope === null ? detached : storeFor(scope);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const unsubscribe = store.subscribe(listener);
+      const release = scope === null ? undefined : hold(scope, store);
+      return () => {
+        unsubscribe();
+        release?.();
+      };
+    },
+    [store, scope],
+  );
+  const version = useCallback(() => store.getVersion(), [store]);
+  useSyncExternalStore(subscribe, version, version);
+  return store;
 }

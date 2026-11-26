@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.95.7](https://github.com/Heey-Global/verity/compare/mobile-v1.95.6...mobile-v1.95.7) (2026-11-26)
+
+
+### Features
+
+* **live:** publish pull request status as domain events ([#2936](https://github.com/Heey-Global/verity/issues/2936)) ([de60722](https://github.com/Heey-Global/verity/commit/de60722b8da8c62d4678668d46d797b0e61b1877))
+* **live:** share one overview store and topic subscription across views ([#2944](https://github.com/Heey-Global/verity/issues/2944)) ([06dbb09](https://github.com/Heey-Global/verity/commit/06dbb094e2239844c736d789771180aa5795915f))
+
+
+### Bug Fixes
+
+* **mobile:** keep approval buttons reachable above long requests ([#2943](https://github.com/Heey-Global/verity/issues/2943)) ([2561cc0](https://github.com/Heey-Global/verity/commit/2561cc07d251793d96a8d6129bbe8728e0833aec))
+* **mobile:** show active sessions ahead of mockup reviews ([#2941](https://github.com/Heey-Global/verity/issues/2941)) ([6ede2f7](https://github.com/Heey-Global/verity/commit/6ede2f731df9a820c6bde34af8f142c5d505474a))
+* **tasks:** leave dropped and older done tasks out of the default list ([#2935](https://github.com/Heey-Global/verity/issues/2935)) ([099f663](https://github.com/Heey-Global/verity/commit/099f66331ca7a8e4570f823822c8dba8129b9f96))
+
 ## [1.95.6](https://github.com/Heey-Global/verity/compare/mobile-v1.95.5...mobile-v1.95.6) (2026-11-26)
 
 

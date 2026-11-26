@@ -1,6 +1,6 @@
 import { getVerityBaseUrl } from './client';
 import { subscribeLiveRefresh } from './liveConnection';
-import { useOverviewTopics } from './overviewTopics';
+import { useOverviewStore, useOverviewTopics } from './overviewTopics';
 // One project's live record for the project screen and each of its settings
 // routes.
 //
@@ -13,12 +13,10 @@ import { useOverviewTopics } from './overviewTopics';
 import {
   VerityApiError,
   applyOverviewEvent,
-  appliesToEarlierReads,
-  keptWithout,
   projectEventUpdate,
   publishProjectStatusMutation,
-  type DomainEvent,
   subscribeProjectStatusMutations,
+  type OverviewStore,
   type ProjectDetail,
   type ProjectProfile,
   type ProjectRecord,
@@ -26,7 +24,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 /** The `[id]` route param as one string. Expo Router hands back an array when a
  *  link repeats the segment; the first value is the project. */
@@ -60,28 +58,45 @@ export type ProjectDetailState = {
 // would PATCH the same status.
 const setupMigrations = new Set<string>();
 
+/** A project an action or another screen returned is newer than any read
+ * still on its way, so it is applied as the newest read of that project. */
+function adoptProject(store: OverviewStore, project: ProjectRecord): void {
+  // `applyProjects` ends the read it is given; no `endRead` is needed.
+  store.applyProjects(store.beginRead(), [project], { covers: (p) => p.id === project.id });
+}
+
 export function useProjectDetail(client: VerityClient, projectId: string): ProjectDetailState {
+  // The same source as Home, so both views share one live connection and one
+  // copy of the project and its sessions (ADR 0033).
+  const baseUrl = getVerityBaseUrl();
+  const store = useOverviewStore(baseUrl);
+  const storeRef = useRef(store);
+  storeRef.current = store;
+  // The last read of this page: settings and everything else the store does
+  // not hold, and the order of the sessions it listed.
   const [detail, setDetail] = useState<ProjectDetail | undefined>(undefined);
+  // False while the store could not take the last read; the page then shows
+  // that read's sessions until the next one lands.
+  const [sessionsInStore, setSessionsInStore] = useState(true);
   const [savedProfile, setSavedProfile] = useState<ProjectProfile | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const loadGeneration = useRef(0);
-  const answeredRef = useRef<{ event: DomainEvent; generation: number }[]>([]);
-  const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
-  const pendingProjectMutationRef = useRef<ProjectRecord | undefined>(undefined);
   // Polls run only while this screen is the one on top. Every route on the
   // project stack mounts this hook, and a screen two levels down has nothing
   // to show the operator until they come back — at which point the focus
   // reload below fetches fresh state anyway.
   const focusedRef = useRef(false);
+  // The record this screen published itself; its echo is already adopted.
+  const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
 
   const onProjectUpdated = useCallback((next: ProjectRecord) => {
     // A poll already in flight carries pre-action state and must not win later.
     loadGeneration.current += 1;
     setLoading(false);
-    pendingProjectMutationRef.current = undefined;
-    publishedProjectRef.current = next;
+    adoptProject(storeRef.current, next);
     setDetail((current) => (current ? { ...current, project: next } : current));
+    publishedProjectRef.current = next;
     publishProjectStatusMutation(next);
   }, []);
   const onSettingsSaved = useCallback((next: ProjectSettings) => {
@@ -102,48 +117,65 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     );
   }, []);
 
-  const onProfileSaved = useCallback((profile: ProjectProfile) => {
-    loadGeneration.current += 1;
-    setSavedProfile((current) => ({ ...current, ...profile }));
-    setDetail((current) =>
-      current
-        ? {
-            ...current,
-            project:
-              profile.name === undefined
-                ? current.project
-                : { ...current.project, name: profile.name },
-            settings:
-              profile.description === undefined || current.settings === null
-                ? current.settings
-                : { ...current.settings, description: profile.description },
-          }
-        : current,
-    );
-  }, []);
+  const onProfileSaved = useCallback(
+    (profile: ProjectProfile) => {
+      loadGeneration.current += 1;
+      setSavedProfile((current) => ({ ...current, ...profile }));
+      const held = storeRef.current.project(projectId);
+      if (held !== undefined && profile.name !== undefined && held.name !== profile.name)
+        adoptProject(storeRef.current, { ...held, name: profile.name });
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              project:
+                profile.name === undefined
+                  ? current.project
+                  : { ...current.project, name: profile.name },
+              settings:
+                profile.description === undefined || current.settings === null
+                  ? current.settings
+                  : { ...current.settings, description: profile.description },
+            }
+          : current,
+      );
+    },
+    [projectId],
+  );
 
   const load = useCallback(
-    async (silent = false): Promise<void> => {
+    // `retry` marks the one repeat of a read the store refused.
+    async (silent = false, retry = false): Promise<void> => {
       const generation = ++loadGeneration.current;
       if (!silent) {
         setLoading(true);
         setError(undefined);
       }
+      // Events that arrive while the read is on its way are applied again on
+      // top of its answer, and a project another screen saved meanwhile wins.
+      const target = storeRef.current;
+      const projectRead = target.beginRead();
+      const sessionsRead = target.beginRead();
       try {
         const next = await client.getProject(projectId);
         if (generation === loadGeneration.current) {
-          const project = pendingProjectMutationRef.current ?? next.project;
-          pendingProjectMutationRef.current = undefined;
-          // Answers received while this read was on its way still apply to it;
-          // reads started after an answer are the server's word.
-          answeredRef.current = answeredRef.current.filter((a) => generation <= a.generation);
-          let sessions = next.sessions;
-          for (const { event } of answeredRef.current) {
-            const applied = applyOverviewEvent(sessions, event);
-            if (applied.kind === 'local') sessions = applied.sessions;
-          }
-          setDetail({ ...next, project, sessions });
+          const projectApplied = target.applyProjects(projectRead, [next.project], {
+            covers: (p) => p.id === projectId,
+          });
+          const sessionsApplied = target.applySessions(sessionsRead, next.sessions, {
+            covers: (s) => s.projectId === projectId,
+          });
+          setDetail(next);
+          // A store replaced while the read was out is not the one shown.
+          setSessionsInStore(sessionsApplied && target === storeRef.current);
           setSavedProfile(undefined);
+          // Events this read would need replayed were dropped: read again.
+          // A screen below the one on top reads again when it comes back.
+          if ((!projectApplied || !sessionsApplied) && focusedRef.current && !retry) {
+            queueMicrotask(() => {
+              if (focusedRef.current) void loadRef.current(true, true);
+            });
+          }
           // A fetch result deliberately stays off the status bus. Only an
           // action's response is published (see `onProjectUpdated`): with the
           // project screen and its settings routes stacked, each polling, a
@@ -156,19 +188,25 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
           setError(caught instanceof VerityApiError ? caught.message : 'Could not load project');
         }
       } finally {
+        // Ends reads that failed or were superseded; after an `apply…` it
+        // changes nothing.
+        target.endRead(projectRead);
+        target.endRead(sessionsRead);
         if (!silent && generation === loadGeneration.current) setLoading(false);
       }
     },
     [client, projectId],
   );
+  const loadRef = useRef(load);
+  loadRef.current = load;
 
   const detailLoaded = detail !== undefined;
   useEffect(
     () =>
       subscribeProjectStatusMutations((next) => {
-        if (next.id !== projectId) return;
-        if (publishedProjectRef.current === next) return;
-        pendingProjectMutationRef.current = next;
+        if (next.id !== projectId || next === publishedProjectRef.current) return;
+        // Another screen's action: newer than a read of this one in flight.
+        adoptProject(storeRef.current, next);
         setDetail((current) => (current ? { ...current, project: next } : current));
       }),
     [projectId],
@@ -212,56 +250,69 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     [client, projectId, detailLoaded, load],
   );
 
-  // Requests and questions answered anywhere leave this page at once (ADR 0033).
-  const detailRef = useRef(detail);
-  detailRef.current = detail;
+  // What the page shows: the project and its sessions as the shared store
+  // holds them, so an event or another view's read changes them at once, in
+  // the order of this page's last read.
+  const version = store.getVersion();
+  const shown = useMemo(() => {
+    if (detail === undefined) return undefined;
+    const fromStore = sessionsInStore && store.project(projectId) !== undefined;
+    const sessions = detail.sessions.flatMap((listed) => {
+      const held = store.session(listed.sessionId);
+      if (held !== undefined) return [held];
+      // Until the store took a read of this project (it refused the last one,
+      // or it was replaced since), the page's own read speaks for its sessions.
+      return fromStore ? [] : [listed];
+    });
+    return {
+      ...detail,
+      project: store.project(projectId) ?? detail.project,
+      sessions,
+    };
+    // `version` changes whenever an entity in the store does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail, sessionsInStore, store, projectId, version]);
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+
+  // Requests and questions answered anywhere leave this page at once (ADR 0033);
+  // the store applies every event, and the page only reads what an event
+  // cannot carry.
   useOverviewTopics(
-    // The same source as Home, so both views share one live connection.
-    getVerityBaseUrl(),
+    baseUrl,
     [projectId],
     (event) => {
-      // Sandbox and project changes: shown at once, completed by a read.
       const update = projectEventUpdate(event);
       if (update !== undefined) {
         if (update.projectId !== projectId) return;
+        // Also kept on the page's own copy, which it shows while the store
+        // refuses its read.
         setDetail((latest) =>
           latest === undefined ? latest : { ...latest, project: update.patch(latest.project) },
         );
         if (update.reload && focusedRef.current) void load(true);
         return;
       }
-      if (appliesToEarlierReads(event)) {
-        // Kept even before the first read lands, which would otherwise bring
-        // the answered card back or an older pull request status.
-        answeredRef.current = [
-          ...keptWithout(answeredRef.current, event).slice(-255),
-          { event, generation: loadGeneration.current },
-        ];
-      }
-      const current = detailRef.current;
-      const effect =
-        current === undefined
-          ? { kind: 'none' as const }
-          : applyOverviewEvent(current.sessions, event);
-      if (effect.kind === 'none') return;
+      const current = shownRef.current;
+      if (current === undefined) return;
+      const effect = applyOverviewEvent(current.sessions, event);
       if (effect.kind === 'local') {
-        // Applied in place: an answered card needs no project read.
+        // Also kept on the page's own copy, which it lists until the store
+        // holds this project.
         setDetail((latest) => {
           if (latest === undefined) return latest;
           const applied = applyOverviewEvent(latest.sessions, event);
           return applied.kind === 'local' ? { ...latest, sessions: applied.sessions } : latest;
         });
-        return;
-      }
-      if (focusedRef.current) void load(true);
+      } else if (effect.kind === 'reload' && focusedRef.current) void load(true);
     },
     () => {
-      if (focusedRef.current && detailRef.current !== undefined) void load(true);
+      if (focusedRef.current && shownRef.current !== undefined) void load(true);
     },
   );
 
   return {
-    detail,
+    detail: shown,
     loading,
     error,
     setError,

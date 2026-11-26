@@ -6,6 +6,24 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.106.0](https://github.com/Heey-Global/verity/compare/v4.105.0...v4.106.0) (2026-11-26)
+
+
+### Features
+
+* **live:** publish pull request status as domain events ([#2936](https://github.com/Heey-Global/verity/issues/2936)) ([de60722](https://github.com/Heey-Global/verity/commit/de60722b8da8c62d4678668d46d797b0e61b1877))
+
+
+### Bug Fixes
+
+* **mobile:** keep approval buttons reachable above long requests ([#2943](https://github.com/Heey-Global/verity/issues/2943)) ([2561cc0](https://github.com/Heey-Global/verity/commit/2561cc07d251793d96a8d6129bbe8728e0833aec))
+* **tasks:** leave dropped and older done tasks out of the default list ([#2935](https://github.com/Heey-Global/verity/issues/2935)) ([099f663](https://github.com/Heey-Global/verity/commit/099f66331ca7a8e4570f823822c8dba8129b9f96))
+
+
+### Performance Improvements
+
+* **server:** keep background branch reads from blocking open sessions ([#2937](https://github.com/Heey-Global/verity/issues/2937)) ([b621f27](https://github.com/Heey-Global/verity/commit/b621f27e30dd41bb258447e02e46ff3012cad056))
+
 ## [4.105.0](https://github.com/Heey-Global/verity/compare/v4.104.0...v4.105.0) (2026-11-26)
 
 
