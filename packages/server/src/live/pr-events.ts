@@ -26,8 +26,10 @@ const MAX_REMEMBERED_SESSIONS = 4_096;
  * read. The cache presents a status only after applying the session's pull
  * request visibility, and nothing in it depends on who views it:
  * `viewerCanMerge` describes the server's forge credential. Views derive the
- * compact `pr` marker from it the way the routes' `compactPr` does. Wiki maintenance sessions, which the session list leaves out, reach
- * only their own session topic.
+ * compact `pr` marker from it the way the routes' `compactPr` does.
+ *
+ * Wiki maintenance sessions, which the session list leaves out, reach only
+ * their own session topic.
  */
 export function createPrEvents(
   app: { log: { warn(obj: object, msg: string): void } },
