@@ -75,7 +75,7 @@ export {
   type RunnerFrameIngestResult,
 } from './event-writes.js';
 import { SessionLifecycleStore } from './session-lifecycle.js';
-import { sessionEventAppendLock, sessionEventAppendLockKey } from './session-event-lock.js';
+import { sessionEventAppendLockKey } from './session-event-lock.js';
 export { DeletedProjectError } from './deleted-project-error.js';
 import { ProjectAccessStore } from './project-access.js';
 import { ProjectLifecycleStore } from './project-lifecycle.js';
@@ -200,7 +200,7 @@ import {
   type BoundedHistoryResult,
 } from '@verity/events';
 import { randomUUID } from 'node:crypto';
-import { type AgentEvent, parseAgentEvent } from '@verity/events';
+import type { AgentEvent } from '@verity/events';
 import { type Kysely, sql } from 'kysely';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
 import {
@@ -224,8 +224,6 @@ import { KnowledgeStore } from './knowledge.js';
 import { IntegrationStore } from './integrations.js';
 import { LiveMeetingStore } from './live-meetings.js';
 import { StarterProjectStore } from './starter-projects.js';
-import { scrubNulEscapes } from './nul-scrub.js';
-import { redactSecrets } from './redact.js';
 import {
   SessionAutomationStore,
   type SessionAutomationInput,
@@ -504,29 +502,6 @@ export class EventStore implements EventSink {
         this.enqueuePersistedMessageEvent(id, seq, at, event),
       scheduleMessageProjection: () => this.scheduleMessageProjection(),
     }));
-  }
-
-  /**
-   * Serialize every append to one session's event log.
-   *
-   * A conditional append ({@link appendEventForRunningTurn}) tests the log it is about
-   * to write into. Under READ COMMITTED that test only sees what had COMMITTED when the
-   * statement began, so a concurrent append — a Runner frame ingest in particular, whose
-   * insert sits inside a multi-statement transaction — can be invisible to the predicate
-   * and still take the lower id. The result would be a message about a turn that had
-   * already spoken, placed after what it spoke.
-   *
-   * Serializing the appends removes the overlap instead of trying to detect it: each one
-   * commits before the next begins, so the predicate reads a settled log. Server
-   * generations overlap during reattach/cutover, so this in-process tail is only half of
-   * it: every append also takes {@link sessionEventAppendLock} inside its transaction, so
-   * the ordering holds between processes too. The tail is what makes that lock effective
-   * under PGlite, which does not model advisory-lock contention between its concurrent
-   * transactions — the same belt-and-braces pairing frame ingest and the message
-   * projection already use.
-   */
-  private async withSessionEventAppend<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
-    return this.eventWrites.withSessionEventAppend(sessionId, run);
   }
 
   private enqueuePersistedMessageEvent(
@@ -1867,7 +1842,7 @@ export class EventStore implements EventSink {
    * that follows it, and the successor it drains can all land between the check and the
    * insert — putting a message about a dead turn after a successful result, or into a
    * healthy turn's transcript. `insert … select … where` is one statement, so what it
-   * tests cannot be overtaken by what it writes, and {@link withSessionEventAppend}
+   * tests cannot be overtaken by what it writes, and {@link EventWriteStore.withSessionEventAppend}
    * keeps a concurrent append from being invisible to the test yet ordered before it.
    *
    * `turn_id` is part of the anchor, not just `prompt_seq`: a resume-retry re-anchors the
@@ -2348,41 +2323,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     event: AgentEvent,
   ): Promise<{ seq: number; ts: number } | undefined> {
-    const parsed = parseAgentEvent(event);
-    if (!parsed.success) {
-      throw new Error(`refusing to persist invalid event: ${parsed.error.message}`);
-    }
-    const payload = scrubNulEscapes(redactSecrets(JSON.stringify(event)));
-    const persisted = await this.withSessionEventAppend(sessionId, () =>
-      this.db.transaction().execute(async (tx) => {
-        await sessionEventAppendLock(tx, sessionId);
-        const del = await tx.deleteFrom('queued_turns').where('id', '=', id).executeTakeFirst();
-        if (del.numDeletedRows === 0n) return undefined;
-        const row = await tx
-          .insertInto('events')
-          .values({
-            session_id: sessionId,
-            type: event.t,
-            payload,
-          })
-          .returning(['id', 'created_at'])
-          .executeTakeFirstOrThrow();
-        return { seq: Number(row.id), ts: row.created_at.getTime() };
-      }),
-    );
-    // Enqueue only AFTER the transaction commits. Doing this inside the callback
-    // could project a prompt from a transaction that subsequently rolled back;
-    // omitting it entirely left successfully drained prompts absent from search
-    // until an unrelated backfill happened to run.
-    if (persisted !== undefined) {
-      this.enqueuePersistedMessageEvent(
-        sessionId,
-        persisted.seq,
-        new Date(persisted.ts),
-        JSON.parse(payload) as AgentEvent,
-      );
-    }
-    return persisted;
+    return this.eventWrites.drainQueuedTurn(id, sessionId, event);
   }
 
   /**

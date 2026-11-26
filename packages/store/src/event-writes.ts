@@ -760,4 +760,58 @@ export class EventWriteStore {
     );
     if (projectionInvalidated) this.deps.scheduleMessageProjection();
   }
+
+  /**
+   * Atomically drain a queued turn (lifecycle Phase 1, SR-5): in ONE transaction,
+   * delete its durable `queued_turns` row AND append its prompt `event`. Either the
+   * turn leaves the queue and its prompt is persisted, or neither — closing the
+   * `delete → persist` window where a crash dropped the row (double-run on restart)
+   * or dropped the prompt (lost turn). Returns the appended event's `seq`/`ts` for
+   * the live broadcast, or `undefined` if the row was already gone (a concurrent
+   * drain/retract won the race — the run-once latch: nothing persisted, no turn).
+   *
+   * The event is the drained turn's prompt (never a `tool_result`), so it needs no
+   * blob externalization — its attachments are already content-addressed refs.
+   */
+  async drainQueuedTurn(
+    id: string,
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number } | undefined> {
+    const parsed = parseAgentEvent(event);
+    if (!parsed.success) {
+      throw new Error(`refusing to persist invalid event: ${parsed.error.message}`);
+    }
+    const payload = scrubNulEscapes(redactSecrets(JSON.stringify(event)));
+    const persisted = await this.withSessionEventAppend(sessionId, () =>
+      this.db.transaction().execute(async (tx) => {
+        await sessionEventAppendLock(tx, sessionId);
+        const del = await tx.deleteFrom('queued_turns').where('id', '=', id).executeTakeFirst();
+        if (del.numDeletedRows === 0n) return undefined;
+        const row = await tx
+          .insertInto('events')
+          .values({
+            session_id: sessionId,
+            type: event.t,
+            payload,
+          })
+          .returning(['id', 'created_at'])
+          .executeTakeFirstOrThrow();
+        return { seq: Number(row.id), ts: row.created_at.getTime() };
+      }),
+    );
+    // Enqueue only AFTER the transaction commits. Doing this inside the callback
+    // could project a prompt from a transaction that subsequently rolled back;
+    // omitting it entirely left successfully drained prompts absent from search
+    // until an unrelated backfill happened to run.
+    if (persisted !== undefined) {
+      this.deps.enqueuePersistedMessageEvent(
+        sessionId,
+        persisted.seq,
+        new Date(persisted.ts),
+        JSON.parse(payload) as AgentEvent,
+      );
+    }
+    return persisted;
+  }
 }
