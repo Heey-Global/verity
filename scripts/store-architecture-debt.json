@@ -89,8 +89,6 @@
     "createPublicPreviewShare": "2c2a88bf 192fef57 cddc0e06 b97b11c6 1c1e64b3 f97e4406 3f376678 7c35f1da",
     "transitionPublicPreviewShare": "18ba892e c5284db1 d8d63c0d 6cdd04a0 dbd64f91 04e05b20 dee77dad e411cda9",
     "listPublicPreviewSharesDue": "e176e75c fa33f7fb 15f2823d f8997c6d 7a7a0059 474e9371 0896ea27 24c46543",
-    "getPackageProtectionDecision": "46d22604 861e6afb de5a8851 2f27f2a8 ff362509 b7a9b2a6 3e1ab4c4 de9639ee",
-    "setPackageProtectionDecision": "83f08bd9 f0f4dbb9 3482457d df2626ad 28da3223 2ef256ee 7ebf1e8d c5e5adc4",
     "backupGitRepositoryKey": "168080a4 92c68405 4eedf146 6c078ac1 a6db721b 855d169d fb4f8c80 6d80124e",
     "listDuePushReceipts": "ec5d9c81 b1d006bd 12e15d1a 87d59923 4431de40 e0498a68 b7d65056 eb6a0a52"
   },
