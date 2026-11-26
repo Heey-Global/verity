@@ -68,7 +68,7 @@ it('fails explicitly when even one file cannot fit, without accepting a partial 
   const execute = vi.fn(() => ({ ...outOfMemory, stdout: 'partial output' }));
   const io = options();
   expect(runLint(['large.ts'], { ...io, execute })).toBe(1);
-  expect(execute).toHaveBeenCalledTimes(2);
+  expect(execute).toHaveBeenCalledTimes(3);
   expect(io.output).not.toHaveBeenCalled();
   expect(io.error.mock.calls.map(([text]) => text).join('')).toContain('large.ts');
   expect(io.error.mock.calls.map(([text]) => text).join('')).toContain('No successful lint result');
@@ -142,6 +142,14 @@ it('sizes the type program to the whole worker group', () => {
   const args = lintWorkerArguments(files, 512, false, true);
   expect(args).toContain(`--type-batch=${files.length}`);
   expect(args.slice(args.indexOf('--') + 1)).toEqual(files);
+  expect(args).not.toContain('--lite-mode');
+});
+
+it('runs a lite-mode worker with the same heap budget and file arguments', () => {
+  const args = lintWorkerArguments(['large.ts'], 512, false, false, true);
+  expect(args.slice(0, 3)).toEqual([process.execPath, '--lite-mode', '--max-old-space-size=512']);
+  expect(args).toContain('--no-ambient-cache');
+  expect(args.slice(args.indexOf('--') + 1)).toEqual(['large.ts']);
 });
 
 it('separates large sources before starting workers and still checks oversized files', () => {
@@ -296,8 +304,46 @@ it('retries a single OOM without ambient metadata at the same heap and requires 
     return ambient ? outOfMemory : { status: 0, stdout: 'fully checked' };
   });
   expect(runLint(['large.ts'], { ...io, execute })).toBe(0);
-  expect(execute.mock.calls.map(([, , ambient]) => ambient)).toEqual([true, false]);
+  expect(execute.mock.calls.map(([, , ambient, lite]) => [ambient, lite])).toEqual([
+    [true, false],
+    [false, false],
+  ]);
   expect(io.output.mock.calls.map(([text]) => text).join('')).toBe('fully checked');
+});
+
+it('retries a single OOM once in lite mode at the same heap and requires a clean result', () => {
+  const io = options();
+  const execute = vi.fn((files: string[], heap: number, _ambient: boolean, lite: boolean) => {
+    expect(files).toEqual(['large.ts']);
+    expect(heap).toBe(io.heapMiB);
+    return lite ? { status: 0, stdout: 'checked without optimized code' } : outOfMemory;
+  });
+  expect(runLint(['large.ts'], { ...io, execute })).toBe(0);
+  expect(execute.mock.calls.map(([, , ambient, lite]) => [ambient, lite])).toEqual([
+    [true, false],
+    [false, false],
+    [false, true],
+  ]);
+  expect(io.output.mock.calls.map(([text]) => text).join('')).toBe(
+    'checked without optimized code',
+  );
+  const exhausted = vi.fn(() => outOfMemory);
+  const failed = options();
+  expect(runLint(['large.ts'], { ...failed, execute: exhausted })).toBe(1);
+  expect(exhausted).toHaveBeenCalledTimes(3);
+  const measured = vi.fn(() => outOfMemory);
+  expect(
+    runLint(['large.ts'], {
+      ...options(),
+      ambientCache: false,
+      liteRetry: false,
+      execute: measured,
+    }),
+  ).toBe(1);
+  expect(measured).toHaveBeenCalledTimes(1);
+  expect(failed.error.mock.calls.map(([text]) => text).join('')).toContain(
+    'No successful lint result was accepted for this file.',
+  );
 });
 
 it('preserves findings from the fresh worker and never retries an already disabled cache', () => {
@@ -309,5 +355,8 @@ it('preserves findings from the fresh worker and never retries an already disabl
   expect(io.output.mock.calls.map(([text]) => text).join('')).toContain('real lint finding');
   const disabled = vi.fn(() => outOfMemory);
   expect(runLint(['large.ts'], { ...options(), ambientCache: false, execute: disabled })).toBe(1);
-  expect(disabled).toHaveBeenCalledTimes(1);
+  expect(disabled.mock.calls.map(([, , ambient, lite]) => [ambient, lite])).toEqual([
+    [false, false],
+    [false, true],
+  ]);
 });
