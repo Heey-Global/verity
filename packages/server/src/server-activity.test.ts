@@ -1279,7 +1279,7 @@ describe('GET /sessions', () => {
     );
   });
 
-  it('refreshes idle list branches once a minute while active sessions retain the short TTL', async () => {
+  it('never re-reads a known idle list branch while active sessions retain the short TTL', async () => {
     const current = vi.fn(async () => 'feat/one');
     const server = buildServer({
       eventStore: ctx.store,
@@ -1313,9 +1313,9 @@ describe('GET /sessions', () => {
       await poll();
       expect(current.mock.calls).toEqual([[join(worktreeRoot, 'active')]]);
       current.mockClear();
-      now = 60_001;
+      now = 120_001; // An idle branch moves only through invalidated turns or switches.
       await poll();
-      expect(current).toHaveBeenCalledTimes(2);
+      expect(current.mock.calls).toEqual([[join(worktreeRoot, 'active')]]);
     } finally {
       clock.mockRestore();
       await server.close();
