@@ -28,8 +28,9 @@ export function applyOverviewEvent(
     const index = sessions.findIndex((session) => session.sessionId === event.sessionId);
     if (index < 0) return { kind: 'none' };
     const patched = withSummaryRow(sessions[index]!, event.patch);
-    // A row this app cannot read is left to the overview read.
-    if (patched === undefined) return { kind: 'reload' };
+    // A row this app cannot read is ignored: the list read carries the same
+    // fields and would fail on them too, so reading again only adds load.
+    if (patched === undefined) return { kind: 'none' };
     const next = [...sessions];
     next[index] = patched;
     return { kind: 'local', sessions: next };

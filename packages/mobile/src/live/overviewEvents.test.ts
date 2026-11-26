@@ -234,8 +234,10 @@ describe('applyOverviewEvent with session.summary', () => {
     expect(next!.lastActivityAt).toBeNull();
   });
 
-  it('asks for a read when the row is not one this app can read', () => {
-    expect(applyOverviewEvent([waiting()], summary(waiting(), { status: 42 })).kind).toBe('reload');
+  // The list read carries the same fields; reading it for every row of a
+  // streaming session would only add load.
+  it('ignores a row this app cannot read', () => {
+    expect(applyOverviewEvent([waiting()], summary(waiting(), { status: 42 })).kind).toBe('none');
   });
 
   it('leaves sessions it does not list to their list read', () => {
