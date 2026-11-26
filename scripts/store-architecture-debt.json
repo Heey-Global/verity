@@ -102,16 +102,6 @@
     "latestPromptInitiator": "5918073c 30ac234c be62ee2a 3ef3f1b0 cfe329cf 5276f730 968d099e ceea9b0a",
     "runningTurnInitiator": "5f0caf0c 12e5a1d2 b0860e73 0c0a91a8 4456f22e c6226be5 47f305b7 cb23d9cf",
     "promptInitiatorAt": "cae0d7b5 b88499b6 124e4d98 a943047e 37ecadb4 6c3cc050 7187bd6b 7fb48b4c",
-    "listSessionProjectionFacts": "824530ff d88c8750 243ea390 44fc7edc dea29474 ad70e10a fa12071e d29ac19e",
-    "readProjectionTails": "70444c97 a57cb75b d0cff88f 20aa0a0d 7edbd8ad 4de333d1 66bfc8a4 dc2c0d3d",
-    "readLatestRateLimits": "1a74471a 16bf171b 8d1ab66e 9d041c62 29676a17 84ef1dec 36d406f2 5dc41c68",
-    "readUsageTotals": "381361fc c8b0f90e 0ca37f5e 597e2ba2 03cac747 7284fbe9 03e16635 c7c64975",
-    "listSessionProjectionEvents": "f7c8f6e0 3c1f0682 4c7e3921 fe1440a3 289ff6b8 713b7aea b0cfdc41 6cca25c9",
-    "visitSessionProjectionEvents": "eaa25ad5 4f9348cd b150d79e d7f92c1d 8be9d836 cb527d9e bbd6d3b7 a1878149",
-    "listRecentSessionProjectionEvents": "3e430656 52b24c31 bde5e972 d793fbfa fe828bda 744e60a5 feab1f3e fc86311c",
-    "latestSessionTurnControlEvent": "fc51a11e e7309e4e b58c2aae 7dbf36ee a20318b6 cfc7603f d9b08a07 0a7bcbe3",
-    "sessionHasTaskLifecycleEvent": "7a7581b8 8b0c742f 5ba134c6 a5c8e6be 1d128ba0 c1929e25 7cd23508 9c9467c7",
-    "readProjectionSlices": "e1d75abf 29e988aa 671fa8a5 a29a8243 6bf373fb 79549d44 df8540b0 b6d92a15",
     "enqueuePlanImplementation": "92ae16c0 7a2f7faa 883ddacc a2fe3292 9c679e25 68d899dc 56a3c639 11a3543a",
     "confirmTurnSettled": "56e23096 f20324a8 03944213 ed1db3b0 b280a1c7 3a3c7387 7eaef8de d641c77f",
     "drainQueuedTurn": "5174c6d5 f726c9c0 712bba1c 6308e397 10db8470 d22ab003 aff06ea1 9bc4bc8e",
@@ -127,9 +117,7 @@
     "getPackageProtectionDecision": "46d22604 861e6afb de5a8851 2f27f2a8 ff362509 b7a9b2a6 3e1ab4c4 de9639ee",
     "setPackageProtectionDecision": "83f08bd9 f0f4dbb9 3482457d df2626ad 28da3223 2ef256ee 7ebf1e8d c5e5adc4",
     "backupGitRepositoryKey": "168080a4 92c68405 4eedf146 6c078ac1 a6db721b 855d169d fb4f8c80 6d80124e",
-    "listDuePushReceipts": "ec5d9c81 b1d006bd 12e15d1a 87d59923 4431de40 e0498a68 b7d65056 eb6a0a52",
-    "module: usageSum": "364964e0 6b0c59db bcb933a6 b49f8eff 22e1b39e c3cde4af 7e2e651f c6b83cc6",
-    "module: emptyUsageTotals": "24b7ead5 dcdef6b2 4f821524 ab40dd27 858d1ae5 e5c7fb07 e71b4630 3236939e"
+    "listDuePushReceipts": "ec5d9c81 b1d006bd 12e15d1a 87d59923 4431de40 e0498a68 b7d65056 eb6a0a52"
   },
   "imports": [
     "packages/store/src/db.ts -> packages/store/src/migrations.ts",
