@@ -71,6 +71,8 @@ export interface TaskListFilter {
   sessionId?: string | undefined;
   statuses?: readonly TaskStatus[] | undefined;
   origin?: TaskOrigin | undefined;
+  /** Keep only `done` tasks completed at or after this instant; other statuses are unaffected. */
+  doneSince?: Date | undefined;
 }
 
 export class TaskNotFoundError extends Error {
@@ -158,6 +160,11 @@ export class TaskStore {
     if (filter.statuses !== undefined && filter.statuses.length > 0)
       query = query.where('status', 'in', [...filter.statuses]);
     if (filter.origin !== undefined) query = query.where('origin', '=', filter.origin);
+    const { doneSince } = filter;
+    if (doneSince !== undefined)
+      query = query.where((eb) =>
+        eb.or([eb('status', '<>', 'done'), eb('completed_at', '>=', doneSince)]),
+      );
     const rows = await query.orderBy('sort', 'asc').orderBy('created_at', 'asc').execute();
     return rows.map((row) => this.record(row));
   }

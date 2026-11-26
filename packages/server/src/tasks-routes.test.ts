@@ -5,7 +5,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 
-import { executeTasksTool, registerTasksRoutes } from './tasks-routes.js';
+import { DONE_TASK_LIST_WINDOW_MS, executeTasksTool, registerTasksRoutes } from './tasks-routes.js';
 
 const ADMIN = '00000000-0000-4000-8000-000000000001';
 const MEMBER = '00000000-0000-4000-8000-000000000002';
@@ -1064,3 +1064,33 @@ it.each([{ detail: null }, { detail: '' }, { sessionId: 's1' }, { status: 'done'
     expect(queryTitle).not.toHaveBeenCalled();
   },
 );
+
+// Every client and the live observer re-read the unfiltered list on each change. Returning
+// all history there made each refresh carry every task ever closed; a filtered read must
+// still reach that history.
+it('lists only what clients show by default, and full history on an explicit status', async () => {
+  const T3 = '33333333-3333-4333-8333-333333333333';
+  const T4 = '44444444-4444-4444-8444-444444444444';
+  const task = (id: string, status: TaskRecord['status']) =>
+    store.tasks.upsert({ id, ownerUserId: ADMIN, origin: 'user', title: id, status });
+  await task(T1, 'open');
+  await task(T2, 'dropped');
+  await task(T3, 'done');
+  await task(T4, 'done');
+  const outsideWindow = new Date(Date.now() - DONE_TASK_LIST_WINDOW_MS - 60_000);
+  await ctx.db
+    .updateTable('tasks')
+    .set({ completed_at: outsideWindow.toISOString() })
+    .where('id', '=', T4)
+    .execute();
+
+  const list = async (url: string) => ids((await app.inject({ method: 'GET', url })).json()).sort();
+  expect(await list('/tasks')).toEqual([T1, T3]);
+  expect(await list('/tasks?status=done')).toEqual([T3, T4]);
+  expect(await list('/tasks?status=open,in_progress,done,dropped')).toEqual([T1, T2, T3, T4]);
+  const since = encodeURIComponent(new Date(Date.now() - DONE_TASK_LIST_WINDOW_MS).toISOString());
+  expect(await list(`/tasks?status=done,dropped&doneSince=${since}`)).toEqual([T2, T3]);
+  expect((await app.inject({ method: 'GET', url: '/tasks?doneSince=yesterday' })).statusCode).toBe(
+    400,
+  );
+});
