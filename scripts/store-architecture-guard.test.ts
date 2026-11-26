@@ -32,6 +32,9 @@ it('accepts parameter forwarding and detects logic hidden in a return expression
     'return this.db.selectFrom("events");',
     'if (id) return this.events.read(id);',
     'return this.events.read(id.trim());',
+    'return this.events?.read(id);',
+    'return this.events.read?.(id);',
+    'return this?.events.read(id);',
   ]) {
     expect(
       Object.keys(facadeImplementations('class EventStore { read(id: string) { ' + body + ' } }')),

@@ -61,6 +61,7 @@ export function facadeImplementations(text) {
       ) &&
       expression &&
       ts.isCallExpression(expression) &&
+      !ts.isOptionalChain(expression) &&
       ts.isPropertyAccessExpression(expression.expression) &&
       ts.isPropertyAccessExpression(expression.expression.expression) &&
       expression.expression.expression.expression.kind === ts.SyntaxKind.ThisKeyword &&
