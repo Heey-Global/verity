@@ -108,6 +108,8 @@ export function VerityApprovalCard({
 }) {
   const overview =
     approval.input === undefined ? null : permissionOverview(approval.tool, approval.input);
+  // Offered only with something to read: never an Allow next to an empty card.
+  const decidable = overview?.decidable === true && (overview.lines?.length ?? 0) > 0;
   return (
     <View testID="verity-approval">
       <Card stacked selected>
@@ -116,8 +118,8 @@ export function VerityApprovalCard({
           wrapTitle
           trailing={<StatusTag intent="action" label="Waiting for you" />}
         />
-        {overview?.decidable
-          ? overview.lines?.map((line, index) => (
+        {decidable
+          ? overview?.lines?.map((line, index) => (
               <Text
                 key={index}
                 variant={line.kind === 'code' ? 'code' : 'bodySmall'}
@@ -136,7 +138,7 @@ export function VerityApprovalCard({
           approval={approval}
           allowLabel="Allow"
           denyLabel="Deny"
-          decidable={overview?.decidable === true}
+          decidable={decidable}
           onReview={onReview}
         />
       </Card>

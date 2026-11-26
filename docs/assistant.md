@@ -181,7 +181,7 @@ session's permission route; nothing jumps to the session.
   result (see [Handoff results](#handoff-results)). `Don't hand over` denies
   with a fixed message (`ASSISTANT_HANDOFF_DECLINED`) that the assistant reads
   as the user's decision; the card then shows `Not handed over`, while any other
-  error shows `Failed`.
+  error, including a denial in the session's own card, shows `Failed`.
 - **Other approvals** (a mail to send, an event to change) are decided on their
   own card when their summary carries the whole request, as on Home.
 - A request too large to carry, one that does not parse, or one from an older

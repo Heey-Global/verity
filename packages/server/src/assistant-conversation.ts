@@ -215,7 +215,7 @@ export function attachHandoffResults(
  * card is the newest unlinked still-pending handoff with the approval's title whose
  * call came before the approval: a handoff waits on its approval before it can answer,
  * and taking the approvals newest first keeps two with one title on their own cards,
- * while a card a crashed turn left pending cannot claim a later approval. The title
+ * and a card a crashed turn left pending only claims an approval no newer card matches. The title
  * comes from the full request, so an approval too large to carry still finds its card.
  * Without a match the approval stays a card of its own rather than land on the wrong one.
  */
