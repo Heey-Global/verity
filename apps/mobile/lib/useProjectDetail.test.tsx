@@ -1,5 +1,4 @@
 import {
-  publishProjectStatusMutation,
   type LiveTopicSink,
   type ProjectDetail,
   type ProjectRecord,
@@ -127,23 +126,56 @@ describe('useProjectDetail overview events', () => {
   });
 
   it('keeps a project another screen saved while this read was on its way', async () => {
-    let release: (detail: ProjectDetail) => void = () => undefined;
+    const releases: Array<(detail: ProjectDetail) => void> = [];
     const client = {
-      getProject: jest.fn(() => new Promise<ProjectDetail>((resolve) => (release = resolve))),
+      getProject: jest.fn(() => new Promise<ProjectDetail>((resolve) => releases.push(resolve))),
       setProjectSetupStatus: jest.fn(),
     } as unknown as VerityClient;
     const { result } = renderHook(() => useProjectDetail(client, 'p4'));
+    const other = renderHook(() => useProjectDetail(client, 'p4'));
     act(() =>
-      publishProjectStatusMutation({ id: 'p4', name: 'P4', state: 'active' } as ProjectRecord),
+      other.result.current.onProjectUpdated({
+        id: 'p4',
+        name: 'P4',
+        state: 'active',
+      } as ProjectRecord),
     );
     await act(async () =>
-      release({
+      releases[0]!({
         ...detailWith([]),
         project: { id: 'p4', name: 'P4', state: 'cloning' },
       } as ProjectDetail),
     );
     await waitFor(() => expect(result.current.detail).toBeDefined());
     expect(result.current.detail?.project.state).toBe('active');
+  });
+
+  it("keeps the person's fold state and dismissed items when an action answers", async () => {
+    const client = {
+      getProject: jest.fn().mockResolvedValue({
+        ...detailWith([]),
+        project: { id: 'p7', name: 'P7', state: 'active', collapsed: true, inboxDismissed: ['x'] },
+      }),
+      setProjectSetupStatus: jest.fn(),
+    } as unknown as VerityClient;
+    const { result } = renderHook(() => useProjectDetail(client, 'p7'));
+    await waitFor(() => expect(result.current.detail).toBeDefined());
+    const other = renderHook(() => useProjectDetail(client, 'p7'));
+    await waitFor(() => expect(other.result.current.detail).toBeDefined());
+    // An action's answer does not speak for this person's view of the project.
+    act(() =>
+      other.result.current.onProjectUpdated({
+        id: 'p7',
+        name: 'P7',
+        state: 'absent',
+        collapsed: false,
+      } as ProjectRecord),
+    );
+    expect(result.current.detail?.project).toMatchObject({
+      state: 'absent',
+      collapsed: true,
+      inboxDismissed: ['x'],
+    });
   });
 
   it('shows a pull request status from an event without reading', async () => {
@@ -177,15 +209,20 @@ describe('useProjectDetail overview events', () => {
   // Past the replay bound the store refuses the read; the page must still
   // list what the server sent rather than show an empty project.
   it("shows the read's sessions when the store could not take it", async () => {
-    let release: (detail: ProjectDetail) => void = () => undefined;
+    const releases: Array<(detail: ProjectDetail) => void> = [];
     const client = {
-      getProject: jest.fn(() => new Promise<ProjectDetail>((resolve) => (release = resolve))),
+      getProject: jest.fn(() => new Promise<ProjectDetail>((resolve) => releases.push(resolve))),
       setProjectSetupStatus: jest.fn(),
     } as unknown as VerityClient;
     const { result } = renderHook(() => useProjectDetail(client, 'p6'));
     // An older record of the project, as another screen saved it earlier.
+    const other = renderHook(() => useProjectDetail(client, 'p6'));
     act(() =>
-      publishProjectStatusMutation({ id: 'p6', name: 'Old', state: 'active' } as ProjectRecord),
+      other.result.current.onProjectUpdated({
+        id: 'p6',
+        name: 'Old',
+        state: 'active',
+      } as ProjectRecord),
     );
     const sink = mockSinks.get('project:p6')!;
     act(() => {
@@ -193,7 +230,7 @@ describe('useProjectDetail overview events', () => {
         sink.event({ t: 'choices.answered', sessionId: `other-${i}`, rev: 1 });
     });
     await act(async () =>
-      release({
+      releases[0]!({
         ...detailWith([{ ...waiting, sessionId: 's6', projectId: 'p6' }]),
         project: { id: 'p6', name: 'P6' },
       } as ProjectDetail),

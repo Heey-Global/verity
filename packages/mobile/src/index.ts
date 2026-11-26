@@ -33,12 +33,10 @@ export {
 } from './pullRequestStatusMutation.js';
 export {
   publishDevServerStatusMutation,
-  publishProjectStatusMutation,
   publishSessionStatusMutation,
   publishServerUpdateStatusMutation,
   publishSessionAutomationMutation,
   subscribeDevServerStatusMutations,
-  subscribeProjectStatusMutations,
   subscribeSessionAutomationMutations,
   subscribeSessionStatusMutations,
   subscribeServerUpdateStatusMutations,

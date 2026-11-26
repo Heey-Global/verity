@@ -8,9 +8,9 @@ import { useFocusEffect } from 'expo-router';
 // that can act on it, that the Sandbox screen shows one honest state with
 // the one action that answers it, and that a choice made on a screen lands on
 // the server as exactly the PATCH the server expects.
-import { subscribeProjectStatusMutations, type ProjectDetail } from '@verity/mobile';
+import type { ProjectDetail } from '@verity/mobile';
 import { Alert, Linking } from 'react-native';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
@@ -20,6 +20,8 @@ jest.mock('../lib/homePreferences', () => ({
   useNewDesignChoice: () => mockNewDesignChoice,
 }));
 
+import { getVerityBaseUrl } from '../lib/client';
+import { useOverviewStore } from '../lib/overviewTopics';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import ProjectSandboxScreen from '../app/project/[id]/settings/sandbox';
 import ProjectServicesScreen from '../app/project/[id]/settings/services';
@@ -548,27 +550,23 @@ describe('project settings — sandbox', () => {
   // The pill reads from the shared `projectBadge`, so it names the container state
   // the same way the overview dot does — and never falls back to the raw state id
   // (it used to render a literal "container_starting" at the operator).
-  // The project screen and its settings routes stack on top of each other, each
-  // polling the same project. Only an ACTION's response may go on the status
-  // bus: a published poll result would land in the other instances as a pending
-  // mutation that outranks their own newer fetch, so an older poll could roll a
-  // visible screen back from Running to Starting.
-  it('publishes an action result to the status bus but never a poll result', async () => {
+  // The project screen and its settings routes stack on top of each other, and
+  // Home lists the same project. An action's answer goes into the store they
+  // share, so every one of them shows it without a read of its own.
+  it('puts an action result into the store every view of the project shows', async () => {
     const base = makeDetail();
     const detail: ProjectDetail = { ...base, project: { ...base.project, state: 'active' } };
     const deprovisionProject = jest.fn().mockResolvedValue({ ...detail.project, state: 'absent' });
     mockCreateVerityClient.mockReturnValue(makeClient({ detail, deprovisionProject }));
-    const published = jest.fn();
-    const unsubscribe = subscribeProjectStatusMutations(published);
+    const shared = renderHook(() => useOverviewStore(getVerityBaseUrl()));
     render(<ProjectSandboxScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Pause project(,|$)/));
     fireEvent.press(screen.getByRole('button', { name: 'Pause sandbox' }));
     await waitFor(() => expect(deprovisionProject).toHaveBeenCalledWith('p/1', { purge: false }));
-    await waitFor(() => expect(published).toHaveBeenCalledTimes(1));
-    expect(published).toHaveBeenCalledWith(expect.objectContaining({ id: 'p/1', state: 'absent' }));
+    await waitFor(() => expect(shared.result.current.project('p/1')?.state).toBe('absent'));
     expect(await screen.findByLabelText(/^Start project(,|$)/)).toBeOnTheScreen();
-    unsubscribe();
+    shared.unmount();
   });
 
   // Every stacked screen sees the same `pending` status on load; without a

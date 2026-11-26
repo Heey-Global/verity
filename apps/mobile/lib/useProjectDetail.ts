@@ -8,14 +8,13 @@ import { useOverviewStore, useOverviewTopics } from './overviewTopics';
 // environment, model), and expo-router mounts each of them independently. Every
 // route reads the project through this hook, so the container state ages the
 // same wherever the operator is looking, and a lifecycle action taken on one
-// screen reaches the others through the shared status-mutation bus rather than
-// through a stale copy each screen fetched for itself.
+// screen reaches the others, and Home, through the shared overview store
+// rather than through a stale copy each screen fetched for itself.
+import { mergeProjectStatusMutation } from './projectStatusMutation';
 import {
   VerityApiError,
   applyOverviewEvent,
   projectEventUpdate,
-  publishProjectStatusMutation,
-  subscribeProjectStatusMutations,
   type OverviewStore,
   type ProjectDetail,
   type ProjectProfile,
@@ -58,11 +57,15 @@ export type ProjectDetailState = {
 // would PATCH the same status.
 const setupMigrations = new Set<string>();
 
-/** A project an action or another screen returned is newer than any read
- * still on its way, so it is applied as the newest read of that project. */
+/** A project an action returned is newer than any read still on its way, so
+ * it is applied as the newest read of that project, and every screen showing
+ * the project, Home included, shows it from the store. An action does not own
+ * the person's view of the project: fold state and dismissed items stay as
+ * the last read left them. */
 function adoptProject(store: OverviewStore, project: ProjectRecord): void {
+  const adopted = mergeProjectStatusMutation(store.project(project.id), project);
   // `applyProjects` ends the read it is given; no `endRead` is needed.
-  store.applyProjects(store.beginRead(), [project], { covers: (p) => p.id === project.id });
+  store.applyProjects(store.beginRead(), [adopted], { covers: (p) => p.id === project.id });
 }
 
 export function useProjectDetail(client: VerityClient, projectId: string): ProjectDetailState {
@@ -87,17 +90,14 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   // to show the operator until they come back — at which point the focus
   // reload below fetches fresh state anyway.
   const focusedRef = useRef(false);
-  // The record this screen published itself; its echo is already adopted.
-  const publishedProjectRef = useRef<ProjectRecord | undefined>(undefined);
 
   const onProjectUpdated = useCallback((next: ProjectRecord) => {
     // A poll already in flight carries pre-action state and must not win later.
     loadGeneration.current += 1;
     setLoading(false);
+    // Other screens of the project and Home show it from the store.
     adoptProject(storeRef.current, next);
     setDetail((current) => (current ? { ...current, project: next } : current));
-    publishedProjectRef.current = next;
-    publishProjectStatusMutation(next);
   }, []);
   const onSettingsSaved = useCallback((next: ProjectSettings) => {
     // A detail request started before the PATCH may return old settings later.
@@ -176,12 +176,9 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
               if (focusedRef.current) void loadRef.current(true, true);
             });
           }
-          // A fetch result deliberately stays off the status bus. Only an
-          // action's response is published (see `onProjectUpdated`): with the
-          // project screen and its settings routes stacked, each polling, a
-          // published fetch would land in the other instances as a "pending
-          // mutation" that outranks their own newer fetch — an older poll
-          // could then roll the visible screen back to a state it had left.
+          // The store keeps what a newer read or an action's answer said, so
+          // an older read of a stacked screen cannot roll the visible one
+          // back to a state it had left.
         }
       } catch (caught) {
         if (!silent && generation === loadGeneration.current) {
@@ -201,16 +198,6 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   loadRef.current = load;
 
   const detailLoaded = detail !== undefined;
-  useEffect(
-    () =>
-      subscribeProjectStatusMutations((next) => {
-        if (next.id !== projectId || next === publishedProjectRef.current) return;
-        // Another screen's action: newer than a read of this one in flight.
-        adoptProject(storeRef.current, next);
-        setDetail((current) => (current ? { ...current, project: next } : current));
-      }),
-    [projectId],
-  );
   useEffect(() => {
     void load();
   }, [load]);
