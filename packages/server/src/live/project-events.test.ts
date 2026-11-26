@@ -43,14 +43,17 @@ function setup() {
       return () => observers.delete(listener);
     },
   };
-  let identity: string | undefined = 'toolkit-a';
+  let identity: string | Error | undefined = 'toolkit-a';
   const domainEvents = new DomainEventBus();
   const closers: (() => unknown)[] = [];
   const ctx = {
     deps: {
       eventStore: { projectChanges, getProject: async (id: string) => rows.get(id) },
       sandboxUpdates,
-      toolkitIdentity: async () => identity,
+      toolkitIdentity: async () => {
+        if (identity instanceof Error) throw identity;
+        return identity;
+      },
     },
     domainEvents,
     lifecycle: { onClose: (stop: () => unknown) => closers.push(stop) },
@@ -70,7 +73,7 @@ function setup() {
     observers,
     closers,
     setStatus: (next: SandboxUpdateStatus) => (nextStatus = next),
-    setIdentity: (next: string | undefined) => (identity = next),
+    setIdentity: (next: string | Error | undefined) => (identity = next),
   };
 }
 
@@ -164,6 +167,22 @@ describe('installProjectEvents', () => {
       expect(w.events().slice(count)).toContainEqual(
         expect.objectContaining({ t: 'project.changed', patch: { toolkitDrift: null } }),
       ),
+    );
+  });
+
+  it('keeps the published drift while the server cannot read its own toolkit', async () => {
+    const w = setup();
+    w.write({ state: 'active', imageRef: 'img:1', toolkitIdentity: 'toolkit-old' });
+    await vi.waitFor(() => expect(w.events()).toHaveLength(2));
+    w.setIdentity(new Error('bundle unreadable'));
+    w.write({ name: 'Renamed' });
+    await vi.waitFor(() => expect(w.events()).toHaveLength(3));
+    w.setIdentity('toolkit-a');
+    w.write({ name: 'Renamed again' });
+    await vi.waitFor(() => expect(w.events()).toHaveLength(4));
+    // Neither the failure nor the recovery changed the verdict views hold.
+    expect(w.events().some((event) => 'patch' in event && 'toolkitDrift' in event.patch)).toBe(
+      false,
     );
   });
 
@@ -271,7 +290,7 @@ describe('project state writers', () => {
     for (const { file, text } of sources) {
       for (const method of methodsOf(text)) {
         if (
-          !/updateTable\('projects'\)\s*\.set\(\{[\s\S]*?\b(?:latest_release_tag|toolkit_identity)\s*:/u.test(
+          !/updateTable\('projects'\)\s*\.set\(\{[^}]*?\b(?:latest_release_tag|toolkit_identity)\s*:/u.test(
             method.body,
           )
         ) {

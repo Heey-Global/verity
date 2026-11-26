@@ -12,6 +12,9 @@ import { createRevisions } from './revisions.js';
  * like any other. */
 const MAX_REMEMBERED_PROJECTS = 4_096;
 
+/** The server's own toolkit identity could not be read. */
+const UNREADABLE = Symbol('unreadable');
+
 interface Remembered {
   lifecycle: string;
   name: string;
@@ -60,10 +63,11 @@ export function installProjectEvents(
   const revisions = createRevisions();
   const remembered = new Map<string, Remembered>();
   const updateAvailable = new Map<string, boolean>();
-  // Cached process-wide on success; a failure compares as "cannot judge", the
-  // same verdict the project routes show for it.
-  const serverToolkitIdentity = (): Promise<string | undefined> =>
-    (deps.toolkitIdentity ?? cachedTrustedToolkitIdentity)().catch(() => undefined);
+  // Cached process-wide on success. A failed lookup is a fault of this server,
+  // not news about the project: the verdict last published stands, rather than
+  // a banner that disappears and returns with every hiccup.
+  const serverToolkitIdentity = (): Promise<string | undefined | typeof UNREADABLE> =>
+    (deps.toolkitIdentity ?? cachedTrustedToolkitIdentity)().catch(() => UNREADABLE);
 
   const publish = (projectId: string, event: DomainEvent): void => {
     domainEvents.publish(domainTopic('project', projectId), event);
@@ -76,9 +80,13 @@ export function installProjectEvents(
       updateAvailable.delete(projectId);
       return;
     }
-    const drift = reportedToolkitDrift(project, await serverToolkitIdentity());
-    const next = rememberedOf(project, drift);
+    const identity = await serverToolkitIdentity();
+    const drift = identity === UNREADABLE ? undefined : reportedToolkitDrift(project, identity);
     const previous = remembered.get(projectId);
+    const next = rememberedOf(
+      project,
+      drift === undefined ? (previous?.drift ?? '') : JSON.stringify(drift),
+    );
     remember(remembered, projectId, next);
     if (previous?.lifecycle !== next.lifecycle) {
       const { state, lifecycleState } = publicLifecycle(project);
@@ -101,7 +109,9 @@ export function installProjectEvents(
     if (previous !== undefined && previous.release !== next.release) {
       for (const field of RELEASE_FIELDS) patch[field] = project[field];
     }
-    if (previous !== undefined && previous.drift !== next.drift) patch['toolkitDrift'] = drift;
+    if (drift !== undefined && previous !== undefined && previous.drift !== next.drift) {
+      patch['toolkitDrift'] = drift;
+    }
     if (Object.keys(patch).length > 0) {
       publish(projectId, {
         t: 'project.changed',
@@ -199,14 +209,14 @@ function publicLifecycle(project: ProjectRecord): { state: string; lifecycleStat
   return sleeping ? { state: 'active', lifecycleState: project.state } : { state: project.state };
 }
 
-function rememberedOf(project: ProjectRecord, drift: unknown): Remembered {
+function rememberedOf(project: ProjectRecord, drift: string): Remembered {
   return {
     lifecycle: JSON.stringify([project.state, project.provisionError, project.provisionWarning]),
     name: project.name,
     setupStatus: project.setupStatus ?? null,
     image: JSON.stringify([project.imageRef, project.toolkitIdentity]),
     release: JSON.stringify(RELEASE_FIELDS.map((field) => project[field])),
-    drift: JSON.stringify(drift),
+    drift,
   };
 }
 
