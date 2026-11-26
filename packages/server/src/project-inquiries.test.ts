@@ -122,6 +122,21 @@ const request = {
 };
 
 describe('project inquiries', () => {
+  it('returns an actionable gateway refusal when an inquiry target tries to forward a request', async () => {
+    const h = harness();
+    const incoming = await h.service.request('source', null, request);
+    h.store.projectInquiries.create.mockClear();
+
+    await expect(
+      h.service.request(incoming.targetSessionId, null, { ...request, targetProjectId: 'other' }),
+    ).rejects.toMatchObject({
+      name: 'ControlPlaneSessionAuthorityError',
+      message:
+        'Inquiry targets cannot forward requests. Ask the originating session to send the follow-up.',
+    });
+    expect(h.store.projectInquiries.create).not.toHaveBeenCalled();
+  });
+
   it('reuses one target for follow-up questions and sets read-only planning before dispatch', async () => {
     const h = harness();
     const first = await h.service.request('source', null, request);

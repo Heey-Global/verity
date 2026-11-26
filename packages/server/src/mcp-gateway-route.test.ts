@@ -3010,29 +3010,45 @@ it('shows the stored general QA assignment on a one-time approval card', async (
   });
 });
 
-it('keeps inquiry targets read-only even when a normal planning tool could mutate session state', async () => {
-  const harness = build({ planningTools: true, unlocked: true });
-  await harness.store.createProject({
-    id: 'p1',
-    kind: 'local',
-    owner: '__local__',
-    repo: 'alpha',
-    containerName: 'verity-alpha',
-    state: 'active',
-  });
-  for (const sessionId of ['source', 's1'])
-    await harness.store.createSession({
-      sessionId,
-      projectId: 'p1',
-      worktree: `/tmp/inquiry-${sessionId}`,
+async function buildInquiryTarget() {
+  const h = build({ planningTools: true, unlocked: true });
+  for (const id of ['p1', 'source']) {
+    await h.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo: id,
+      containerName: id,
+      state: 'active',
+    });
+    await h.store.createSession({
+      sessionId: id === 'p1' ? 's1' : id,
+      projectId: id,
+      worktree: `/wt/${id}`,
       model: 'm',
     });
-  await harness.store.projectInquiries.bind('source', 'p1', 's1');
+  }
+  await h.store.projectInquiries.bind('source', 'p1', 's1');
+  return h;
+}
+it('keeps inquiry targets read-only even when a normal planning tool could mutate session state', async () => {
+  const harness = await buildInquiryTarget();
   await harness.store.startSessionPlanning('s1');
   const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
   await withListener(harness, async (socketPath) => {
     for (const [name, args] of [
       ['verity_tasks', { action: 'add', tasks: [{ title: 'Unauthorized change' }] }],
+      [
+        'verity_project_inquiry',
+        {
+          operation: 'request',
+          requestId: 'follow-up',
+          targetProjectId: 'source',
+          title: 'Question',
+          body: 'Inspect',
+          kind: 'question',
+        },
+      ],
       ['verity_end_planning', { action: 'discard' }],
     ] as const) {
       const response = await postUnix(socketPath, `Bearer ${token}`, {
@@ -3043,13 +3059,14 @@ it('keeps inquiry targets read-only even when a normal planning tool could mutat
       });
       const result = (JSON.parse(response.body) as { result: { isError?: boolean } }).result;
       expect(result.isError, response.body).toBe(true);
-      expect(response.body).toContain('target-side human approval');
+      expect(response.body).toContain(
+        name === 'verity_project_inquiry' ? 'originating session' : 'target-side human approval',
+      );
     }
   });
   expect((await harness.store.getSession('s1'))?.planning).toBe('active');
   expect(harness.approvals).toEqual([]);
 });
-
 it('lets an approved inquiry change start, present and discard its own plan', async () => {
   const harness = build({ planningTools: true, unlocked: true });
   await harness.store.createProject({
@@ -3114,25 +3131,8 @@ it('lets an approved inquiry change start, present and discard its own plan', as
 });
 
 it('executes inquiry list and answer tools while a question target remains in planning', async () => {
-  const h = build({ planningTools: true, unlocked: true });
-  for (const id of ['p1', 'source']) {
-    await h.store.createProject({
-      id,
-      kind: 'local',
-      owner: '__local__',
-      repo: id,
-      containerName: id,
-      state: 'active',
-    });
-    await h.store.createSession({
-      sessionId: id === 'p1' ? 's1' : id,
-      projectId: id,
-      worktree: `/wt/${id}`,
-      model: 'm',
-    });
-  }
+  const h = await buildInquiryTarget();
   await h.store.projectInquiries.setGrant('source', 'p1', true);
-  await h.store.projectInquiries.bind('source', 'p1', 's1');
   await h.store.projectInquiries.create({
     id: 'question',
     sourceSessionId: 'source',

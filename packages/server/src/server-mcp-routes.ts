@@ -1,3 +1,4 @@
+import { authorizeInquiryTargetTool } from './server-project-inquiries.js';
 import { createMcpAppAuthorization } from './mcp-apps-authorization.js';
 import { installDetachedSecretApprovals } from './detached-secret-approvals.js';
 import { createBrokeredSecretAuthorization } from './brokered-secret-authorization.js';
@@ -917,9 +918,8 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
           throw new ControlPlaneSessionAuthorityError(
             'QA uses server-validated decisions, not executable tools.',
           );
-        // The assistant reads mail and voice notes, so it gets an allow-list rather than
-        // Control's full set: no fleet-wide reads, secrets or brokered HTTP. A tool added to
-        // Control later stays closed to it until it is listed here.
+        // The assistant's allow-list excludes fleet-wide reads, secrets and brokered HTTP.
+        // New Control tools remain closed to the assistant until explicitly listed.
         const assistantRefusal = assistantToolRefusal(
           await deps.eventStore.assistant.settings(),
           sessionId,
@@ -932,19 +932,7 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
           throw new ControlPlaneSessionAuthorityError(
             'The calling user no longer has project execution permission.',
           );
-        if (
-          (await deps.eventStore.getSession(sessionId))?.planning === 'active' &&
-          (await deps.eventStore.projectInquiries.isReadOnlyTarget(sessionId)) &&
-          toolName !== 'verity_app_help' &&
-          !(
-            toolName === 'verity_project_inquiry' &&
-            ['answer', 'list'].includes((input.request as { operation: string }).operation)
-          )
-        ) {
-          throw new ControlPlaneSessionAuthorityError(
-            'Inquiry investigation is read-only; changes require target-side human approval',
-          );
-        }
+        await authorizeInquiryTargetTool(deps.eventStore, sessionId, toolName, input.request);
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;

@@ -2,6 +2,13 @@ import { createHash } from 'node:crypto';
 import { isSessionLinkProject, type EventStore, type ProjectInquiry } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import {
+  ControlPlaneSessionAuthorityError,
+  ControlPlaneSessionToolError,
+} from './session-handoff-tool.js';
+
+export const inquiryForwardingRefusal =
+  'Inquiry targets cannot forward requests. Ask the originating session to send the follow-up.';
 
 const requestSchema = z
   .object({
@@ -125,10 +132,13 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
     ): Promise<ProjectInquiry> {
       const request = requestSchema.parse(input);
       const source = await store.getSession(sourceSessionId);
-      if (!source?.projectId || (await store.projectInquiries.isTarget(sourceSessionId)))
-        throw new Error('Inquiry targets cannot forward requests');
+      if (!source?.projectId)
+        throw new ControlPlaneSessionAuthorityError('The calling session has no project');
+      if (await store.projectInquiries.isTarget(sourceSessionId))
+        throw new ControlPlaneSessionAuthorityError(inquiryForwardingRefusal);
       const sourceProjectId = source.projectId;
-      if (sourceProjectId === request.targetProjectId) throw new Error('Choose another project');
+      if (sourceProjectId === request.targetProjectId)
+        throw new ControlPlaneSessionToolError('Choose another project');
       const targetSessionId = createHash('sha256')
         .update(`inquiry:${sourceSessionId}:${request.targetProjectId}`)
         .digest('hex');
@@ -152,7 +162,7 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
         createdAt: new Date().toISOString(),
       };
       if (!(await permitted(candidate)))
-        throw new Error('Target project is unavailable or not permitted');
+        throw new ControlPlaneSessionToolError('Target project is unavailable or not permitted');
       return serialized(`create:${sourceSessionId}:${request.targetProjectId}`, async () => {
         // The store keeps the request pending unless a standing grant admits it;
         // a pending request neither creates the target session nor reaches it.
@@ -203,7 +213,7 @@ export function createProjectInquiries(deps: ProjectInquiryDeps) {
     async answer(targetSessionId: string, id: string, answer: string) {
       const text = z.string().trim().min(1).max(20000).parse(answer);
       if (!(await store.projectInquiries.answer(id, targetSessionId, text)))
-        throw new Error('Request unavailable');
+        throw new ControlPlaneSessionToolError('Request unavailable');
       const inquiry = await store.projectInquiries.get(id);
       if (
         inquiry &&
