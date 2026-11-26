@@ -18,9 +18,22 @@ function projectRecord(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     setupStatus: null,
     imageRef: null,
     toolkitIdentity: null,
+    latestReleaseTag: null,
+    latestReleaseName: null,
+    latestReleaseUrl: null,
+    latestReleasePublishedAt: null,
     ...overrides,
   } as ProjectRecord;
 }
+
+/** What the first sight of the fixture project states besides its name. */
+const FIRST_SIGHT = {
+  latestReleaseTag: null,
+  latestReleaseName: null,
+  latestReleaseUrl: null,
+  latestReleasePublishedAt: null,
+  toolkitDrift: null,
+};
 
 function status(state: SandboxUpdateStatus['state']): SandboxUpdateStatus {
   return { state } as SandboxUpdateStatus;
@@ -89,7 +102,7 @@ describe('installProjectEvents', () => {
     expect(w.events()).toEqual([
       expect.objectContaining({ t: 'sandbox.lifecycle', state: 'container_starting' }),
       // First sight of the project also states its overview fields.
-      expect.objectContaining({ t: 'project.changed', patch: { name: 'P1' } }),
+      expect.objectContaining({ t: 'project.changed', patch: { name: 'P1', ...FIRST_SIGHT } }),
       expect.objectContaining({
         t: 'sandbox.lifecycle',
         state: 'active',
@@ -147,9 +160,12 @@ describe('installProjectEvents', () => {
     const w = setup();
     w.write({ state: 'active', imageRef: 'img:1', toolkitIdentity: 'toolkit-a' });
     await vi.waitFor(() => expect(w.events()).toHaveLength(2));
-    // A project seen for the first time is in every snapshot already.
-    expect(w.events().some((event) => 'patch' in event && 'toolkitDrift' in event.patch)).toBe(
-      false,
+    expect(w.events()[1]).toEqual(
+      expect.objectContaining({
+        patch: expect.objectContaining({
+          toolkitDrift: expect.objectContaining({ verdict: 'matches' }),
+        }),
+      }),
     );
     w.write({ imageRef: 'img:2', toolkitIdentity: 'toolkit-old' });
     await vi.waitFor(() =>
@@ -181,8 +197,29 @@ describe('installProjectEvents', () => {
     w.write({ name: 'Renamed again' });
     await vi.waitFor(() => expect(w.events()).toHaveLength(4));
     // Neither the failure nor the recovery changed the verdict views hold.
-    expect(w.events().some((event) => 'patch' in event && 'toolkitDrift' in event.patch)).toBe(
-      false,
+    expect(w.events().filter((event) => 'patch' in event && 'toolkitDrift' in event.patch)).toEqual(
+      [
+        expect.objectContaining({
+          patch: expect.objectContaining({
+            toolkitDrift: expect.objectContaining({ verdict: 'drifted' }),
+          }),
+        }),
+      ],
+    );
+  });
+
+  // After a restart nothing is remembered: the first change of a project a
+  // view already shows must still reach it.
+  it('publishes a release found before any other change of the project', async () => {
+    const w = setup();
+    w.write({ latestReleaseTag: 'v3.0.0' });
+    await vi.waitFor(() =>
+      expect(w.events()).toContainEqual(
+        expect.objectContaining({
+          t: 'project.changed',
+          patch: expect.objectContaining({ latestReleaseTag: 'v3.0.0' }),
+        }),
+      ),
     );
   });
 
@@ -290,7 +327,7 @@ describe('project state writers', () => {
     for (const { file, text } of sources) {
       for (const method of methodsOf(text)) {
         if (
-          !/updateTable\('projects'\)\s*\.set\(\{[^}]*?\b(?:latest_release_tag|toolkit_identity)\s*:/u.test(
+          !/updateTable\('projects'\)\s*\.set\(\{(?:(?!\}\))[\s\S])*?\b(?:latest_release_tag|toolkit_identity)\s*:/u.test(
             method.body,
           )
         ) {

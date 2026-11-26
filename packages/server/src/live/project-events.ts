@@ -104,14 +104,13 @@ export function installProjectEvents(
     if (previous?.setupStatus !== next.setupStatus && next.setupStatus !== null) {
       patch['setupStatus'] = next.setupStatus;
     }
-    // A project seen for the first time is already in every snapshot a view
-    // reads when it subscribes; only a change after that is news.
-    if (previous !== undefined && previous.release !== next.release) {
+    // Published on first sight too, like the lifecycle: after a restart the
+    // first change of a project a view already shows is seen for the first
+    // time. The values are absolute, so repeating one a view holds is harmless.
+    if (previous?.release !== next.release) {
       for (const field of RELEASE_FIELDS) patch[field] = project[field];
     }
-    if (drift !== undefined && previous !== undefined && previous.drift !== next.drift) {
-      patch['toolkitDrift'] = drift;
-    }
+    if (drift !== undefined && previous?.drift !== next.drift) patch['toolkitDrift'] = drift;
     if (Object.keys(patch).length > 0) {
       publish(projectId, {
         t: 'project.changed',
