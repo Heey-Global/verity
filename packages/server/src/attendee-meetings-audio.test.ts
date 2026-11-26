@@ -10,6 +10,9 @@ it('routes hosted bot audio through its own Uplink share and finalizes the resul
   const store = {
     getSession: async () => ({ id: 'session' }),
     getAttendeeState: async (id: string) => rows.get(id),
+    deleteAttendeeState: async (id: string) => {
+      rows.delete(id);
+    },
     putAttendeeState: async (id: string, state: unknown) => {
       rows.set(id, structuredClone(state));
     },
