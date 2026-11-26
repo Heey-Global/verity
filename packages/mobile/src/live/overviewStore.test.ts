@@ -120,6 +120,53 @@ describe('OverviewStore', () => {
     expect(store.session('new')).toBeUndefined();
   });
 
+  // The newer read may show a state no event announced (here: the pull
+  // request is gone); replaying the older event over it would bring it back.
+  it('does not replay an event over a newer read that started after it', () => {
+    const store = new OverviewStore();
+    const open: DomainEvent = {
+      t: 'pr.status',
+      sessionId: 's1',
+      rev: 1,
+      pr: {
+        number: 7,
+        title: 'Add live status',
+        url: 'https://example.test/pr/7',
+        phase: 'open',
+        pipeline: 'success',
+        mergeable: true,
+        checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+      },
+    };
+    readSessions(store, [session('s1')]);
+    const older = store.beginRead();
+    store.applyEvent(open);
+    const newer = store.beginRead();
+    store.applySessions(newer, [session('s1', { pullRequest: null, pr: null })], allSessions);
+    store.applySessions(older, [session('s1')], allSessions);
+    expect(store.session('s1')?.pullRequest).toBeNull();
+  });
+
+  // Past the bound the late read misses events it would need replayed; the
+  // answered card would come back.
+  it('ignores a late read once events it missed were dropped', () => {
+    const store = new OverviewStore();
+    readSessions(store, [waiting()]);
+    const late = store.beginRead();
+    store.applyEvent(decided(2));
+    for (let i = 0; i < 256; i += 1)
+      store.applyEvent({ t: 'choices.answered', sessionId: `other-${i}`, rev: 1 });
+    store.applySessions(late, [waiting()], allSessions);
+    expect(store.session('s1')?.pendingPermissionRequests).toEqual([]);
+  });
+
+  it('leaves revision checks to a caller that gates events itself', () => {
+    const store = new OverviewStore({ gated: false });
+    readSessions(store, [waiting()]);
+    store.applyEvent(decided(5));
+    expect(store.applyEvent(decided(4)).applied).toBe(true);
+  });
+
   it('removes only the sessions a read covers and did not return', () => {
     const store = new OverviewStore();
     readSessions(store, [session('a'), session('b', { projectId: 'p2' })]);

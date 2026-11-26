@@ -43,7 +43,8 @@ interface TopicEntry {
  * topic's revision gate once before it reaches the views of its project.
  */
 class OverviewHub {
-  readonly store = new OverviewStore();
+  /** Gated per topic here, so one topic's resync does not open another's. */
+  readonly store = new OverviewStore({ gated: false });
   private readonly topics = new Map<string, TopicEntry>();
   private readonly listeners = new Set<OverviewListener>();
   /** Live topics within the share every view may use, and from the reserve. */
@@ -162,9 +163,7 @@ class OverviewHub {
     return {
       event: (event) => {
         if (!gate.accept(event)) return;
-        // The store's gate is reset with every topic's, so it never refuses
-        // what this topic's gate let through.
-        if (!this.store.applyEvent(event).applied) return;
+        this.store.applyEvent(event);
         for (const listener of this.interestedIn(projectId))
           listener.handlers.current.onEvent(event);
       },

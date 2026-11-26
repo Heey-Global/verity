@@ -47,10 +47,14 @@ const MAX_KEPT_EVENTS = 256;
 export class OverviewStore {
   private readonly sessionMap = new Map<string, SessionSummary>();
   private readonly projectMap = new Map<string, ProjectRecord>();
-  private readonly gate = new RevisionGate();
+  /** Absent when the caller gates events itself (one gate per topic). */
+  private readonly gate: RevisionGate | undefined;
   private clock = 0;
   private readonly openReads = new Set<number>();
   private kept: { event: DomainEvent; at: number }[] = [];
+  /** The newest kept event dropped past the bound; reads started before it
+   * cannot be completed and are ignored. */
+  private lostAt = 0;
   /** The newest read that spoke for each entity, gone ones included, while
    * any read is open. */
   private readonly readAt = new Map<string, number>();
@@ -58,6 +62,12 @@ export class OverviewStore {
   private version = 0;
   private sessionList: SessionSummary[] | undefined;
   private projectList: ProjectRecord[] | undefined;
+
+  /** `gated: false` leaves revision checks to the caller, which must then
+   * pass each event once per revision between its own resyncs. */
+  constructor(options: { readonly gated?: boolean } = {}) {
+    this.gate = options.gated === false ? undefined : new RevisionGate();
+  }
 
   /** Note a list read about to start; pass the result to its `apply…`. */
   beginRead(): OverviewRead {
@@ -97,12 +107,14 @@ export class OverviewStore {
 
   /** Apply a domain event from the live connection. */
   applyEvent(event: DomainEvent): OverviewEventOutcome {
-    if (!this.gate.accept(event)) return { applied: false };
+    if (this.gate !== undefined && !this.gate.accept(event)) return { applied: false };
     const at = ++this.clock;
     const { changed, reload } = this.applyToEntities(event);
     // Only a read already on its way can still answer with an older state.
     if (this.openReads.size > 0) {
-      this.kept = [...keptWithout(this.kept, event), { event, at }].slice(-MAX_KEPT_EVENTS);
+      const kept = [...keptWithout(this.kept, event), { event, at }];
+      if (kept.length > MAX_KEPT_EVENTS) this.lostAt = kept[kept.length - MAX_KEPT_EVENTS - 1]!.at;
+      this.kept = kept.slice(-MAX_KEPT_EVENTS);
     }
     if (changed) this.changed();
     return reload === undefined ? { applied: true } : { applied: true, reload };
@@ -111,7 +123,7 @@ export class OverviewStore {
   /** Events were missed: every later revision applies again, and views read
    * their snapshots. */
   resync(): void {
-    this.gate.reset();
+    this.gate?.reset();
   }
 
   session(sessionId: string): SessionSummary | undefined {
@@ -148,9 +160,19 @@ export class OverviewStore {
 
   private applySnapshot(read: OverviewRead, replace: () => boolean): void {
     this.openReads.delete(read.seq);
+    // Events this read missed were dropped, so its answer cannot be brought
+    // up to date; the next read speaks instead.
+    if (read.seq < this.lostAt) {
+      this.prune();
+      return;
+    }
     let changed = replace();
     for (const { event, at } of this.kept) {
-      if (at > read.seq && this.applyToEntities(event).changed) changed = true;
+      // A newer read that started after the event already shows it, and
+      // possibly a later state no event announced.
+      const key = readKey(event);
+      const spokenAt = key === undefined ? 0 : (this.readAt.get(key) ?? 0);
+      if (at > Math.max(read.seq, spokenAt) && this.applyToEntities(event).changed) changed = true;
     }
     this.prune();
     if (changed) this.changed();
@@ -225,6 +247,7 @@ export class OverviewStore {
       // events nor which read spoke for an entity can matter any more.
       this.kept = [];
       this.readAt.clear();
+      this.lostAt = 0;
       return;
     }
     const oldest = Math.min(...this.openReads);
@@ -237,4 +260,11 @@ export class OverviewStore {
     this.projectList = undefined;
     for (const listener of [...this.listeners]) listener();
   }
+}
+
+/** The `readAt` key of the entity an event changes. */
+function readKey(event: DomainEvent): string | undefined {
+  const update = projectEventUpdate(event);
+  if (update !== undefined) return `p:${update.projectId}`;
+  return 'sessionId' in event ? `s:${event.sessionId}` : undefined;
 }
