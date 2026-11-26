@@ -78,8 +78,6 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   // False while the store could not take the last read; the page then shows
   // that read's sessions until the next one lands.
   const [sessionsInStore, setSessionsInStore] = useState(true);
-  // A read the store refused is repeated once, not in a loop.
-  const retryRef = useRef(false);
   const [savedProfile, setSavedProfile] = useState<ProjectProfile | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -146,10 +144,9 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   );
 
   const load = useCallback(
-    async (silent = false): Promise<void> => {
+    // `retry` marks the one repeat of a read the store refused.
+    async (silent = false, retry = false): Promise<void> => {
       const generation = ++loadGeneration.current;
-      const isRetry = retryRef.current;
-      retryRef.current = false;
       if (!silent) {
         setLoading(true);
         setError(undefined);
@@ -174,10 +171,9 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
           setSavedProfile(undefined);
           // Events this read would need replayed were dropped: read again.
           // A screen below the one on top reads again when it comes back.
-          if ((!projectApplied || !sessionsApplied) && focusedRef.current && !isRetry) {
-            retryRef.current = true;
+          if ((!projectApplied || !sessionsApplied) && focusedRef.current && !retry) {
             queueMicrotask(() => {
-              if (focusedRef.current) void loadRef.current(true);
+              if (focusedRef.current) void loadRef.current(true, true);
             });
           }
           // A fetch result deliberately stays off the status bus. Only an
@@ -299,8 +295,16 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
       }
       const current = shownRef.current;
       if (current === undefined) return;
-      if (applyOverviewEvent(current.sessions, event).kind === 'reload' && focusedRef.current)
-        void load(true);
+      const effect = applyOverviewEvent(current.sessions, event);
+      if (effect.kind === 'local') {
+        // Also kept on the page's own copy, which it lists until the store
+        // holds this project.
+        setDetail((latest) => {
+          if (latest === undefined) return latest;
+          const applied = applyOverviewEvent(latest.sessions, event);
+          return applied.kind === 'local' ? { ...latest, sessions: applied.sessions } : latest;
+        });
+      } else if (effect.kind === 'reload' && focusedRef.current) void load(true);
     },
     () => {
       if (focusedRef.current && shownRef.current !== undefined) void load(true);

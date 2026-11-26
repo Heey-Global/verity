@@ -51,7 +51,7 @@ class OverviewHub {
 
   constructor(
     private readonly baseUrl: string,
-    private readonly store: OverviewStore,
+    readonly store: OverviewStore,
   ) {}
 
   get idle(): boolean {
@@ -202,25 +202,31 @@ const hubs = new Map<string, OverviewHub>();
  * new subscription's resync brings it up to date. Once nothing holds it, it is
  * dropped: no later view is shown a copy that stopped following events. */
 const stores = new Map<string, OverviewStore>();
+let pruneOnAccountChange: (() => void) | undefined;
 /** Hubs and views holding each store. */
-const holds = new Map<string, number>();
+const holds = new Map<OverviewStore, number>();
 
-function hold(scope: string): () => void {
-  holds.set(scope, (holds.get(scope) ?? 0) + 1);
+/** Hold `store`, the one `storeFor(scope)` returned. A view may take its hold
+ * just after the store was dropped (another screen released it in the same
+ * commit); while no newer store took the scope, it is reinstated rather than
+ * replaced, so views never chase a store that is dropped again. */
+function hold(scope: string, store: OverviewStore): () => void {
+  if (!stores.has(scope)) stores.set(scope, store);
+  holds.set(store, (holds.get(store) ?? 0) + 1);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const left = (holds.get(scope) ?? 1) - 1;
+    const left = (holds.get(store) ?? 1) - 1;
     if (left > 0) {
-      holds.set(scope, left);
+      holds.set(store, left);
       return;
     }
-    holds.delete(scope);
-    dropStore(scope);
+    holds.delete(store);
+    if (stores.get(scope) === store) dropStore(scope);
   };
 }
-let pruneOnAccountChange: (() => void) | undefined;
+
 /** Views holding a store; told when one is dropped, so they move to the store
  * the next hub of their scope feeds. */
 const storeHolders = new Set<() => void>();
@@ -259,9 +265,9 @@ function storeFor(scope: string): OverviewStore {
  * one a render created that never committed. */
 function pruneStores(): void {
   const signedIn = taskAccountScope();
-  for (const scope of stores.keys()) {
+  for (const [scope, store] of stores) {
     const [, account] = JSON.parse(scope) as [string, string | null];
-    if (account !== signedIn && !holds.has(scope)) dropStore(scope);
+    if (account !== signedIn && !holds.has(store)) dropStore(scope);
   }
 }
 
@@ -285,7 +291,7 @@ function attachToHub(
     hub = new OverviewHub(baseUrl, storeFor(scope));
     hubs.set(scope, hub);
   }
-  const release = hold(scope);
+  const release = hold(scope, hub.store);
   const detach = hub.attach(listener);
   const attached = hub;
   return () => {
@@ -346,7 +352,7 @@ export function useOverviewStore(baseUrl: string | null): OverviewStore {
   const subscribe = useCallback(
     (listener: () => void) => {
       const unsubscribe = store.subscribe(listener);
-      const release = scope === null ? undefined : hold(scope);
+      const release = scope === null ? undefined : hold(scope, store);
       return () => {
         unsubscribe();
         release?.();

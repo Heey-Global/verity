@@ -203,5 +203,16 @@ describe('useProjectDetail overview events', () => {
     // The store applies every event at once, so its copy is never older than
     // a refused read; a screen's save during the read stays.
     expect(result.current.detail?.project.name).toBe('Old');
+    // Answers still leave the listed copy while the store does not speak for it.
+    act(() =>
+      sink.event({
+        t: 'permission.decided',
+        sessionId: 's6',
+        toolUseId: 'tool-1',
+        rev: 2,
+        outcome: 'allowed',
+      }),
+    );
+    expect(result.current.detail?.sessions[0]?.pendingPermissionRequests).toEqual([]);
   });
 });

@@ -1,5 +1,6 @@
 import type { DomainEvent, LiveTopicSink, ProjectRecord } from '@verity/mobile';
-import { act, renderHook } from '@testing-library/react-native';
+import { act, render, renderHook } from '@testing-library/react-native';
+import { createElement } from 'react';
 import { useOverviewStore, useOverviewTopics } from './overviewTopics';
 
 const mockSinks = new Map<string, LiveTopicSink>();
@@ -265,6 +266,24 @@ describe('useOverviewTopics', () => {
     expect(renderHook(() => useOverviewStore('https://core.example')).result.current).not.toBe(
       store,
     );
+  });
+
+  // One screen replaces another in a single commit, each the only holder: the
+  // old one's release must not send the new one chasing dropped stores.
+  it('keeps the store when the only view holding it is replaced', () => {
+    const seen: unknown[] = [];
+    const Screen = () => {
+      seen.push(useOverviewStore('https://core.example'));
+      return null;
+    };
+    const ScreenX = () => createElement(Screen);
+    const ScreenY = () => createElement(Screen);
+    const view = render(createElement(ScreenX));
+    const first = seen.at(-1);
+    view.rerender(createElement(ScreenY));
+    expect(seen.at(-1)).toBe(first);
+    expect(renderHook(() => useOverviewStore('https://core.example')).result.current).toBe(first);
+    view.unmount();
   });
 
   // A page whose project changes re-attaches; the store it renders must be
