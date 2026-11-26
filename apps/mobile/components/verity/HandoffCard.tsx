@@ -384,7 +384,7 @@ function HandoffProgress({
 }
 
 /** What "Hand over" does, in the words of the target the request names. */
-export function handOverSentence(summary: SessionHandoffSummary): string {
+function handOverSentence(summary: SessionHandoffSummary): string {
   const where = summary.destination.project ?? 'that project';
   const action =
     summary.targetKind === 'new-session'
@@ -396,7 +396,7 @@ export function handOverSentence(summary: SessionHandoffSummary): string {
 }
 
 /** "1,277 characters · 7 lines", measured on what the target session receives. */
-export function briefingSize(summary: SessionHandoffSummary): string {
+function briefingSize(summary: SessionHandoffSummary): string {
   const { characters, lines } = summary.briefingSize;
   const group = (value: number) => value.toString().replace(/\B(?=(\d{3})+(?!\d))/gu, ',');
   return `${group(characters)} character${characters === 1 ? '' : 's'} · ${group(lines)} line${
