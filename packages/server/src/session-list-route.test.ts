@@ -397,3 +397,37 @@ it('lists a submission for review to members with Code until one of them writes'
     await app.close();
   }
 });
+
+// A row taken after a session.summary was published must say so, or a view
+// replays that older row over the newer read; one published while the read
+// is computed may be newer than it, so the revision is the one at the start.
+it('marks each row with the summary revision from before it was read', async () => {
+  const app = Fastify();
+  let revision = 5;
+  registerSessionListRoute(app, {
+    store: {
+      listSessions: async () => [{ sessionId: 's1' }, { sessionId: 's2' }] as never,
+      linkedSessionIds: async () => new Set(),
+      sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async () => new Map() } as never,
+    },
+    summaryRevision: (id) => (id === 's1' ? revision : undefined),
+    summarizeSessions: async (sessions) => {
+      // Published while the rows are being computed.
+      revision = 6;
+      return sessions.map(({ sessionId }) => ({ sessionId })) as unknown as SessionSummary[];
+    },
+    collectAttention: async () => [],
+    prunePrSummaryCache: () => {},
+    pruneBranchCache: () => {},
+  });
+  try {
+    const rows = (await app.inject({ url: '/sessions' })).json<
+      Array<{ sessionId: string; summaryRev?: number }>
+    >();
+    expect(rows.find((row) => row.sessionId === 's1')?.summaryRev).toBe(5);
+    expect(rows.find((row) => row.sessionId === 's2')).not.toHaveProperty('summaryRev');
+  } finally {
+    await app.close();
+  }
+});

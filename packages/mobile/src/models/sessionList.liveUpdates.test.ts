@@ -277,3 +277,34 @@ describe('SessionListModel.applyHints with followed projects', () => {
     model.stop();
   });
 });
+
+describe("SessionListModel waiting for a skipped hint's row", () => {
+  // The server may fail to compute a row, or this app may not read it; a
+  // skipped hint must not leave the session stale for good.
+  it('reads the list when the row does not come, and not when it does', async () => {
+    const listSessions = vi.fn(() => Promise.resolve([summary('s1', { projectId: 'p1' })]));
+    const model = new SessionListModel({
+      client: clientFor(listSessions),
+      pollIntervalMs: 0,
+      followsLive: () => true,
+      rowWaitMs: 30,
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
+    model.applyDomainEvent({
+      t: 'session.summary',
+      sessionId: 's1',
+      rev: 1,
+      patch: { ...summary('s1'), status: 'idle' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(listSessions).toHaveBeenCalledTimes(1);
+
+    model.applyHints([{ sessionId: 's1', topics: ['status'] }]);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    model.stop();
+  });
+});

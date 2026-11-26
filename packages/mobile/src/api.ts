@@ -399,6 +399,9 @@ export const sessionSummarySchema = z
     sortOrder: z.number().int().nonnegative().nullable().optional(),
     /** The session's recurring automation, if it has one. */
     automation: z.object({ status: z.enum(['enabled', 'paused']) }).optional(),
+    /** The revision of the last `session.summary` this row reflects; only a
+     * newer one changes it. Absent on older servers and before any. */
+    summaryRev: z.number().int().nonnegative().optional(),
   })
   .overwrite((session) => ({
     ...session,

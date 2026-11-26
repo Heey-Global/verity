@@ -287,11 +287,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     vulnerabilitySessions,
     onPrStatus: createPrEvents(app, ctx),
   });
-  installSummaryEvents(app, ctx, summarizeSessions);
+  const { summaryRevision } = installSummaryEvents(app, ctx, summarizeSessions);
 
   const { readSecretStatus, listSessionsAs } = installSessionList(app, ctx, {
     codexUsage,
     wikiMaintenanceSessions,
+    summaryRevision,
     sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions, sessionPrCache },
   });
 

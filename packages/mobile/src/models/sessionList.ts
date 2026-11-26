@@ -104,7 +104,13 @@ export interface SessionListModelOptions {
    * included. Its sessions' status and transcript growth then reach the list
    * as events, and the hints announcing them need no list read. */
   followsLive?: (projectId: string) => boolean;
+  /** See {@link ROW_WAIT_MS}; injected in tests. */
+  rowWaitMs?: number;
 }
+
+/** How long a skipped hint waits for its `session.summary` before the list
+ * is read after all. The server publishes within two seconds. */
+const ROW_WAIT_MS = 10_000;
 
 /** Hint topics a `session.summary` event answers for a followed project. */
 const SUMMARY_TOPICS: ReadonlySet<string> = new Set(['events', 'status']);
@@ -182,6 +188,8 @@ export class SessionListModel {
   /** Reads the store refused in a row; only the first is repeated at once. */
   private refusedReads = 0;
   private lastEventsRefreshAt = Number.NEGATIVE_INFINITY;
+  /** Sessions whose skipped hint awaits its `session.summary`. */
+  private readonly awaitedRows = new Map<string, ReturnType<typeof setTimeout>>();
   private eventsRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly opts: SessionListModelOptions) {}
@@ -633,6 +641,7 @@ export class SessionListModel {
    * `choices.opened` reload brings it back.
    */
   applyDomainEvent(event: DomainEvent): void {
+    if (event.t === 'session.summary') this.rowArrived(event.sessionId);
     const effect = applyOverviewEvent(this._sessions, event);
     if (effect.kind === 'reload') {
       // `poll` coalesces: a burst of requests is one read in flight plus one.
@@ -788,7 +797,11 @@ export class SessionListModel {
    * announced is never answered by a response that predates it.
    */
   applyHints(all: readonly LiveHint[]): void {
-    const hints = all.filter((hint) => !this.answeredByEvents(hint));
+    const hints = all.filter((hint) => {
+      if (!this.answeredByEvents(hint)) return true;
+      this.awaitRow(hint.sessionId);
+      return false;
+    });
     // Every hint was answered by events of followed projects.
     if (all.length > 0 && hints.length === 0) return;
     for (const hint of hints) {
@@ -831,6 +844,25 @@ export class SessionListModel {
     };
     if (wait <= 0) run();
     else this.eventsRefreshTimer = setTimeout(run, wait);
+  }
+
+  /** A skipped hint expects the session's `session.summary`; one that does
+   * not come (the server could not compute it, or this app could not read
+   * it) is made up for by a list read. */
+  private awaitRow(sessionId: string): void {
+    if (this.awaitedRows.has(sessionId)) return;
+    this.awaitedRows.set(
+      sessionId,
+      setTimeout(() => {
+        this.awaitedRows.delete(sessionId);
+        this.poll?.();
+      }, this.opts.rowWaitMs ?? ROW_WAIT_MS),
+    );
+  }
+
+  private rowArrived(sessionId: string): void {
+    clearTimeout(this.awaitedRows.get(sessionId));
+    this.awaitedRows.delete(sessionId);
   }
 
   /** A hint only of status or transcript growth, for a listed session whose
@@ -898,6 +930,8 @@ export class SessionListModel {
   stop(): void {
     this.poll = undefined;
     this.cancelEventsRefresh();
+    for (const timer of this.awaitedRows.values()) clearTimeout(timer);
+    this.awaitedRows.clear();
     this.cancelPoll?.();
     this.cancelTimeTick?.();
     this.cancelPoll = undefined;

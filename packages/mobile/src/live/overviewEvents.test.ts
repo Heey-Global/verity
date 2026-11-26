@@ -240,6 +240,18 @@ describe('applyOverviewEvent with session.summary', () => {
     expect(applyOverviewEvent([waiting()], summary(waiting(), { status: 42 })).kind).toBe('none');
   });
 
+  // Kept rows are replayed over reads that answered later; a read that began
+  // after a row was published already shows it, or something newer.
+  it('applies a row only over an older one', () => {
+    const read = { ...waiting(), summaryRev: 5 } as SessionSummary;
+    const replayed = { ...summary(read, { status: 'running' }), rev: 5 } as DomainEvent;
+    expect(applyOverviewEvent([read], replayed).kind).toBe('none');
+    const newer = { ...summary(read, { status: 'idle' }), rev: 6 } as DomainEvent;
+    const effect = applyOverviewEvent([read], newer);
+    const [next] = (effect as { sessions: SessionSummary[] }).sessions;
+    expect(next).toMatchObject({ status: 'idle', summaryRev: 6 });
+  });
+
   it('leaves sessions it does not list to their list read', () => {
     expect(applyOverviewEvent([], summary(waiting(), { status: 'idle' })).kind).toBe('none');
   });
@@ -267,6 +279,8 @@ describe('applyOverviewEvent with session.summary', () => {
       'openChoices',
       'pr',
       'pullRequest',
+      // The revision of the row itself, set by the read and by each event.
+      'summaryRev',
     ]);
     const shared = new Set<string>(SESSION_SUMMARY_FIELDS);
     const fields = Object.keys(sessionSummarySchema.shape);

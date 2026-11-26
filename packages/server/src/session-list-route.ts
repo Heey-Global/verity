@@ -27,6 +27,8 @@ export interface SessionListRouteDeps {
   pruneBranchCache: (liveWorktrees: ReadonlySet<string>) => void;
   summarizeSessions: (sessions: SessionRecord[]) => Promise<SessionSummary[]>;
   collectAttention: () => Promise<AttentionSignal[]>;
+  /** The revision of each session's last published `session.summary`. */
+  summaryRevision?: (sessionId: string) => number | undefined;
   /** Sessions the server runs for itself (Wiki maintenance); no list shows them. */
   hiddenSessionIds?: () => Promise<ReadonlySet<string>>;
   /**
@@ -99,9 +101,18 @@ export function registerSessionListRoute(
       deps.prunePrSummaryCache(liveWorktrees);
       deps.pruneBranchCache(liveWorktrees);
     }
+    // Taken before the rows are computed: a row published meanwhile may hold
+    // a later state than they do, so views still apply it.
+    const revisions = new Map(
+      sessions.map((session) => [session.sessionId, deps.summaryRevision?.(session.sessionId)]),
+    );
     const summaries = await measureLatencyPhase('session_summaries', () =>
       deps.summarizeSessions(sessions),
     );
+    for (const summary of summaries) {
+      const revision = revisions.get(summary.sessionId);
+      if (revision !== undefined) summary.summaryRev = revision;
+    }
     const linked = await deps.store.linkedSessionIds();
     for (const summary of summaries) {
       if (linked.has(summary.sessionId)) summary.linked = true;

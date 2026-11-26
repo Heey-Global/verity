@@ -27,7 +27,12 @@ export function applyOverviewEvent(
   if (event.t === 'session.summary') {
     const index = sessions.findIndex((session) => session.sessionId === event.sessionId);
     if (index < 0) return { kind: 'none' };
-    const patched = withSummaryRow(sessions[index]!, event.patch);
+    const held = sessions[index]!;
+    // The held row is as new as this one or newer: a read that began after
+    // it was published, or a later row. Kept events replayed over a read that
+    // answered later end here.
+    if (held.summaryRev !== undefined && held.summaryRev >= event.rev) return { kind: 'none' };
+    const patched = withSummaryRow(held, event.patch, event.rev);
     // A row this app cannot read is ignored: the list read carries the same
     // fields and would fail on them too, so reading again only adds load.
     if (patched === undefined) return { kind: 'none' };
@@ -83,8 +88,9 @@ export function appliesToEarlierReads(event: DomainEvent): boolean {
 function withSummaryRow(
   session: SessionSummary,
   row: Readonly<Record<string, unknown>>,
+  rev: number,
 ): SessionSummary | undefined {
-  const next: Record<string, unknown> = { ...session };
+  const next: Record<string, unknown> = { ...session, summaryRev: rev };
   for (const key of SESSION_SUMMARY_FIELDS) {
     if (key in row) next[key] = row[key];
     else delete next[key];

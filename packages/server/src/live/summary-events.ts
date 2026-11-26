@@ -10,6 +10,8 @@ import { createRevisions } from './revisions.js';
  * least this often, so one burst is one row. */
 const SETTLE_MS = 300;
 const MAX_WAIT_MS = 2_000;
+/** Sessions whose last published revision is remembered for the list rows. */
+const MAX_REMEMBERED_SESSIONS = 4_096;
 /** Attempts for a row that could not be computed, each after a longer wait. */
 const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000];
 
@@ -54,9 +56,12 @@ export function installSummaryEvents(
     clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
     now: Date.now,
   },
-): void {
+): { summaryRevision: (sessionId: string) => number | undefined } {
   const { deps, domainEvents, lifecycle } = ctx;
   const revisions = createRevisions();
+  /** The revision of each session's last published row; bounded like the
+   * revisions, so a forgotten session's list rows carry none. */
+  const lastRevisions = new Map<string, number>();
   const scheduled = new Map<string, { timer: unknown; since: number }>();
   const queues = new Map<string, Promise<void>>();
   let closed = false;
@@ -79,6 +84,10 @@ export function installSummaryEvents(
       patch: row,
     };
     for (const topic of topics) domainEvents.publish(topic, event);
+    lastRevisions.delete(sessionId);
+    lastRevisions.set(sessionId, event.rev);
+    if (lastRevisions.size > MAX_REMEMBERED_SESSIONS)
+      lastRevisions.delete(lastRevisions.keys().next().value!);
   };
 
   // One computation per session at a time, in order, so patches build on the
@@ -125,4 +134,5 @@ export function installSummaryEvents(
     for (const { timer } of scheduled.values()) timers.clearTimeout(timer);
     scheduled.clear();
   });
+  return { summaryRevision: (sessionId) => lastRevisions.get(sessionId) };
 }
