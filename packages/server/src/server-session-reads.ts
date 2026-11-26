@@ -182,19 +182,15 @@ export function installSessionList(
     // From the store, so a session another server generation created is hidden
     // too; the local set covers one created moments ago and not yet recorded.
     hiddenSessionIds: async () => {
-      const [recorded, assistant] = await Promise.all([
-        deps.eventStore.wikiMaintenance.sessionIds(),
-        // A failed settings read lists the session rather than failing every list.
-        deps.eventStore.assistant.settings().catch(() => null),
-      ]);
-      for (const id of recorded) wikiMaintenanceSessions.add(id);
-      for (const id of wikiMaintenanceSessions) recorded.add(id);
+      const { wikiSessionIds, assistantSessionId } =
+        await deps.eventStore.wikiMaintenance.sessionListExclusions();
+      for (const id of wikiSessionIds) wikiMaintenanceSessions.add(id);
+      for (const id of wikiMaintenanceSessions) wikiSessionIds.add(id);
       // Verity's conversation lives behind the V, approvals included; listing its session
       // too put each approval in two places. Switched off, it is listed again, so its
       // history stays reachable while the V cannot open it.
-      if (assistant?.enabled === true && assistant.session_id !== null)
-        recorded.add(assistant.session_id);
-      return recorded;
+      if (assistantSessionId !== null) wikiSessionIds.add(assistantSessionId);
+      return wikiSessionIds;
     },
   });
 
