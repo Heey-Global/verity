@@ -146,6 +146,10 @@ export class AttendeeAudioReceiver {
     });
   }
 
+  get streamClosed(): boolean {
+    return this.disconnectedNormally;
+  }
+
   listen(): Promise<number> {
     return new Promise((resolve, reject) => {
       this.server.once('error', reject);
@@ -249,8 +253,15 @@ export class AttendeeAudioReceiver {
 
   private addTrack(participantId: string | undefined): Track | undefined {
     if (this.tracks.size >= MAX_PARTICIPANTS) {
-      this.gap('overloaded');
-      return undefined;
+      for (const [idleId, track] of this.tracks) {
+        if (track.chunk) continue;
+        this.tracks.delete(idleId);
+        break;
+      }
+      if (this.tracks.size >= MAX_PARTICIPANTS) {
+        this.gap('overloaded');
+        return undefined;
+      }
     }
     const track = {};
     this.tracks.set(participantId, track);

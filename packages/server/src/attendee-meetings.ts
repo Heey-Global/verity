@@ -592,7 +592,7 @@ export class AttendeeMeetings {
     }
   }
 
-  private async audioSnapshot(state: OnlineMeeting, final: boolean) {
+  private async audioSnapshot(state: OnlineMeeting, final: boolean, joined = false) {
     const audio = state.audio;
     if (!audio) return [];
     const connection = this.audioConnections.get(state.meeting.id);
@@ -603,7 +603,9 @@ export class AttendeeMeetings {
       audio.segments.push(...received);
       const previousGap = audio.gap;
       audio.gap ||=
-        connection.gap || (final && audio.segments.length === 0 && state.joinedAt !== undefined);
+        connection.gap ||
+        (joined && connection.receiver.streamClosed) ||
+        (final && audio.segments.length === 0 && state.joinedAt !== undefined);
       if (received.length || previousGap !== audio.gap) {
         await this.save(state);
         connection.segments.splice(0, received.length);
@@ -1207,7 +1209,7 @@ export class AttendeeMeetings {
     const snapshot = discard
       ? []
       : state.audio
-        ? await this.audioSnapshot(state, final)
+        ? await this.audioSnapshot(state, final, join.status === 'joined' && !state.stopRequested)
         : await client.transcript(state.botId);
     if (!discard) this.logSnapshot(state, bot.state, snapshot, final);
     if (!discard) {
