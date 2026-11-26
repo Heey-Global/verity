@@ -53,6 +53,24 @@ it.each(['appId, sessionId', 'sessionId', 'sessionId, sessionId'])(
   },
 );
 
+it('checks computed method names and rest forwarding', () => {
+  expect(
+    facadeImplementations('class EventStore { read(...ids) { return this.events.read(...ids); } }'),
+  ).toEqual({});
+  expect(
+    Object.keys(
+      facadeImplementations('class EventStore { read(...ids) { return this.events.read(ids); } }'),
+    ),
+  ).toEqual(['read']);
+  expect(
+    Object.keys(
+      facadeImplementations(
+        'class EventStore { [registerLookup()](id) { return this.events.read(id); } }',
+      ),
+    ),
+  ).toEqual(['[registerLookup()]']);
+});
+
 it('detects executable defaults in forwarding methods and fingerprints retained defaults', () => {
   const source = (value: string) =>
     'class EventStore { read(id = ' + value + ') { return this.events.read(id); } }';

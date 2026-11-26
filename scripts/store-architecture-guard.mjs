@@ -54,10 +54,15 @@ export function facadeImplementations(text) {
         ? statements[0].expression
         : undefined;
     const parameterNodes = ts.isFunctionLike(member) ? member.parameters : [];
-    const parameters = parameterNodes.map((parameter) => parameter.name.getText(source));
     const forwarded =
+      ts.isMethodDeclaration(member) &&
+      ts.isIdentifier(member.name) &&
+      !member.modifiers?.some(ts.isDecorator) &&
       parameterNodes.every(
-        (parameter) => !parameter.initializer && ts.isIdentifier(parameter.name),
+        (parameter) =>
+          !parameter.initializer &&
+          ts.isIdentifier(parameter.name) &&
+          !parameter.modifiers?.some(ts.isDecorator),
       ) &&
       expression &&
       ts.isCallExpression(expression) &&
@@ -66,10 +71,15 @@ export function facadeImplementations(text) {
       ts.isPropertyAccessExpression(expression.expression.expression) &&
       expression.expression.expression.expression.kind === ts.SyntaxKind.ThisKeyword &&
       expression.expression.expression.name.text !== 'db' &&
-      expression.arguments.length === parameters.length &&
-      expression.arguments.every(
-        (arg, index) => ts.isIdentifier(arg) && arg.text === parameters[index],
-      );
+      expression.arguments.length === parameterNodes.length &&
+      expression.arguments.every((argument, index) => {
+        const parameter = parameterNodes[index];
+        if (!parameter || Boolean(parameter.dotDotDotToken) !== ts.isSpreadElement(argument)) {
+          return false;
+        }
+        const value = ts.isSpreadElement(argument) ? argument.expression : argument;
+        return ts.isIdentifier(value) && value.text === parameter.name.getText(source);
+      });
     if (forwarded || (member.parent === facade && isStoreWiring(initializer))) continue;
     const key = member.parent === facade ? name : 'module: ' + name;
     if (Object.hasOwn(debt, key)) throw new Error('Duplicate facade exception: ' + key);
