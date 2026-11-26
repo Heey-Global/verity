@@ -189,7 +189,10 @@ export class SessionListModel {
   private refusedReads = 0;
   private lastEventsRefreshAt = Number.NEGATIVE_INFINITY;
   /** Sessions whose skipped hint awaits its `session.summary`. */
-  private readonly awaitedRows = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly awaitedRows = new Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; after: number }
+  >();
   private eventsRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly opts: SessionListModelOptions) {}
@@ -648,7 +651,7 @@ export class SessionListModel {
       (this._sessions.find((s) => s.sessionId === event.sessionId)?.summaryRev ?? -1) >= event.rev;
     const effect = applyOverviewEvent(this._sessions, event);
     if (event.t === 'session.summary' && (reflected || effect.kind === 'local'))
-      this.rowArrived(event.sessionId);
+      this.rowArrived(event.sessionId, event.rev);
     if (effect.kind === 'reload') {
       // `poll` coalesces: a burst of requests is one read in flight plus one.
       this.poll?.();
@@ -858,18 +861,20 @@ export class SessionListModel {
   private awaitRow(sessionId: string): void {
     // Each hint waits for a row from after it, so a row of an earlier change
     // cannot answer for a later one whose row then fails.
-    clearTimeout(this.awaitedRows.get(sessionId));
-    this.awaitedRows.set(
-      sessionId,
-      setTimeout(() => {
-        this.awaitedRows.delete(sessionId);
-        this.poll?.();
-      }, this.opts.rowWaitMs ?? ROW_WAIT_MS),
-    );
+    clearTimeout(this.awaitedRows.get(sessionId)?.timer);
+    const after = this._sessions.find((s) => s.sessionId === sessionId)?.summaryRev ?? -1;
+    const timer = setTimeout(() => {
+      this.awaitedRows.delete(sessionId);
+      this.poll?.();
+    }, this.opts.rowWaitMs ?? ROW_WAIT_MS);
+    this.awaitedRows.set(sessionId, { timer, after });
   }
 
-  private rowArrived(sessionId: string): void {
-    clearTimeout(this.awaitedRows.get(sessionId));
+  /** A row newer than the one the list held when the hint came answers it. */
+  private rowArrived(sessionId: string, rev: number): void {
+    const wait = this.awaitedRows.get(sessionId);
+    if (wait === undefined || rev <= wait.after) return;
+    clearTimeout(wait.timer);
     this.awaitedRows.delete(sessionId);
   }
 
@@ -938,7 +943,7 @@ export class SessionListModel {
   stop(): void {
     this.poll = undefined;
     this.cancelEventsRefresh();
-    for (const timer of this.awaitedRows.values()) clearTimeout(timer);
+    for (const { timer } of this.awaitedRows.values()) clearTimeout(timer);
     this.awaitedRows.clear();
     this.cancelPoll?.();
     this.cancelTimeTick?.();

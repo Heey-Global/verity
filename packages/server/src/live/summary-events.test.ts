@@ -235,4 +235,24 @@ describe('session.summary', () => {
     closers.forEach((fn) => fn());
     hub.close();
   });
+
+  // A list read that took its revisions while this row was being computed
+  // holds a later state; the row must not order after it.
+  it('takes the revision before computing the row', async () => {
+    const w = setup([summary()]);
+    w.record('project:p1');
+    let finish: () => void = () => undefined;
+    w.summarize.mockImplementationOnce(
+      () => new Promise((resolve) => (finish = () => resolve([summary()]))),
+    );
+    w.event();
+    w.advance(300);
+    await vi.waitFor(() => expect(w.summarize).toHaveBeenCalledTimes(1));
+    const computing = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    finish();
+    await vi.waitFor(() => expect(w.published).toHaveLength(1));
+    expect((w.published[0]!.event as { rev: number }).rev).toBeLessThanOrEqual(computing);
+    w.close();
+  });
 });

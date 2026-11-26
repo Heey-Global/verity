@@ -67,6 +67,9 @@ export function installSummaryEvents(
   let closed = false;
 
   const publish = async (sessionId: string): Promise<void> => {
+    // Taken before the row is computed, so a list read that took its revisions
+    // after this one began holds a later state and views keep it.
+    const rev = revisions.next(sessionId);
     const session = await deps.eventStore.getSession(sessionId);
     if (session === undefined || closed) return;
     const [summary] = await summarize([session]);
@@ -81,7 +84,7 @@ export function installSummaryEvents(
     const event = {
       t: 'session.summary' as const,
       sessionId,
-      rev: revisions.next(sessionId),
+      rev,
       patch: row,
     };
     for (const topic of topics) domainEvents.publish(topic, event);

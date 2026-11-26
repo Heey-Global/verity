@@ -101,8 +101,9 @@ export function registerSessionListRoute(
       deps.prunePrSummaryCache(liveWorktrees);
       deps.pruneBranchCache(liveWorktrees);
     }
-    // Taken before the rows are computed: a row published meanwhile may hold
-    // a later state than they do, so views still apply it.
+    // Taken before the rows are computed. A row whose computation began after
+    // this has a higher revision and may hold a later state, so views apply
+    // it; one that began before holds no later state than these rows.
     const revisions = new Map(
       sessions.map((session) => [session.sessionId, deps.summaryRevision?.(session.sessionId)]),
     );
