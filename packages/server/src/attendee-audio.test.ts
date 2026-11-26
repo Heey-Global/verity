@@ -98,6 +98,19 @@ describe('Attendee audio receiver', () => {
     expect(onGap).not.toHaveBeenCalled();
   });
 
+  it('keeps brief silence inside a spoken segment', async () => {
+    const { url, transcribe } = await start();
+    const client = await connect(url);
+    const silence = Buffer.alloc(pcm.length);
+    client.send(frame());
+    client.send(frame({ audio: silence }));
+    client.send(frame());
+    await vi.waitFor(() => expect(transcribe).toHaveBeenCalledTimes(1), { timeout: 2_000 });
+    expect(transcribe.mock.calls[0]?.[0].wav.subarray(44)).toEqual(
+      Buffer.concat([pcm, silence, pcm]),
+    );
+  });
+
   it('reports queued audio gaps and cancels work on shutdown', async () => {
     const { receiver, url, transcribe, onGap } = await start();
     transcribe.mockImplementation(

@@ -455,7 +455,20 @@ export class AttendeeMeetings {
     await Promise.all(this.researchJobs.values());
     for (const connector of this.connectors.values()) connector.close();
     this.connectors.clear();
-    for (const id of this.audioConnections.keys()) await this.closeAudio(id);
+    for (const [id, connection] of this.audioConnections) {
+      await connection.receiver.close();
+      try {
+        const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);
+        if (state && !state.discarded) await this.persistAudio(state);
+      } catch (error) {
+        this.options.log?.warn(
+          { meetingId: id, ...failureFields(error) },
+          'Could not save final audio on shutdown',
+        );
+      } finally {
+        await this.closeAudio(id);
+      }
+    }
     const receiver = this.receiver;
     if (receiver) {
       receiver.closeAllConnections();
@@ -1009,7 +1022,10 @@ export class AttendeeMeetings {
    * A failure leaves the state for the reconcile loop to finish. */
   private async finishDiscard(state: OnlineMeeting) {
     if (state.audio && !state.audio.disabled) {
-      await this.releaseAudio(state);
+      // A failed revoke may be retried after the bot has received the leave request.
+      await this.releaseAudio(state).catch((error: unknown) => {
+        this.options.log?.warn(failureFields(error), 'Audio share revocation will be retried');
+      });
       state.audio.segments = [];
       await this.save(state);
     }

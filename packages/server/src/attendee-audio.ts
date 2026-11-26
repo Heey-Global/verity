@@ -47,6 +47,7 @@ interface AudioChunk {
 
 interface Track {
   nextTimestampMs?: number;
+  silenceBytes?: number;
   chunk?: AudioChunk;
   idle?: ReturnType<typeof setTimeout>;
 }
@@ -237,12 +238,22 @@ export class AttendeeAudioReceiver {
     track.nextTimestampMs =
       Math.max(timestampMs, track.nextTimestampMs ?? timestampMs) +
       (pcm.length / BYTES_PER_SECOND) * 1_000;
-    if (!pcm.some((byte) => byte !== 0)) {
-      this.enqueue(track);
-      return;
+    const silent = !pcm.some((byte) => byte !== 0);
+    if (silent) {
+      if (!track.chunk) return;
+      track.silenceBytes = (track.silenceBytes ?? 0) + pcm.length;
+      if (track.silenceBytes >= (BYTES_PER_SECOND * IDLE_MS) / 1000) {
+        this.enqueue(track);
+        return;
+      }
+    } else {
+      delete track.silenceBytes;
     }
 
-    if (track.chunk && track.chunk.bytes + pcm.length > CHUNK_BYTES) this.enqueue(track);
+    if (track.chunk && track.chunk.bytes + pcm.length > CHUNK_BYTES) {
+      this.enqueue(track);
+      if (silent) return;
+    }
     track.chunk ??= {
       pcm: [],
       bytes: 0,
@@ -275,6 +286,7 @@ export class AttendeeAudioReceiver {
   private enqueue(track: Track): void {
     clearTimeout(track.idle);
     delete track.idle;
+    delete track.silenceBytes;
     const chunk = track.chunk;
     delete track.chunk;
     if (!chunk) return;
