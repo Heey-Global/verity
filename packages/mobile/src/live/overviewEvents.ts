@@ -102,9 +102,10 @@ export function keptWithout<T extends { event: DomainEvent }>(
   kept: readonly T[],
   event: DomainEvent,
 ): T[] {
-  if (event.t !== 'pr.status') return [...kept];
+  // A newer status or whole row makes the session's older one moot.
+  if (event.t !== 'pr.status' && event.t !== 'session.summary') return [...kept];
   return kept.filter(
-    (entry) => entry.event.t !== 'pr.status' || entry.event.sessionId !== event.sessionId,
+    (entry) => entry.event.t !== event.t || entry.event.sessionId !== event.sessionId,
   );
 }
 

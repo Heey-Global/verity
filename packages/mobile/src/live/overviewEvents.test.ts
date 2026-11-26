@@ -272,3 +272,15 @@ describe('applyOverviewEvent with session.summary', () => {
     expect([...shared].filter((field) => kept.has(field))).toEqual([]);
   });
 });
+
+describe('keptWithout with session.summary', () => {
+  // A streaming session publishes a row every two seconds; only the newest
+  // one matters to a read still on its way.
+  it("keeps only a session's newest row", () => {
+    const row = (sessionId: string, rev: number) => ({
+      event: { t: 'session.summary', sessionId, rev, patch: {} } as DomainEvent,
+    });
+    const kept = keptWithout([row('s1', 1), row('s2', 1)], row('s1', 2).event);
+    expect(kept.map(({ event }) => 'sessionId' in event && event.sessionId)).toEqual(['s2']);
+  });
+});

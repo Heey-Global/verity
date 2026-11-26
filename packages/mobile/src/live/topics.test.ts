@@ -256,4 +256,28 @@ describe('LiveConnection.followsTopic', () => {
     h.socket().serve({ k: 'resync', topic: 'project:p1', cursor: 1 });
     expect(h.connection.followsTopic('project:p1')).toBe(false);
   });
+
+  // Resumed from its cursor, the topic may still fail; until the server
+  // answers, hints of its sessions must not be skipped.
+  it('follows a resumed topic again only once the server answers it', async () => {
+    const h = await harness();
+    h.socket().ready(true);
+    const { sink } = recorder();
+    h.connection.subscribeTopic('project:p1', sink);
+    const summary = (cursor: number) =>
+      h.socket().serve({
+        k: 'domain',
+        topic: 'project:p1',
+        cursor,
+        event: { t: 'session.summary', sessionId: 's1', rev: cursor, patch: {} },
+      });
+    summary(4);
+    expect(h.connection.followsTopic('project:p1')).toBe(true);
+    h.socket().drop();
+    await h.reconnect();
+    h.socket().ready(true);
+    expect(h.connection.followsTopic('project:p1')).toBe(false);
+    summary(5);
+    expect(h.connection.followsTopic('project:p1')).toBe(true);
+  });
 });

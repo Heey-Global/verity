@@ -2,7 +2,10 @@ import type { SessionRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 import type { ServerContext } from '../server-context.js';
 import type { SessionSummary } from '../server-types.js';
+import { InMemoryEventBus } from '@verity/session';
+import type { AgentEvent } from '@verity/events';
 import { DomainEventBus, type DomainRecord } from './domain-events.js';
+import { LiveHub } from './live-hub.js';
 import type { LiveHubChange } from './live-hub.js';
 import { installSummaryEvents, sharedRow } from './summary-events.js';
 
@@ -194,5 +197,42 @@ describe('session.summary', () => {
     await vi.waitFor(() => expect(w.published).toHaveLength(1));
     expect(w.published[0]!.topic).toBe('session:s1');
     w.close();
+  });
+
+  // Home skips its read for every status or transcript hint of a followed
+  // project; the hint of a plain agent event must therefore bring a row too.
+  it('publishes for an agent event the live hub hints', async () => {
+    const bus = new InMemoryEventBus();
+    const domainEvents = new DomainEventBus();
+    const hub = new LiveHub({
+      bus,
+      store: { getSession: async () => undefined, getEventsAfter: async () => [] },
+      access: {
+        canReadSession: async () => true,
+        overviewScope: async () => ({ all: true }),
+      },
+      domainEvents,
+    });
+    const closers: Array<() => void> = [];
+    const ctx = {
+      deps: {
+        eventStore: {
+          getSession: async (id: string) =>
+            ({ sessionId: id, projectId: 'p1' }) as unknown as SessionRecord,
+          wikiMaintenance: { isSession: async () => false },
+        },
+      },
+      domainEvents,
+      lifecycle: { onClose: (fn: () => void) => closers.push(fn) },
+      liveHub: hub,
+    } as unknown as Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle' | 'liveHub'>;
+    installSummaryEvents({ log: { warn: () => undefined } }, ctx, async () => [summary()]);
+    const published: DomainRecord[] = [];
+    domainEvents.subscribe('project:p1', undefined, (r) => published.push(r));
+    bus.publish('s1', { seq: 1, ts: 1, event: { t: 'text', delta: 'hi' } satisfies AgentEvent });
+    await vi.waitFor(() => expect(published).toHaveLength(1));
+    expect(published[0]!.event).toMatchObject({ t: 'session.summary', sessionId: 's1' });
+    closers.forEach((fn) => fn());
+    hub.close();
   });
 });
