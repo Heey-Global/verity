@@ -77,6 +77,15 @@ it('checks decorators and computed names on fields without initializers', () => 
   expect(Object.keys(facadeImplementations(source))).toEqual(['lookup', '[registerField()]']);
 });
 
+it.each([
+  'class EventStore { [register()] = new EventSnapshotStore(() => this.db); }',
+  'class EventStore { @register field = new EventSnapshotStore(() => this.db); }',
+  '@register class EventStore {}',
+  'class EventStore extends register() {}',
+])('detects executable wiring in %s', (source) => {
+  expect(Object.keys(facadeImplementations(source))).toHaveLength(1);
+});
+
 it('detects executable defaults in forwarding methods and fingerprints retained defaults', () => {
   const source = (value: string) =>
     'class EventStore { read(id = ' + value + ') { return this.events.read(id); } }';

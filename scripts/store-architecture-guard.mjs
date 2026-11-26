@@ -19,7 +19,15 @@ export function facadeImplementations(text) {
   if (!facade || !ts.isClassDeclaration(facade)) throw new Error('EventStore class is missing');
   /** @type {Record<string, string>} */
   const debt = {};
+  const executableHeader =
+    ts.getDecorators(facade)?.length ||
+    facade.heritageClauses?.some(
+      (clause) =>
+        clause.token === ts.SyntaxKind.ExtendsKeyword &&
+        clause.types.some((base) => !ts.isIdentifier(base.expression)),
+    );
   const members = [
+    ...(executableHeader ? [facade] : []),
     ...facade.members,
     ...source.statements.filter(
       (node) =>
@@ -84,7 +92,15 @@ export function facadeImplementations(text) {
         const value = ts.isSpreadElement(argument) ? argument.expression : argument;
         return ts.isIdentifier(value) && value.text === parameter.name.getText(source);
       });
-    if (forwarded || (member.parent === facade && isStoreWiring(initializer))) continue;
+    if (
+      forwarded ||
+      (member.parent === facade &&
+        !decorators?.length &&
+        !computedName &&
+        isStoreWiring(initializer))
+    ) {
+      continue;
+    }
     const key = member.parent === facade ? name : 'module: ' + name;
     if (Object.hasOwn(debt, key)) throw new Error('Duplicate facade exception: ' + key);
     // Print the parsed node so line breaks that change the syntax also change the hash.
