@@ -9,6 +9,8 @@ export function listedInOverview(project: ProjectRecord): boolean {
   return project.state !== 'absent' || project.overviewVisible === true;
 }
 
+const NO_PROJECTS: readonly ProjectRecord[] = [];
+
 /**
  * The overview's projects from the shared store (ADR 0033) while `active`,
  * for a view that is not Home, such as a session's settings. Each activation
@@ -16,8 +18,6 @@ export function listedInOverview(project: ProjectRecord): boolean {
  * and events change both; until the store holds that read, the read itself is
  * shown.
  */
-const NO_PROJECTS: readonly ProjectRecord[] = [];
-
 export function useOverviewProjects(client: VerityClient, active: boolean): ProjectRecord[] {
   // Projects only while shown, so a closed sheet does not render its screen.
   const [store, held] = useOverviewSelection(getVerityBaseUrl(), (overview) =>

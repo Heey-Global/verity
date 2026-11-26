@@ -219,4 +219,38 @@ describe('useBranches with the shared overview store', () => {
     unmount();
     shared.unmount();
   });
+
+  it("updates only the default repository's row, which keeps its repository", async () => {
+    const shared = withListedSession();
+    const repository = (id: string, isDefault: boolean) => ({
+      id,
+      name: id,
+      owner: 'example',
+      repo: id,
+      isDefault,
+    });
+    const rows = [
+      { ...pr(42), repository: repository('main', true) },
+      {
+        ...pr(42),
+        url: 'https://github.com/example/other/pull/42',
+        repository: repository('other', false),
+      },
+    ];
+    const getBranches = jest.fn().mockResolvedValue({ ...branches(pr(42)), pullRequests: rows });
+    const client = { getBranches } as unknown as VerityClient;
+    const { result, unmount } = renderHook(() => useBranches(client, 's1'));
+    await waitFor(() => expect(mockSinks.has('project:p1')).toBe(true));
+    await waitFor(() => expect(result.current.pullRequests).toHaveLength(2));
+    act(() =>
+      mockSinks
+        .get('project:p1')!
+        .event({ t: 'pr.status', sessionId: 's1', rev: 1, pr: pr(42, 'success') }),
+    );
+    const [main, other] = result.current.pullRequests;
+    expect(main).toMatchObject({ pipeline: 'success', repository: repository('main', true) });
+    expect(other).toMatchObject({ pipeline: 'running', repository: repository('other', false) });
+    unmount();
+    shared.unmount();
+  });
 });

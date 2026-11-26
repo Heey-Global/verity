@@ -82,6 +82,33 @@ export interface UseBranches {
   saveToProject: () => Promise<{ ok: true } | { ok: false; message: string }>;
 }
 
+type PullRequestStatus = Pick<
+  NonNullable<BranchList['pullRequest']>,
+  | 'phase'
+  | 'pipeline'
+  | 'checks'
+  | 'mergeable'
+  | 'viewerCanMerge'
+  | 'mergeState'
+  | 'headSha'
+  | 'updatedAt'
+>;
+
+/** The status fields of a pull request a repository row takes over; what
+ * names the pull request or its repository stays the row's. */
+function pullRequestStatus(pr: NonNullable<BranchList['pullRequest']>): PullRequestStatus {
+  return {
+    phase: pr.phase,
+    pipeline: pr.pipeline,
+    checks: pr.checks,
+    mergeable: pr.mergeable,
+    ...(pr.viewerCanMerge === undefined ? {} : { viewerCanMerge: pr.viewerCanMerge }),
+    ...(pr.mergeState === undefined ? {} : { mergeState: pr.mergeState }),
+    ...(pr.headSha === undefined ? {} : { headSha: pr.headSha }),
+    ...(pr.updatedAt === undefined ? {} : { updatedAt: pr.updatedAt }),
+  };
+}
+
 /**
  * Branch switcher binding (#91): fetches a session worktree's current +
  * switchable branches on mount and exposes a `switchTo` that maps the server's
@@ -89,12 +116,6 @@ export interface UseBranches {
  * glue hook (no headless model) in the spirit of {@link useSession} /
  * {@link useSessionList}.
  */
-/** The status of a pull request, without what names it (number, title, link). */
-function pullRequestStatus(pr: NonNullable<BranchList['pullRequest']>) {
-  const { number: _number, title: _title, url: _url, ...status } = pr;
-  return status;
-}
-
 export function useBranches(client: VerityClient, sessionId: string, enabled = true): UseBranches {
   const cached = cachedBranches(client, sessionId);
   // The overview's copy of the session (ADR 0033): its pull request status
