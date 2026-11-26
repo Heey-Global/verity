@@ -158,3 +158,13 @@ it('detects generator methods that defer the call until iteration', () => {
   const source = 'class EventStore { *read(id) { return this.events.read(id); } }';
   expect(Object.keys(facadeImplementations(source))).toEqual(['read']);
 });
+
+it('detects queries through the raw database handle', () => {
+  expect(
+    Object.keys(
+      facadeImplementations(
+        'class EventStore { query(table) { return this.rootDb.selectFrom(table); } }',
+      ),
+    ),
+  ).toEqual(['query']);
+});

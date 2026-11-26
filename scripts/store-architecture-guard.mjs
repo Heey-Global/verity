@@ -80,6 +80,7 @@ export function facadeImplementations(text) {
       ts.isPropertyAccessExpression(expression.expression.expression) &&
       expression.expression.expression.expression.kind === ts.SyntaxKind.ThisKeyword &&
       expression.expression.expression.name.text !== 'db' &&
+      expression.expression.expression.name.text !== 'rootDb' &&
       expression.arguments.length === parameterNodes.length &&
       expression.arguments.every((argument, index) => {
         const parameter = parameterNodes[index];
