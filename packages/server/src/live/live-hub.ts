@@ -584,7 +584,14 @@ export class LiveHub {
   }
 
   notify(change: LiveHubChange): void {
-    for (const listener of this.notifyListeners) listener(change);
+    // An observer's failure must not keep the hint from any viewer.
+    for (const listener of this.notifyListeners) {
+      try {
+        listener(change);
+      } catch {
+        // The observer reports its own failures.
+      }
+    }
     if (change.projectId !== undefined)
       this.projectOfSession.set(change.sessionId, change.projectId);
     const pending = this.pendingHints.get(change.sessionId) ?? {

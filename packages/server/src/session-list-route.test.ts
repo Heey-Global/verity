@@ -1,4 +1,6 @@
 import Fastify from 'fastify';
+import { SESSION_SUMMARY_FIELDS } from '@verity/events';
+import { sharedRow } from './live/summary-events.js';
 import { expect, it, vi } from 'vitest';
 import { registerSessionListRoute } from './session-list-route.js';
 import type { SessionSummary } from './server.js';
@@ -427,6 +429,39 @@ it('marks each row with the summary revision from before it was read', async () 
     >();
     expect(rows.find((row) => row.sessionId === 's1')?.summaryRev).toBe(5);
     expect(rows.find((row) => row.sessionId === 's2')).not.toHaveProperty('summaryRev');
+  } finally {
+    await app.close();
+  }
+});
+
+// `session.summary` carries the shared fields as `summarizeSessions` gives
+// them, and a view drops one its row lacks. Were this route to add or change a
+// shared field after summarizing, every event would undo it on Home.
+it('leaves every field session.summary carries as summarizeSessions gives it', async () => {
+  const app = Fastify();
+  const summary: Record<string, unknown> = { sessionId: 's1', planningPlan: 'plan text' };
+  for (const field of SESSION_SUMMARY_FIELDS) summary[field] = { marker: field };
+  summary.planning = 'active';
+  delete summary.planningPresented;
+  registerSessionListRoute(app, {
+    store: {
+      listSessions: async () => [{ sessionId: 's1' }] as never,
+      linkedSessionIds: async () => new Set(),
+      sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async () => new Map() } as never,
+    },
+    summarizeSessions: async () => [{ ...summary }] as unknown as SessionSummary[],
+    collectAttention: async () => [{ kind: 'server-level' }] as never,
+    prunePrSummaryCache: () => {},
+    pruneBranchCache: () => {},
+  });
+  try {
+    const [listed] = (await app.inject({ url: '/sessions?envelope=1' })).json<{
+      sessions: Record<string, unknown>[];
+    }>().sessions;
+    const row = sharedRow(summary as unknown as SessionSummary);
+    for (const field of SESSION_SUMMARY_FIELDS)
+      expect([field, listed![field]]).toEqual([field, row[field]]);
   } finally {
     await app.close();
   }
