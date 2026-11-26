@@ -197,18 +197,20 @@ class OverviewHub {
 const hubs = new Map<string, OverviewHub>();
 
 /** The stores of the servers and accounts in use. A store outlives the views,
- * so a page opened again starts from what the app already knows; when another
- * server or account comes into use, stores no hub holds any more are dropped,
- * so a returning account starts empty unless a view kept it live. */
+ * so a page opened again starts from what the app already knows. A store is
+ * dropped when its hub goes idle while another server or account is in use, so
+ * a returning account starts empty. Nothing is dropped during a render. */
 const stores = new Map<string, OverviewStore>();
+let latestScope: string | undefined;
 
 function storeFor(scope: string): OverviewStore {
+  latestScope = scope;
   let store = stores.get(scope);
-  if (store !== undefined) return store;
-  for (const held of stores.keys()) if (!hubs.has(held)) stores.delete(held);
-  // Gated per topic by the hub, so one topic's resync does not open another's.
-  store = new OverviewStore({ gated: false });
-  stores.set(scope, store);
+  if (store === undefined) {
+    // Gated per topic by the hub, so one topic's resync does not open another's.
+    store = new OverviewStore({ gated: false });
+    stores.set(scope, store);
+  }
   return store;
 }
 
@@ -236,7 +238,9 @@ function attachToHub(
   const attached = hub;
   return () => {
     detach();
-    if (attached.idle && hubs.get(scope) === attached) hubs.delete(scope);
+    if (!attached.idle || hubs.get(scope) !== attached) return;
+    hubs.delete(scope);
+    if (scope !== latestScope) stores.delete(scope);
   };
 }
 

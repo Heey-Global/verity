@@ -173,4 +173,28 @@ describe('useProjectDetail overview events', () => {
     expect(result.current.detail?.sessions[0]?.pr).toMatchObject({ phase: 'merged' });
     expect(getProject).toHaveBeenCalledTimes(1);
   });
+
+  // Past the replay bound the store refuses the read; the page must still
+  // list what the server sent rather than show an empty project.
+  it("shows the read's sessions when the store could not take it", async () => {
+    let release: (detail: ProjectDetail) => void = () => undefined;
+    const client = {
+      getProject: jest.fn(() => new Promise<ProjectDetail>((resolve) => (release = resolve))),
+      setProjectSetupStatus: jest.fn(),
+    } as unknown as VerityClient;
+    const { result } = renderHook(() => useProjectDetail(client, 'p6'));
+    const sink = mockSinks.get('project:p6')!;
+    act(() => {
+      for (let i = 0; i < 257; i += 1)
+        sink.event({ t: 'choices.answered', sessionId: `other-${i}`, rev: 1 });
+    });
+    await act(async () =>
+      release({
+        ...detailWith([{ ...waiting, sessionId: 's6', projectId: 'p6' }]),
+        project: { id: 'p6', name: 'P6' },
+      } as ProjectDetail),
+    );
+    await waitFor(() => expect(result.current.detail).toBeDefined());
+    expect(result.current.detail?.sessions.map((s) => s.sessionId)).toEqual(['s6']);
+  });
 });

@@ -74,6 +74,11 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   // The last read of this page: settings and everything else the store does
   // not hold, and the order of the sessions it listed.
   const [detail, setDetail] = useState<ProjectDetail | undefined>(undefined);
+  // False while the store could not take the last read; the page then shows
+  // that read's sessions until the next one lands.
+  const [sessionsInStore, setSessionsInStore] = useState(true);
+  // A read the store refused is repeated once, not in a loop.
+  const retryRef = useRef(false);
   const [savedProfile, setSavedProfile] = useState<ProjectProfile | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -142,6 +147,8 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
   const load = useCallback(
     async (silent = false): Promise<void> => {
       const generation = ++loadGeneration.current;
+      const isRetry = retryRef.current;
+      retryRef.current = false;
       if (!silent) {
         setLoading(true);
         setError(undefined);
@@ -161,11 +168,14 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
             covers: (s) => s.projectId === projectId,
           });
           setDetail(next);
+          setSessionsInStore(sessionsApplied);
           setSavedProfile(undefined);
           // Events this read would need replayed were dropped: read again.
           // A screen below the one on top reads again when it comes back.
-          if ((!projectApplied || !sessionsApplied) && focusedRef.current)
+          if ((!projectApplied || !sessionsApplied) && focusedRef.current && !isRetry) {
+            retryRef.current = true;
             queueMicrotask(() => void loadRef.current(true));
+          }
           // A fetch result deliberately stays off the status bus. Only an
           // action's response is published (see `onProjectUpdated`): with the
           // project screen and its settings routes stacked, each polling, a
@@ -246,12 +256,13 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     if (detail === undefined) return undefined;
     const sessions = detail.sessions.flatMap((listed) => {
       const held = store.session(listed.sessionId);
-      return held === undefined ? [] : [held];
+      if (held !== undefined) return [held];
+      return sessionsInStore ? [] : [listed];
     });
     return { ...detail, project: store.project(projectId) ?? detail.project, sessions };
     // `version` changes whenever an entity in the store does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, store, projectId, version]);
+  }, [detail, sessionsInStore, store, projectId, version]);
   const shownRef = useRef(shown);
   shownRef.current = shown;
 
