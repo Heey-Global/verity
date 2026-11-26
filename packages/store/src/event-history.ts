@@ -1,19 +1,7 @@
+import type { SessionEventStats } from './session-projection.js';
 import { sql, type Kysely } from 'kysely';
 import { parseAgentEvent, type AgentEvent } from '@verity/events';
 import type { Database } from './schema.js';
-
-/**
- * What the overview projections need from one session's log — see
- * the session projection reads.
- */
-export interface SessionEventStats {
-  /** Nonempty agent-text events; used for unread state. */
-  eventCount: number;
-  lastEventSeq: number;
-  lastActivityAt: number | null;
-  /** Changes on every log mutation, including deletions below the latest seq. */
-  revision: string;
-}
 
 /** A persisted event tagged with its monotonic sequence (the bigserial id) and
  * its real persist time. `seq` orders + keys the event; `ts` is the row's

@@ -1,8 +1,8 @@
 import { SessionOrderStore } from './session-order.js';
 import { PackageProtectionStore } from './package-protection.js';
 import { AttendeeStateStore } from './attendee-state.js';
-import { EventHistoryStore, type SequencedEvent, type SessionEventStats } from './event-history.js';
-export type { SequencedEvent, SessionEventStats } from './event-history.js';
+import { EventHistoryStore, type SequencedEvent } from './event-history.js';
+export type { SequencedEvent } from './event-history.js';
 import { EventSnapshotStore } from './event-snapshots.js';
 import {
   SessionBackendStateStore,
