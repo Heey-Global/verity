@@ -1,11 +1,16 @@
 import { managedServerProviderSnapshotSchema } from '@verity/events';
 import {
   branchListSchema,
-  mergeStateSchema,
   pullRequestSchema,
+  sessionPrSchema,
   type BranchList,
 } from './branch-api.js';
-export { branchListSchema, type BranchList, type SessionPullRequestStatus } from './branch-api.js';
+export {
+  branchListSchema,
+  type BranchList,
+  type SessionPr,
+  type SessionPullRequestStatus,
+} from './branch-api.js';
 import { addressedToViewerSchema, openChoicesSchema } from './sessionRequests.js';
 import { changeSubmissionsClient, sessionChangeSubmissionSchema } from './changeSubmissions.js';
 import { mcpAppsClient } from './mcp-apps-client.js';
@@ -210,29 +215,6 @@ export type { Attachment, AttachmentUpload } from '@verity/events';
 /** Session status as the server derives it: the agent status plus `idle`. */
 export const sessionStatusSchema = z.union([agentStatusSchema, z.literal('idle')]);
 export type SessionStatus = z.infer<typeof sessionStatusSchema>;
-
-/** Compact PR status for a session's CURRENT branch, carried on the session list so
- * the overview can show merge-ready / merge-blocked / CI-failed markers without a
- * per-session branch fetch. A projection of the richer `pullRequest` in
- * {@link branchListSchema}. */
-/** GitHub's `mergeable_state`, when the server queried it. Unknown/absent values fall
- * back to `undefined` rather than failing the parse, so a state GitHub adds later (or
- * an older server that omits the field) degrades to "no conflict signal". */
-const sessionPrSchema = z.object({
-  phase: z.enum(['open', 'merged', 'closed']),
-  pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
-  // Tri-state: true = mergeable, false = blocked/conflict, null = unknown (checks
-  // not green yet, or GitHub still computing mergeability just after a push).
-  // `.catch(null)` keeps an older server's bare boolean parseable during rollout.
-  viewerCanMerge: z.boolean().optional(),
-  mergeable: z.boolean().nullable().catch(null),
-  // GitHub's `mergeable_state`. `'dirty'` = the branch CONFLICTS with its base, which
-  // also means GitHub started no `pull_request` checks — the one state that must read
-  // as blocked even though `pipeline` is `unknown`. ABSENT = older server, or the
-  // server didn't query mergeability for this PR.
-  mergeState: mergeStateSchema,
-});
-export type SessionPr = z.infer<typeof sessionPrSchema>;
 
 const usageTotalsSchema = usageSchema.extend({ turns: z.number().int().nonnegative() });
 

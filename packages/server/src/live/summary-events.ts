@@ -129,7 +129,10 @@ export function installSummaryEvents(
   };
 
   const unsubscribe = ctx.liveHub.onNotify((change) => {
-    if (change.deleted === true) return;
+    if (change.deleted === true) {
+      lastRevisions.delete(change.sessionId);
+      return;
+    }
     if (change.topics.some((topic) => topic === 'status' || topic === 'events'))
       schedule(change.sessionId);
   });
