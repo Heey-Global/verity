@@ -6,6 +6,7 @@ import {
   keptWithout,
   withoutPermission,
 } from '../live/overviewEvents.js';
+import type { OverviewStore } from '../live/overviewStore.js';
 import {
   VerityApiError,
   type AttentionSignal,
@@ -94,7 +95,16 @@ export interface SessionListModelOptions {
   eventsRefreshMs?: number;
   /** Clock for {@link eventsRefreshMs}; injected in tests. */
   now?: () => number;
+  /** The shared copy of sessions (ADR 0033) of this server and account, read
+   * when needed because it changes with the account. Reads go into it, and the
+   * list shows each session as it holds it, so an event or another view's read
+   * changes Home at once. Without it the list keeps its own copy. */
+  store?: () => OverviewStore | undefined;
 }
+
+/** Home's read speaks for every session: `/sessions` and the project page
+ * leave out the same ones. */
+const EVERY_SESSION = { covers: () => true };
 
 /**
  * Headless controller for the session-list screen: orchestrates
@@ -147,6 +157,14 @@ export class SessionListModel {
     { active: number; removed: SessionSummary | undefined; succeeded: boolean }
   >();
 
+  /** Names being saved, shown over the store's copy until the answer. */
+  private pendingNames = new Map<string, { name: string | null; mutation: number }>();
+  private nameMutations = 0;
+  /** The store that took the last read; the list shows its copies while it
+   * is the current one. */
+  private readStore: OverviewStore | undefined;
+  /** Reads the store refused in a row; only the first is repeated at once. */
+  private refusedReads = 0;
   private lastEventsRefreshAt = Number.NEGATIVE_INFINITY;
   private eventsRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -155,30 +173,90 @@ export class SessionListModel {
   // Equal polls and quota-only ticks must not invalidate every memoized session row.
   private publishedSessions: SessionSummary[] = [];
   private orderedSource: SessionSummary[] | undefined;
+  private orderedVersion = -1;
+  private shownSessions: SessionSummary[] = [];
 
   get state(): SessionListState {
-    if (this.orderedSource !== this._sessions) {
+    const store = this.currentStore();
+    const version = store === undefined ? -1 : store.getVersion();
+    if (this.orderedSource !== this._sessions || this.orderedVersion !== version) {
+      this.shownSessions = store === undefined ? this._sessions : this.shownFrom(store);
       this.publishedSessions = reuseSnapshotRecords(
         this.publishedSessions,
-        orderedSessions(this._sessions),
+        orderedSessions(this.shownSessions),
         (session) => session.sessionId,
       );
       this.orderedSource = this._sessions;
+      this.orderedVersion = version;
     }
+    const shown = this.shownSessions;
     return {
       sessions: this.publishedSessions,
       sessionReordering: this.sessionReordering,
-      attentionCount: attentionCount(this._sessions),
+      attentionCount: attentionCount(shown),
       loading: this._loading,
       error: this._error,
-      rateLimitNotice: overviewRateLimitNotice(this._sessions, this._providerLimits, Date.now()),
-      providerLimitRows: overviewProviderLimitRows(
-        this._sessions,
-        this._providerLimits,
-        Date.now(),
-      ),
+      rateLimitNotice: overviewRateLimitNotice(shown, this._providerLimits, Date.now()),
+      providerLimitRows: overviewProviderLimitRows(shown, this._providerLimits, Date.now()),
       serverAttention: attentionNotice(this._attention),
     };
+  }
+
+  /** The store whose copies the list shows: the current one, once it took a
+   * read. Until then, or after it refused one, the list shows its own read. */
+  private currentStore(): OverviewStore | undefined {
+    const store = this.opts.store?.();
+    return store !== undefined && store === this.readStore ? store : undefined;
+  }
+
+  /** The store's copy of each listed session, in the list's order, then the
+   * sessions other views read since. Home's own changes not yet confirmed by a
+   * read (favorites, order, deletions) stay on top. */
+  private shownFrom(store: OverviewStore): SessionSummary[] {
+    const listed = new Set(this._sessions.map((session) => session.sessionId));
+    const shown = this._sessions.map((own) =>
+      this.withOwnChanges(store.session(own.sessionId) ?? own),
+    );
+    for (const held of store.sessions()) {
+      if (listed.has(held.sessionId) || this.pendingDeletes.has(held.sessionId)) continue;
+      shown.push(this.withOwnChanges(held));
+    }
+    return shown;
+  }
+
+  private withOwnChanges(session: SessionSummary): SessionSummary {
+    let next = session;
+    const name = this.pendingNames.get(session.sessionId);
+    if (name !== undefined && next.name !== name.name) next = { ...next, name: name.name };
+    const favorite = this.pendingFavorites.get(session.sessionId);
+    if (favorite !== undefined && (session.favorite === true) !== favorite.favorite) {
+      next = { ...next, favorite: true };
+      if (!favorite.favorite) delete next.favorite;
+    }
+    const order = this.pendingOrders.get(session.projectId ?? null);
+    if (order !== undefined) {
+      const position = order.ids.indexOf(session.sessionId);
+      const sortOrder = position < 0 ? null : position;
+      if (next.sortOrder !== sortOrder) next = { ...next, sortOrder };
+    }
+    return next;
+  }
+
+  /** Put an accepted change into the store's copy, which a list read that
+   * started earlier then no longer replaces. */
+  private adopt(sessionId: string, change: (session: SessionSummary) => SessionSummary): void {
+    const store = this.opts.store?.();
+    const held = store?.session(sessionId);
+    if (store === undefined || held === undefined) return;
+    store.applySessions(store.beginRead(), [change(held)], {
+      covers: (session) => session.sessionId === sessionId,
+    });
+  }
+
+  /** The store changed (an event, another view's read). Shown only while the
+   * list runs; {@link start} catches up. */
+  storeChanged(): void {
+    if (this.poll !== undefined) this.emit();
   }
 
   /** Reload the session list now. Safe to call concurrently with polling — a
@@ -189,6 +267,9 @@ export class SessionListModel {
       this._loading = true;
       this.emit();
     }
+    // Events that arrive while the read is out are applied again on top of it.
+    const target = this.opts.store?.();
+    const read = target?.beginRead();
     try {
       const overview = this.opts.client.listSessionOverview;
       const [list, providerLimits] = await Promise.all([
@@ -259,6 +340,13 @@ export class SessionListModel {
       }
       this._providerLimits = providerLimits;
       this._error = undefined;
+      if (target !== undefined && read !== undefined) {
+        const applied = target.applySessions(read, sessions, EVERY_SESSION);
+        this.readStore = applied ? target : undefined;
+        // Events this read would need replayed were dropped: read once more.
+        if (applied) this.refusedReads = 0;
+        else if (this.refusedReads++ === 0) queueMicrotask(() => this.poll?.());
+      }
     } catch (error) {
       if (req !== this.reqSeq) return;
       this._error =
@@ -267,6 +355,9 @@ export class SessionListModel {
           ? error.message
           : 'failed to load sessions';
     } finally {
+      // Ends a read that failed or was superseded; after `applySessions` it
+      // changes nothing.
+      if (read !== undefined) target?.endRead(read);
       if (req === this.reqSeq) {
         this._loading = false;
         this.emit();
@@ -284,12 +375,21 @@ export class SessionListModel {
   async rename(sessionId: string, name: string | null): Promise<void> {
     const previousName = this._sessions.find((s) => s.sessionId === sessionId)?.name ?? null;
     this.applyName(sessionId, name); // optimistic — don't wait for the next poll
+    const mutation = ++this.nameMutations;
+    this.pendingNames.set(sessionId, { name, mutation });
     this.emit();
+    const settled = () => {
+      if (this.pendingNames.get(sessionId)?.mutation === mutation)
+        this.pendingNames.delete(sessionId);
+    };
     try {
       const { name: stored } = await this.opts.client.renameSession(sessionId, name);
       this.applyName(sessionId, stored);
+      this.adopt(sessionId, (session) => ({ ...session, name: stored }));
+      settled();
       this._error = undefined;
     } catch (error) {
+      settled();
       this.applyName(sessionId, previousName); // revert just this name
       this._error = error instanceof VerityApiError ? error.message : 'failed to rename session';
     }
@@ -401,6 +501,7 @@ export class SessionListModel {
     this._sessions = this._sessions.map((session) =>
       session.sessionId === sessionId ? withoutPermission(session, toolUseId) : session,
     );
+    this.adopt(sessionId, (session) => withoutPermission(session, toolUseId));
     this.emit();
   }
 
@@ -441,6 +542,7 @@ export class SessionListModel {
     this._sessions = this._sessions.map((session) =>
       session.sessionId === sessionId ? this.withPrStatus(session, pr, number) : session,
     );
+    this.adopt(sessionId, (session) => this.withPrStatus(session, pr, number));
     this.emit();
   }
 
@@ -460,13 +562,16 @@ export class SessionListModel {
   applySessionAutomation(sessionId: string, automation: SessionSummary['automation']): void {
     // Responses already in flight predate the confirmed mutation.
     this.pendingAutomations.set(sessionId, { automation, maxRequest: this.reqSeq });
-    this._sessions = this._sessions.map((session) => {
-      if (session.sessionId !== sessionId) return session;
+    const withAutomation = (session: SessionSummary): SessionSummary => {
       const next = { ...session };
       if (automation === undefined) delete next.automation;
       else next.automation = automation;
       return next;
-    });
+    };
+    this._sessions = this._sessions.map((session) =>
+      session.sessionId === sessionId ? withAutomation(session) : session,
+    );
+    this.adopt(sessionId, withAutomation);
     this.emit();
   }
 
@@ -485,6 +590,7 @@ export class SessionListModel {
     this._sessions = this._sessions.map((session) =>
       session.sessionId === sessionId ? { ...session, status } : session,
     );
+    this.adopt(sessionId, (session) => ({ ...session, status }));
     this.emit();
   }
 
@@ -613,6 +719,8 @@ export class SessionListModel {
    * so a double `start()` can't leak a timer. */
   start(): void {
     this.stop();
+    // Changes the store took while the list was hidden show at once.
+    if ((this.currentStore()?.getVersion() ?? -1) !== this.orderedVersion) this.emit();
     const intervalMs = this.opts.pollIntervalMs ?? 30_000;
     // Coalesce requests while one is in flight. Without this guard, a slow
     // /sessions response is superseded by every following request and therefore

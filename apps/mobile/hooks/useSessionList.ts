@@ -15,7 +15,7 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getVerityBaseUrl } from '../lib/client';
 import { useLiveHints } from '../lib/liveConnection';
-import { useOverviewTopics } from '../lib/overviewTopics';
+import { useOverviewStore, useOverviewTopics } from '../lib/overviewTopics';
 
 export interface UseSessionList extends SessionListState {
   /** Force an immediate reload (e.g. pull-to-refresh / retry button). `silent`
@@ -41,6 +41,11 @@ export interface UseSessionList extends SessionListState {
  * race guard, polling) lives in the model — this hook is just the glue.
  */
 export function useSessionList(client: VerityClient): UseSessionList {
+  // The same copy of the sessions as the project page and its settings
+  // (ADR 0033): Home lists each session as it holds it.
+  const store = useOverviewStore(getVerityBaseUrl());
+  const storeRef = useRef(store);
+  storeRef.current = store;
   // `onChange` is the React setter, wrapped so it resolves lazily (it's declared
   // below). This relies on the model emitting a FRESH state object on every change
   // so loading and time-dependent fields propagate even when sessions are unchanged.
@@ -49,6 +54,7 @@ export function useSessionList(client: VerityClient): UseSessionList {
       new SessionListModel({
         client: contextOverviewClient(client),
         pollIntervalMs: 0,
+        store: () => storeRef.current,
         onChange: (s) => {
           const finish = beginClientActivity('session-list-publish');
           try {
@@ -69,6 +75,12 @@ export function useSessionList(client: VerityClient): UseSessionList {
   useEffect(() => {
     setState({ ...model.state, loading: true });
   }, [model]);
+
+  useEffect(() => {
+    // A replaced store (another account) shows nothing of the old one.
+    model.storeChanged();
+    return store.subscribe(() => model.storeChanged());
+  }, [model, store]);
 
   // The list refetches when the server says a session changed; its own poll is
   // only the safety net. Hints for a model that is not running are ignored.

@@ -1,3 +1,4 @@
+import { hiddenSessionIds } from './hidden-sessions.js';
 import {
   isLocalProject,
   LOCAL_PROJECT_OWNER,
@@ -87,6 +88,8 @@ export interface ProjectsWiring {
     provision: Promise<unknown>,
     onError: (error: unknown) => void,
   ) => void;
+  /** Wiki maintenance sessions started by this process and not yet recorded. */
+  wikiMaintenanceSessions: Set<string>;
 }
 
 /** What other areas use from the project routes. */
@@ -113,9 +116,11 @@ export function installProjects(
     settleProjectSpawns,
     afterProjectProvision,
     settleBackgroundProvision,
+    wikiMaintenanceSessions,
   }: ProjectsWiring,
 ): InstalledProjects {
   const { deps, conductor } = ctx;
+  const hiddenSessions = hiddenSessionIds(deps.eventStore, wikiMaintenanceSessions);
   // A link keeps its original local identity reserved while the DB row
   // temporarily carries the GitHub target. This closes the only interval in
   // which a concurrent local create could steal the slug and block rollback.
@@ -500,8 +505,11 @@ export function installProjects(
         : cached;
       const settings =
         (await projectSettingsStore(deps.eventStore).getProjectSettingsRaw(id)) ?? null;
-      const sessions = (await deps.eventStore.listSessions()).filter(
-        (session) => session.projectId === id,
+      // Hidden from this page as from `/sessions`: the app keeps one copy of
+      // the sessions both list.
+      const [all, hidden] = await Promise.all([deps.eventStore.listSessions(), hiddenSessions()]);
+      const sessions = all.filter(
+        (session) => session.projectId === id && !hidden.has(session.sessionId),
       );
       const resolved = await resolveProjectRelease(project);
       const sandboxUpdate = withSelfRepair(

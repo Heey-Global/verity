@@ -1,4 +1,5 @@
 import { registerAttachmentRoute } from './attachment-route.js';
+import { hiddenSessionIds } from './hidden-sessions.js';
 import type { FastifyInstance } from 'fastify';
 import {
   attentionSignals,
@@ -179,14 +180,7 @@ export function installSessionList(
     pruneBranchCache,
     summarizeSessions,
     collectAttention,
-    // From the store, so a session another server generation created is hidden
-    // too; the local set covers one created moments ago and not yet recorded.
-    hiddenSessionIds: async () => {
-      const recorded = await deps.eventStore.wikiMaintenance.sessionIds();
-      for (const id of recorded) wikiMaintenanceSessions.add(id);
-      for (const id of wikiMaintenanceSessions) recorded.add(id);
-      return recorded;
-    },
+    hiddenSessionIds: hiddenSessionIds(deps.eventStore, wikiMaintenanceSessions),
   });
 
   registerMessageSearchRoute(app, { eventStore: deps.eventStore });

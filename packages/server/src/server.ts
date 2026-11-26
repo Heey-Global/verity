@@ -356,6 +356,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     settleProjectSpawns,
     afterProjectProvision,
     settleBackgroundProvision,
+    wikiMaintenanceSessions,
   });
   installKnowledge(app, ctx, {
     availableModels: () => availableModels(),
