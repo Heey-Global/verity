@@ -49,18 +49,43 @@ const rev = z.number().int().nonnegative();
 /** Changed overview fields. Keys a client does not know are ignored. */
 const patch = z.record(z.string(), z.unknown());
 
+/**
+ * The overview fields `session.summary` carries: those every viewer sees alike
+ * that no other overview event owns. A view replaces exactly these with the
+ * event's row and keeps the rest as its list read gave them: what each person
+ * sees differently (read marks, dismissed items, favorites, addressing, order)
+ * and what `permission.*`, `choices.*` and `pr.status` announce.
+ *
+ * An allow-list, so a field added to the session row later is published only
+ * once it is named here.
+ */
+export const SESSION_SUMMARY_FIELDS = [
+  'name',
+  'model',
+  'status',
+  'planning',
+  'planningRevision',
+  'planningPresented',
+  'mockupReview',
+  'automation',
+  'usage',
+  'rateLimit',
+  'rateLimits',
+  'resumable',
+  'branch',
+  'eventCount',
+  'eventCountVersion',
+  'agentTextCounterVersion',
+  'backgroundWorking',
+  'lastActivityAt',
+  'lastMessageAt',
+  'attention',
+] as const;
+
 export const domainEventSchema = z.discriminatedUnion('t', [
-  z.object({
-    t: z.literal('session.summary'),
-    sessionId: id,
-    rev,
-    patch,
-    /** Fields the row no longer has. */
-    unset: z.array(id).max(100).optional(),
-    /** The whole row, for a session the server published nothing of before:
-     * fields it lacks may be gone, so a view that holds the row reads it. */
-    full: z.literal(true).optional(),
-  }),
+  /** The session's whole {@link SESSION_SUMMARY_FIELDS} row; a field it
+   * lacks is one the session no longer has. */
+  z.object({ t: z.literal('session.summary'), sessionId: id, rev, patch }),
   z.object({ t: z.literal('permission.requested'), sessionId: id, toolUseId: id, rev }),
   z.object({
     t: z.literal('permission.decided'),

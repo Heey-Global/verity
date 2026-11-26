@@ -124,8 +124,6 @@ const MAX_LIVE_BACKLOG = 2_000;
 
 const PROJECTION_TYPES: ReadonlySet<string> = new Set(SESSION_PROJECTION_EVENT_TYPES);
 
-/** The overview topics an event touches. Every event counts toward a session's
- * unread count, so each one at least hints `events`. */
 /** A change {@link LiveHub.notify} hints to the overview. */
 export interface LiveHubChange {
   sessionId: string;
@@ -134,6 +132,8 @@ export interface LiveHubChange {
   deleted?: boolean | undefined;
 }
 
+/** The overview topics an event touches. Every event counts toward a session's
+ * unread count, so each one at least hints `events`. */
 function hintTopicsFor(event: AgentEvent): LiveHintTopic[] {
   if (event.t === 'permission') return ['events', 'status', 'permission'];
   if (PROJECTION_TYPES.has(event.t)) return ['events', 'status'];

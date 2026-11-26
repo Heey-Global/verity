@@ -4,7 +4,7 @@ import type { ServerContext } from '../server-context.js';
 import type { SessionSummary } from '../server-types.js';
 import { DomainEventBus, type DomainRecord } from './domain-events.js';
 import type { LiveHubChange } from './live-hub.js';
-import { installSummaryEvents, rowPatch, sharedRow } from './summary-events.js';
+import { installSummaryEvents, sharedRow } from './summary-events.js';
 
 function summary(extra: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -84,7 +84,7 @@ function setup(rows: SessionSummary[], maintenance: ReadonlySet<string> = new Se
 }
 
 describe('session.summary', () => {
-  it('publishes the row once per burst, then only what changed', async () => {
+  it('publishes the whole row once per burst', async () => {
     const w = setup([summary()]);
     w.record('project:p1');
     w.event();
@@ -92,11 +92,9 @@ describe('session.summary', () => {
     w.advance(300);
     await vi.waitFor(() => expect(w.published).toHaveLength(1));
     expect(w.summarize).toHaveBeenCalledTimes(1);
-    // The first row is whole: views holding the session read it again.
     expect(w.published[0]!.event).toMatchObject({
       t: 'session.summary',
       sessionId: 's1',
-      full: true,
       patch: { status: 'running', eventCount: 1 },
     });
 
@@ -104,16 +102,16 @@ describe('session.summary', () => {
     w.event();
     w.advance(300);
     await vi.waitFor(() => expect(w.published).toHaveLength(2));
-    expect(w.published[1]!.event).not.toHaveProperty('full');
     expect((w.published[1]!.event as { patch: object }).patch).toEqual({
       status: 'idle',
       eventCount: 2,
+      lastActivityAt: 1,
     });
-    // Nothing changed: nothing published.
+    // Unchanged since the last row, it still goes out: a view may hold a state
+    // its own read took in between, which a hint would have corrected.
     w.event();
     w.advance(300);
-    await vi.waitFor(() => expect(w.summarize).toHaveBeenCalledTimes(3));
-    expect(w.published).toHaveLength(2);
+    await vi.waitFor(() => expect(w.published).toHaveLength(3));
     w.close();
   });
 
@@ -149,13 +147,11 @@ describe('session.summary', () => {
     expect(row).toMatchObject({ planningPresented: true, status: 'running' });
   });
 
-  // `null` is a value some fields have; a field that is gone is named apart.
-  it('names the fields the row no longer has', () => {
-    expect(rowPatch({ a: 1, b: true }, { a: 1, c: null })).toEqual({
-      patch: { c: null },
-      unset: ['b'],
-    });
-    expect(rowPatch({ a: 1 }, { a: 1 })).toBeUndefined();
+  // Only named fields leave the server: a field added to the row later is
+  // not published until someone decides it may be.
+  it('carries only the fields every viewer sees alike', () => {
+    const row = sharedRow(summary({ worktree: '/wt/secret', favorite: true }));
+    expect(Object.keys(row).sort()).toEqual(['eventCount', 'lastActivityAt', 'status']);
   });
 
   // Home skips its list read for these hints, whatever raised them.

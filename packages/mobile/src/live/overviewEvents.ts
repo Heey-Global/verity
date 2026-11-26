@@ -1,4 +1,4 @@
-import type { DomainEvent } from '@verity/events';
+import { SESSION_SUMMARY_FIELDS, type DomainEvent } from '@verity/events';
 import { sessionSummarySchema, type SessionSummary } from '../api.js';
 import { pullRequestSchema } from '../branch-api.js';
 
@@ -27,9 +27,7 @@ export function applyOverviewEvent(
   if (event.t === 'session.summary') {
     const index = sessions.findIndex((session) => session.sessionId === event.sessionId);
     if (index < 0) return { kind: 'none' };
-    // A whole row cannot say which fields the held one should lose.
-    if (event.full === true) return { kind: 'reload' };
-    const patched = withSummaryPatch(sessions[index]!, event.patch, event.unset ?? []);
+    const patched = withSummaryRow(sessions[index]!, event.patch);
     // A row this app cannot read is left to the overview read.
     if (patched === undefined) return { kind: 'reload' };
     const next = [...sessions];
@@ -77,17 +75,19 @@ export function appliesToEarlierReads(event: DomainEvent): boolean {
   );
 }
 
-/** The session with the changed overview fields of a `session.summary`; the
- * fields each viewer sees differently are not in it and stay as read.
+/** The session with the overview fields of a `session.summary` row in place
+ * of its own: a field the row lacks is gone. The rest stays as read: what each
+ * viewer sees differently, and what other overview events own.
  * Undefined when the result is not a row this app can read. */
-function withSummaryPatch(
+function withSummaryRow(
   session: SessionSummary,
-  patch: Readonly<Record<string, unknown>>,
-  unset: readonly string[],
+  row: Readonly<Record<string, unknown>>,
 ): SessionSummary | undefined {
   const next: Record<string, unknown> = { ...session };
-  for (const [key, value] of Object.entries(patch)) if (key !== 'sessionId') next[key] = value;
-  for (const key of unset) if (key !== 'sessionId') delete next[key];
+  for (const key of SESSION_SUMMARY_FIELDS) {
+    if (key in row) next[key] = row[key];
+    else delete next[key];
+  }
   const parsed = sessionSummarySchema.safeParse(next);
   return parsed.success ? parsed.data : undefined;
 }

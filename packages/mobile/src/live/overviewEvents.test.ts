@@ -1,6 +1,6 @@
-import type { DomainEvent } from '@verity/events';
+import { SESSION_SUMMARY_FIELDS, type DomainEvent } from '@verity/events';
 import { describe, expect, it } from 'vitest';
-import type { SessionSummary } from '../api.js';
+import { sessionSummarySchema, type SessionSummary } from '../api.js';
 import { inboxItems } from '../ui/inbox.js';
 import { applyOverviewEvent, keptWithout, RevisionGate } from './overviewEvents.js';
 
@@ -204,42 +204,71 @@ describe('RevisionGate', () => {
 });
 
 describe('applyOverviewEvent with session.summary', () => {
-  const summary = (
-    patch: Record<string, unknown>,
-    more: { unset?: string[]; full?: true } = {},
-  ): DomainEvent => ({ t: 'session.summary', sessionId: 's1', rev: 1, patch, ...more });
+  /** The whole shared row a server publishes for `session`, changed by `change`. */
+  const summary = (session: SessionSummary, change: Record<string, unknown>): DomainEvent => {
+    const row: Record<string, unknown> = {};
+    for (const key of SESSION_SUMMARY_FIELDS) if (key in session) row[key] = session[key];
+    return { t: 'session.summary', sessionId: 's1', rev: 1, patch: { ...row, ...change } };
+  };
 
-  it("changes the session's overview fields and keeps what each viewer sees", () => {
+  it("replaces the session's shared fields and keeps what each viewer sees", () => {
     const session = { ...waiting(), lastActivityAt: 5, inboxDismissed: ['x'] } as SessionSummary;
-    const effect = applyOverviewEvent([session], summary({ status: 'idle', eventCount: 9 }));
+    const effect = applyOverviewEvent(
+      [session],
+      summary(session, { status: 'idle', eventCount: 9 }),
+    );
     expect(effect.kind).toBe('local');
     const [next] = (effect as { sessions: SessionSummary[] }).sessions;
     expect(next).toMatchObject({ status: 'idle', eventCount: 9, inboxDismissed: ['x'] });
+    // Owned by permission events, not by the row.
+    expect(next!.pendingPermissions).toEqual(['tool-1']);
   });
 
-  it('drops a field the row no longer has, and keeps null where null is a value', () => {
+  it('drops a shared field the row lacks, and keeps null where null is a value', () => {
     const session = { ...waiting(), backgroundWorking: true, lastActivityAt: 5 } as SessionSummary;
-    const effect = applyOverviewEvent(
-      [session],
-      summary({ lastActivityAt: null }, { unset: ['backgroundWorking'] }),
-    );
+    const event = summary(session, { lastActivityAt: null });
+    delete (event as { patch: Record<string, unknown> }).patch.backgroundWorking;
+    const effect = applyOverviewEvent([session], event);
     const [next] = (effect as { sessions: SessionSummary[] }).sessions;
     expect(next).not.toHaveProperty('backgroundWorking');
     expect(next!.lastActivityAt).toBeNull();
   });
 
-  // A whole row cannot say which held fields are gone.
-  it('asks for a read for a whole row', () => {
-    expect(applyOverviewEvent([waiting()], summary({ status: 'idle' }, { full: true })).kind).toBe(
-      'reload',
-    );
-  });
-
   it('asks for a read when the row is not one this app can read', () => {
-    expect(applyOverviewEvent([waiting()], summary({ status: 42 })).kind).toBe('reload');
+    expect(applyOverviewEvent([waiting()], summary(waiting(), { status: 42 })).kind).toBe('reload');
   });
 
   it('leaves sessions it does not list to their list read', () => {
-    expect(applyOverviewEvent([], summary({ status: 'idle' })).kind).toBe('none');
+    expect(applyOverviewEvent([], summary(waiting(), { status: 'idle' })).kind).toBe('none');
+  });
+
+  // An unclassified field would either never reach Home live, or reach every
+  // viewer of the project although it is someone's own: each must be decided.
+  it('classifies every overview field as shared or as kept from the read', () => {
+    const kept = new Set([
+      // Identity and placement; a move or rename is hinted as `session`.
+      'sessionId',
+      'worktree',
+      'projectId',
+      // What each person sees differently.
+      'favorite',
+      'lastSeenEventCount',
+      'inboxDismissed',
+      'addressedToViewer',
+      'changeSubmission',
+      'linked',
+      'sortOrder',
+      // Owned by `permission.*`, `choices.*` and `pr.status`.
+      'pendingPermissions',
+      'permissionAwaitingInput',
+      'pendingPermissionRequests',
+      'openChoices',
+      'pr',
+      'pullRequest',
+    ]);
+    const shared = new Set<string>(SESSION_SUMMARY_FIELDS);
+    const fields = Object.keys(sessionSummarySchema.shape);
+    expect(fields.filter((field) => !kept.has(field) && !shared.has(field))).toEqual([]);
+    expect([...shared].filter((field) => kept.has(field))).toEqual([]);
   });
 });
