@@ -1917,9 +1917,9 @@ const permissionDecidedSchema = z.object({
   sessionId: z.string().min(1),
   toolUseId: z.string().min(1),
   decided: z.literal(true),
-  /** Present for scoped allows. False means the request was allowed but the
-   * reusable grant could not be saved, so the request must not be retried. */
+  /** Scoped allows: whether the reusable grant was saved and the action went on. */
   scopeSaved: z.boolean().optional(),
+  actionContinued: z.boolean().optional(),
 });
 export type PermissionDecided = z.infer<typeof permissionDecidedSchema>;
 

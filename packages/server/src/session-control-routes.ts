@@ -91,6 +91,7 @@ export function registerSessionControlRoutes(
           }
         : { behavior: 'deny' as const, message: body.message ?? 'Denied by the operator.' };
     let scopeSaved: boolean | undefined;
+    let actionContinued: boolean | undefined;
     let decided: boolean;
     try {
       decided =
@@ -98,8 +99,9 @@ export function registerSessionControlRoutes(
           ? await deps.conductor.decidePermission(id, toolUseId, decision, {
               scope: body.scope,
               decidedByUser: viewerId(request),
-              onScopeSaved: (saved) => {
+              onScopeSaved: (saved, continued) => {
                 scopeSaved = saved;
+                actionContinued = continued;
               },
             })
           : await deps.conductor.decidePermission(id, toolUseId, decision, {
@@ -138,6 +140,7 @@ export function registerSessionControlRoutes(
       toolUseId,
       decided: true,
       ...(scopeSaved === undefined ? {} : { scopeSaved }),
+      ...(actionContinued === undefined ? {} : { actionContinued }),
     };
   });
 

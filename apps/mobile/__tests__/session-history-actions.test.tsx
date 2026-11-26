@@ -15,7 +15,7 @@ const compiled = ts.transpileModule(`const element = <>${source.slice(start, end
 }).outputText;
 const build = new Function(
   'React',
-  'Banner',
+  'SessionBanner',
   'Button',
   'props',
   `
