@@ -1,3 +1,5 @@
+import { EventHistoryStore, sequencedEvent, type SequencedEvent } from './event-history.js';
+export type { SequencedEvent } from './event-history.js';
 import { EventSnapshotStore } from './event-snapshots.js';
 import {
   SessionBackendStateStore,
@@ -345,18 +347,6 @@ export {
   type SessionAutomationInput,
 } from './session-automations.js';
 
-/** A persisted event tagged with its monotonic sequence (the bigserial id) and
- * its real persist time. `seq` orders + keys the event; `ts` is the row's
- * `created_at` as epoch milliseconds — store/transport metadata alongside `seq`,
- * NOT part of the canonical {@link AgentEvent} payload. Surfaced so the client can
- * show real wall-clock times instead of using `seq` as a `createdAt` proxy (#32). */
-export interface SequencedEvent {
-  seq: number;
-  /** The row's `created_at` as epoch milliseconds (non-decreasing with `seq`). */
-  ts: number;
-  event: AgentEvent;
-}
-
 /**
  * One token field of a `result` payload, summed across a group — see
  * {@link EventStore.readUsageTotals}.
@@ -369,28 +359,6 @@ export interface SequencedEvent {
  */
 function usageSum(field: keyof Usage) {
   return sql<string>`sum(coalesce((payload -> 'usage' ->> ${sql.lit(field)})::bigint, 0))`;
-}
-
-/**
- * One event row as the projections consume it.
- *
- * Same contract as {@link EventStore.getEventsAfter}: a payload that does not
- * parse is a corrupted log, not a row to skip past. Events are validated on the
- * way IN, so a row that fails on the way out means the database no longer holds
- * what the server wrote, and a badge quietly rendered from the surviving rows
- * would hide it.
- */
-function sequencedEvent(
-  sessionId: string,
-  id: string | number,
-  payload: unknown,
-  createdAt: Date,
-): SequencedEvent {
-  const parsed = parseAgentEvent(payload);
-  if (!parsed.success) {
-    throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
-  }
-  return { seq: Number(id), ts: createdAt.getTime(), event: parsed.data };
 }
 
 /** What a session with no `result` events has spent. */
@@ -1114,6 +1082,7 @@ export class EventStore implements EventSink {
     );
   }
 
+  private readonly eventHistory = new EventHistoryStore(() => this.db);
   private readonly eventSnapshots = new EventSnapshotStore(() => this.db);
   private readonly starterProjects = new StarterProjectStore(() => this.db);
   private readonly projectLifecycle = new ProjectLifecycleStore(
@@ -2471,26 +2440,7 @@ export class EventStore implements EventSink {
     limit: number,
     beforeSeq?: number,
   ): Promise<{ events: SequencedEvent[]; hasMore: boolean }> {
-    let q = this.db
-      .selectFrom('events')
-      .select(['id', 'payload', 'created_at'])
-      .where('session_id', '=', sessionId);
-    if (beforeSeq !== undefined) q = q.where('id', '<', beforeSeq);
-    // One extra row probes whether an older page exists, then is dropped.
-    const rows = await q
-      .orderBy('id', 'desc')
-      .limit(limit + 1)
-      .execute();
-    const hasMore = rows.length > limit;
-    const page = (hasMore ? rows.slice(0, limit) : rows).reverse();
-    const events = page.map((row) => {
-      const parsed = parseAgentEvent(row.payload);
-      if (!parsed.success) {
-        throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
-      }
-      return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
-    });
-    return { events, hasMore };
+    return this.eventHistory.getEventsBeforeSeq(sessionId, limit, beforeSeq);
   }
 
   /** The user behind the session's most recent prompt that names one, or `undefined`
@@ -2544,22 +2494,7 @@ export class EventStore implements EventSink {
     afterSeq: number,
     limit?: number,
   ): Promise<SequencedEvent[]> {
-    let query = this.db
-      .selectFrom('events')
-      .select(['id', 'payload', 'created_at'])
-      .where('session_id', '=', sessionId)
-      .where('id', '>', afterSeq)
-      .orderBy('id', 'asc');
-    // Paged readers (the live replay) bound each read; recovery reads stay whole.
-    if (limit !== undefined) query = query.limit(limit);
-    const rows = await query.execute();
-    return rows.map((row) => {
-      const parsed = parseAgentEvent(row.payload);
-      if (!parsed.success) {
-        throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
-      }
-      return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
-    });
+    return this.eventHistory.getEventsAfter(sessionId, afterSeq, limit);
   }
 
   /**

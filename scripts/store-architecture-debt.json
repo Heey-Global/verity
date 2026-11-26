@@ -99,11 +99,9 @@
     "externalizeToolResult": "d9c8e657 473da598 2cf8ba0f 24c1379b 78401a94 6a89369c c72549ff 43c90c01",
     "getEvents": "5e61366b 965fb5d4 b620aa76 85608365 9349c338 d07f89f1 d40c2cb7 d2a81015",
     "getBoundedHistory": "cbce3e9a 0a1a79d2 2e9e8003 ff3ed5be a5976c20 6b80eb8e 7a34ddcc 6383d3dd",
-    "getEventsBeforeSeq": "0c0de01b f729da21 e2b7cd7c b27e70fb 6e124b82 5e1050f6 8777d23b de9b91ee",
     "latestPromptInitiator": "5918073c 30ac234c be62ee2a 3ef3f1b0 cfe329cf 5276f730 968d099e ceea9b0a",
     "runningTurnInitiator": "5f0caf0c 12e5a1d2 b0860e73 0c0a91a8 4456f22e c6226be5 47f305b7 cb23d9cf",
     "promptInitiatorAt": "cae0d7b5 b88499b6 124e4d98 a943047e 37ecadb4 6c3cc050 7187bd6b 7fb48b4c",
-    "getEventsAfter": "ab64f8e1 16ac5825 6422fc4d 7f4aef81 16453015 68928e3c f13316f4 f5e248ce",
     "listSessionProjectionFacts": "824530ff d88c8750 243ea390 44fc7edc dea29474 ad70e10a fa12071e d29ac19e",
     "readProjectionTails": "70444c97 a57cb75b d0cff88f 20aa0a0d 7edbd8ad 4de333d1 66bfc8a4 dc2c0d3d",
     "readLatestRateLimits": "1a74471a 16bf171b 8d1ab66e 9d041c62 29676a17 84ef1dec 36d406f2 5dc41c68",
@@ -131,7 +129,6 @@
     "backupGitRepositoryKey": "168080a4 92c68405 4eedf146 6c078ac1 a6db721b 855d169d fb4f8c80 6d80124e",
     "listDuePushReceipts": "ec5d9c81 b1d006bd 12e15d1a 87d59923 4431de40 e0498a68 b7d65056 eb6a0a52",
     "module: usageSum": "364964e0 6b0c59db bcb933a6 b49f8eff 22e1b39e c3cde4af 7e2e651f c6b83cc6",
-    "module: sequencedEvent": "6fe02672 f6c1bf3f 5517a578 8195d6bc 7d910b8c 914b59d7 009f0008 808eb040",
     "module: emptyUsageTotals": "24b7ead5 dcdef6b2 4f821524 ab40dd27 858d1ae5 e5c7fb07 e71b4630 3236939e"
   },
   "imports": [
