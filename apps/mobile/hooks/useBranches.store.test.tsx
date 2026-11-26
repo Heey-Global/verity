@@ -282,4 +282,23 @@ describe('useBranches with the shared overview store', () => {
     unmount();
     shared.unmount();
   });
+
+  // The chip shows the store's copy; a merge must show at once there, before
+  // the read that follows it answers.
+  it('shows a merge at once and puts it in the store', async () => {
+    const shared = withListedSession();
+    const getBranches = jest
+      .fn()
+      .mockResolvedValueOnce(branches(pr(42)))
+      .mockImplementation(() => new Promise(() => undefined));
+    const mergePullRequest = jest.fn().mockResolvedValue(undefined);
+    const client = { getBranches, mergePullRequest } as unknown as VerityClient;
+    const { result, unmount } = renderHook(() => useBranches(client, 's1'));
+    await waitFor(() => expect(shared.result.current.session('s1')?.pullRequest?.number).toBe(42));
+    act(() => void result.current.mergePullRequest(42));
+    await waitFor(() => expect(result.current.pullRequest?.phase).toBe('merged'));
+    expect(shared.result.current.session('s1')?.pullRequest?.phase).toBe('merged');
+    unmount();
+    shared.unmount();
+  });
 });

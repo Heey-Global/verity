@@ -33,6 +33,9 @@ describe('useOverviewProjects', () => {
     });
     expect(result.current.find((p) => p.id === 'p1')?.name).toBe('Renamed');
     expect(listProjects).toHaveBeenCalledTimes(1);
+    // A closing sheet keeps the list it showed.
+    rerender({ active: false });
+    expect(result.current.map((p) => p.id)).toEqual(['p1', 'p2']);
     shared.unmount();
   });
 });

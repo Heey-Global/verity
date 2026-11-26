@@ -148,6 +148,8 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   storeRef.current = store;
   /** The store that took this hook's last read; its status is at least as new. */
   const [readStore, setReadStore] = useState<OverviewStore | undefined>(undefined);
+  /** The store a catch-up read was asked for (see `unheard` below). */
+  const caughtUp = useRef<OverviewStore | undefined>(undefined);
   const [identity, setIdentity] = useState({ client, sessionId });
   const [current, setCurrent] = useState<string | undefined>(cached?.current);
   const [switchable, setSwitchable] = useState<string[]>(cached?.switchable ?? []);
@@ -198,6 +200,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   if (identity.client !== client || identity.sessionId !== sessionId) {
     setIdentity({ client, sessionId });
     setReadStore(undefined);
+    caughtUp.current = undefined;
     reqId.current += 1;
     if (pending.current) {
       pending.current.followup = false;
@@ -451,6 +454,15 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
           setPullRequest((current) =>
             current?.number === number ? { ...current, ...merged } : current,
           );
+          // The chip shows the store's copy; it is merged for every view now.
+          const target = storeRef.current;
+          const listed = target.session(sessionId);
+          if (listed?.pullRequest?.number === number)
+            target.applySessions(
+              target.beginRead(),
+              [withPullRequest(listed, { ...listed.pullRequest, ...merged })],
+              { covers: (session) => session.sessionId === sessionId },
+            );
           publishPullRequestStatusMutation({
             sessionId,
             number,
@@ -511,7 +523,6 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   // before Home loaded, or another account's store): one more read puts the
   // status there, and the store's events then show.
   const unheard = heldPullRequest !== undefined && readStore !== store;
-  const caughtUp = useRef<OverviewStore | undefined>(undefined);
   useEffect(() => {
     if (!unheard || !visible.current || !enabled || caughtUp.current === store) return;
     caughtUp.current = store;
