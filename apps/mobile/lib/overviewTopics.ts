@@ -96,7 +96,21 @@ class OverviewHub {
     if (entry === undefined) return false;
     entry.count -= 1;
     if (focused) entry.focused -= 1;
-    if (entry.count > 0) return false;
+    if (entry.count > 0) {
+      // A topic the reserve gave a page goes back once only Home shows it and
+      // Home is past its share; Home keeps following hints and reads.
+      if (
+        entry.focused === 0 &&
+        entry.detach !== undefined &&
+        this.live > MAX_PROJECT_TOPICS - FOCUSED_RESERVE
+      ) {
+        entry.detach();
+        entry.detach = undefined;
+        entry.gate = undefined;
+        this.live -= 1;
+      }
+      return false;
+    }
     this.topics.delete(projectId);
     if (entry.detach === undefined) return false;
     entry.detach();
@@ -175,8 +189,12 @@ function subscribeAccount(listener: () => void): () => void {
 
 /** Attach a view to the hub of this server and the signed-in account; another
  * account or server starts from an empty store. */
-function attachToHub(baseUrl: string, listener: OverviewListener): () => void {
-  const scope = JSON.stringify([baseUrl, taskAccountScope()]);
+function attachToHub(
+  baseUrl: string,
+  account: string | null,
+  listener: OverviewListener,
+): () => void {
+  const scope = JSON.stringify([baseUrl, account]);
   let hub = hubs.get(scope);
   if (hub === undefined) {
     hub = new OverviewHub(baseUrl);
@@ -213,7 +231,7 @@ export function useOverviewTopics(
   const account = useSyncExternalStore(subscribeAccount, taskAccountScope, taskAccountScope);
   useEffect(() => {
     if (baseUrl === null || key === '') return undefined;
-    return attachToHub(baseUrl, {
+    return attachToHub(baseUrl, account, {
       projects: new Set(key.split('\n')),
       handlers,
       resyncQueued: false,

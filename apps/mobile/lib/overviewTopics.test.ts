@@ -110,6 +110,18 @@ describe('useOverviewTopics', () => {
     expect(mockSubscribed).toContain('project:p47');
   });
 
+  it('returns a reserved topic once the page leaves and Home is past its share', () => {
+    const many = Array.from({ length: 48 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    renderHook(() => useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()));
+    const page = renderHook(() =>
+      useOverviewTopics('https://core.example', ['p47'], jest.fn(), jest.fn()),
+    );
+    expect(mockSubscribed).toContain('project:p47');
+    page.unmount();
+    // Otherwise every page visit would use up the reserve for good.
+    expect(mockUnsubscribed).toEqual(['project:p47']);
+  });
+
   it('gives a freed topic to a project that waited past the cap', () => {
     const many = Array.from({ length: 41 }, (_, i) => `p${String(i).padStart(2, '0')}`);
     const first = renderHook(() =>
