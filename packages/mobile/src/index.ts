@@ -15,6 +15,7 @@ export {
   appliesToEarlierReads,
   keptWithout,
   RevisionGate,
+  withPullRequest,
   type OverviewEventEffect,
 } from './live/overviewEvents.js';
 export { projectEventUpdate, type ProjectEventUpdate } from './live/projectEvents.js';
