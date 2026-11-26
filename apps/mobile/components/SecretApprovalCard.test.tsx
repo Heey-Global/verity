@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react-native';
+import { ScrollView } from 'react-native';
 
 import { darkTheme } from '../theme/tokens';
 import { SecretApprovalCard } from './SecretApprovalCard';
@@ -108,4 +109,15 @@ it('leaves the answered transcript card unbounded', () => {
   render(<SecretApprovalCard request={request} decision="once" />);
 
   expect(screen.queryByTestId('secret-approval-body')).toBeNull();
+});
+
+it('does not nest a second scroll box inside the pinned body', () => {
+  const view = render(
+    <SecretApprovalCard
+      request={request}
+      actions={{ allow: jest.fn(), deny: jest.fn(), deciding: false, disabled: false }}
+    />,
+  );
+
+  expect(view.UNSAFE_getAllByType(ScrollView)).toHaveLength(1);
 });

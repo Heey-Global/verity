@@ -165,14 +165,7 @@ export function SecretApprovalCard({
               />
             )}
             {expanded || pending ? (
-              // Pinned, the whole body already scrolls: a second scroll box inside it would
-              // trap the swipe meant for the buttons below.
-              <ScrollView
-                nestedScrollEnabled
-                scrollEnabled={actions === undefined}
-                style={actions ? styles.detailInline : styles.detailScroll}
-                contentContainerStyle={styles.detailContent}
-              >
+              <DetailsBox pinned={actions !== undefined}>
                 {http ? (
                   <>
                     <Text variant="code" style={styles.compactCode} selectable>
@@ -210,7 +203,7 @@ export function SecretApprovalCard({
                     {spellOutBidiControls(dopplerSourceLabel(source))}
                   </Text>
                 ) : null}
-              </ScrollView>
+              </DetailsBox>
             ) : null}
           </View>
         ) : null}
@@ -278,6 +271,22 @@ export function SecretApprovalCard({
 
 // Only the card with actions is pinned above the composer; the transcript's copy scrolls
 // with the transcript and keeps its plain layout.
+// Pinned, the whole body already scrolls: a second scroll box inside it would trap the
+// swipe meant for the buttons below.
+function DetailsBox({ pinned, children }: { pinned: boolean; children: ReactNode }) {
+  return pinned ? (
+    <View style={[styles.detailInline, styles.detailContent]}>{children}</View>
+  ) : (
+    <ScrollView
+      nestedScrollEnabled
+      style={styles.detailScroll}
+      contentContainerStyle={styles.detailContent}
+    >
+      {children}
+    </ScrollView>
+  );
+}
+
 function Body({ pinned, children }: { pinned: boolean; children: ReactNode }) {
   return pinned ? <PinnedScroll testID="secret-approval-body">{children}</PinnedScroll> : children;
 }
