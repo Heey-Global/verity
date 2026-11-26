@@ -183,6 +183,10 @@ describe('useProjectDetail overview events', () => {
       setProjectSetupStatus: jest.fn(),
     } as unknown as VerityClient;
     const { result } = renderHook(() => useProjectDetail(client, 'p6'));
+    // An older record of the project, as another screen saved it earlier.
+    act(() =>
+      publishProjectStatusMutation({ id: 'p6', name: 'Old', state: 'active' } as ProjectRecord),
+    );
     const sink = mockSinks.get('project:p6')!;
     act(() => {
       for (let i = 0; i < 257; i += 1)
@@ -196,5 +200,8 @@ describe('useProjectDetail overview events', () => {
     );
     await waitFor(() => expect(result.current.detail).toBeDefined());
     expect(result.current.detail?.sessions.map((s) => s.sessionId)).toEqual(['s6']);
+    // The store applies every event at once, so its copy is never older than
+    // a refused read; a screen's save during the read stays.
+    expect(result.current.detail?.project.name).toBe('Old');
   });
 });

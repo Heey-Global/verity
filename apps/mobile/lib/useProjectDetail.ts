@@ -262,7 +262,11 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
       if (held !== undefined) return [held];
       return sessionsInStore ? [] : [listed];
     });
-    return { ...detail, project: store.project(projectId) ?? detail.project, sessions };
+    return {
+      ...detail,
+      project: store.project(projectId) ?? detail.project,
+      sessions,
+    };
     // `version` changes whenever an entity in the store does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detail, sessionsInStore, store, projectId, version]);
@@ -279,12 +283,11 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
       const update = projectEventUpdate(event);
       if (update !== undefined) {
         if (update.projectId !== projectId) return;
-        // Without a copy in the store (it refused the last read) the page
-        // keeps the change itself.
-        if (storeRef.current.project(projectId) === undefined)
-          setDetail((latest) =>
-            latest === undefined ? latest : { ...latest, project: update.patch(latest.project) },
-          );
+        // Also kept on the page's own copy, which it shows while the store
+        // refuses its read.
+        setDetail((latest) =>
+          latest === undefined ? latest : { ...latest, project: update.patch(latest.project) },
+        );
         if (update.reload && focusedRef.current) void load(true);
         return;
       }
