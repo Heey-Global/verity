@@ -86,7 +86,7 @@ export function createPrEvents(
 
 /** Whether the session maintains a Wiki. A store without that record (a test
  * double) has none. */
-async function isMaintenanceSession(store: object, sessionId: string): Promise<boolean> {
+export async function isMaintenanceSession(store: object, sessionId: string): Promise<boolean> {
   const maintenance = (store as { wikiMaintenance?: { isSession?: unknown } }).wikiMaintenance;
   if (typeof maintenance?.isSession !== 'function') return false;
   return (maintenance as { isSession(id: string): Promise<boolean> }).isSession(sessionId);

@@ -274,6 +274,11 @@ export class LiveConnection implements LiveSessionTransport {
     return this.topics.subscribe(topic, sink);
   }
 
+  /** See {@link LiveTopics.follows}. */
+  followsTopic(topic: DomainTopic): boolean {
+    return this.topics.follows(topic);
+  }
+
   onAlert(listener: (alert: LiveAlert) => void): () => void {
     this.alertListeners.add(listener);
     return () => this.alertListeners.delete(listener);

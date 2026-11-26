@@ -100,7 +100,14 @@ export interface SessionListModelOptions {
    * list shows each session as it holds it, so an event or another view's read
    * changes Home at once. Without it the list keeps its own copy. */
   store?: () => OverviewStore | undefined;
+  /** Whether a project's topic delivers its events live, `session.summary`
+   * included. Its sessions' status and transcript growth then reach the list
+   * as events, and the hints announcing them need no list read. */
+  followsLive?: (projectId: string) => boolean;
 }
+
+/** Hint topics a `session.summary` event answers for a followed project. */
+const SUMMARY_TOPICS: ReadonlySet<string> = new Set(['events', 'status']);
 
 /** Home's read speaks for every session: `/sessions` and the project page
  * leave out the same ones. */
@@ -780,7 +787,10 @@ export class SessionListModel {
    * lands while a request is in flight queues exactly one more, so the change it
    * announced is never answered by a response that predates it.
    */
-  applyHints(hints: readonly LiveHint[]): void {
+  applyHints(all: readonly LiveHint[]): void {
+    const hints = all.filter((hint) => !this.answeredByEvents(hint));
+    // Every hint was answered by events of followed projects.
+    if (all.length > 0 && hints.length === 0) return;
     for (const hint of hints) {
       if (hint.deleted === true) {
         const deletion = this.pendingDeletes.get(hint.sessionId) ?? {
@@ -821,6 +831,15 @@ export class SessionListModel {
     };
     if (wait <= 0) run();
     else this.eventsRefreshTimer = setTimeout(run, wait);
+  }
+
+  /** A hint only of status or transcript growth, for a listed session whose
+   * project the list follows live: its `session.summary` brings the change. */
+  private answeredByEvents(hint: LiveHint): boolean {
+    if (hint.deleted === true || hint.topics.length === 0) return false;
+    if (!hint.topics.every((topic) => SUMMARY_TOPICS.has(topic))) return false;
+    const projectId = this._sessions.find((s) => s.sessionId === hint.sessionId)?.projectId;
+    return projectId != null && this.opts.followsLive?.(projectId) === true;
   }
 
   private cancelEventsRefresh(): void {

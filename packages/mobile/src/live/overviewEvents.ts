@@ -1,5 +1,5 @@
 import type { DomainEvent } from '@verity/events';
-import type { SessionSummary } from '../api.js';
+import { sessionSummarySchema, type SessionSummary } from '../api.js';
 import { pullRequestSchema } from '../branch-api.js';
 
 /**
@@ -23,6 +23,16 @@ export function applyOverviewEvent(
 ): OverviewEventEffect {
   if (event.t === 'permission.requested' || event.t === 'choices.opened') {
     return { kind: 'reload' };
+  }
+  if (event.t === 'session.summary') {
+    const index = sessions.findIndex((session) => session.sessionId === event.sessionId);
+    if (index < 0) return { kind: 'none' };
+    const patched = withSummaryPatch(sessions[index]!, event.patch);
+    // A row this app cannot read is left to the overview read.
+    if (patched === undefined) return { kind: 'reload' };
+    const next = [...sessions];
+    next[index] = patched;
+    return { kind: 'local', sessions: next };
   }
   if (event.t === 'pr.status') {
     if (!sessions.some((session) => session.sessionId === event.sessionId)) return { kind: 'none' };
@@ -58,8 +68,32 @@ export function applyOverviewEvent(
  */
 export function appliesToEarlierReads(event: DomainEvent): boolean {
   return (
-    event.t === 'permission.decided' || event.t === 'choices.answered' || event.t === 'pr.status'
+    event.t === 'permission.decided' ||
+    event.t === 'choices.answered' ||
+    event.t === 'pr.status' ||
+    event.t === 'session.summary'
   );
+}
+
+/** Fields a summary patch may set to `null` as a value; on any other field
+ * `null` means the row no longer has it. */
+const NULLABLE_FIELDS: ReadonlySet<string> = new Set(['lastActivityAt', 'lastMessageAt', 'name']);
+
+/** The session with the changed overview fields of a `session.summary`; the
+ * fields each viewer sees differently are not in it and stay as read.
+ * Undefined when the result is not a row this app can read. */
+function withSummaryPatch(
+  session: SessionSummary,
+  patch: Readonly<Record<string, unknown>>,
+): SessionSummary | undefined {
+  const next: Record<string, unknown> = { ...session };
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === 'sessionId') continue;
+    if (value === null && !NULLABLE_FIELDS.has(key)) delete next[key];
+    else next[key] = value;
+  }
+  const parsed = sessionSummarySchema.safeParse(next);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /**

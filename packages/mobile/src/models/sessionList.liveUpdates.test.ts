@@ -251,3 +251,29 @@ describe('SessionListModel.applyDomainEvent', () => {
     expect(model.state.sessions[0]?.pr).toMatchObject({ pipeline: 'success' });
   });
 });
+
+describe('SessionListModel.applyHints with followed projects', () => {
+  it('reads nothing for status and transcript hints a followed project answers with events', async () => {
+    const listSessions = vi.fn(() =>
+      Promise.resolve([summary('s1', { projectId: 'p1' }), summary('s2', { projectId: 'p2' })]),
+    );
+    const model = new SessionListModel({
+      client: clientFor(listSessions),
+      pollIntervalMs: 0,
+      followsLive: (projectId) => projectId === 'p1',
+    });
+    model.start();
+    await vi.waitFor(() => expect(model.state.sessions).toHaveLength(2));
+    // Let the first read settle, so a further read would start at once.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    model.applyHints([{ sessionId: 's1', topics: ['status', 'events'] }]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    // A request's content, and sessions of projects not followed, still need the read.
+    model.applyHints([{ sessionId: 's1', topics: ['permission'] }]);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    model.applyHints([{ sessionId: 's2', topics: ['status'] }]);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(3));
+    model.stop();
+  });
+});

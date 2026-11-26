@@ -227,3 +227,33 @@ describe('LiveConnection topics', () => {
     expect(h.connection.topicsSupported).toBe(true);
   });
 });
+
+describe('LiveConnection.followsTopic', () => {
+  // Home skips its list read for status hints of a followed project; with a
+  // server that never sends `session.summary`, statuses would then never change.
+  it('follows a live topic only once the server has sent a session summary', async () => {
+    const h = await harness();
+    h.socket().ready(true);
+    const { sink } = recorder();
+    h.connection.subscribeTopic('project:p1', sink);
+    h.socket().serve({ k: 'resync', topic: 'project:p1', cursor: 3 });
+    expect(h.connection.followsTopic('project:p1')).toBe(false);
+    h.socket().serve({
+      k: 'domain',
+      topic: 'project:p1',
+      cursor: 4,
+      event: { t: 'session.summary', sessionId: 's1', rev: 1, patch: { status: 'idle' } },
+    });
+    expect(h.connection.followsTopic('project:p1')).toBe(true);
+    expect(h.connection.followsTopic('project:p2')).toBe(false);
+
+    // Dropped: nothing arrives until the connection is back.
+    h.socket().drop();
+    expect(h.connection.followsTopic('project:p1')).toBe(false);
+    // Another server process may be an older one.
+    await h.reconnect();
+    h.socket().ready(true, 'epoch-2');
+    h.socket().serve({ k: 'resync', topic: 'project:p1', cursor: 1 });
+    expect(h.connection.followsTopic('project:p1')).toBe(false);
+  });
+});

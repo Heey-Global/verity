@@ -49,6 +49,9 @@ export class LiveTopics {
   private epoch: string | undefined;
   /** Whether the connected server accepts topics (protocol 2). */
   supported = false;
+  /** Whether this server process publishes `session.summary`, as one it sent
+   * shows; an older server announces status only as hints. */
+  private summaries = false;
 
   constructor(private readonly send: (frame: LiveClientFrame) => void) {}
 
@@ -77,6 +80,7 @@ export class LiveTopics {
       // name positions this one never handed out; the views read snapshots.
       for (const entry of this.topics.values()) entry.cursor = undefined;
       this.epoch = epoch;
+      this.summaries = false;
     }
     // A fresh connection starts every backoff over: the earlier failures may
     // have been cured by whatever made this connection possible.
@@ -88,6 +92,22 @@ export class LiveTopics {
     for (let i = 0; i < requests.length; i += LIVE_MAX_TOPIC_SUBSCRIPTIONS) {
       this.send({ k: 'topics.sub', topics: requests.slice(i, i + LIVE_MAX_TOPIC_SUBSCRIPTIONS) });
     }
+  }
+
+  /**
+   * Whether `topic` delivers its sessions' status as `session.summary` now:
+   * the server publishes it, the subscription is live (it answered with an
+   * event or `resync`) and is not retrying after an error.
+   */
+  follows(topic: DomainTopic): boolean {
+    const entry = this.topics.get(topic);
+    return (
+      this.supported &&
+      this.summaries &&
+      entry !== undefined &&
+      entry.cursor !== undefined &&
+      entry.failures === 0
+    );
   }
 
   /** The connection dropped; nothing arrives until the next {@link ready}. */
@@ -102,6 +122,7 @@ export class LiveTopics {
     if (entry.cursor !== undefined && cursor <= entry.cursor) return;
     entry.cursor = cursor;
     entry.failures = 0;
+    if (event.t === 'session.summary') this.summaries = true;
     for (const sink of [...entry.sinks]) sink.event(event);
   }
 
