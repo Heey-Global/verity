@@ -64,6 +64,7 @@ export function facadeImplementations(text) {
     const parameterNodes = ts.isFunctionLike(member) ? member.parameters : [];
     const forwarded =
       ts.isMethodDeclaration(member) &&
+      !member.asteriskToken &&
       ts.isIdentifier(member.name) &&
       !decorators?.length &&
       parameterNodes.every(

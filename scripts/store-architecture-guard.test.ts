@@ -153,3 +153,8 @@ it('requires removal of a retired constructor exception', () => {
     'Remove retired facade exception: constructor',
   ]);
 });
+
+it('detects generator methods that defer the call until iteration', () => {
+  const source = 'class EventStore { *read(id) { return this.events.read(id); } }';
+  expect(Object.keys(facadeImplementations(source))).toEqual(['read']);
+});
