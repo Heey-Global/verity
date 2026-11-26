@@ -7166,7 +7166,7 @@ function PermissionPrompt({
             ) : null}
           </View>
         ) : (
-          <PermissionRequestDetails input={pending.input} />
+          <PermissionRequestDetails input={pending.input} inline />
         )}
       </PinnedScroll>
       <View style={styles.permissionButtons}>

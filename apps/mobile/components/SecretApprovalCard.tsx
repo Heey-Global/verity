@@ -111,7 +111,7 @@ export function SecretApprovalCard({
                 {spellOutBidiControls(dopplerSourceLabel(source))}
               </Text>
             ) : null}
-            <PermissionRequestDetails input={request.input} />
+            <PermissionRequestDetails input={request.input} inline={actions !== undefined} />
           </>
         ) : (
           <View style={styles.flow}>

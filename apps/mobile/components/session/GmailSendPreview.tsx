@@ -36,6 +36,7 @@ export function GmailSendPreview({ summary }: { summary: GmailSendSummary }) {
           <Meta>HTML version:</Meta>
           <WebView
             style={styles.html}
+            nestedScrollEnabled
             source={{ html: gmailPreviewHtml(summary.htmlBody), baseUrl: 'about:blank' }}
             javaScriptEnabled={false}
             domStorageEnabled={false}
@@ -100,5 +101,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.footnote.fontSize,
     lineHeight: theme.typography.footnote.lineHeight,
   },
-  html: { height: 320, borderRadius: theme.radius.sm, overflow: 'hidden' },
+  // Shorter than the pinned card, so a swipe beside it still reaches the buttons.
+  html: { height: 200, borderRadius: theme.radius.sm, overflow: 'hidden' },
 }));
