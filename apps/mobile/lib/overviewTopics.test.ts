@@ -98,28 +98,64 @@ describe('useOverviewTopics', () => {
     expect(mockSubscribed).toEqual(['project:p1']);
   });
 
-  it('gives a freed topic to a project that waited past the cap', () => {
+  it('keeps topics for a project page while Home waits past its share', () => {
     const many = Array.from({ length: 48 }, (_, i) => `p${String(i).padStart(2, '0')}`);
-    const home = renderHook(() =>
-      useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()),
-    );
+    renderHook(() => useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()));
+    // Home's long list leaves the reserve free, so an opened page is live.
+    expect(mockSubscribed).toHaveLength(40);
     renderHook(() => useOverviewTopics('https://core.example', ['zz'], jest.fn(), jest.fn()));
-    expect(mockSubscribed).toHaveLength(48);
-    expect(mockSubscribed).not.toContain('project:zz');
-    home.unmount();
     expect(mockSubscribed).toContain('project:zz');
+    // A page of a project Home waits for takes it out of the queue.
+    renderHook(() => useOverviewTopics('https://core.example', ['p47'], jest.fn(), jest.fn()));
+    expect(mockSubscribed).toContain('project:p47');
+  });
+
+  it('gives a freed topic to a project that waited past the cap', () => {
+    const many = Array.from({ length: 41 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    const first = renderHook(() =>
+      useOverviewTopics('https://core.example', many.slice(0, 20), jest.fn(), jest.fn()),
+    );
+    renderHook(() =>
+      useOverviewTopics('https://core.example', many.slice(20), jest.fn(), jest.fn()),
+    );
+    expect(mockSubscribed).toHaveLength(40);
+    expect(mockSubscribed).not.toContain('project:p40');
+    first.unmount();
+    expect(mockSubscribed).toContain('project:p40');
   });
 
   it('does not promote a waiting project of the view that detaches', () => {
-    // 49 projects: the last one waits. Unmounting must not subscribe it on its
+    // 41 projects: the last one waits. Unmounting must not subscribe it on its
     // way out only to release it again.
-    const many = Array.from({ length: 49 }, (_, i) => `p${String(i).padStart(2, '0')}`);
+    const many = Array.from({ length: 41 }, (_, i) => `p${String(i).padStart(2, '0')}`);
     const home = renderHook(() =>
       useOverviewTopics('https://core.example', many, jest.fn(), jest.fn()),
     );
-    expect(mockSubscribed).not.toContain('project:p48');
+    expect(mockSubscribed).not.toContain('project:p40');
     home.unmount();
-    expect(mockSubscribed).not.toContain('project:p48');
+    expect(mockSubscribed).not.toContain('project:p40');
+  });
+
+  it('lets a resync of one topic replay only that topic', () => {
+    const events: DomainEvent[] = [];
+    renderHook(() =>
+      useOverviewTopics('https://core.example', ['p1', 'p2'], (e) => events.push(e), jest.fn()),
+    );
+    const other: DomainEvent = { t: 'choices.answered', sessionId: 's2', rev: 3 };
+    mockSinks.get('project:p2')!.event(other);
+    mockSinks.get('project:p1')!.resync();
+    // p2 was not resynced, so its views read nothing and must not see the
+    // same revision twice.
+    mockSinks.get('project:p2')!.event(other);
+    expect(events).toEqual([other]);
+  });
+
+  it('keeps one hub per server while views of two servers are mounted', () => {
+    renderHook(() => useOverviewTopics('https://a.example', ['p1'], jest.fn(), jest.fn()));
+    renderHook(() => useOverviewTopics('https://b.example', ['p1'], jest.fn(), jest.fn()));
+    renderHook(() => useOverviewTopics('https://a.example', ['p1'], jest.fn(), jest.fn()));
+    // The second view of server A shares its topic instead of subscribing again.
+    expect(mockSubscribed).toEqual(['project:p1', 'project:p1']);
   });
 
   it('starts from an empty store for another account', () => {

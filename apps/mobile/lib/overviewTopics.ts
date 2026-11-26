@@ -1,4 +1,4 @@
-import { OverviewStore, type DomainEvent, type LiveTopicSink } from '@verity/mobile';
+import { OverviewStore, RevisionGate, type DomainEvent, type LiveTopicSink } from '@verity/mobile';
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { subscribeAuthToken } from './authToken';
 import { subscribeBrowserSession } from './browserSession';
@@ -17,25 +17,46 @@ interface OverviewListener {
   disposed: boolean;
 }
 
+/** Topics only views of a few projects (a project page) may take, so Home's
+ * long list never leaves an opened project without live events. */
+const FOCUSED_RESERVE = 8;
+/** A view showing at most this many projects counts as focused. */
+const FOCUSED_VIEW_PROJECTS = 4;
+
+interface TopicEntry {
+  /** Views showing the project. */
+  count: number;
+  /** Focused views among them; they may use the reserve. */
+  focused: number;
+  detach?: () => void;
+  /** Revisions seen on this topic; only its own resync resets them. */
+  gate?: RevisionGate;
+}
+
 /**
  * The app's one subscription to overview topics for one server and account
  * (ADR 0033). Every view registers the projects it shows; each project topic
  * is subscribed once however many views show it, and every event passes the
- * shared store's revision gate once before it reaches the views of its
- * project.
+ * topic's revision gate once before it reaches the views of its project.
  */
 class OverviewHub {
   readonly store = new OverviewStore();
-  private readonly topics = new Map<string, { count: number; detach?: () => void }>();
+  private readonly topics = new Map<string, TopicEntry>();
   private readonly listeners = new Set<OverviewListener>();
+  private live = 0;
 
   constructor(private readonly baseUrl: string) {}
 
+  get idle(): boolean {
+    return this.listeners.size === 0;
+  }
+
   attach(listener: OverviewListener): () => void {
     this.listeners.add(listener);
+    const focused = listener.projects.size <= FOCUSED_VIEW_PROJECTS;
     let joinedLive = false;
     for (const projectId of listener.projects) {
-      if (this.want(projectId)) joinedLive = true;
+      if (this.want(projectId, focused)) joinedLive = true;
     }
     // The server answers a new subscription with `resync`, which makes a view
     // read its snapshot once the stream is live. A view joining a topic that is
@@ -48,63 +69,77 @@ class OverviewHub {
       // to be released again a moment later.
       let freed = false;
       for (const projectId of listener.projects) {
-        if (this.release(projectId)) freed = true;
+        if (this.release(projectId, focused)) freed = true;
       }
       if (freed) this.promoteWaiting();
     };
   }
 
   /** Count one more view of the project; true when its topic was already live. */
-  private want(projectId: string): boolean {
-    const held = this.topics.get(projectId);
-    if (held !== undefined) {
-      held.count += 1;
-      return held.detach !== undefined;
+  private want(projectId: string, focused: boolean): boolean {
+    let entry = this.topics.get(projectId);
+    const wasLive = entry?.detach !== undefined;
+    if (entry === undefined) {
+      entry = { count: 0, focused: 0 };
+      this.topics.set(projectId, entry);
     }
-    const entry: { count: number; detach?: () => void } = { count: 1 };
-    this.topics.set(projectId, entry);
-    this.subscribeIfRoom(projectId, entry);
-    return false;
+    entry.count += 1;
+    if (focused) entry.focused += 1;
+    // A project waiting for Home may now use the reserve.
+    if (!wasLive) this.subscribeIfRoom(projectId, entry);
+    return wasLive;
   }
 
   /** Count one view less; true when this freed a live topic. */
-  private release(projectId: string): boolean {
-    const held = this.topics.get(projectId);
-    if (held === undefined) return false;
-    held.count -= 1;
-    if (held.count > 0) return false;
+  private release(projectId: string, focused: boolean): boolean {
+    const entry = this.topics.get(projectId);
+    if (entry === undefined) return false;
+    entry.count -= 1;
+    if (focused) entry.focused -= 1;
+    if (entry.count > 0) return false;
     this.topics.delete(projectId);
-    if (held.detach === undefined) return false;
-    held.detach();
+    if (entry.detach === undefined) return false;
+    entry.detach();
+    this.live -= 1;
     return true;
   }
 
-  /** Freed topics go to the longest waiting projects. */
+  /** Freed topics go to waiting focused views first, then to the longest
+   * waiting projects. */
   private promoteWaiting(): void {
-    for (const [waiting, entry] of this.topics) {
-      if (entry.detach !== undefined) continue;
-      this.subscribeIfRoom(waiting, entry);
-      if (entry.detach === undefined) break;
+    const waiting = [...this.topics].filter(([, entry]) => entry.detach === undefined);
+    for (const [projectId, entry] of waiting) {
+      if (entry.focused > 0) this.subscribeIfRoom(projectId, entry);
+    }
+    for (const [projectId, entry] of waiting) {
+      if (this.live >= MAX_PROJECT_TOPICS - FOCUSED_RESERVE) break;
+      if (entry.detach === undefined) this.subscribeIfRoom(projectId, entry);
     }
   }
 
-  private subscribeIfRoom(projectId: string, entry: { detach?: () => void }): void {
-    const live = [...this.topics.values()].filter((topic) => topic.detach).length;
-    if (live >= MAX_PROJECT_TOPICS) return;
+  private subscribeIfRoom(projectId: string, entry: TopicEntry): void {
+    const room = entry.focused > 0 ? MAX_PROJECT_TOPICS : MAX_PROJECT_TOPICS - FOCUSED_RESERVE;
+    if (this.live >= room) return;
+    this.live += 1;
+    entry.gate = new RevisionGate();
     entry.detach = liveConnectionFor(this.baseUrl).subscribeTopic(
       `project:${projectId}`,
-      this.sinkFor(projectId),
+      this.sinkFor(projectId, entry.gate),
     );
   }
 
-  private sinkFor(projectId: string): LiveTopicSink {
+  private sinkFor(projectId: string, gate: RevisionGate): LiveTopicSink {
     return {
       event: (event) => {
+        if (!gate.accept(event)) return;
+        // The store's gate is reset with every topic's, so it never refuses
+        // what this topic's gate let through.
         if (!this.store.applyEvent(event).applied) return;
         for (const listener of this.interestedIn(projectId))
           listener.handlers.current.onEvent(event);
       },
       resync: () => {
+        gate.reset();
         this.store.resync();
         for (const listener of this.interestedIn(projectId)) this.queueResync(listener);
       },
@@ -128,7 +163,8 @@ class OverviewHub {
   }
 }
 
-let current: { scope: string; hub: OverviewHub } | undefined;
+/** One hub per server and account while any view uses it. */
+const hubs = new Map<string, OverviewHub>();
 
 function subscribeAccount(listener: () => void): () => void {
   const detach = [subscribeAuthToken(listener), subscribeBrowserSession(listener)];
@@ -137,12 +173,21 @@ function subscribeAccount(listener: () => void): () => void {
   };
 }
 
-/** The hub of this server and the signed-in account; another account or
- * server starts from an empty store. */
-function hubFor(baseUrl: string): OverviewHub {
+/** Attach a view to the hub of this server and the signed-in account; another
+ * account or server starts from an empty store. */
+function attachToHub(baseUrl: string, listener: OverviewListener): () => void {
   const scope = JSON.stringify([baseUrl, taskAccountScope()]);
-  if (current?.scope !== scope) current = { scope, hub: new OverviewHub(baseUrl) };
-  return current.hub;
+  let hub = hubs.get(scope);
+  if (hub === undefined) {
+    hub = new OverviewHub(baseUrl);
+    hubs.set(scope, hub);
+  }
+  const detach = hub.attach(listener);
+  const attached = hub;
+  return () => {
+    detach();
+    if (attached.idle && hubs.get(scope) === attached) hubs.delete(scope);
+  };
 }
 
 /**
@@ -168,7 +213,7 @@ export function useOverviewTopics(
   const account = useSyncExternalStore(subscribeAccount, taskAccountScope, taskAccountScope);
   useEffect(() => {
     if (baseUrl === null || key === '') return undefined;
-    return hubFor(baseUrl).attach({
+    return attachToHub(baseUrl, {
       projects: new Set(key.split('\n')),
       handlers,
       resyncQueued: false,
