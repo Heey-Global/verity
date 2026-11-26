@@ -176,6 +176,12 @@ describe('useProjectDetail overview events', () => {
       collapsed: true,
       inboxDismissed: ['x'],
     });
+    // The acting screen shows the same record.
+    expect(other.result.current.detail?.project).toMatchObject({
+      state: 'absent',
+      collapsed: true,
+      inboxDismissed: ['x'],
+    });
   });
 
   it('shows a pull request status from an event without reading', async () => {

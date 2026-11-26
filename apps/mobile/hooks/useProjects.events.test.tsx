@@ -138,6 +138,25 @@ describe('useProjects project events', () => {
     home.unmount();
   });
 
+  it('lists a project an action on its page made visible', async () => {
+    const paused = { ...starting, id: 'p9', state: 'absent' } satisfies ProjectRecord;
+    const client = {
+      listProjects: jest.fn().mockResolvedValue([starting]),
+      getProject: jest.fn().mockResolvedValue({ project: paused, settings: null, sessions: [] }),
+      setProjectSetupStatus: jest.fn(),
+    } as unknown as VerityClient;
+    const home = renderHook(() => useProjects(client));
+    await waitFor(() => expect(home.result.current.projects).toHaveLength(1));
+    const page = renderHook(() => useProjectDetail(client, 'p9'));
+    await waitFor(() => expect(page.result.current.detail).toBeDefined());
+    // Not on the overview while absent.
+    expect(home.result.current.projects.map((project) => project.id)).toEqual(['p1']);
+    act(() => page.result.current.onProjectUpdated({ ...paused, state: 'container_starting' }));
+    expect(home.result.current.projects.map((project) => project.id)).toEqual(['p1', 'p9']);
+    page.unmount();
+    home.unmount();
+  });
+
   it('keeps the order of its read and the same list when nothing changed', async () => {
     const second = { ...starting, id: 'p2', name: 'P2' } satisfies ProjectRecord;
     const client = { listProjects: jest.fn().mockResolvedValue([second, starting]) };

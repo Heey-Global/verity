@@ -157,11 +157,15 @@ export function useProjects(client: VerityClient) {
         const finishPublish = beginClientActivity('project-list-publish');
         try {
           publishPreviews();
+          // `/projects` is not filtered by the client: it speaks for every
+          // project the server lists on the overview, and only for those.
           const applied = target.applyProjects(read, nextProjects, { covers: listedOnHome });
           setListed(nextProjects);
           // A store replaced while the read was out is not the one shown.
           setListedInStore(applied && target === storeRef.current);
-          // Events this read would need replayed were dropped: read again once.
+          // Events this read would need replayed were dropped: read again
+          // once. Refused again, the list shows its own reads, with their
+          // events, until the next focus or refresh reads one the store takes.
           if (!applied && !opts?.retry)
             queueMicrotask(() => void loadRef.current({ silent: true, retry: true }));
         } finally {
@@ -192,8 +196,10 @@ export function useProjects(client: VerityClient) {
   loadRef.current = load;
 
   // What the list shows: each project as the store holds it, in the order of
-  // the last read. Per-person fields come from reads only, which the store
-  // keeps when it adopts an action's answer.
+  // the last read, then those the store learned of since that the overview
+  // lists (an action on a project page made one visible). Per-person fields
+  // come from reads only, which the store keeps when it adopts an action's
+  // answer.
   const held = store.projects();
   const projects = useMemo(() => {
     if (!listedInStore) return listed;
@@ -203,9 +209,11 @@ export function useProjects(client: VerityClient) {
       if (copy !== own) changed = true;
       return copy;
     });
+    const read = new Set(listed.map((project) => project.id));
+    const learned = held.filter((project) => !read.has(project.id) && listedOnHome(project));
+    if (learned.length > 0) return [...shown, ...learned];
     return changed ? shown : listed;
     // `held` changes whenever a project in the store does.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listed, listedInStore, store, held]);
 
   // Retain invalidations while hidden, and reject responses admitted before blur.

@@ -62,10 +62,11 @@ const setupMigrations = new Set<string>();
  * the project, Home included, shows it from the store. An action does not own
  * the person's view of the project: fold state and dismissed items stay as
  * the last read left them. */
-function adoptProject(store: OverviewStore, project: ProjectRecord): void {
+function adoptProject(store: OverviewStore, project: ProjectRecord): ProjectRecord {
   const adopted = mergeProjectStatusMutation(store.project(project.id), project);
   // `applyProjects` ends the read it is given; no `endRead` is needed.
   store.applyProjects(store.beginRead(), [adopted], { covers: (p) => p.id === project.id });
+  return adopted;
 }
 
 export function useProjectDetail(client: VerityClient, projectId: string): ProjectDetailState {
@@ -96,8 +97,8 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     loadGeneration.current += 1;
     setLoading(false);
     // Other screens of the project and Home show it from the store.
-    adoptProject(storeRef.current, next);
-    setDetail((current) => (current ? { ...current, project: next } : current));
+    const adopted = adoptProject(storeRef.current, next);
+    setDetail((current) => (current ? { ...current, project: adopted } : current));
   }, []);
   const onSettingsSaved = useCallback((next: ProjectSettings) => {
     // A detail request started before the PATCH may return old settings later.
