@@ -25,17 +25,20 @@ describe('live audio transcription', () => {
       expect(form.get('language')).toBeNull();
       const audio = form.get('file') as File;
       expect(audio.type).toBe('audio/wav');
-      expect(Buffer.from(await audio.arrayBuffer()).toString()).toBe('WAV');
+      const bytes = Buffer.from(await audio.arrayBuffer());
+      expect(bytes.length === 3 ? bytes.toString() : bytes.toString('ascii', 0, 4)).toMatch(
+        /^(WAV|RIFF)$/u,
+      );
       return Response.json({ text: '  Hallo and welcome  ' });
     });
     vi.stubGlobal('fetch', request);
     const transcriber = configuredLiveAudioTranscription(async () => settings);
     await transcriber.checkAudioTranscription();
-    expect(request).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
     await expect(
       transcriber.transcribeAudio(Buffer.from('WAV'), new AbortController().signal),
     ).resolves.toBe('Hallo and welcome');
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledTimes(2);
   });
 
   it('fails before sending audio when the stored endpoint or model is absent', async () => {

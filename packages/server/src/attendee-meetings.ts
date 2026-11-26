@@ -1253,7 +1253,13 @@ export class AttendeeMeetings {
       else await this.publish(state);
       return;
     }
-    if (!discard && !state.stopRequested && state.audio && !state.audio.disabled) {
+    if (
+      !discard &&
+      !state.stopRequested &&
+      state.audio &&
+      !state.audio.disabled &&
+      !state.audio.finalized
+    ) {
       // Restore media transport even when Attendee's status API is unavailable.
       await this.persistAudio(state);
       try {

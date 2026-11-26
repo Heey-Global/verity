@@ -83,6 +83,14 @@ function encodeWav(chunk: AudioChunk): Buffer {
   return wav;
 }
 
+export function attendeeAudioProbe(): Buffer {
+  return encodeWav({
+    pcm: [Buffer.alloc(BYTES_PER_SECOND)],
+    bytes: BYTES_PER_SECOND,
+    timestampMs: 0,
+  });
+}
+
 /** One loopback listener and bounded in-memory audio queue per online meeting. */
 export class AttendeeAudioReceiver {
   private readonly server = createServer((_request, response) => response.writeHead(404).end());

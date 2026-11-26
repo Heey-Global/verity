@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { attendeeAudioProbe } from './attendee-audio.js';
 import {
   MeetingTranscriberUnavailableError,
   MeetingTranscriptionCancelledError,
@@ -39,50 +40,54 @@ export function configuredLiveAudioTranscription(
     return { endpoint, model, token: settings?.transcribeApiKey?.trim(), target };
   }
 
-  return {
-    async checkAudioTranscription(): Promise<string> {
-      return (await configuration()).target;
-    },
-    async transcribeAudio(
-      wav: Buffer,
-      signal: AbortSignal,
-      expectedTarget?: string,
-    ): Promise<string> {
-      const { endpoint, model, token, target } = await configuration();
-      if (expectedTarget !== undefined && target !== expectedTarget)
-        throw new MeetingTranscriberUnavailableError();
-      const form = new FormData();
-      form.set('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'meeting.wav');
-      form.set('model', model);
-      form.set('response_format', 'json');
-      try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
-          body: form,
-          redirect: 'error',
-          signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
-        });
-        if (!response.ok) {
-          await response.body?.cancel().catch(() => undefined);
-          throw new MeetingTranscriptionFailedError();
-        }
-        const text = await readResponse(response);
-        const result: unknown = JSON.parse(text);
-        if (
-          typeof result !== 'object' ||
-          result === null ||
-          !('text' in result) ||
-          typeof result.text !== 'string'
-        ) {
-          throw new MeetingTranscriptionFailedError();
-        }
-        return result.text.trim();
-      } catch {
-        if (signal.aborted) throw new MeetingTranscriptionCancelledError();
+  async function transcribeAudio(
+    wav: Buffer,
+    signal: AbortSignal,
+    expectedTarget?: string,
+  ): Promise<string> {
+    const { endpoint, model, token, target } = await configuration();
+    if (expectedTarget !== undefined && target !== expectedTarget)
+      throw new MeetingTranscriberUnavailableError();
+    const form = new FormData();
+    form.set('file', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'meeting.wav');
+    form.set('model', model);
+    form.set('response_format', 'json');
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+        body: form,
+        redirect: 'error',
+        signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
+      });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
         throw new MeetingTranscriptionFailedError();
       }
+      const text = await readResponse(response);
+      const result: unknown = JSON.parse(text);
+      if (
+        typeof result !== 'object' ||
+        result === null ||
+        !('text' in result) ||
+        typeof result.text !== 'string'
+      ) {
+        throw new MeetingTranscriptionFailedError();
+      }
+      return result.text.trim();
+    } catch {
+      if (signal.aborted) throw new MeetingTranscriptionCancelledError();
+      throw new MeetingTranscriptionFailedError();
+    }
+  }
+
+  return {
+    async checkAudioTranscription(): Promise<string> {
+      const { target } = await configuration();
+      await transcribeAudio(attendeeAudioProbe(), AbortSignal.timeout(8_000), target);
+      return target;
     },
+    transcribeAudio,
   };
 }
 
