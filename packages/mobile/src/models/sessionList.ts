@@ -164,9 +164,9 @@ export class SessionListModel {
    * which the store has not taken. */
   private favoritesStored = new Set<string>();
   private ordersStored = new Set<string | null>();
-  /** The newest rename of each session; older answers stay out of the store.
-   * Kept after it settles, since an older answer may still arrive. */
-  private latestRenames = new Map<string, number>();
+  /** The newest rename of each session the server stored; older answers
+   * stay out of the store. Kept, since an older answer may still arrive. */
+  private storedRenames = new Map<string, number>();
   /** Names the server stored while a later rename of the session was out. */
   private confirmedNames = new Map<string, string | null>();
   /** The store that took the last read; the list shows its copies while it
@@ -454,10 +454,10 @@ export class SessionListModel {
     this.applyName(sessionId, name); // optimistic — don't wait for the next poll
     const mutation = ++this.nameMutations;
     this.pendingNames.set(sessionId, { name, mutation });
-    this.latestRenames.set(sessionId, mutation);
     this.emit();
-    // An older rename answering late must not replace a newer one in the store.
-    const superseded = () => (this.latestRenames.get(sessionId) ?? 0) > mutation;
+    // Answers may come in any order. A newer rename still out decides for
+    // itself; one already stored is newer than this answer.
+    const newerOut = () => (this.pendingNames.get(sessionId)?.mutation ?? 0) > mutation;
     const settled = () => {
       if (this.pendingNames.get(sessionId)?.mutation !== mutation) return;
       this.pendingNames.delete(sessionId);
@@ -466,16 +466,19 @@ export class SessionListModel {
     try {
       const { name: stored } = await this.opts.client.renameSession(sessionId, name);
       this.applyName(sessionId, stored);
-      if (!superseded()) this.adopt(sessionId, (session) => ({ ...session, name: stored }));
-      // Kept for a later rename still out, should that one fail.
-      else if (this.pendingNames.has(sessionId)) this.confirmedNames.set(sessionId, stored);
+      if ((this.storedRenames.get(sessionId) ?? 0) < mutation) {
+        this.storedRenames.set(sessionId, mutation);
+        // Kept for a newer rename still out, should that one fail.
+        if (newerOut()) this.confirmedNames.set(sessionId, stored);
+        else this.adopt(sessionId, (session) => ({ ...session, name: stored }));
+      }
       settled();
       this._error = undefined;
     } catch (error) {
       // An earlier rename the server stored while this one was out is the
       // name now, which the store has not taken yet.
       const confirmed = this.confirmedNames.get(sessionId);
-      if (!superseded() && confirmed !== undefined)
+      if (!newerOut() && confirmed !== undefined)
         this.adopt(sessionId, (session) => ({ ...session, name: confirmed }));
       settled();
       this.applyName(sessionId, previousName); // revert just this name

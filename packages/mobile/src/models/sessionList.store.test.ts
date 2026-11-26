@@ -349,4 +349,27 @@ describe('SessionListModel with the shared overview store', () => {
     expect(onChange.mock.calls[0]![0].sessions[0].status).toBe('idle');
     model.stop();
   });
+
+  it('takes an older rename the server stored after a newer one failed', async () => {
+    const answers: Array<{ resolve: (name: string) => void; reject: () => void }> = [];
+    const { model, store } = harness(() => Promise.resolve([summary('s1')]), {
+      renameSession: vi.fn(
+        () =>
+          new Promise<{ sessionId: string; name: string }>((resolve, reject) =>
+            answers.push({
+              resolve: (name) => resolve({ sessionId: 's1', name }),
+              reject: () => reject(new Error('refused')),
+            }),
+          ),
+      ),
+    });
+    await model.refresh();
+    const first = model.rename('s1', 'First');
+    const second = model.rename('s1', 'Second');
+    answers[1]!.reject();
+    await second;
+    answers[0]!.resolve('First');
+    await first;
+    expect(store.session('s1')?.name).toBe('First');
+  });
 });
