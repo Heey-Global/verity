@@ -158,6 +158,8 @@ export function createEmbeddedProjectFleetBindings(
                 await stop();
               };
             },
+            following: () => liveness.following(),
+            onContainerChange: (listener) => liveness.onContainerChange(listener),
           },
         }
       : {}),

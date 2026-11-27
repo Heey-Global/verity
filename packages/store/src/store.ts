@@ -196,13 +196,8 @@ export type {
   SessionCalendarConnection,
   SessionContactsConnection,
 } from './google-connections.js';
-import {
-  HISTORY_MAX_BYTES,
-  HISTORY_MAX_EVENTS,
-  type BoundedHistoryPage,
-  type BoundedHistoryResult,
-} from '@verity/events';
-import { randomUUID } from 'node:crypto';
+import type { BoundedHistoryResult } from '@verity/events';
+import { BackupRepositoryStore } from './backup-repositories.js';
 import type { AgentEvent } from '@verity/events';
 import type { Kysely } from 'kysely';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
@@ -301,51 +296,41 @@ export {
  * hand out — an event that violates the schema.
  */
 export class EventStore implements EventSink {
-  listProjectRepositories(projectId: string, options: { includeRemoved?: boolean } = {}) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).list(
-      projectId,
-      options,
-    );
+  private readonly projectRepositories = new ProjectRepositoryStore(
+    () => this.db,
+    (id) => this.getProject(id),
+  );
+
+  listProjectRepositories(projectId: string, options?: { includeRemoved?: boolean }) {
+    return this.projectRepositories.list(projectId, options);
   }
 
   getProjectRepository(projectId: string, repositoryId?: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).get(
-      projectId,
-      repositoryId,
-    );
+    return this.projectRepositories.get(projectId, repositoryId);
   }
 
   addProjectRepository(input: AddProjectRepositoryInput) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).add(input);
+    return this.projectRepositories.add(input);
   }
 
   removeProjectRepository(projectId: string, repositoryId: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).remove(
-      projectId,
-      repositoryId,
-    );
+    return this.projectRepositories.remove(projectId, repositoryId);
   }
 
   recordRepositoryPullRequest(...args: Parameters<ProjectRepositoryStore['recordPullRequest']>) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).recordPullRequest(
-      ...args,
-    );
+    return this.projectRepositories.recordPullRequest(...args);
   }
 
   sessionRepositoryWorkspaceSessionId(worktree: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).workspaceSessionId(
-      worktree,
-    );
+    return this.projectRepositories.workspaceSessionId(worktree);
   }
 
   listSessionRepositoryWorkspaces(sessionId: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).listWorkspaces(
-      sessionId,
-    );
+    return this.projectRepositories.listWorkspaces(sessionId);
   }
 
   upsertSessionRepositoryWorkspace(input: Omit<SessionRepositoryWorkspaceRecord, 'createdAt'>) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).upsertWorkspace(input);
+    return this.projectRepositories.upsertWorkspace(input);
   }
 
   private egressDestinationMutation: EgressDestinationMutation = unguardedEgressDestinationMutation;
@@ -389,28 +374,13 @@ export class EventStore implements EventSink {
   }
   /** Project writes, announced after they commit for live views (ADR 0033). */
   readonly projectChanges = new ProjectChangeFeed();
-  private readonly backupRevocationListeners = new Set<() => Promise<void>>();
-
   /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
   subscribeBackupRevocations(listener: () => Promise<void>): () => void {
-    this.backupRevocationListeners.add(listener);
-    return () => {
-      this.backupRevocationListeners.delete(listener);
-    };
-  }
-
-  private async notifyBackupRevocations(): Promise<void> {
-    // A destination outage must not undo or misreport an already committed token deletion.
-    await Promise.allSettled(
-      [...this.backupRevocationListeners].map((listener) => Promise.resolve().then(listener)),
-    );
+    return this.authTokens.subscribeBackupRevocations(listener);
   }
 
   private readonly secretKeyMetadata = new SecretKeyMetadataStore(() => this.db);
-  private readonly authTokens = new AuthTokenStore(
-    () => this.db,
-    () => this.notifyBackupRevocations(),
-  );
+  private readonly authTokens = new AuthTokenStore(() => this.db);
   private readonly claudeEgressIdentity: ClaudeEgressIdentityStore;
   private readonly httpMcpConnections = new HttpMcpConnectionStore(
     () => this.db,
@@ -750,11 +720,6 @@ export class EventStore implements EventSink {
   private get projectAccess(): ProjectAccessStore {
     return new ProjectAccessStore(this.db);
   }
-
-  get projectTeam(): ProjectTeamStore {
-    return new ProjectTeamStore(this.db, this.cipher);
-  }
-
   get projectSandboxes(): ProjectSandboxStore {
     return new ProjectSandboxStore(this.db);
   }
@@ -797,9 +762,18 @@ export class EventStore implements EventSink {
     () => this.googleAccounts,
   );
   readonly sessionProjections = new SessionProjectionStore(() => this.db);
-  private readonly eventHistory = new EventHistoryStore(() => this.db);
+  private readonly eventHistory = new EventHistoryStore(
+    () => this.db,
+    (sessionId, limit, beforeSeq) => this.getEventsBeforeSeq(sessionId, limit, beforeSeq),
+    (sessionId, afterSeq) => this.getEventsAfter(sessionId, afterSeq),
+  );
   private readonly eventSnapshots = new EventSnapshotStore(() => this.db);
   private readonly starterProjects = new StarterProjectStore(() => this.db);
+  readonly projectTeam = new ProjectTeamStore(
+    () => this.db,
+    () => this.cipher,
+    () => this.projectChanges,
+  );
   private readonly projectLifecycle = new ProjectLifecycleStore(
     () => this.db,
     (id) => this.getProject(id),
@@ -1286,10 +1260,7 @@ export class EventStore implements EventSink {
    * branch moved without a visible transcript line.
    */
   async appendPendingNote(sessionId: string, note: string): Promise<void> {
-    await this.db
-      .insertInto('session_pending_note')
-      .values({ session_id: sessionId, note })
-      .execute();
+    return this.sessionLifecycle.appendPendingNote(sessionId, note);
   }
 
   /**
@@ -1298,15 +1269,7 @@ export class EventStore implements EventSink {
    * turn. Returns the note texts in insert order; empty when there are none.
    */
   async consumePendingNotes(sessionId: string): Promise<string[]> {
-    const rows = await this.db
-      .deleteFrom('session_pending_note')
-      .where('session_id', '=', sessionId)
-      .returning(['id', 'note'])
-      .execute();
-    // `execute()` returns a fresh array, so sort it in place. Postgres does not
-    // guarantee RETURNING order (and DELETE takes no ORDER BY), so sort by the
-    // serial `id` to restore insert order.
-    return rows.sort((a, b) => Number(a.id) - Number(b.id)).map((r) => r.note);
+    return this.sessionLifecycle.consumePendingNotes(sessionId);
   }
 
   /**
@@ -1692,8 +1655,7 @@ export class EventStore implements EventSink {
 
   /** Read a session's full event log in append order. Validates each payload. */
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
-    const sequenced = await this.getEventsAfter(sessionId, 0);
-    return sequenced.map((s) => s.event);
+    return this.eventHistory.getEvents(sessionId);
   }
 
   /** Return a contiguous suffix of complete events within the negotiated wire
@@ -1704,62 +1666,7 @@ export class EventStore implements EventSink {
     snapshotSeq?: number,
     eventOffset?: number,
   ): Promise<BoundedHistoryResult> {
-    // One query establishes the initial snapshot, including the empty-log case.
-    const source = await this.getEventsBeforeSeq(
-      sessionId,
-      eventOffset === undefined ? HISTORY_MAX_EVENTS : 1,
-      snapshotSeq === undefined ? beforeSeq : Math.min(beforeSeq ?? Infinity, snapshotSeq + 1),
-    );
-    const snapshot = snapshotSeq ?? source.events.at(-1)?.seq ?? 0;
-    const page: BoundedHistoryPage = {
-      contract: 'bounded-history-v1',
-      kind: 'page',
-      events: [],
-      snapshotSeq: snapshot,
-      beforeSeq: null,
-      hasMore: false,
-    };
-    for (let i = source.events.length - 1; i >= 0; i -= 1) {
-      const event = source.events[i]!;
-      const candidate: BoundedHistoryPage = {
-        ...page,
-        events: [event, ...page.events],
-        beforeSeq: event.seq,
-        hasMore: i > 0 || source.hasMore,
-      };
-      const requiredBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
-      if (requiredBytes > HISTORY_MAX_BYTES) {
-        if (page.events.length === 0) {
-          if (eventOffset !== undefined) {
-            const serialized = JSON.stringify(candidate);
-            // A JSON string needs at most six UTF-8 bytes per UTF-16 code unit.
-            // Leave room for the chunk envelope, including all numeric cursors.
-            const chunkChars = Math.floor((HISTORY_MAX_BYTES - 1024) / 6);
-            if (eventOffset >= serialized.length) throw new RangeError('invalid history offset');
-            return {
-              contract: 'bounded-history-v1',
-              kind: 'event-chunk',
-              seq: event.seq,
-              snapshotSeq: snapshot,
-              offset: eventOffset,
-              totalChars: serialized.length,
-              data: serialized.slice(eventOffset, eventOffset + chunkChars),
-            };
-          }
-          return {
-            contract: 'bounded-history-v1',
-            kind: 'oversized-event',
-            seq: event.seq,
-            requiredBytes,
-            maxBytes: HISTORY_MAX_BYTES,
-            snapshotSeq: snapshot,
-          };
-        }
-        return page;
-      }
-      Object.assign(page, candidate);
-    }
-    return page;
+    return this.eventHistory.getBoundedHistory(sessionId, beforeSeq, snapshotSeq, eventOffset);
   }
 
   /**
@@ -2086,18 +1993,10 @@ export class EventStore implements EventSink {
   }
 
   /** The names people chose to be shown under in shared projects (ADR 0023). */
+  private readonly currentUserProfiles = new UserProfileStore(() => this.db);
+
   async userDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
-    if (userIds.length === 0) return new Map();
-    const rows = await this.db
-      .selectFrom('users')
-      .select(['id', 'display_name'])
-      .where('id', 'in', [...userIds])
-      .execute();
-    return new Map(
-      rows
-        .filter((row) => row.display_name !== null && row.display_name.trim() !== '')
-        .map((row) => [row.id, row.display_name!.trim()]),
-    );
+    return this.currentUserProfiles.nonBlankDisplayNames(userIds);
   }
 
   /** Active users holding a project permission — the notification audience
@@ -2668,42 +2567,11 @@ export class EventStore implements EventSink {
     return this.authTokens.acknowledgeBackupRevocation(id);
   }
 
+  private readonly backupRepositories = new BackupRepositoryStore(() => this.db);
+
   /** Stable server-owned bookkeeping; identities never come from sandbox-written markers. */
   async backupGitRepositoryKey(projectId: string | null, path: string): Promise<string> {
-    if (
-      !path ||
-      path.startsWith('/') ||
-      path.includes('\\') ||
-      path.split('/').some((part) => !part || part === '.' || part === '..')
-    )
-      throw new Error('Invalid backup Git bookkeeping path');
-    const key = randomUUID();
-    if (projectId === null) {
-      await this.db
-        .insertInto('backup_unassigned_git_repositories')
-        .values({ path, repo_key: key })
-        .onConflict((conflict) => conflict.column('path').doNothing())
-        .execute();
-      return (
-        await this.db
-          .selectFrom('backup_unassigned_git_repositories')
-          .select('repo_key')
-          .where('path', '=', path)
-          .executeTakeFirstOrThrow()
-      ).repo_key;
-    }
-    await this.db
-      .insertInto('backup_git_repositories')
-      .values({ project_id: projectId, path, repo_key: key })
-      .onConflict((conflict) => conflict.columns(['project_id', 'path']).doNothing())
-      .execute();
-    const row = await this.db
-      .selectFrom('backup_git_repositories')
-      .select('repo_key')
-      .where('project_id', '=', projectId)
-      .where('path', '=', path)
-      .executeTakeFirstOrThrow();
-    return row.repo_key;
+    return this.backupRepositories.backupGitRepositoryKey(projectId, path);
   }
 
   // ── Per-device Expo push tokens (ADR 0008, token registry) ────────────────

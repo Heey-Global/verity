@@ -25182,7 +25182,7 @@ var import_zod10 = __toESM(require_zod(), 1);
 // node_modules/@verity/events/dist/domain-events.js
 var import_zod9 = __toESM(require_zod(), 1);
 var LIVE_MAX_TOPIC_SUBSCRIPTIONS = 64;
-var TOPIC_PATTERN = /^(user|project|session):[^\s:]{1,200}$/u;
+var TOPIC_PATTERN = /^(user|project|session|collection):[^\s:]{1,200}$/u;
 var domainTopicSchema = import_zod9.z.string().regex(TOPIC_PATTERN);
 var cursor = import_zod9.z.number().int().nonnegative();
 var id2 = import_zod9.z.string().min(1).max(200);
@@ -25204,6 +25204,17 @@ var domainEventSchema = import_zod9.z.discriminatedUnion("t", [
   import_zod9.z.object({ t: import_zod9.z.literal("choices.answered"), sessionId: id2, rev }),
   import_zod9.z.object({ t: import_zod9.z.literal("pr.status"), sessionId: id2, rev, pr: patch.nullable() }),
   import_zod9.z.object({ t: import_zod9.z.literal("project.changed"), projectId: id2, rev, patch }),
+  /** The project entered the overview: views read it and list it. */
+  import_zod9.z.object({ t: import_zod9.z.literal("project.listed"), projectId: id2, rev, userId: id2.optional() }),
+  /** The project left the overview. `gone` marks one that no longer exists.
+   * Delivered to the subscribers that held the project. */
+  import_zod9.z.object({
+    t: import_zod9.z.literal("project.unlisted"),
+    projectId: id2,
+    rev,
+    userId: id2.optional(),
+    gone: import_zod9.z.boolean().optional()
+  }),
   import_zod9.z.object({
     t: import_zod9.z.literal("sandbox.lifecycle"),
     projectId: id2,

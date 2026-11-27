@@ -69,6 +69,7 @@ import type { SshKeygenSpawner } from './signing-key.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import type { TeamAvailability } from './uplink-feature-state.js';
 import type { WorktreeProvisioner } from './worktree.js';
+import type { InspectionTrust } from './sandbox-updates.js';
 
 export interface ServerDeps {
   dependencyCapacity?: DependencyCapacity | undefined;
@@ -123,6 +124,10 @@ export interface ServerDeps {
   serverUpdateResolver?: ReleaseChannelResolver | undefined;
   /** Privileged Updater control channel. Absent leaves the update action unavailable. */
   serverUpdateController?: ServerUpdateController | undefined;
+  /** Free and total bytes of the disk holding the Server's data, for the
+   *  low-disk warning. Defaults to measuring `dataRoot`; with neither, the
+   *  warning stays off. */
+  diskSpace?: (() => Promise<{ freeBytes: number; totalBytes: number }>) | undefined;
   /**
    * Where the release notifier remembers the version it last announced. Absent
    * disables the notification entirely — deliberately, because without somewhere
@@ -441,7 +446,7 @@ export interface ServerDeps {
    * event stream, so reads need not inspect them. Started with the server and
    * stopped when it closes. Absent → reads compare as before.
    */
-  containerLiveness?: { start(): () => Promise<void> } | undefined;
+  containerLiveness?: ({ start(): () => Promise<void> } & Partial<InspectionTrust>) | undefined;
   /**
    * Lists all GitHub-App installation repositories that can become Verity projects.
    * Unlike `listProjects`, this includes rows that are still `state='absent'`

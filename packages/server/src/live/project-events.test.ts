@@ -22,6 +22,7 @@ function projectRecord(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     latestReleaseName: null,
     latestReleaseUrl: null,
     latestReleasePublishedAt: null,
+    hiddenAt: null,
     ...overrides,
   } as ProjectRecord;
 }
@@ -67,11 +68,22 @@ function setup() {
   const closers: (() => unknown)[] = [];
   const ticks: (() => void)[] = [];
   const getProject = vi.fn(async (id: string) => rows.get(id));
+  const readers = new Map<string, Set<string>>([['p1', new Set(['bob'])]]);
+  const authorizationChanged = vi.fn();
+  const overviewScope = vi.fn(async () => ({ all: true as const }));
+  let permission: ((userId: string, projectId: string) => Promise<boolean>) | undefined;
   const failures = new Map<string, { at: number; message: string }>();
   const turnBlocked = new Set<string>();
   const ctx = {
     deps: {
-      eventStore: { projectChanges, getProject },
+      eventStore: {
+        projectChanges,
+        getProject,
+        hasProjectPermission: async (userId: string, projectId: string) =>
+          permission?.(userId, projectId) ?? readers.get(projectId)?.has(userId) === true,
+        listReadableProjectIds: async (userId: string) =>
+          [...readers].filter(([, users]) => users.has(userId)).map(([id]) => id),
+      },
       sandboxUpdates,
       provisioner: {
         sandboxRepairLastFailures: vi.fn(() => failures),
@@ -83,6 +95,7 @@ function setup() {
       },
     },
     domainEvents,
+    liveHub: { authorizationChanged, overviewScope },
     lifecycle: {
       onClose: (stop: () => unknown) => closers.push(stop),
       every: (_ms: number, tick: () => void) => ticks.push(tick),
@@ -92,12 +105,26 @@ function setup() {
   const published: DomainRecord[] = [];
   const watchedRecords: DomainRecord[] = [];
   domainEvents.subscribe('project:p1', undefined, (record) => published.push(record));
+  const listing: DomainRecord[] = [];
+  domainEvents.subscribe('collection:projects', undefined, (record) => listing.push(record));
   const write = (overrides: Partial<ProjectRecord>) => {
     rows.set('p1', { ...rows.get('p1')!, ...overrides });
     projectChanges.announce('p1');
   };
   const events = () => published.map((record) => record.event);
   return {
+    listing: () => listing.map((record) => record.event),
+    projectChanges,
+    readers,
+    authorizationChanged,
+    overviewScope,
+    setPermission: (next: typeof permission) => {
+      permission = next;
+    },
+    remove: () => {
+      rows.delete('p1');
+      projectChanges.announce('p1');
+    },
     write,
     events,
     statusCalls,
@@ -160,6 +187,190 @@ describe('installProjectEvents', () => {
     await vi.waitFor(() => expect(w.events()).toHaveLength(2));
     w.write({ state: 'failed', provisionError: 'container stopped' });
     await vi.waitFor(() => expect(w.events()).toHaveLength(3));
+  });
+
+  // Home lists a project created, restored or hidden on another device only
+  // through these; without them it waits for its next full read.
+  it('announces a project entering and leaving the overview on the collection', async () => {
+    const w = setup();
+    w.write({});
+    await vi.waitFor(() =>
+      expect(w.listing()).toEqual([
+        expect.objectContaining({ t: 'project.listed', projectId: 'p1' }),
+      ]),
+    );
+    // Unchanged visibility announces nothing more.
+    w.write({ name: 'Renamed' });
+    await vi.waitFor(() => expect(w.events().at(-1)).toMatchObject({ patch: { name: 'Renamed' } }));
+    expect(w.listing()).toHaveLength(1);
+    w.write({ hiddenAt: new Date('2026-11-27T10:00:00Z') });
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual(
+        expect.objectContaining({ t: 'project.unlisted', projectId: 'p1' }),
+      ),
+    );
+    expect(w.listing().at(-1)).not.toHaveProperty('gone');
+    w.write({ hiddenAt: null });
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual(expect.objectContaining({ t: 'project.listed' })),
+    );
+    w.remove();
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual(
+        expect.objectContaining({ t: 'project.unlisted', projectId: 'p1', gone: true }),
+      ),
+    );
+  });
+
+  // A repository the installation sync adds stays `absent` and off the
+  // overview until someone adds it; announcing it would list the whole
+  // installation on every device.
+  it('does not list a synced repository nobody added', async () => {
+    const w = setup();
+    w.write({ state: 'absent' });
+    await vi.waitFor(() => expect(w.events().length).toBeGreaterThan(0));
+    // Never on a view, so nothing to leave.
+    expect(w.listing()).toEqual([]);
+    w.write({ overviewVisible: true });
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual(expect.objectContaining({ t: 'project.listed' })),
+    );
+  });
+
+  // The overview adds the control plane by a setting of its own; an
+  // `unlisted` for it would take it off Home after every server restart.
+  it('announces nothing for a project first seen off the overview', async () => {
+    const w = setup();
+    w.write({ kind: 'control_plane', state: 'active' });
+    await vi.waitFor(() => expect(w.events().length).toBeGreaterThan(0));
+    w.write({ name: 'Renamed' });
+    await vi.waitFor(() => expect(w.events().at(-1)).toMatchObject({ patch: { name: 'Renamed' } }));
+    expect(w.listing()).toEqual([]);
+  });
+
+  // After a restart nothing is remembered; hiding a project nobody touched
+  // since must still take it off every other device's Home.
+  it('announces the first hide of a project seen for the first time', async () => {
+    const w = setup();
+    w.write({ state: 'active', hiddenAt: new Date('2026-11-27T10:00:00Z') });
+    await vi.waitFor(() =>
+      expect(w.listing()).toEqual([
+        expect.objectContaining({ t: 'project.unlisted', projectId: 'p1' }),
+      ]),
+    );
+  });
+
+  // A member added on one device must see the project on theirs at once, and
+  // one removed must lose it, and its stream, without waiting for a read.
+  it('announces a change of access to the person alone, and rechecks their topics', async () => {
+    const w = setup();
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.listing()).toHaveLength(1));
+    w.projectChanges.announceAccess('bob', 'p1');
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual({
+        t: 'project.listed',
+        projectId: 'p1',
+        rev: expect.any(Number),
+        userId: 'bob',
+      }),
+    );
+    expect(w.authorizationChanged).toHaveBeenCalledWith({ userId: 'bob', projectId: 'p1' });
+
+    w.readers.get('p1')!.delete('bob');
+    w.projectChanges.announceAccess('bob', 'p1');
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toMatchObject({ t: 'project.unlisted', userId: 'bob' }),
+    );
+
+    // An account that became active: every project it may read.
+    w.readers.get('p1')!.add('carol');
+    w.projectChanges.announceAccess('carol');
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toMatchObject({
+        t: 'project.listed',
+        projectId: 'p1',
+        userId: 'carol',
+      }),
+    );
+    expect(w.authorizationChanged).toHaveBeenLastCalledWith({ userId: 'carol' });
+  });
+
+  // A removal right behind a join must end with the project off the
+  // person's overview, however long the join's own check takes.
+  it('publishes the access changes of one person in the order they committed', async () => {
+    const w = setup();
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.listing()).toHaveLength(1));
+    let answer!: (readable: boolean) => void;
+    w.setPermission(() => new Promise((resolve) => (answer = resolve)));
+    w.projectChanges.announceAccess('bob', 'p1');
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    w.setPermission(async () => false);
+    w.projectChanges.announceAccess('bob', 'p1');
+    // Long enough for the removal to publish, were it not waiting its turn.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Its streams were rechecked at once, without waiting for the join.
+    expect(w.authorizationChanged).toHaveBeenCalledTimes(2);
+    answer(true);
+    await vi.waitFor(() =>
+      expect(w.listing().filter((event) => 'userId' in event)).toHaveLength(2),
+    );
+    expect(
+      w
+        .listing()
+        .filter((event) => 'userId' in event)
+        .map((event) => event.t),
+    ).toEqual(['project.listed', 'project.unlisted']);
+    // Their scope is read anew, so the hub knows what they hold now.
+    expect(w.overviewScope).toHaveBeenCalledWith('bob');
+  });
+
+  // A project hidden while a join is being checked must not come back onto the
+  // new member's overview with the join's announcement.
+  it('announces a join by the project as it is once the check is done', async () => {
+    const w = setup();
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.listing()).toHaveLength(1));
+    let answer!: (readable: boolean) => void;
+    w.setPermission(() => new Promise((resolve) => (answer = resolve)));
+    w.projectChanges.announceAccess('bob', 'p1');
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    w.write({ hiddenAt: new Date('2026-11-27T10:00:00Z') });
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toMatchObject({ t: 'project.unlisted', projectId: 'p1' }),
+    );
+    answer(true);
+    await vi.waitFor(() =>
+      expect(w.listing().filter((event) => 'userId' in event)).toHaveLength(1),
+    );
+    expect(w.listing().find((event) => 'userId' in event)).toMatchObject({
+      t: 'project.unlisted',
+      userId: 'bob',
+    });
+  });
+
+  // A failing check must not take the server down: the queue it leaves for
+  // the next change of that person must not reject unhandled.
+  it('survives an access change it cannot check', async () => {
+    const w = setup();
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      w.setPermission(async () => {
+        throw new Error('store down');
+      });
+      w.projectChanges.announceAccess('bob', 'p1');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+      w.setPermission(async () => true);
+      w.projectChanges.announceAccess('bob', 'p1');
+      await vi.waitFor(() =>
+        expect(w.listing().at(-1)).toMatchObject({ t: 'project.listed', userId: 'bob' }),
+      );
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
 
   it('publishes renames and setup status as project changes', async () => {
@@ -553,6 +764,60 @@ describe('project state writers', () => {
         ) {
           continue;
         }
+        writers += 1;
+        if (!/\b(?:changes|projectChanges)\??\.announce\(/u.test(method.body)) {
+          silent.push(`${file} ${method.name}`);
+        }
+      }
+    }
+    expect(writers).toBeGreaterThan(1);
+    expect(silent).toEqual([]);
+  });
+
+  // Who may read a project changes in these writers; a silent one leaves the
+  // person's other devices with the old overview, and a removed member's
+  // stream open, until something unrelated reads again.
+  it('announces every team store method that grants or removes access', () => {
+    // Only the team store writes memberships or account status; the profile
+    // store writes names, not who may read.
+    const team = sources.find(({ file }) => file.endsWith('store/src/project-team.ts'))!;
+    // Pending joins: the person is not active yet and reads nothing either way.
+    const pending = new Set([
+      'revokeInvitation',
+      'failJoin',
+      'clearExpiredJoinCredentials',
+      'redeemInvitation',
+    ]);
+    const silent: string[] = [];
+    let writers = 0;
+    for (const method of methodsOf(team.text)) {
+      const grants =
+        /(?:updateTable|deleteFrom|insertInto)\('project_memberships'\)/u.test(method.body) ||
+        /updateTable\('users'\)\s*\.set\(\{(?:(?!\}\))[\s\S])*?\bstatus\s*:/u.test(method.body);
+      if (!grants || pending.has(method.name)) continue;
+      writers += 1;
+      if (!/\bchanges\??\.announceAccess\(/u.test(method.body)) silent.push(method.name);
+    }
+    expect(writers).toBeGreaterThanOrEqual(3);
+    expect(silent).toEqual([]);
+  });
+
+  // The overview drops a hidden or deleted project only through the change
+  // feed; a silent writer would leave it on every other device's Home.
+  it('announces every store method that hides or deletes a project', () => {
+    const silent: string[] = [];
+    let writers = 0;
+    for (const { file, text } of sources) {
+      for (const method of methodsOf(text)) {
+        const hides =
+          /updateTable\('projects'\)\s*\.set\(\{(?:(?!\}\))[\s\S])*?\bhidden_at\s*:\s*sql`now\(\)`/u.test(
+            method.body,
+          );
+        const deletes = /deleteFrom\('projects'\)/u.test(method.body);
+        if (!hides && !deletes) continue;
+        // Deletes only the installation sync's placeholder, which is `absent`
+        // and never on the overview: there is nothing for a view to drop.
+        if (method.name === 'retireInstallationPlaceholder') continue;
         writers += 1;
         if (!/\b(?:changes|projectChanges)\??\.announce\(/u.test(method.body)) {
           silent.push(`${file} ${method.name}`);

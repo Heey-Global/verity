@@ -69,6 +69,10 @@ export class ProjectLifecycleStore {
       // drops the returning clause — a contract bug, not a runtime path.
       throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
     }
+    // Only an upsert that shows the project can enter the overview; the
+    // installation sync's own upserts stay silent, or every list read would
+    // announce the whole installation.
+    if (input.restore === true || input.overviewVisible === true) this.changes?.announce(row.id);
     return projectRowToRecord(row);
   }
 
@@ -348,6 +352,8 @@ export class ProjectLifecycleStore {
       return project;
     });
     if (!row) throw new Error('verity: createRepositoryProject RETURNING yielded no row');
+    // After commit: the overview lists the new project on every device.
+    this.changes?.announce(row.id);
     return projectRowToRecord(row);
   }
 
@@ -400,6 +406,7 @@ export class ProjectLifecycleStore {
       if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
       return project;
     });
+    this.changes?.announce(row.id);
     return projectRowToRecord(row);
   }
 
@@ -778,7 +785,7 @@ export class ProjectLifecycleStore {
    * second hide just refreshes the timestamp. Returns whether a row matched.
    */
   async hideProject(id: string): Promise<boolean> {
-    return this.db.transaction().execute(async (tx) => {
+    const hidden = await this.db.transaction().execute(async (tx) => {
       await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const result = await tx
         .updateTable('projects')
@@ -803,6 +810,9 @@ export class ProjectLifecycleStore {
       await tx.deleteFrom('project_knowledge_spaces').where('project_id', '=', id).execute();
       return result.numUpdatedRows > 0n;
     });
+    // After commit: the overview drops the project on every device.
+    if (hidden) this.changes?.announce(id);
+    return hidden;
   }
 
   async deleteProject(id: string): Promise<boolean> {
@@ -833,7 +843,9 @@ export class ProjectLifecycleStore {
       await tx.deleteFrom('integration_sources').where('project_id', '=', id).execute();
       return tx.deleteFrom('projects').where('id', '=', id).executeTakeFirst();
     });
-    return result.numDeletedRows > 0n;
+    const deleted = result.numDeletedRows > 0n;
+    if (deleted) this.changes?.announce(id);
+    return deleted;
   }
 
   /**

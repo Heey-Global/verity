@@ -2,11 +2,13 @@ import { Fragment, type ReactNode } from 'react';
 import { Text, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 
 import type { SessionProjectGroup } from '../../lib/projectGroups';
+import { HostResources } from './HostResources';
 import { OtherServerProjects } from './OtherServerProjects';
 
 /**
  * Below the Home project list: the projects of the other servers this app knows,
- * then the paused projects. Styled by the list it closes, so it reads as one.
+ * then the paused projects, then the server's machine at a glance. Styled by the
+ * list it closes, so it reads as one.
  */
 export function ProjectListFooter({
   pausedGroups,
@@ -39,6 +41,7 @@ export function ProjectListFooter({
           </View>
         </View>
       ) : null}
+      <HostResources />
     </>
   );
 }

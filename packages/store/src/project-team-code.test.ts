@@ -37,7 +37,11 @@ describe('the Code right', () => {
     });
   });
 
-  const team = () => new ProjectTeamStore(ctx.db, cipher);
+  const team = () =>
+    new ProjectTeamStore(
+      () => ctx.db,
+      () => cipher,
+    );
 
   /** Invite, admit and redeem until the person is an active member. */
   async function join(rights: { canExecute: boolean; canCode?: boolean }): Promise<string> {

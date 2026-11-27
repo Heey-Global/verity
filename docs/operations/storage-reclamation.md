@@ -140,7 +140,18 @@ later, until one pass reaches every project; it no longer waits for the next
 daily or low-disk maintenance pass. A failure on one preserved copy no longer
 keeps the other copies or an idle session's private installation in place. A dev
 server or preview holds back only its own session's pass; a project-level
-public share and the orphan pass still hold the project.
+public share and the orphan pass still hold the project. In a running project a
+session is collected under its own hold only: turns in other sessions of the
+project do not defer it. Sleeping projects and the orphan pass still use the
+project-wide mutation, since only they need a maintenance sandbox for Git.
+
+## Low-disk warning
+
+When less than 30 GiB are free on the disk holding the Server's data, the
+session list carries the server-level notice `storage_low` ("Disk almost full —
+N GB free of M GB …"), which the app shows above the list. It follows a sealed
+secret store and precedes Updater notices, since a full disk stops the database
+and every session with it. The Server measures the disk at most once a minute.
 
 ## Data volume breakdown
 
@@ -445,7 +456,12 @@ reports a blocker; collection never clears another operation's lock.
 A session with a closed or merged PR may have its whole worktree retired after
 seven idle days only when its current commit is reachable from a freshly fetched
 remote branch, the worktree has no changes, stashes or index flags that hide changes, and no unknown untracked
-or ignored files remain. A closed PR alone does not prove work has been saved.
+or ignored files remain. Ignored build and install output (`node_modules`,
+`dist`, `build`, `coverage`, `.turbo`, `.next`, `.nuxt`, `.vite`, `.cache`,
+`.expo` directories and `*.tsbuildinfo` files) is regenerable and does not keep a
+worktree; any other ignored file, such as an `.env`, does. A worktree without a
+private installation is retirement-checked even when its dependency manifests
+differ from the base checkout's. A closed PR alone does not prove work has been saved.
 The base checkout, document workspaces and Knowledge are never retirement targets.
 Git errors and uncertain ownership retain the worktree and appear as blockers.
 

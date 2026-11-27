@@ -1,9 +1,10 @@
-import { domainTopic, type DomainEvent } from '@verity/events';
+import { domainTopic, PROJECTS_COLLECTION_TOPIC, type DomainEvent } from '@verity/events';
 import type { ProjectChangeFeed, ProjectRecord } from '@verity/store';
 import { cachedTrustedToolkitIdentity } from '../runner-boundary-attestation.js';
 import { createSandboxUpdateView } from '../sandbox-update-view.js';
 import type { SandboxUpdateChecker, SandboxUpdateStatus } from '../sandbox-updates.js';
 import type { ServerContext } from '../server-context.js';
+import { listedInProjectCollection } from '../server-support.js';
 import { reportedToolkitDrift } from '../toolkit-drift.js';
 import { installReleaseChecker } from './release-checker.js';
 import { createRevisions } from './revisions.js';
@@ -29,6 +30,7 @@ interface Remembered {
   image: string;
   release: string;
   drift: string;
+  listed: boolean;
 }
 
 /** The release fields as the project routes show them. */
@@ -82,6 +84,67 @@ export function installProjectEvents(
   const serverToolkitIdentity = (): Promise<string | undefined | typeof UNREADABLE> =>
     (deps.toolkitIdentity ?? cachedTrustedToolkitIdentity)().catch(() => UNREADABLE);
 
+  // One change of a person's access at a time, in the order they committed:
+  // an earlier change read before a later one must not publish after it.
+  const accessQueues = new Map<string, Promise<void>>();
+  /**
+   * What one person may read changed. Their open topics are checked again at
+   * once, so a project they lost ends its stream now; and the projects whose
+   * place on their overview changed are announced to them alone.
+   */
+  const accessChanged = (userId: string, projectId?: string): Promise<void> => {
+    // Before waiting for anything: a project they lost ends its stream now,
+    // even behind an earlier change still being checked.
+    try {
+      ctx.liveHub.authorizationChanged({
+        userId,
+        ...(projectId === undefined ? {} : { projectId }),
+      });
+    } catch (error) {
+      // The announcement below still tells their devices what changed.
+      app.log.warn({ err: error, userId, projectId }, 'verity: live topics not rechecked');
+    }
+    const next = (accessQueues.get(userId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => publishAccess(userId, projectId));
+    // Held for the next change, never rejecting: the caller handles `next`.
+    const settled = next
+      .catch(() => undefined)
+      .finally(() => {
+        if (accessQueues.get(userId) === settled) accessQueues.delete(userId);
+      });
+    accessQueues.set(userId, settled);
+    return next;
+  };
+  const publishAccess = async (userId: string, projectId?: string): Promise<void> => {
+    // The change cleared their cached scope; reading it now, before anything
+    // is announced, lets the hub know they hold a project they just joined, so
+    // its hiding or deletion reaches them too.
+    await ctx.liveHub.overviewScope(userId);
+    const store = deps.eventStore;
+    const projectIds =
+      projectId === undefined ? await store.listReadableProjectIds(userId) : [projectId];
+    for (const id of projectIds) {
+      const readable = await store.hasProjectPermission(userId, id, 'read');
+      // Read last, with nothing awaited after it: a hide or deletion during
+      // the permission check must not be announced over.
+      const project = await store.getProject(id);
+      const listed = readable && project !== undefined && listedInProjectCollection(project);
+      domainEvents.publish(
+        PROJECTS_COLLECTION_TOPIC,
+        listed
+          ? { t: 'project.listed', projectId: id, rev: revisions.next(), userId }
+          : {
+              t: 'project.unlisted',
+              projectId: id,
+              rev: revisions.next(),
+              userId,
+              ...(project === undefined ? { gone: true } : {}),
+            },
+      );
+    }
+  };
+
   const publish = (projectId: string, event: DomainEvent): void => {
     domainEvents.publish(domainTopic('project', projectId), event);
   };
@@ -127,10 +190,23 @@ export function installProjectEvents(
   const check = async (projectId: string): Promise<void> => {
     const project = await deps.eventStore.getProject(projectId);
     if (project === undefined) {
+      const was = remembered.get(projectId);
       remembered.delete(projectId);
       lastStatus.delete(projectId);
       lastProject.delete(projectId);
       publishedUpdate.delete(projectId);
+      // Gone from the store: every view that lists it drops it. Announced for
+      // a project not seen before too, since only a deletion announces one
+      // that no longer exists; the live hub delivers it only to those who
+      // held it.
+      if (was?.listed !== false) {
+        domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
+          t: 'project.unlisted',
+          projectId,
+          rev: revisions.next(),
+          gone: true,
+        });
+      }
       return;
     }
     // A status from before a lifecycle change says nothing about the sandbox
@@ -158,6 +234,26 @@ export function installProjectEvents(
       drift === undefined ? (previous?.drift ?? '') : JSON.stringify(drift),
     );
     remember(remembered, projectId, next);
+    // Entering the overview, on first sight too: a view that already lists
+    // the project ignores it. Leaving it only from a state that was listed: a
+    // project first seen unlisted (a synced repository, the control plane the
+    // overview adds by its own setting) was never on a view to leave.
+    if (next.listed && previous?.listed !== true) {
+      domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
+        t: 'project.listed',
+        projectId,
+        rev: revisions.next(),
+      });
+    } else if (
+      !next.listed &&
+      (previous?.listed === true || (previous === undefined && hiddenFromOverview(project)))
+    ) {
+      domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
+        t: 'project.unlisted',
+        projectId,
+        rev: revisions.next(),
+      });
+    }
     if (previous?.lifecycle !== next.lifecycle) {
       const { state, lifecycleState } = publicLifecycle(project);
       publish(projectId, {
@@ -237,6 +333,15 @@ export function installProjectEvents(
 
   if (changes !== undefined) {
     lifecycle.onClose(changes.observe(announce));
+    if (typeof changes.observeAccess === 'function') {
+      lifecycle.onClose(
+        changes.observeAccess((userId, projectId) => {
+          void accessChanged(userId, projectId).catch((error: unknown) => {
+            app.log.warn({ err: error, userId, projectId }, 'verity: access change not published');
+          });
+        }),
+      );
+    }
     // Releases reach the store through it; without a feed nothing would carry
     // them on to views.
     installReleaseChecker(app, ctx);
@@ -296,6 +401,12 @@ function publicLifecycle(project: ProjectRecord): { state: string; lifecycleStat
   return sleeping ? { state: 'active', lifecycleState: project.state } : { state: project.state };
 }
 
+/** A project the overview would list but for being hidden: first seen after
+ * a restart, its hiding may be what announced it. */
+function hiddenFromOverview(project: ProjectRecord): boolean {
+  return project.hiddenAt !== null && listedInProjectCollection({ ...project, hiddenAt: null });
+}
+
 function lifecycleOf(project: ProjectRecord): string {
   return JSON.stringify([project.state, project.provisionError, project.provisionWarning]);
 }
@@ -308,6 +419,7 @@ function rememberedOf(project: ProjectRecord, drift: string): Remembered {
     image: JSON.stringify([project.imageRef, project.toolkitIdentity]),
     release: JSON.stringify(RELEASE_FIELDS.map((field) => project[field])),
     drift,
+    listed: listedInProjectCollection(project),
   };
 }
 

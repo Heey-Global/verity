@@ -54,6 +54,7 @@ import {
   isUniqueViolation,
   isControlPlaneProject,
   projectHasReleases,
+  appearsInProjectOverview,
   recordReleaseSummary,
   releaseDiffers,
   projectWithRelease,
@@ -118,8 +119,19 @@ export function installProjects(
   const { deps, conductor } = ctx;
   // Project states follow their sandbox containers from Docker's event stream
   // for as long as the server runs.
-  const stopContainerLiveness = deps.containerLiveness?.start();
+  const liveness = deps.containerLiveness;
+  const stopContainerLiveness = liveness?.start();
   if (stopContainerLiveness !== undefined) ctx.lifecycle.onClose(stopContainerLiveness);
+  // While the stream vouches for them, the update checker reuses its container
+  // inspections: an overview read then inspects no running sandbox.
+  if (liveness?.following !== undefined && liveness.onContainerChange !== undefined) {
+    const source = liveness;
+    const stopTrusting = deps.sandboxUpdates?.trustInspections?.({
+      following: () => source.following?.() === true,
+      onContainerChange: (listener) => source.onContainerChange?.(listener) ?? (() => undefined),
+    });
+    if (stopTrusting !== undefined) ctx.lifecycle.onClose(stopTrusting);
+  }
   // A link keeps its original local identity reserved while the DB row
   // temporarily carries the GitHub target. This closes the only interval in
   // which a concurrent local create could steal the slug and block rollback.
@@ -318,9 +330,6 @@ export function installProjects(
       ...withoutControl,
     ];
   };
-
-  const appearsInProjectOverview = (project: ProjectRecord): boolean =>
-    project.state !== 'absent' || project.overviewVisible === true;
 
   registerProjectGitHubIssueRoutes(app, {
     store: deps.eventStore,

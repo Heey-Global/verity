@@ -4,6 +4,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { SecretCipher } from './crypto.js';
+import type { ProjectChangeFeed } from './project-changes.js';
 import type { Database } from './schema.js';
 
 /** An invitation is valid for 7 days by default and at most (Uplink team contract). */
@@ -128,10 +129,25 @@ function invitation(row: Row, now: Date): ProjectInvitation {
  * the team outbox, so it is delivered even after a restart.
  */
 export class ProjectTeamStore {
+  /** Each collaborator is read when used, so the store follows the facade's
+   * current database and cipher. */
   constructor(
-    private readonly db: Kysely<Database>,
-    private readonly cipher: SecretCipher,
+    private readonly dbOf: () => Kysely<Database>,
+    private readonly cipherOf: () => SecretCipher,
+    private readonly changesOf: () => ProjectChangeFeed | undefined = () => undefined,
   ) {}
+
+  private get db(): Kysely<Database> {
+    return this.dbOf();
+  }
+
+  private get cipher(): SecretCipher {
+    return this.cipherOf();
+  }
+
+  private get changes(): ProjectChangeFeed | undefined {
+    return this.changesOf();
+  }
 
   /**
    * Create an invitation and return it with its link secret, which is never
@@ -742,7 +758,8 @@ export class ProjectTeamStore {
   async confirmJoin(redemptionId: string): Promise<boolean> {
     // Under the invitation's row lock, like failJoin: a confirmation racing a
     // fence must never activate the fenced person.
-    return this.db.transaction().execute(async (tx) => {
+    let joined: string | undefined;
+    const confirmed = await this.db.transaction().execute(async (tx) => {
       const row = await tx
         .selectFrom('project_invitations')
         .select(['redeemed_by_user_id', 'state'])
@@ -778,8 +795,12 @@ export class ProjectTeamStore {
         .set({ status: 'active' })
         .where('id', '=', row.redeemed_by_user_id)
         .execute();
+      joined = row.redeemed_by_user_id;
       return true;
     });
+    // After commit: the person now reads the projects they joined.
+    if (joined !== undefined) this.changes?.announceAccess(joined);
+    return confirmed;
   }
 
   async listMembers(projectId: string, db: Kysely<Database> = this.db): Promise<ProjectMember[]> {
@@ -823,7 +844,7 @@ export class ProjectTeamStore {
     userId: string,
     rights: { canExecute: boolean; canCode?: boolean | undefined; canManage: boolean },
   ): Promise<ProjectMember> {
-    return this.db.transaction().execute(async (tx) => {
+    const member = await this.db.transaction().execute(async (tx) => {
       const current = await this.requireChangeable(tx, projectId, userId);
       const next: MemberRights = {
         canExecute: rights.canExecute,
@@ -853,6 +874,8 @@ export class ProjectTeamStore {
         throw new ProjectTeamError('member_not_found', 'This person is not on the project.');
       return member;
     });
+    this.changes?.announceAccess(userId, projectId);
+    return member;
   }
 
   /**
@@ -864,7 +887,7 @@ export class ProjectTeamStore {
     userId: string,
     now = new Date(),
   ): Promise<{ lastProject: boolean }> {
-    return this.db.transaction().execute(async (tx) => {
+    const removed = await this.db.transaction().execute(async (tx) => {
       await this.requireChangeable(tx, projectId, userId);
       await tx
         .deleteFrom('project_memberships')
@@ -892,6 +915,9 @@ export class ProjectTeamStore {
         );
       return { lastProject };
     });
+    // After commit: the project leaves the person's overview.
+    this.changes?.announceAccess(userId, projectId);
+    return removed;
   }
 
   /** Retire expired replay secrets and fence joins that never authorized completion. */

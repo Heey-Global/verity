@@ -47,7 +47,8 @@ type AttentionCode =
   | 'secret_sealed'
   | 'updater_unhealthy'
   | 'sandbox_disconnected'
-  | 'usage_probe_unhealthy';
+  | 'usage_probe_unhealthy'
+  | 'storage_low';
 
 /**
  * A remedy the client can offer as a tap, for the signals that have exactly one.
@@ -122,8 +123,15 @@ export const USAGE_PROBE_STALL_MS = 30 * 60 * 1000;
  */
 export const SIGN_IN_REJECTED_STALL_MS = 5 * 60 * 1000;
 
+/** Below this much free space the disk warning appears: enough headroom to
+ *  clean up before sandbox builds are refused and the database runs out. */
+export const STORAGE_LOW_BYTES = 30 * 1024 ** 3;
+
 export interface AttentionInputs {
   readonly secretStatus: SecretStatus;
+  /** Free and total bytes of the disk holding the Server's data; absent when
+   *  unknown, which says nothing. */
+  readonly storage?: { readonly freeBytes: number; readonly totalBytes: number } | undefined;
   readonly updater: UpdaterProbe;
   /** Last outcome of the account-wide Codex quota probe; absent on a Server that
    *  does not run one, which is not a fault and says nothing. */
@@ -152,6 +160,11 @@ export function attentionSignals(inputs: AttentionInputs): AttentionSignal[] {
         'Server is sealed — sessions cannot use agent providers, sign commits, or use GitHub until you unlock it',
     });
 
+  // Ahead of the Updater: a full disk takes the database and with it every
+  // session down, and only the first line is shown.
+  const storage = storageSignal(inputs.storage);
+  if (storage !== null) signals.push(storage);
+
   const stalled = stalledUpdate(inputs);
   if (inputs.updater.kind === 'unreachable')
     signals.push({
@@ -174,6 +187,29 @@ export function attentionSignals(inputs: AttentionInputs): AttentionSignal[] {
   if (usage !== null) signals.push(usage);
 
   return signals;
+}
+
+/**
+ * The disk is nearly full, worded by what fails next. Observed: the data
+ * volume filled over two weeks with nothing on screen until the database
+ * stopped with "No space left on device" and the Server could not start.
+ */
+function storageSignal(storage: AttentionInputs['storage']): AttentionSignal | null {
+  if (
+    storage === undefined ||
+    !Number.isFinite(storage.freeBytes) ||
+    !Number.isFinite(storage.totalBytes) ||
+    storage.totalBytes <= 0 ||
+    storage.freeBytes >= STORAGE_LOW_BYTES
+  )
+    return null;
+  const gb = (bytes: number) => String(Math.max(0, Math.floor(bytes / 1024 ** 3)));
+  return {
+    code: 'storage_low',
+    message:
+      `Disk almost full — ${gb(storage.freeBytes)} GB free of ${gb(storage.totalBytes)} GB; ` +
+      'sandbox builds and the database fail when it runs out',
+  };
 }
 
 /**

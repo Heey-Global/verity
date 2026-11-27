@@ -17,19 +17,28 @@ import { z } from 'zod';
  * withhold from a viewer of the topic.
  */
 
-export const DOMAIN_TOPIC_KINDS = ['user', 'project', 'session'] as const;
+export const DOMAIN_TOPIC_KINDS = ['user', 'project', 'session', 'collection'] as const;
 export type DomainTopicKind = (typeof DOMAIN_TOPIC_KINDS)[number];
 
 /** Topics a connection may hold at once. */
 export const LIVE_MAX_TOPIC_SUBSCRIPTIONS = 64;
 
-const TOPIC_PATTERN = /^(user|project|session):[^\s:]{1,200}$/u;
+const TOPIC_PATTERN = /^(user|project|session|collection):[^\s:]{1,200}$/u;
 export const domainTopicSchema = z.string().regex(TOPIC_PATTERN);
 export type DomainTopic = z.infer<typeof domainTopicSchema>;
 
 export function domainTopic(kind: DomainTopicKind, id: string): DomainTopic {
   return `${kind}:${id}`;
 }
+
+/**
+ * The projects the overview lists. It announces a project entering or leaving
+ * that list — created, restored, hidden, deleted — as `project.listed` and
+ * `project.unlisted`; each subscriber receives only the projects it may read.
+ * One that carries `userId` concerns that person alone: they joined the
+ * project, or were removed from it.
+ */
+export const PROJECTS_COLLECTION_TOPIC: DomainTopic = 'collection:projects';
 
 /** The kind and id of a topic, or undefined for a malformed one. */
 export function parseDomainTopic(topic: string): { kind: DomainTopicKind; id: string } | undefined {
@@ -98,6 +107,17 @@ export const domainEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('choices.answered'), sessionId: id, rev }),
   z.object({ t: z.literal('pr.status'), sessionId: id, rev, pr: patch.nullable() }),
   z.object({ t: z.literal('project.changed'), projectId: id, rev, patch }),
+  /** The project entered the overview: views read it and list it. */
+  z.object({ t: z.literal('project.listed'), projectId: id, rev, userId: id.optional() }),
+  /** The project left the overview. `gone` marks one that no longer exists.
+   * Delivered to the subscribers that held the project. */
+  z.object({
+    t: z.literal('project.unlisted'),
+    projectId: id,
+    rev,
+    userId: id.optional(),
+    gone: z.boolean().optional(),
+  }),
   z.object({
     t: z.literal('sandbox.lifecycle'),
     projectId: id,

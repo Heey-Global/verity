@@ -209,5 +209,9 @@ function entityKey(event: DomainEvent): string {
     case 'sandbox.lifecycle':
     case 'sandbox.update':
       return `${event.t}:${event.projectId}`;
+    // One entity: whether the overview lists the project.
+    case 'project.listed':
+    case 'project.unlisted':
+      return `listed:${event.projectId}`;
   }
 }

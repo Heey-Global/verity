@@ -86,6 +86,53 @@ it('allows the Workspace store to resolve the current Google account store', () 
   ]);
 });
 
+it('allows the project repository store to forward project lookup', () => {
+  const source = (lookup: string) =>
+    'class EventStore { repositories = new ProjectRepositoryStore(() => this.db, ' +
+    lookup +
+    '); }';
+  expect(facadeImplementations(source('(id) => this.getProject(id)'))).toEqual({});
+  for (const lookup of [
+    '(id) => this.getProject(otherId)',
+    '(id) => this.deleteProject(id)',
+    '(id) => this.getProject?.(id)',
+    '(id = defaultId) => this.getProject(id)',
+  ]) {
+    expect(Object.keys(facadeImplementations(source(lookup)))).toEqual(['repositories']);
+  }
+});
+
+it('allows the event history store to forward backward page reads in order', () => {
+  const source = (read: string) =>
+    'class EventStore { history = new EventHistoryStore(() => this.db, ' + read + '); }';
+  expect(
+    facadeImplementations(
+      source('(id, limit, before) => this.getEventsBeforeSeq(id, limit, before)'),
+    ),
+  ).toEqual({});
+  expect(
+    Object.keys(
+      facadeImplementations(
+        source('(id, limit, before) => this.getEventsBeforeSeq(id, before, limit)'),
+      ),
+    ),
+  ).toEqual(['history']);
+});
+
+it('allows the event history store to forward full-log reads without overriding the cursor', () => {
+  const source = (read: string) =>
+    'class EventStore { history = new EventHistoryStore(() => this.db, ' +
+    '(id, limit, before) => this.getEventsBeforeSeq(id, limit, before), ' +
+    read +
+    '); }';
+  expect(facadeImplementations(source('(id, after) => this.getEventsAfter(id, after)'))).toEqual(
+    {},
+  );
+  expect(
+    Object.keys(facadeImplementations(source('(id, after) => this.getEventsAfter(id, 0)'))),
+  ).toEqual(['history']);
+});
+
 it('allows plan implementation to use the existing append and projection stores', () => {
   const source = (store: string, projection: string) =>
     'class EventStore { plan = new ' +

@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.96.3](https://github.com/Heey-Global/verity/compare/mobile-v1.96.2...mobile-v1.96.3) (2026-11-27)
+
+
+### Features
+
+* **live:** publish the full sandbox update state as sandbox.update ([#2989](https://github.com/Heey-Global/verity/issues/2989)) ([3e8fd6a](https://github.com/Heey-Global/verity/commit/3e8fd6a2c82afb3f4de1d839edbc01b72e8a0a52))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2836](https://github.com/Heey-Global/verity/issues/2836)) ([bdfd3f3](https://github.com/Heey-Global/verity/commit/bdfd3f3555474653f96c7e3aae26e82722c2bfb8))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.9.1 ([#2892](https://github.com/Heey-Global/verity/issues/2892)) ([0817320](https://github.com/Heey-Global/verity/commit/0817320e646b69ba2d3e83b5e5da7dda69092220))
+* **mobile:** hide administrator actions in member settings ([#2991](https://github.com/Heey-Global/verity/issues/2991)) ([e7e1e80](https://github.com/Heey-Global/verity/commit/e7e1e80309860e19e28d1eaacd134c58f65cd3ad))
+
 ## [1.96.2](https://github.com/Heey-Global/verity/compare/mobile-v1.96.1...mobile-v1.96.2) (2026-11-27)
 
 
