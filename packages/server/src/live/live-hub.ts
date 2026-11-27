@@ -602,7 +602,9 @@ export class LiveHub {
   }
 
   detach(connection: LiveConnection): void {
-    this.connections.delete(connection);
+    // Once per connection: a socket that closes after its device was revoked
+    // must not count the user's other devices as gone.
+    if (!this.connections.delete(connection)) return;
     // Who held what matters only to a user's open connections; subscribing
     // again reads the scope anew.
     const key = connection.userKey;

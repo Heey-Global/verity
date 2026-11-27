@@ -407,6 +407,32 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  // Closing a socket can follow a revocation that already detached it; the
+  // user's other device must keep what it held.
+  it('counts a connection leaving only once', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    const phone = w.connect('bob');
+    const tablet = w.connect('bob');
+    await phone.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await tablet.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    // A revocation detaches the phone, and its socket closing detaches it again.
+    const connections = (w.hub as unknown as { connections: Set<{ socket: unknown }> }).connections;
+    const phoneConnection = [...connections].find((connection) => connection.socket === phone)!;
+    w.hub.detach(phoneConnection as never);
+    w.hub.detach(phoneConnection as never);
+    w.readable.get('bob')!.delete('p2');
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(tablet.of('domain')).toHaveLength(1));
+    w.hub.close();
+  });
+
   it('refuses a collection it does not know', async () => {
     const w = world();
     const alice = w.connect('alice');
