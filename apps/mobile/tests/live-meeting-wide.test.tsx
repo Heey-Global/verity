@@ -1,3 +1,7 @@
+jest.mock('../lib/meetingStartAccess', () => ({
+  ...jest.requireActual('../lib/meetingStartAccess'),
+  requireMeetingStartAccess: jest.fn().mockResolvedValue(undefined),
+}));
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import { useLocalSearchParams } from 'expo-router';
@@ -13,6 +17,7 @@ jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({
   default: () => ({ width: 1180, height: 820, scale: 2, fontScale: 1 }),
 }));
 jest.mock('expo-router', () => ({
+  useFocusEffect: jest.fn(),
   router: { back: jest.fn(), push: jest.fn() },
   Stack: { Screen: () => null },
   useLocalSearchParams: jest.fn(() => ({ sessionId: 'session-1' })),
