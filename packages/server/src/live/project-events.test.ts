@@ -384,8 +384,9 @@ describe('installProjectEvents', () => {
   });
 
   // A slow registry read that began while the sandbox ran can land after it
-  // failed; published, it would show an update the routes no longer report.
-  it('takes only the status asked for a new state until it is back', async () => {
+  // failed, before or after the status asked for the failed sandbox; taken,
+  // it would show an update the routes no longer report.
+  it('takes no update status for a sandbox that is not running', async () => {
     const w = setup();
     w.setStatus(status('available'));
     w.write({ state: 'active' });
@@ -394,14 +395,23 @@ describe('installProjectEvents', () => {
     w.statusCalls.mockImplementationOnce(
       () => new Promise<SandboxUpdateStatus>((resolve) => (answer = resolve)),
     );
-    w.failures.set('p1', { at: Date.parse('2026-11-27T08:00:00Z'), message: 'pull failed' });
     w.write({ state: 'failed' });
     await vi.waitFor(() => expect(answer).toBeDefined());
-    // The late answer to the earlier read.
+    // The late answer to the earlier read, before the new one is back...
     for (const observer of w.observers) observer('p1', status('available'));
     expect(w.updates()).toHaveLength(1);
+    for (const observer of w.observers) observer('p1', status('unknown'));
     answer(status('unknown'));
     await vi.waitFor(() => expect(w.updates()).toHaveLength(2));
+    // ...and after it.
+    for (const observer of w.observers) observer('p1', status('available'));
+    w.write({ state: 'sleeping' });
+    await vi.waitFor(() =>
+      expect(w.others().at(-1)).toEqual(expect.objectContaining({ lifecycleState: 'sleeping' })),
+    );
+    for (const observer of w.observers) observer('p1', status('available'));
+    w.tick();
+    expect(w.updates()).toHaveLength(2);
     expect(w.updates()[1]).toEqual(
       expect.objectContaining({ update: expect.objectContaining({ state: 'unknown' }) }),
     );

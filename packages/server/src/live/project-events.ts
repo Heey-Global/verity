@@ -76,10 +76,6 @@ export function installProjectEvents(
   const lastStatus = new Map<string, SandboxUpdateStatus>();
   const lastProject = new Map<string, ProjectRecord>();
   const publishedUpdate = new Map<string, string>();
-  /** Projects waiting for the status asked after a change of their state,
-   * with the request that answers; other reports meanwhile may predate it. */
-  const rechecks = new Map<string, number>();
-  let recheckRequests = 0;
   // Cached process-wide on success. A failed lookup is a fault of this server,
   // not news about the project: the verdict last published stands, rather than
   // a banner that disappears and returns with every hiccup.
@@ -104,6 +100,7 @@ export function installProjectEvents(
     // sandbox is the exception: `unknown` is its status, and the routes report
     // it as an update that is not repairing itself.
     if (status.state === 'unknown' && project.state !== 'failed') return;
+    if (status.state !== 'unknown' && project.state !== 'active') return;
     const update = updateView.withSelfRepair(project, status, verdicts);
     const fingerprint = JSON.stringify(update);
     if (publishedUpdate.get(projectId) === fingerprint) return;
@@ -124,7 +121,6 @@ export function installProjectEvents(
       lastStatus.delete(projectId);
       lastProject.delete(projectId);
       publishedUpdate.delete(projectId);
-      rechecks.delete(projectId);
       return;
     }
     // A status from before a lifecycle change says nothing about the sandbox
@@ -141,7 +137,6 @@ export function installProjectEvents(
     if (stateChanged) {
       lastStatus.delete(projectId);
       publishedUpdate.delete(projectId);
-      rechecks.set(projectId, ++recheckRequests);
     }
     bounded(lastProject, projectId, project);
     const identity = await serverToolkitIdentity();
@@ -196,26 +191,11 @@ export function installProjectEvents(
         (project.state === 'active' &&
           (previous?.lifecycle !== next.lifecycle || previous.image !== next.image)))
     ) {
-      const request = rechecks.get(projectId) ?? ++recheckRequests;
-      rechecks.set(projectId, request);
-      const settle = (): boolean => {
-        if (rechecks.get(projectId) !== request) return false;
-        rechecks.delete(projectId);
-        return true;
-      };
       // Not awaited: a slow registry must not hold back this project's next
-      // lifecycle event.
-      void updates.status(project).then(
-        (status) => {
-          if (settle()) accept(projectId, status);
-        },
-        (error: unknown) => {
-          settle();
-          app.log.warn({ err: error, projectId }, 'verity: sandbox update check failed');
-        },
-      );
-    } else if (stateChanged) {
-      rechecks.delete(projectId);
+      // lifecycle event. The answer arrives through the checker's observer.
+      void updates.status(project).catch((error: unknown) => {
+        app.log.warn({ err: error, projectId }, 'verity: sandbox update check failed');
+      });
     }
   };
 
@@ -251,12 +231,19 @@ export function installProjectEvents(
     installReleaseChecker(app, ctx);
   }
 
-  /** Take a status the checker reported for the project. */
-  const accept = (projectId: string, status: SandboxUpdateStatus): void => {
+  const stopObserving = updates?.observe?.((projectId, status) => {
     const project = lastProject.get(projectId);
-    // Kept for a project not read yet: whether `unknown` matters depends on
-    // whether it failed.
-    if (status.state === 'unknown' && project !== undefined && project.state !== 'failed') return;
+    if (project !== undefined) {
+      // Only a running sandbox has an image to compare. For any other,
+      // `unknown` is the only status that describes it; anything else is a
+      // read that began while it still ran and landed late.
+      if (project.state !== 'active' && status.state !== 'unknown') return;
+      // A running one's `unknown` is a failed inspect or registry read, which
+      // says nothing about the update: the last state published stands rather
+      // than every banner changing whenever the registry stumbles.
+      if (status.state === 'unknown' && project.state !== 'failed') return;
+    }
+    // Kept for a project not read yet, and judged once its record is held.
     bounded(lastStatus, projectId, status);
     // A project seen before is judged with the record its last check read, so
     // a checker sweep over the whole fleet costs no store read. One not seen
@@ -264,12 +251,6 @@ export function installProjectEvents(
     // gains a viewer later.
     if (project !== undefined) publishUpdate(projectId);
     else if (domainEvents.watching(domainTopic('project', projectId))) announce(projectId);
-  };
-  const stopObserving = updates?.observe?.((projectId, status) => {
-    // A read that started before the state changed can land after it; only
-    // the status asked for the new state counts until that one is back.
-    if (rechecks.has(projectId)) return;
-    accept(projectId, status);
   });
   if (stopObserving !== undefined) lifecycle.onClose(stopObserving);
   if (updates !== undefined) {
