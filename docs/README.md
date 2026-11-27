@@ -11,6 +11,8 @@ Pick the section that matches what you want to do.
   and other connections add, and how projects use them.
 - [File connections](file-connections.md): working with Google Drive files
   inside a session.
+- [Network shares](network-shares.md): giving agents folders on a NAS or file
+  server over SMB, for example a Synology.
 - [Knowledge](knowledge.md): project knowledge folders and how agents use them.
 - [Google Calendar](google-calendar.md) and
   [live meetings](attendee-live-meetings.md): calendar access and meeting

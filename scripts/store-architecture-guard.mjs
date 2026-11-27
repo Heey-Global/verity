@@ -161,7 +161,8 @@ function isStoreWiring(initializer) {
           ((initializer.expression.text === 'GoogleWorkspaceStore' ||
             initializer.expression.text === 'GoogleConnectionStore') &&
             argument.body.name.text === 'googleAccounts') ||
-          (initializer.expression.text === 'AttendeeStateStore' &&
+          ((initializer.expression.text === 'AttendeeStateStore' ||
+            initializer.expression.text === 'NetworkShareStore') &&
             argument.body.name.text === 'cipher') ||
           (initializer.expression.text === 'ProjectTeamStore' &&
             ['cipher', 'projectChanges'].includes(argument.body.name.text)) ||

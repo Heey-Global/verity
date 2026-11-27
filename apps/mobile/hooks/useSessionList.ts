@@ -4,6 +4,7 @@ import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
   SessionListModel,
+  SERVER_ATTENTION_TOPIC,
   type SessionListState,
   subscribePullRequestStatusMutations,
   subscribeSessionAutomationMutations,
@@ -118,6 +119,19 @@ export function useSessionList(client: VerityClient): UseSessionList {
     (event) => model.applyDomainEvent(event),
     () => model.applyHints([]),
   );
+  // The server's own conditions reach an administrator as they change (ADR
+  // 0033). For anyone else the server ends the topic, as the list read
+  // reports them none.
+  useEffect(() => {
+    const baseUrl = getVerityBaseUrl();
+    if (baseUrl === null) return undefined;
+    return liveConnectionFor(baseUrl).subscribeTopic(SERVER_ATTENTION_TOPIC, {
+      event: (event) => {
+        if (event.t === 'server.attention') model.applyServerAttention(event.attention, event.rev);
+      },
+      resync: () => model.applyHints([]),
+    });
+  }, [model]);
   useEffect(
     () =>
       subscribeLiveRefresh(

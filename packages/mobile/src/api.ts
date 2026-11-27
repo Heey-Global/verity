@@ -145,6 +145,7 @@ import {
   type SwitchTiming,
 } from './sessionSwitchTiming.js';
 import { taskSchema, type Task, type TaskCapture, type TaskPatch } from './tasks.js';
+import { networkSharesClient } from './network-shares-api.js';
 import { liveResourceInterval, type LiveResource, selectedOpenCodeModels } from '@verity/events';
 import {
   agentEventSchema,
@@ -2557,13 +2558,13 @@ export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
 export class VerityClient {
   readonly secretApprovals: ReturnType<typeof createSecretApprovalsClient>;
-  readonly sessionCollaboration = createSessionCollaborationClient((path, init) =>
-    this.request(path, init),
-  );
+  private readonly send = (path: string, init: TransportRequestInit) => this.request(path, init);
+  readonly sessionCollaboration = createSessionCollaborationClient(this.send);
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
   readonly projectQA = projectQAClient((path, init) => this.request(path, init));
   readonly doppler = dopplerClient((path, init) => this.request(path, init));
+  readonly networkShares = networkSharesClient(this.send);
   readonly getHostResources = hostResourcesClient((path, init) => this.request(path, init));
   readonly monitoring = serverMonitoringClient((path, init) => this.request(path, init));
   readonly listDopplerConnections = this.doppler.listConnections;
@@ -2604,10 +2605,7 @@ export class VerityClient {
   readonly createKnowledgeFileFolder = this.knowledgeFiles.createKnowledgeFileFolder;
   readonly listKnowledgeBacklinks = this.knowledgeFiles.listKnowledgeBacklinks;
   readonly createSessionFolder = this.knowledgeFiles.createSessionFolder;
-  private readonly driveFiles = projectGoogleDriveFilesClient(
-    (path, init) => this.request(path, init),
-    driveFileSchema,
-  );
+  private readonly driveFiles = projectGoogleDriveFilesClient(this.send, driveFileSchema);
   readonly createProjectGoogleDriveFolder = this.driveFiles.createProjectGoogleDriveFolder;
   readonly updateProjectGoogleDriveFile = this.driveFiles.updateProjectGoogleDriveFile;
 
@@ -3085,7 +3083,7 @@ export class VerityClient {
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
     this.secretApprovals = createSecretApprovalsClient(
-      (path, init) => this.request(path, init),
+      this.send,
       () => this.getToken() || undefined,
     );
     this.onUnauthorized = opts.onUnauthorized;

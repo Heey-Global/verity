@@ -221,6 +221,16 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     keywords: ['drive', 'folder', 'files', 'upload', 'read-only'],
   },
   {
+    id: 'network-shares',
+    title: 'Network shares',
+    summary: 'Give a project access to folders on an SMB server.',
+    details:
+      'An administrator adds an SMB share in Settings, Connectors, Network shares, then grants a folder in the project’s Network shares settings. Folders start read-only. With write access, agents can create files and request approval to replace existing files.',
+    appLink: 'verity://settings/services/network-shares',
+    docsPath: 'docs/network-shares.md',
+    keywords: ['smb', 'nas', 'synology', 'network share', 'file server'],
+  },
+  {
     id: 'doppler',
     title: 'Doppler',
     summary: 'Managed secrets that agents can use without seeing them.',

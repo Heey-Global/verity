@@ -129,6 +129,7 @@ export const gatewayToolNameSchema = z.enum([
   'verity_scheduling',
   'verity_google_contacts',
   'verity_google_drive',
+  'verity_network_shares',
 ]);
 export type GatewayToolName = z.infer<typeof gatewayToolNameSchema>;
 

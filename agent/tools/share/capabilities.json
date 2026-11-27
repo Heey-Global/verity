@@ -1,0 +1,62 @@
+[
+  {
+    "name": "verity_share_folders",
+    "title": "Verity · Share · Folders",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "network-shares",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_network_shares",
+      "action": "folders"
+    }
+  },
+  {
+    "name": "verity_share_list",
+    "title": "Verity · Share · List",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "network-shares",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_network_shares",
+      "action": "list"
+    }
+  },
+  {
+    "name": "verity_share_read",
+    "title": "Verity · Share · Read",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "network-shares",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_network_shares",
+      "action": "read"
+    }
+  },
+  {
+    "name": "verity_share_create",
+    "title": "Verity · Share · Create",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "network-shares",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_network_shares",
+      "action": "create"
+    }
+  },
+  {
+    "name": "verity_share_update",
+    "title": "Verity · Share · Update",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "network-shares",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_network_shares",
+      "action": "update"
+    }
+  }
+]

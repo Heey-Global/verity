@@ -17,6 +17,7 @@ const domains: Record<string, string> = {
   verity_google_docs: 'docs',
   verity_google_sheets: 'sheets',
   verity_google_slides: 'slides',
+  verity_network_shares: 'share',
 };
 const renamed: Record<string, string> = {
   verity_list_sessions: 'verity_session_list',

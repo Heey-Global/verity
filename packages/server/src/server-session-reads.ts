@@ -30,6 +30,7 @@ import { recentSessionDiagnostics } from './session-observation.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
 import { permissionEventAwaitsInput } from './status.js';
+import { installServerAttentionEvents } from './live/attention-events.js';
 
 type SessionOverview = ReturnType<typeof createServerSessionOverview>;
 type SharedProjectPeople = ReturnType<typeof sharedProjectPeople>;
@@ -185,6 +186,7 @@ export function installSessionList(
     });
   };
 
+  installServerAttentionEvents(app, ctx, collectAttention);
   registerSessionOrderRoute(app, { store: deps.eventStore });
   const listSessionsAs = registerSessionListRoute(app, {
     store: deps.eventStore,

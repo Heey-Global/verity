@@ -91,6 +91,7 @@ function ProjectSettingsIndexView({
     usage,
     dopplerBindings,
     driveFolderNames,
+    shareFolders,
     forgeConnections,
     refresh: refreshConnections,
   } = useProjectConnections(client, projectId);
@@ -134,7 +135,7 @@ function ProjectSettingsIndexView({
       | '/project/[id]/settings/model'
       | '/project/[id]/settings/design',
   ) => router.push({ pathname, params: { id: projectId } });
-  const toService = (section: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google') =>
+  const toService = (section: 'doppler' | 'drive' | 'shares' | 'mcp' | 'matrix' | 'google') =>
     router.push({
       pathname: '/project/[id]/settings/services',
       params: { id: projectId, section },
@@ -279,6 +280,24 @@ function ProjectSettingsIndexView({
                   : (detail.settings?.googleDriveFolderName ?? 'Not selected'),
               }}
               onPress={() => toService('drive')}
+            />
+          ) : null}
+          {available.shares ? (
+            <SettingsNavRow
+              icon="hard-drive"
+              title="Network shares"
+              subtitle="Folders on a NAS or file server"
+              status={(() => {
+                // A stale folder no longer reaches agents; it must not read as ready.
+                const current = (shareFolders ?? []).filter((folder) => !folder.stale);
+                return {
+                  intent: current.length ? ('ready' as const) : ('optional' as const),
+                  label: current.length
+                    ? current.map((folder) => folder.name).join(', ')
+                    : 'Not selected',
+                };
+              })()}
+              onPress={() => toService('shares')}
             />
           ) : null}
           {available.google ? (

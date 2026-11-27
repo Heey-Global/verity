@@ -25182,7 +25182,7 @@ var import_zod10 = __toESM(require_zod(), 1);
 // node_modules/@verity/events/dist/domain-events.js
 var import_zod9 = __toESM(require_zod(), 1);
 var LIVE_MAX_TOPIC_SUBSCRIPTIONS = 64;
-var TOPIC_PATTERN = /^(user|project|session|collection):[^\s:]{1,200}$/u;
+var TOPIC_PATTERN = /^(user|project|session|collection|server):[^\s:]{1,200}$/u;
 var domainTopicSchema = import_zod9.z.string().regex(TOPIC_PATTERN);
 var cursor = import_zod9.z.number().int().nonnegative();
 var id2 = import_zod9.z.string().min(1).max(200);
@@ -25214,6 +25214,17 @@ var domainEventSchema = import_zod9.z.discriminatedUnion("t", [
     rev,
     userId: id2.optional(),
     gone: import_zod9.z.boolean().optional()
+  }),
+  /** Every server-level condition that holds now; an empty list when the
+   * server is healthy. Signals as `GET /sessions?envelope=1` reports them. */
+  import_zod9.z.object({
+    t: import_zod9.z.literal("server.attention"),
+    rev,
+    attention: import_zod9.z.array(import_zod9.z.object({
+      code: import_zod9.z.string().min(1).max(64),
+      message: import_zod9.z.string().min(1).max(2e3),
+      action: import_zod9.z.string().min(1).max(64).optional()
+    })).max(32)
   }),
   import_zod9.z.object({
     t: import_zod9.z.literal("sandbox.lifecycle"),

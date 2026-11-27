@@ -515,7 +515,7 @@ export { formatChoiceAnswer, type ChoicesOption, type RiskClass } from '@verity/
 export { parseProjectInquiryAnswerTurn } from '@verity/events';
 export type { PlanDecision } from '@verity/events';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
-export { PROJECTS_COLLECTION_TOPIC } from '@verity/events';
+export { PROJECTS_COLLECTION_TOPIC, SERVER_ATTENTION_TOPIC } from '@verity/events';
 export { ASSISTANT_HANDOFF_DECLINED } from '@verity/events';
 export { END_PLANNING_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 export {
@@ -637,6 +637,15 @@ export {
   type PersonalDopplerTokens,
   type ProjectDopplerBinding,
 } from './doppler-api.js';
+export {
+  networkShareConnectionSchema,
+  projectNetworkShareFolderSchema,
+  type NetworkShareAccessMode,
+  type NetworkShareConnection,
+  type NetworkShareFolderListing,
+  type NetworkShareTestResult,
+  type ProjectNetworkShareFolder,
+} from './network-shares-api.js';
 export { signingKeyGenerateSchema, type SigningKeyGenerateResult } from './api.js';
 export {
   driveFileSchema,

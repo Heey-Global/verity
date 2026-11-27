@@ -101,6 +101,7 @@ export function createEmbeddedMcpGateway(
             'verity_scheduling',
             'verity_google_contacts',
             'verity_google_drive',
+            'verity_network_shares',
           ]
         : [
             'verity_http_request',
@@ -130,6 +131,7 @@ export function createEmbeddedMcpGateway(
             'verity_scheduling',
             'verity_google_contacts',
             'verity_google_drive',
+            'verity_network_shares',
           ],
     // Control-plane session tools are handled in `buildServer`, which owns session
     // creation and dispatch. Keep their advertisement scoped to the control project.

@@ -5,6 +5,7 @@ import {
   githubRepositoryAccessReady,
   type ForgeConnection,
   type ProjectDopplerBinding,
+  type ProjectNetworkShareFolder,
   type VerityClient,
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
@@ -28,7 +29,10 @@ export function useProjectConnections(client: VerityClient, projectId: string) {
     google: false,
     mcp: false,
     matrix: false,
+    shares: false,
   });
+  /** The project's network share folders; null until read. */
+  const [shareFolders, setShareFolders] = useState<ProjectNetworkShareFolder[] | null>(null);
   const [driveFolderNames, setDriveFolderNames] = useState<string[] | null>(null);
   useFocusEffect(
     useCallback(() => {
@@ -46,6 +50,8 @@ export function useProjectConnections(client: VerityClient, projectId: string) {
         Promise.resolve().then(() => client.listConnections()),
         Promise.resolve().then(() => client.doppler.listConnections()),
         Promise.resolve().then(() => client.doppler.listBindings(projectId)),
+        Promise.resolve().then(() => client.networkShares.listConnections()),
+        Promise.resolve().then(() => client.networkShares.listProjectFolders(projectId)),
       ]).then((results) => {
         if (!active) return;
         const [
@@ -61,7 +67,10 @@ export function useProjectConnections(client: VerityClient, projectId: string) {
           forge,
           dopplerConnections,
           dopplerBound,
+          shareConnections,
+          sharedFolders,
         ] = results;
+        setShareFolders(sharedFolders.status === 'fulfilled' ? sharedFolders.value : null);
         setDopplerBindings(dopplerBound.status === 'fulfilled' ? dopplerBound.value : null);
         const forgeList = forge.status === 'fulfilled' ? forge.value : null;
         setForgeConnections(forgeList?.connections ?? null);
@@ -98,6 +107,10 @@ export function useProjectConnections(client: VerityClient, projectId: string) {
           matrix:
             integrations.status === 'fulfilled' &&
             integrations.value.accounts.some((account) => account.provider === 'matrix'),
+          // Like Doppler: members cannot list the shares, but see the project's folders.
+          shares:
+            (shareConnections.status === 'fulfilled' && shareConnections.value.length > 0) ||
+            (sharedFolders.status === 'fulfilled' && sharedFolders.value.length > 0),
         });
       });
       return () => {
@@ -110,6 +123,7 @@ export function useProjectConnections(client: VerityClient, projectId: string) {
     usage,
     dopplerBindings,
     driveFolderNames,
+    shareFolders,
     forgeConnections,
     refresh: useCallback(() => setConnectionRefresh((value) => value + 1), []),
   };

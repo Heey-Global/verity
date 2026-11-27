@@ -245,6 +245,7 @@ export {
   domainTopicSchema,
   parseDomainTopic,
   PROJECTS_COLLECTION_TOPIC,
+  SERVER_ATTENTION_TOPIC,
   topicSubscriptionSchema,
   type DomainEvent,
   type DomainTopic,

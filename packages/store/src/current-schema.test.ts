@@ -16,6 +16,8 @@ it('creates exactly the tables and columns the runtime store declares', async ()
     new URL('./schema-brokered-approvals.ts', import.meta.url),
     new URL('./schema-people.ts', import.meta.url),
     new URL('./schema-doppler.ts', import.meta.url),
+    new URL('./schema-network-shares.ts', import.meta.url),
+    new URL('./schema-google-workspace.ts', import.meta.url),
     new URL('./schema-project-qa.ts', import.meta.url),
     new URL('./schema-project-inquiries.ts', import.meta.url),
     new URL('./schema-project-repositories.ts', import.meta.url),

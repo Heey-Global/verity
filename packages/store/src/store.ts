@@ -109,6 +109,7 @@ import { PlanImplementationStore, type PlanningConsent } from './plan-implementa
 export type { PlanningConsent } from './plan-implementation.js';
 import { SessionPlanningStore, type SessionPlanning } from './session-planning.js';
 import type { SessionRecord } from './session-rows.js';
+import type { EventSink, SessionInput } from './event-sink.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import {
   SessionProjectionStore,
@@ -253,6 +254,7 @@ export {
   type ProjectAgent,
 } from './project-settings.js';
 import { TaskStore } from './tasks.js';
+import { NetworkShareStore } from './network-shares.js';
 
 export {
   backfillInlineAttachments,
@@ -267,19 +269,6 @@ export type {
   SessionLinkReservation,
   PendingSessionLinkMessage,
 } from './session-links.js';
-
-/** Input to {@link EventStore.createSession}: a {@link SessionRecord} whose
- * `name` is optional (a fresh session starts nameless unless the operator named
- * it at spawn). */
-export type SessionInput = Omit<
-  SessionRecord,
-  'name' | 'projectId' | 'lastSeenEventCount' | 'planning'
-> & {
-  name?: string | null;
-  projectId?: string | null;
-  /** The person starting the session; its requests are theirs (ADR 0023). */
-  createdByUserId?: string | null;
-};
 
 export type { SessionBackendStateRecord } from './session-backend-state.js';
 export type { SessionPlanning } from './session-planning.js';
@@ -297,28 +286,6 @@ export {
   type SessionAutomationRecord,
   type SessionAutomationInput,
 } from './session-automations.js';
-
-/**
- * The narrow persistence seam the Runner's ingest path drives (ADR 0006 D2). It
- * is EXACTLY the three {@link EventStore} methods the runner/ingest/backend
- * path touches — `appendEvent` (persist a stream event, returning its assigned
- * `seq`/`ts`), plus `createSession`/`getSession` for the session-bind bookkeeping.
- *
- * Retyping `RunTurnOptions.store` from the concrete {@link EventStore} to this
- * interface lets a Runner be handed a substitute sink (e.g. the Stage 2 file-sink
- * that writes events to the event stream file instead of the DB) WITHOUT the
- * Runner gaining DB access (D2: the Server persists; the Runner does not touch the
- * DB). The real {@link EventStore} `implements EventSink`, so every existing
- * caller passes it unchanged.
- */
-export interface EventSink {
-  appendEvent(
-    sessionId: string,
-    event: AgentEvent,
-  ): Promise<{ seq: number; ts: number; existing?: true }>;
-  createSession(session: SessionInput): Promise<void>;
-  getSession(sessionId: string): Promise<SessionRecord | undefined>;
-}
 
 /**
  * The durable source of truth (concept §5a). Wraps the append-only Postgres
@@ -529,6 +496,10 @@ export class EventStore implements EventSink {
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
+  readonly networkShares = new NetworkShareStore(
+    () => this.db,
+    () => this.cipher,
+  );
   readonly repairs: RepairSupervisionStore;
   readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
