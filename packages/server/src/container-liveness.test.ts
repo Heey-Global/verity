@@ -389,6 +389,43 @@ describe('createContainerLiveness', () => {
     await stop();
   });
 
+  // The comparison keeps the row when its write fails; trusted, it would
+  // show a sandbox as running that the event reported dead.
+  it('hands comparing back to reads when the state cannot be written', async () => {
+    const l = setup([project('p1')]);
+    const stop = l.liveness.start();
+    l.handlers().onConnected();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    let release!: () => void;
+    const rows = await l.listProjects();
+    l.listProjects.mockImplementationOnce(
+      () => new Promise((resolve) => (release = () => resolve(rows))),
+    );
+    l.updateProjectState.mockRejectedValueOnce(new Error('store busy'));
+    l.stopContainer('p1');
+    l.handlers().onEvent('p1', 'die');
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(l.liveness.following()).toBe(false);
+    release();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    await stop();
+  });
+
+  // A source that reports for a run that ended must not make the next one
+  // trust rows its own stream never covered.
+  it('ignores what the stream of an earlier run reports', async () => {
+    vi.useFakeTimers();
+    const l = setup([project('p1')]);
+    const first = l.liveness.start();
+    const earlier = l.handlers();
+    await first();
+    const second = l.liveness.start();
+    earlier.onConnected();
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(l.liveness.following()).toBe(false);
+    await second();
+  });
+
   it('never follows without an event stream, so reads keep comparing', () => {
     const l = setup([project('p1')], { stream: false });
     const stop = l.liveness.start();

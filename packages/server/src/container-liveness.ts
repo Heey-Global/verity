@@ -84,12 +84,15 @@ export function createContainerLiveness(options: {
       projects,
       unreadable === undefined ? docker : noting(unreadable),
       async (id, state, provisionError, provisionWarning) => {
-        const row = await eventStore.updateProjectState(
-          id,
-          state,
-          provisionError,
-          provisionWarning,
-        );
+        let row: ProjectRecord | undefined;
+        try {
+          row = await eventStore.updateProjectState(id, state, provisionError, provisionWarning);
+        } catch (error) {
+          // The comparison swallows it and keeps the row, which then does not
+          // hold what the container showed: not a comparison reads may trust.
+          unreadable?.add(`write:${id}`);
+          throw error;
+        }
         if (unreadable === undefined) {
           // A read's comparison is not serialized with the follower's: its
           // write may land after a catch-up that did not see it. The rows are
@@ -230,15 +233,22 @@ export function createContainerLiveness(options: {
   };
 
   /** Start the stream and the periodic comparisons; returns their stop. */
+  let runs = 0;
   const run = (): (() => Promise<void>) => {
+    // The handlers belong to this run: a stream that reports after it stopped,
+    // or after a later run began, changes nothing.
+    const self = ++runs;
+    const live = (): boolean => !stopped && self === runs;
     stopped = false;
     open = false;
     connected = false;
     epoch += 1;
     const stopStream = docker.followContainerEvents?.({
-      onEvent,
+      onEvent: (projectId) => {
+        if (live()) onEvent(projectId);
+      },
       onConnected: () => {
-        if (stopped) return;
+        if (!live()) return;
         open = true;
         lose();
         // Events from before the stream opened are not replayed: reads keep
@@ -246,7 +256,7 @@ export function createContainerLiveness(options: {
         void sweep();
       },
       onDisconnected: (error) => {
-        if (stopped) return;
+        if (!live()) return;
         if (connected) log.warn('verity: Docker event stream ended; reads compare again', error);
         open = false;
         lose();
