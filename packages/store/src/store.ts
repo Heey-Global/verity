@@ -511,7 +511,7 @@ export class EventStore implements EventSink {
     this.sessionLinks = new SessionLinkStore(db);
     this.capacityLeases = new CapacityLeaseStore(db);
     this.userContext = new UserContextStore(db);
-    this.userProfiles = new UserProfileStore(() => db);
+    this.userProfiles = new UserProfileStore(db);
     this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);

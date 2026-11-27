@@ -25,10 +25,10 @@ export function normalizeDisplayName(input: string): string {
 
 /** A person's own profile, keyed by authenticated identity, never a device. */
 export class UserProfileStore {
-  constructor(private readonly getDb: () => Kysely<Database>) {}
+  constructor(private readonly database: Kysely<Database> | (() => Kysely<Database>)) {}
 
   private get db(): Kysely<Database> {
-    return this.getDb();
+    return typeof this.database === 'function' ? this.database() : this.database;
   }
 
   async read(userId: string): Promise<UserProfile | undefined> {
