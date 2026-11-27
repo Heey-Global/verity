@@ -59,7 +59,7 @@ function setup() {
       return () => observers.delete(listener);
     },
   };
-  let identity: string | Error | undefined = 'toolkit-a';
+  let identity: string | Error | undefined | Promise<string> = 'toolkit-a';
   const domainEvents = new DomainEventBus();
   const closers: (() => unknown)[] = [];
   const ticks: (() => void)[] = [];
@@ -101,7 +101,7 @@ function setup() {
     observers,
     closers,
     setStatus: (next: SandboxUpdateStatus) => (nextStatus = next),
-    setIdentity: (next: string | Error | undefined) => (identity = next),
+    setIdentity: (next: string | Error | undefined | Promise<string>) => (identity = next),
     failures,
     turnBlocked,
     getProject,
@@ -356,6 +356,28 @@ describe('installProjectEvents', () => {
         update: expect.objectContaining({ state: 'unknown' }),
       }),
     );
+  });
+
+  // The toolkit lookup inside a check can be slow; a tick in that window must
+  // not judge the new record by the status from before the change.
+  it('judges no new lifecycle by an old status while its check is under way', async () => {
+    const w = setup();
+    w.setStatus(status('available'));
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(1));
+    let release!: (identity: string) => void;
+    w.setIdentity(new Promise<string>((resolve) => (release = resolve)));
+    w.failures.set('p1', { at: Date.parse('2026-11-27T08:00:00Z'), message: 'pull failed' });
+    const reads = w.getProject.mock.calls.length;
+    w.write({ state: 'failed' });
+    await vi.waitFor(() => expect(w.getProject.mock.calls.length).toBeGreaterThan(reads));
+    await new Promise((resolve) => setImmediate(resolve));
+    w.tick();
+    release('toolkit-a');
+    await vi.waitFor(() =>
+      expect(w.events().at(-1)).toEqual(expect.objectContaining({ state: 'failed' })),
+    );
+    expect(w.updates()).toHaveLength(1);
   });
 
   // Views saw the sandbox fail in between; the same status after it came back

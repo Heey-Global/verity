@@ -122,6 +122,17 @@ export function installProjectEvents(
       publishedUpdate.delete(projectId);
       return;
     }
+    // A status from before a lifecycle change says nothing about the sandbox
+    // now; a running one is checked again below, a failed one reports
+    // `unknown` at the checker's next look. Forgetting what was published too
+    // lets the next status go out even when it repeats one from before. In the
+    // same step as holding the new record, so that no tick or checker report
+    // judges the new record by the old status in between.
+    const held = lastProject.get(projectId);
+    if (held !== undefined && lifecycleOf(held) !== lifecycleOf(project)) {
+      lastStatus.delete(projectId);
+      publishedUpdate.delete(projectId);
+    }
     bounded(lastProject, projectId, project);
     const identity = await serverToolkitIdentity();
     const drift = identity === UNREADABLE ? undefined : reportedToolkitDrift(project, identity);
@@ -161,15 +172,6 @@ export function installProjectEvents(
         rev: revisions.next(),
         patch,
       });
-    }
-    // A status from before a lifecycle change says nothing about the sandbox
-    // now; a running one is checked again just below, a failed one reports
-    // `unknown` at the checker's next look.
-    // Forgetting what was published too lets the next status go out even when
-    // it repeats one from before the change.
-    if (previous !== undefined && previous.lifecycle !== next.lifecycle) {
-      lastStatus.delete(projectId);
-      publishedUpdate.delete(projectId);
     }
     publishUpdate(projectId);
     // A sandbox that came up or was rebuilt may have changed its update
@@ -265,9 +267,13 @@ function publicLifecycle(project: ProjectRecord): { state: string; lifecycleStat
   return sleeping ? { state: 'active', lifecycleState: project.state } : { state: project.state };
 }
 
+function lifecycleOf(project: ProjectRecord): string {
+  return JSON.stringify([project.state, project.provisionError, project.provisionWarning]);
+}
+
 function rememberedOf(project: ProjectRecord, drift: string): Remembered {
   return {
-    lifecycle: JSON.stringify([project.state, project.provisionError, project.provisionWarning]),
+    lifecycle: lifecycleOf(project),
     name: project.name,
     setupStatus: project.setupStatus ?? null,
     image: JSON.stringify([project.imageRef, project.toolkitIdentity]),
