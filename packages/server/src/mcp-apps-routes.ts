@@ -85,9 +85,12 @@ function createReadOnlyGrants(now: () => number) {
   return {
     covers: (...args: Parameters<typeof key>) => (grants.get(key(...args)) ?? 0) > now(),
     grant(...args: Parameters<typeof key>) {
-      for (const [k, expires] of grants) if (expires <= now()) grants.delete(k);
+      const k = key(...args);
+      for (const [other, expires] of grants) if (expires <= now()) grants.delete(other);
+      // Re-insert so the oldest entry really is the first one evicted.
+      grants.delete(k);
       if (grants.size >= MAX_GRANTS) grants.delete(grants.keys().next().value!);
-      grants.set(key(...args), now() + READ_ONLY_GRANT_MS);
+      grants.set(k, now() + READ_ONLY_GRANT_MS);
     },
     revoke: (...args: Parameters<typeof key>) => grants.delete(key(...args)),
     clear: () => grants.clear(),
@@ -346,7 +349,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
                 // Shown on the approval card, so the scope of the answer is visible.
                 ...(repeatable
                   ? {
-                      approvalCovers: `Further calls of this read-only tool, with any arguments, from this app for ${READ_ONLY_GRANT_MS / 60_000} minutes`,
+                      approvalCovers: `Further calls of this tool, which the server declares read-only, with any arguments, from this app for ${READ_ONLY_GRANT_MS / 60_000} minutes`,
                     }
                   : {}),
               },
@@ -378,8 +381,8 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
             grants.revoke(id, appId, userId, call.name);
             return reply.code(403).send({ error: 'MCP app access changed' });
           }
-          if (repeatable && !granted) grants.grant(id, appId, userId, call.name);
           if (gone.signal.aborted) return reply.code(409).send({ error: 'Caller went away' });
+          if (repeatable && !granted) grants.grant(id, appId, userId, call.name);
           const { result } = await rpc(resolved.connection, 'tools/call', call, sessionId, version);
           if ((await resolve(id, appId, userId)) === undefined) {
             grants.revoke(id, appId, userId, call.name);
