@@ -6,7 +6,9 @@ import {
   SESSION_PROJECTION_EVENT_TYPES,
   decodeLiveClientFrame,
   parseDomainTopic,
+  PROJECTS_COLLECTION_TOPIC,
   type AgentEvent,
+  type DomainEvent,
   type DomainTopic,
   type LiveAlert,
   type LiveEndedReason,
@@ -174,6 +176,7 @@ class LiveConnection {
         : new TopicSubscriptions({
             bus,
             canRead: (topic) => this.canReadTopic(topic),
+            filter: (record) => this.mayReceive(record),
             send: (frame) => this.send(frame),
             overBudget: () => this.socket.bufferedAmount > hub.maxBufferedBytes,
             logger: hub.deps.logger,
@@ -196,7 +199,34 @@ class LiveConnection {
         const session = await store.getSession(parsed.id);
         return session !== undefined && (await access.canReadSession(userId, session));
       }
+      case 'collection':
+        // Anyone who may read the overview; each record is filtered below.
+        return parsed.id === 'projects';
     }
+  }
+
+  /**
+   * Whether this connection receives a record. A project topic was authorized
+   * as a whole; the project collection carries every project, and each
+   * subscriber receives only those its overview would list. A project that no
+   * longer exists reaches everyone: there is nothing left to read it by, and
+   * views drop an id they do not hold.
+   */
+  private mayReceive(record: {
+    topic: DomainTopic;
+    event: DomainEvent;
+  }): boolean | Promise<boolean> {
+    if (record.topic !== PROJECTS_COLLECTION_TOPIC) return true;
+    const { event } = record;
+    if (event.t !== 'project.listed' && event.t !== 'project.unlisted') return false;
+    if (event.t === 'project.unlisted' && event.gone === true) return true;
+    const { userId } = this.identity;
+    return (async () => {
+      if (scopeAllows(await this.hub.overviewScope(userId), event.projectId)) return true;
+      // The cached scope may predate the project: a creator's other devices
+      // must still learn about the project they just made.
+      return scopeAllows(await this.hub.overviewScope(userId, true), event.projectId);
+    })();
   }
 
   get userKey(): string {
@@ -636,7 +666,7 @@ export class LiveHub {
     }
     for (const connection of [...this.connections]) {
       if (!connection.overview) continue;
-      const scope = await this.scopeFor(connection.identity.userId).catch(() => undefined);
+      const scope = await this.overviewScope(connection.identity.userId).catch(() => undefined);
       if (scope === undefined) continue;
       const visible = hints
         .filter(({ projectId }) => scopeAllows(scope, projectId))
@@ -645,10 +675,14 @@ export class LiveHub {
     }
   }
 
-  private async scopeFor(userId: string | undefined): Promise<LiveOverviewScope> {
+  /** The projects a user's overview may list, cached briefly; `fresh` reads
+   * them anew. */
+  async overviewScope(userId: string | undefined, fresh = false): Promise<LiveOverviewScope> {
     const key = userId ?? '';
     const cached = this.scopes.get(key);
-    if (cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) return cached.scope;
+    if (!fresh && cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) {
+      return cached.scope;
+    }
     const scope = await this.deps.access.overviewScope(userId);
     this.scopes.set(key, { scope, at: this.now() });
     return scope;

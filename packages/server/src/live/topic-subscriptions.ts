@@ -15,6 +15,9 @@ interface Subscription {
    * told to read its snapshots again. */
   behind: boolean;
   unsubscribe: () => void;
+  /** Records waiting for an asynchronous `filter`, in order. */
+  queue: Promise<void> | undefined;
+  pending: number;
 }
 
 export interface TopicSubscriptionsOptions {
@@ -25,6 +28,10 @@ export interface TopicSubscriptionsOptions {
   send(frame: LiveServerFrame): boolean;
   /** True while the socket holds more unsent bytes than it should. */
   overBudget(): boolean;
+  /** Whether this connection receives a record of a topic it holds: a
+   * collection topic carries entities each subscriber may or may not read.
+   * May answer asynchronously; records stay in order either way. */
+  filter?: ((record: DomainRecord) => boolean | Promise<boolean>) | undefined;
   logger?: { warn(obj: object, msg: string): void } | undefined;
 }
 
@@ -50,7 +57,13 @@ export class TopicSubscriptions {
       this.opts.send({ k: 'topic_ended', topic, reason: 'limit' });
       return;
     }
-    const sub: Subscription = { cancelled: false, behind: false, unsubscribe: () => undefined };
+    const sub: Subscription = {
+      cancelled: false,
+      behind: false,
+      unsubscribe: () => undefined,
+      queue: undefined,
+      pending: 0,
+    };
     // Registered before the first await so a quick `topics.unsub` finds it.
     this.subscriptions.set(topic, sub);
     let allowed: boolean;
@@ -81,6 +94,57 @@ export class TopicSubscriptions {
   }
 
   private deliver(sub: Subscription, record: DomainRecord): void {
+    if (sub.cancelled) return;
+    const filter = this.opts.filter;
+    if (filter === undefined) {
+      this.send(sub, record);
+      return;
+    }
+    const decide = (): boolean | Promise<boolean> => {
+      try {
+        return filter(record);
+      } catch (error) {
+        this.opts.logger?.warn({ err: error, topic: record.topic }, 'verity: live filter failed');
+        return false;
+      }
+    };
+    if (sub.pending === 0) {
+      const verdict = decide();
+      if (typeof verdict === 'boolean') {
+        if (verdict) this.send(sub, record);
+        return;
+      }
+      this.enqueue(sub, record, () => verdict);
+      return;
+    }
+    // Behind an answer still on its way: wait for it, so records stay in order.
+    this.enqueue(sub, record, decide);
+  }
+
+  private enqueue(
+    sub: Subscription,
+    record: DomainRecord,
+    decide: () => boolean | Promise<boolean>,
+  ): void {
+    sub.pending += 1;
+    sub.queue = (sub.queue ?? Promise.resolve())
+      .then(async () => {
+        let allowed = false;
+        try {
+          allowed = await decide();
+        } catch (error) {
+          // Withheld, not sent: a record the connection may not read stays unsent.
+          this.opts.logger?.warn({ err: error, topic: record.topic }, 'verity: live filter failed');
+        }
+        if (allowed) this.send(sub, record);
+      })
+      .finally(() => {
+        sub.pending -= 1;
+        if (sub.pending === 0) sub.queue = undefined;
+      });
+  }
+
+  private send(sub: Subscription, record: DomainRecord): void {
     if (sub.cancelled) return;
     if (this.opts.overBudget()) {
       // Holding domain frames for a socket that cannot keep up would let one

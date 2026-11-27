@@ -150,6 +150,61 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  // The project collection carries every project; a subscriber learning of a
+  // project it may not read would learn that the project exists.
+  it('delivers each project of the collection only to those who may read it', async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    const bob = w.connect('bob');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await bob.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    expect(alice.of('topic_ended')).toEqual([]);
+    const listed = (projectId: string, rev: number): DomainEvent => ({
+      t: 'project.listed',
+      projectId,
+      rev,
+    });
+    w.bus!.publish('collection:projects', listed('p2', 1));
+    w.bus!.publish('collection:projects', listed('p1', 2));
+    w.bus!.publish('collection:projects', { t: 'project.unlisted', projectId: 'p2', rev: 3 });
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p9',
+      rev: 4,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(4));
+    await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(2));
+    // In publication order, the deleted project to everyone.
+    expect(alice.of('domain').map(({ event }) => event.rev)).toEqual([2, 4]);
+    expect(bob.of('domain').map(({ event }) => event.rev)).toEqual([1, 2, 3, 4]);
+    w.hub.close();
+  });
+
+  // The scope is cached; a project created a moment ago is not in it yet, and
+  // its creator's other devices must still list it.
+  it('reads the scope anew for a project the cached one does not hold', async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 1 });
+    await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(1));
+    w.readable.get('alice')!.add('p3');
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p3', rev: 2 });
+    await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(2));
+    w.hub.close();
+  });
+
+  it('refuses a collection it does not know', async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:sessions' }] });
+    expect(alice.of('topic_ended')).toEqual([
+      expect.objectContaining({ topic: 'collection:sessions', reason: 'forbidden' }),
+    ]);
+    w.hub.close();
+  });
+
   it('replays missed events from the cursor and asks for a resync on a gap', async () => {
     const w = world();
     const first = w.bus!.publish('project:p1', lifecycle('p1', 1));

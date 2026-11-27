@@ -16,6 +16,7 @@ import { liveConnectionFor, subscribeLiveRefresh } from '../lib/liveConnection';
 import { getVerityBaseUrl } from '../lib/client';
 import { listedInOverview } from '../lib/overviewProjects';
 import { useOverviewStore, useOverviewTopics } from '../lib/overviewTopics';
+import { useProjectCollection } from '../lib/projectCollection';
 import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import {
   localPreviewLinks,
@@ -298,6 +299,44 @@ export function useProjects(client: VerityClient) {
     },
     readWhenShown,
   );
+
+  // A project created, restored or removed on another device enters or leaves
+  // the list without reading it whole: only the project that changed is read.
+  const listOne = useCallback(
+    async (projectId: string) => {
+      const target = storeRef.current;
+      if (target.project(projectId) !== undefined) return;
+      const read = target.beginRead();
+      try {
+        const { project } = await client.getProject(projectId);
+        if (!listedInOverview(project)) return;
+        target.applyProjects(read, [project], { covers: (p) => p.id === projectId });
+        setListed((current) =>
+          current.some((p) => p.id === projectId) ? current : [...current, project],
+        );
+      } catch {
+        // Not readable after all, or the read failed: the next list read decides.
+      } finally {
+        target.endRead(read);
+      }
+    },
+    [client],
+  );
+  const unlistOne = useCallback((projectId: string) => {
+    const target = storeRef.current;
+    const read = target.beginRead();
+    try {
+      target.applyProjects(read, [], { covers: (p) => p.id === projectId });
+    } finally {
+      target.endRead(read);
+    }
+    setListed((current) => current.filter((p) => p.id !== projectId));
+  }, []);
+  useProjectCollection(getVerityBaseUrl(), {
+    listed: (projectId) => void listOne(projectId),
+    unlisted: unlistOne,
+    resync: readWhenShown,
+  });
 
   const activeProjectIds = JSON.stringify(
     projects

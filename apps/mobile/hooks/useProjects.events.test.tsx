@@ -215,3 +215,38 @@ describe('useProjects project events', () => {
     unmount();
   });
 });
+
+describe('useProjects project collection', () => {
+  // A project created or removed on another device used to show only at the
+  // next full list read; now only that project is read, or none at all.
+  it('lists a project another device added and drops one it removed, reading only that project', async () => {
+    const active = { ...starting, state: 'active' as const };
+    const added = { ...active, id: 'p2', name: 'P2' };
+    const client = {
+      listProjects: jest.fn().mockResolvedValue([active]),
+      getProject: jest.fn().mockResolvedValue({ project: added, settings: null, sessions: [] }),
+    };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await waitFor(() => expect(result.current.projects).toHaveLength(1));
+    await waitFor(() => expect(mockSinks.has('collection:projects')).toBe(true));
+    const reads = client.listProjects.mock.calls.length;
+    const collection = mockSinks.get('collection:projects')!;
+
+    // Already listed: nothing to read.
+    act(() => collection.event({ t: 'project.listed', projectId: 'p1', rev: 1 }));
+    expect(client.getProject).not.toHaveBeenCalled();
+
+    await act(async () => collection.event({ t: 'project.listed', projectId: 'p2', rev: 2 }));
+    await waitFor(() =>
+      expect(result.current.projects.map((project) => project.id).sort()).toEqual(['p1', 'p2']),
+    );
+    expect(client.getProject).toHaveBeenCalledWith('p2');
+
+    act(() => collection.event({ t: 'project.unlisted', projectId: 'p1', rev: 3 }));
+    await waitFor(() =>
+      expect(result.current.projects.map((project) => project.id)).toEqual(['p2']),
+    );
+    expect(client.listProjects.mock.calls.length).toBe(reads);
+    unmount();
+  });
+});

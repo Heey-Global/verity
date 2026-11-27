@@ -1,9 +1,10 @@
-import { domainTopic, type DomainEvent } from '@verity/events';
+import { domainTopic, PROJECTS_COLLECTION_TOPIC, type DomainEvent } from '@verity/events';
 import type { ProjectChangeFeed, ProjectRecord } from '@verity/store';
 import { cachedTrustedToolkitIdentity } from '../runner-boundary-attestation.js';
 import { createSandboxUpdateView } from '../sandbox-update-view.js';
 import type { SandboxUpdateChecker, SandboxUpdateStatus } from '../sandbox-updates.js';
 import type { ServerContext } from '../server-context.js';
+import { listedInProjectCollection } from '../server-support.js';
 import { reportedToolkitDrift } from '../toolkit-drift.js';
 import { installReleaseChecker } from './release-checker.js';
 import { createRevisions } from './revisions.js';
@@ -29,6 +30,7 @@ interface Remembered {
   image: string;
   release: string;
   drift: string;
+  listed: boolean;
 }
 
 /** The release fields as the project routes show them. */
@@ -127,10 +129,22 @@ export function installProjectEvents(
   const check = async (projectId: string): Promise<void> => {
     const project = await deps.eventStore.getProject(projectId);
     if (project === undefined) {
+      const was = remembered.get(projectId);
       remembered.delete(projectId);
       lastStatus.delete(projectId);
       lastProject.delete(projectId);
       publishedUpdate.delete(projectId);
+      // Gone from the store: every view that lists it drops it. Announced for
+      // a project not seen before too, since only a deletion announces one
+      // that no longer exists.
+      if (was?.listed !== false) {
+        domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
+          t: 'project.unlisted',
+          projectId,
+          rev: revisions.next(),
+          gone: true,
+        });
+      }
       return;
     }
     // A status from before a lifecycle change says nothing about the sandbox
@@ -158,6 +172,15 @@ export function installProjectEvents(
       drift === undefined ? (previous?.drift ?? '') : JSON.stringify(drift),
     );
     remember(remembered, projectId, next);
+    // Entering or leaving the overview: created, restored, hidden. On first
+    // sight too; a view that already lists the project ignores it.
+    if (previous?.listed !== next.listed) {
+      domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
+        t: next.listed ? 'project.listed' : 'project.unlisted',
+        projectId,
+        rev: revisions.next(),
+      });
+    }
     if (previous?.lifecycle !== next.lifecycle) {
       const { state, lifecycleState } = publicLifecycle(project);
       publish(projectId, {
@@ -308,6 +331,7 @@ function rememberedOf(project: ProjectRecord, drift: string): Remembered {
     image: JSON.stringify([project.imageRef, project.toolkitIdentity]),
     release: JSON.stringify(RELEASE_FIELDS.map((field) => project[field])),
     drift,
+    listed: listedInProjectCollection(project),
   };
 }
 
