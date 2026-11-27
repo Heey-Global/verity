@@ -133,6 +133,30 @@ it('allows the event history store to forward full-log reads without overriding 
   ).toEqual(['history']);
 });
 
+it('allows Google connections to forward their session and project lookups', () => {
+  const source = (contacts: string) => `
+    class EventStore {
+      connections = new GoogleConnectionStore(
+        () => this.db,
+        () => this.googleAccounts,
+        (id) => this.getSession(id),
+        (id, service) => this.getProjectGoogleConnection(id, service),
+        (id, user) => this.getSessionGmailConnection(id, user),
+        (id, user) => this.getSessionCalendarConnection(id, user),
+        ${contacts},
+      );
+    }
+  `;
+  expect(
+    facadeImplementations(source('(id, user) => this.getSessionContactsConnection(id, user)')),
+  ).toEqual({});
+  expect(
+    Object.keys(
+      facadeImplementations(source('(id, user) => this.getSessionContactsConnection(user, id)')),
+    ),
+  ).toEqual(['connections']);
+});
+
 it('allows plan implementation to use the existing append and projection stores', () => {
   const source = (store: string, projection: string) =>
     'class EventStore { plan = new ' +

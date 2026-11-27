@@ -131,12 +131,23 @@ function isStoreWiring(initializer) {
       if (index === 2 && initializer.expression.text === 'EventHistoryStore') {
         return isForwardingCallback(argument, 'getEventsAfter', 2);
       }
+      if (initializer.expression.text === 'GoogleConnectionStore' && index >= 2) {
+        const method = [
+          'getSession',
+          'getProjectGoogleConnection',
+          'getSessionGmailConnection',
+          'getSessionCalendarConnection',
+          'getSessionContactsConnection',
+        ][index - 2];
+        return method !== undefined && isForwardingCallback(argument, method, index === 2 ? 1 : 2);
+      }
       return (
         argument.parameters.length === 0 &&
         ts.isPropertyAccessExpression(argument.body) &&
         argument.body.expression.kind === ts.SyntaxKind.ThisKeyword &&
         (argument.body.name.text === 'db' ||
-          (initializer.expression.text === 'GoogleWorkspaceStore' &&
+          ((initializer.expression.text === 'GoogleWorkspaceStore' ||
+            initializer.expression.text === 'GoogleConnectionStore') &&
             argument.body.name.text === 'googleAccounts') ||
           (initializer.expression.text === 'AttendeeStateStore' &&
             argument.body.name.text === 'cipher') ||

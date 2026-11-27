@@ -777,14 +777,15 @@ export class EventStore implements EventSink {
     return new GoogleAccountStore(this.db, this.cipher);
   }
 
-  private get googleConnections(): GoogleConnectionStore {
-    return new GoogleConnectionStore(
-      () => this.db,
-      () => this.googleAccounts,
-      (sessionId) => this.getSession(sessionId),
-      (projectId, service) => this.getProjectGoogleConnection(projectId, service),
-    );
-  }
+  private readonly googleConnections: GoogleConnectionStore = new GoogleConnectionStore(
+    () => this.db,
+    () => this.googleAccounts,
+    (sessionId) => this.getSession(sessionId),
+    (projectId, service) => this.getProjectGoogleConnection(projectId, service),
+    (sessionId, userId) => this.getSessionGmailConnection(sessionId, userId),
+    (sessionId, userId) => this.getSessionCalendarConnection(sessionId, userId),
+    (sessionId, userId) => this.getSessionContactsConnection(sessionId, userId),
+  );
 
   private readonly googleWorkspace = new GoogleWorkspaceStore(
     () => this.db,
@@ -868,9 +869,7 @@ export class EventStore implements EventSink {
     accountEmail: string,
     userId: string,
   ): Promise<SessionGmailConnection> {
-    return this.googleConnections.enableSessionGmail(sessionId, accountEmail, userId, (id, owner) =>
-      this.getSessionGmailConnection(id, owner),
-    );
+    return this.googleConnections.enableSessionGmail(sessionId, accountEmail, userId);
   }
 
   async disableSessionGmail(sessionId: string): Promise<void> {
@@ -893,12 +892,7 @@ export class EventStore implements EventSink {
     accountEmail: string,
     userId: string,
   ): Promise<SessionCalendarConnection> {
-    return this.googleConnections.enableSessionCalendar(
-      sessionId,
-      accountEmail,
-      userId,
-      (id, owner) => this.getSessionCalendarConnection(id, owner),
-    );
+    return this.googleConnections.enableSessionCalendar(sessionId, accountEmail, userId);
   }
 
   async disableSessionCalendar(sessionId: string): Promise<void> {
@@ -921,12 +915,7 @@ export class EventStore implements EventSink {
     accountEmail: string,
     userId: string,
   ): Promise<SessionContactsConnection> {
-    return this.googleConnections.enableSessionContacts(
-      sessionId,
-      accountEmail,
-      userId,
-      (id, owner) => this.getSessionContactsConnection(id, owner),
-    );
+    return this.googleConnections.enableSessionContacts(sessionId, accountEmail, userId);
   }
 
   async disableSessionContacts(sessionId: string): Promise<void> {
