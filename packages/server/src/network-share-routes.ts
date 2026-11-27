@@ -227,11 +227,24 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
     if (!params.success || !body.success)
       return reply.code(400).send({ error: 'invalid network share' });
     const connectionId = params.data.connectionId;
-    if (!(await shares.getConnection(connectionId)))
-      return reply.code(404).send({ error: 'network share not found' });
+    const existing = await shares.getConnection(connectionId);
+    if (!existing) return reply.code(404).send({ error: 'network share not found' });
     try {
       const target =
         body.data.address === undefined ? undefined : parseNetworkShareAddress(body.data.address);
+      // The stored password is only ever sent to the server it was entered for;
+      // a new server needs it entered again.
+      if (
+        target !== undefined &&
+        body.data.password === undefined &&
+        (target.host !== existing.host.toLowerCase() ||
+          target.port !== existing.port ||
+          target.share.toLowerCase() !== existing.share.toLowerCase())
+      )
+        return reply.code(400).send({
+          error: 'Enter the password again for a new address.',
+          code: 'password_required',
+        });
       const reaches =
         target !== undefined ||
         body.data.username !== undefined ||

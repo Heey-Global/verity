@@ -45,7 +45,9 @@ The password is stored encrypted on the Verity server and is never shown again,
 returned by the API or given to agents. Each share shows whether it is currently
 reachable.
 
-Changing a share's address ends every project's access to it: folders granted
+A new address needs the password entered again: the saved password is only
+ever sent to the server it was entered for. Changing a share's address ends
+every project's access to it: folders granted
 for one server or shared folder never silently follow it to another. Add the
 folders to the projects again afterwards. Changing only the username or
 password keeps the folders, but agents then act as the new NAS account: what

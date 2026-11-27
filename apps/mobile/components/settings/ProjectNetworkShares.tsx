@@ -89,14 +89,22 @@ export function ProjectNetworkShares({
   const load = useCallback(async () => {
     const [list, shares] = await Promise.all([
       client.networkShares.listProjectFolders(projectId),
-      client.networkShares.listConnections().catch((cause: unknown) => {
-        if (cause instanceof VerityApiError && cause.status === 403) return null;
-        throw cause;
-      }),
+      // Folders stay visible when the shares cannot be listed; only managing waits.
+      client.networkShares
+        .listConnections()
+        .then((connections) => ({ connections }))
+        .catch((cause: unknown) => ({
+          connections: null,
+          ...(cause instanceof VerityApiError && cause.status === 403
+            ? {}
+            : {
+                error: cause instanceof Error ? cause.message : 'Could not load network shares.',
+              }),
+        })),
     ]);
     setFolders(list);
-    setError(undefined);
-    setConnections(shares);
+    setError('error' in shares ? shares.error : undefined);
+    setConnections(shares.connections);
   }, [client, projectId]);
   useFocusEffect(
     useCallback(() => {

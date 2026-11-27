@@ -87,7 +87,8 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
       setConnections(list);
       setTests({});
       setLoadError(undefined);
-      await Promise.all(list.map((connection) => test(connection, current)));
+      // Tests run on their own: a slow NAS must not hold up saving or removing.
+      for (const connection of list) void test(connection, current);
     } catch (cause) {
       if (current === generation.current)
         setLoadError(cause instanceof Error ? cause.message : 'Could not load network shares.');
@@ -206,6 +207,8 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
   let footer: ReactNode = null;
   if (mode?.kind === 'add' || mode?.kind === 'edit') {
     const adding = mode.kind === 'add';
+    // The saved password is never sent to a new server.
+    const addressChanged = mode.kind === 'edit' && form.address.trim() !== mode.connection.address;
     title = adding ? 'Add network share' : `Edit ${mode.connection.label}`;
     body = (
       <View style={styles.fields}>
@@ -243,7 +246,9 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
           />
           {adding ? null : (
             <Text variant="bodySmall" tone="muted">
-              Leave empty to keep the saved password.
+              {addressChanged
+                ? 'Enter the password again for the new address.'
+                : 'Leave empty to keep the saved password.'}
             </Text>
           )}
         </View>
@@ -264,7 +269,7 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
           !form.label.trim() ||
           !form.address.trim() ||
           !form.username.trim() ||
-          (adding && !form.password)
+          ((adding || addressChanged) && !form.password)
         }
         onPress={requestSave}
       />

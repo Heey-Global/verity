@@ -92,6 +92,8 @@ describe('changing a share address', () => {
     fireEvent.press(await screen.findByText('Studio NAS'));
     fireEvent.press(await screen.findByText('Edit'));
     fireEvent.changeText(screen.getByLabelText('Address'), 'smb://nas2.studio.lan/team');
+    expect(screen.getByText('Enter the password again for the new address.')).toBeTruthy();
+    fireEvent.changeText(screen.getByLabelText('Password'), 'pw');
     fireEvent.press(screen.getByText('Test and save'));
     expect(await screen.findByText('Change the address of Studio NAS?')).toBeTruthy();
     expect(client.networkShares.updateConnection).not.toHaveBeenCalled();
@@ -99,6 +101,7 @@ describe('changing a share address', () => {
     await waitFor(() =>
       expect(client.networkShares.updateConnection).toHaveBeenCalledWith('studio', {
         address: 'smb://nas2.studio.lan/team',
+        password: 'pw',
       }),
     );
   });

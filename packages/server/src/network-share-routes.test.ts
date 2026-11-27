@@ -292,13 +292,20 @@ describe('network share routes', () => {
     });
     const offline = await call(app, 'admin', 'PATCH', `/network-shares/${id}`, {
       address: 'smb://offline.lan/team',
+      password: 'pw',
     });
     expect(offline.statusCode).toBe(502);
     expect((await store.networkShares.getConnection(id))?.host).toBe('nas.studio.lan');
 
-    // The stored password is used for the test when only the address changes.
+    // The stored password is never sent to a new target.
+    const withoutPassword = await call(app, 'admin', 'PATCH', `/network-shares/${id}`, {
+      address: 'smb://attacker.example/archive',
+    });
+    expect(withoutPassword.json()).toMatchObject({ code: 'password_required' });
+    expect(seen.some((attempt) => attempt.host === 'attacker.example')).toBe(false);
     const moved = await call(app, 'admin', 'PATCH', `/network-shares/${id}`, {
       address: 'smb://nas.studio.lan/archive',
+      password: 'pw',
     });
     expect(moved.statusCode).toBe(200);
     expect(seen.at(-1)).toEqual({ password: 'pw', host: 'nas.studio.lan', share: 'archive' });
