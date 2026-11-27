@@ -336,6 +336,8 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
             return reply.code(403).send({ error: 'Tool unavailable to this app' });
           // Without a known person there is nobody to scope the grant to: always ask.
           const repeatable = readOnly(tool) && userId !== undefined;
+          // A tool that stops declaring itself read-only loses any earlier grant for good.
+          if (!readOnly(tool)) grants.revoke(id, appId, userId, call.name);
           const granted = repeatable && grants.covers(id, appId, userId, call.name);
           if (!granted) {
             permissionId = randomUUID();
@@ -400,11 +402,12 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
         // The lane covers the approval's settlement too, so the next call asks only after it,
         // but a stuck settlement must not block the session's later calls for good.
         try {
+          let timer: NodeJS.Timeout | undefined;
           if (permissionId !== undefined)
             await Promise.race([
               deps.settled(id, permissionId),
-              new Promise((resolve) => setTimeout(resolve, SETTLE_WAIT_MS).unref()),
-            ]);
+              new Promise((resolve) => (timer = setTimeout(resolve, SETTLE_WAIT_MS))),
+            ]).finally(() => clearTimeout(timer));
         } finally {
           release();
         }
