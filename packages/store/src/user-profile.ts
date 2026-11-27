@@ -58,4 +58,14 @@ export class UserProfileStore {
       .execute();
     return new Map(rows.map((row) => [row.id, row.display_name]));
   }
+
+  async nonBlankDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
+    const names = await this.displayNames(userIds);
+    const result = new Map<string, string>();
+    for (const [userId, displayName] of names) {
+      const trimmed = displayName?.trim();
+      if (trimmed) result.set(userId, trimmed);
+    }
+    return result;
+  }
 }

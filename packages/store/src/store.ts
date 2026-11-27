@@ -2105,17 +2105,7 @@ export class EventStore implements EventSink {
 
   /** The names people chose to be shown under in shared projects (ADR 0023). */
   async userDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
-    if (userIds.length === 0) return new Map();
-    const rows = await this.db
-      .selectFrom('users')
-      .select(['id', 'display_name'])
-      .where('id', 'in', [...userIds])
-      .execute();
-    return new Map(
-      rows
-        .filter((row) => row.display_name !== null && row.display_name.trim() !== '')
-        .map((row) => [row.id, row.display_name!.trim()]),
-    );
+    return new UserProfileStore(this.db).nonBlankDisplayNames(userIds);
   }
 
   /** Active users holding a project permission — the notification audience
