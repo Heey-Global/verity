@@ -6,6 +6,7 @@ jest.mock('../lib/verityConversation', () => ({
   retryOutgoing: jest.fn(),
   discardOutgoing: jest.fn(),
   dismissVerityNotice: jest.fn(),
+  decideVerityApproval: jest.fn(async () => undefined),
 }));
 const mockVoice = {
   state: 'idle',
@@ -94,18 +95,20 @@ it('answers her question with the question’s id, so a stale tap is caught', ()
   expect(answerVerity).toHaveBeenCalledWith('q-4', ['Müller']);
 });
 
-it('sends approvals to the conversation instead of deciding them here', () => {
+it('sends an approval it cannot show in full to the conversation instead of deciding it', () => {
   const onClose = jest.fn();
   jest.mocked(useVerity).mockReturnValue({
     ...ready,
     conversation: {
       ...ready.conversation!,
       state: 'needs_you',
+      // No input: too large to carry, or from an older server.
       approvals: [{ id: 'perm-1', tool: 'verity_gmail' }],
     },
   });
   const screen = render(<VerityPanel mode="text" projectId={null} onClose={onClose} />);
-  fireEvent.press(screen.getByText('Review'));
+  expect(screen.queryByText('Allow')).toBeNull();
+  fireEvent.press(screen.getByText('Review in session'));
   expect(onClose).toHaveBeenCalled();
   expect(router.push).toHaveBeenCalledWith('/session/assistant');
 });
@@ -381,4 +384,73 @@ it('marks a waiting question as a normal next step, not as a problem', () => {
   });
   const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
   expect(screen.getByLabelText('Needs you, waiting for you')).toBeTruthy();
+});
+
+it('shows a handoff’s published result on its card: Done, or Open with the blocker', () => {
+  const card = (
+    id: string,
+    result: Extract<AssistantConversationItem, { kind: 'assignment' }>['result'],
+  ) =>
+    ({
+      kind: 'assignment',
+      id,
+      at: 1,
+      title: `Backup check ${id}`,
+      project: 'heey-global/deep-ocr',
+      state: 'sent',
+      sessionId: 't1',
+      result,
+    }) as const;
+  jest.mocked(useVerity).mockReturnValue({
+    ...ready,
+    conversation: {
+      ...ready.conversation!,
+      items: [
+        card('a', undefined),
+        card('b', { delivered: true, summary: 'Documents are excluded.', at: 2 }),
+        card('c', {
+          delivered: false,
+          summary: 'Prepared, not deployed.',
+          blocker: 'Needs your approval.',
+          at: 3,
+        }),
+      ],
+    },
+  });
+  const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  // Without a result the card keeps saying where the work went.
+  expect(screen.getByText('Handed over')).toBeTruthy();
+  expect(screen.getByText('Done')).toBeTruthy();
+  expect(screen.getByText('Open')).toBeTruthy();
+  expect(screen.getAllByTestId('handoff-result').map((node) => node.props.children)).toEqual([
+    'Documents are excluded.',
+    'Prepared, not deployed.',
+  ]);
+  expect(screen.getByText('Blocker: Needs your approval.')).toBeTruthy();
+});
+
+it('dates a result that arrived on another day than its handoff', () => {
+  const handedOff = new Date(2026, 10, 20, 9).getTime();
+  const answered = new Date(2026, 10, 21, 14, 32).getTime();
+  jest.mocked(useVerity).mockReturnValue({
+    ...ready,
+    conversation: {
+      ...ready.conversation!,
+      items: [
+        {
+          kind: 'assignment',
+          id: 'a',
+          at: handedOff,
+          title: 'Backup check',
+          project: 'heey-global/deep-ocr',
+          state: 'sent',
+          sessionId: 't1',
+          result: { delivered: true, summary: 'Excluded.', at: answered },
+        },
+      ],
+    },
+  });
+  const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  const day = new Date(answered).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  expect(screen.getByText(new RegExp(`Result from the session · ${day}, `))).toBeTruthy();
 });

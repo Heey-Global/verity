@@ -114,3 +114,73 @@ do not certify a deployed container or reproduce a particular historical session
 termination. Verify a recreated sandbox with two compatible session worktrees,
 one changed lockfile and an interrupted preparation before declaring live rollout
 complete.
+
+## Copy capacity and recovery admission
+
+Managed activation measures the complete root and workspace installation before
+creating another tree. It walks at most 250,000 entries for 60 seconds, never
+follows symlinks, and refuses an incomplete or unreadable inventory. The measured
+full-copy bound includes files that may subsequently be shared. Both root and
+hard-link fallback paths must retain the configured build reserve (by default
+10 GiB and 1,000,000 free inodes). `install --private` uses the same admission
+before changing package files. Refusal preserves the active installation and
+recovery data and reports the measured requirement and available capacity.
+
+An installation may retain one measured full installation's worth of recovery
+blocks. Before replacement, the helper accounts for existing preserved trees and
+all root/workspace trees that it cannot prove unchanged. If that would exceed the
+larger of the measured replacement footprint and the newly preserved data, it
+refuses the replacement before moving any active tree. The allowance uses the
+requested replacement, not the current installation: a previously unknown
+identity must first be prepared and measured, while an existing central inventory
+can be checked before preparation. This allowance is based on
+bytes, not directory counts: small workspace recovery trees do not each consume a
+full installation slot. Unknown recovery content remains protected. Resolve its
+unique edits before explicitly approving removal of redundant recovery data;
+waiting for an age threshold does not establish that it is disposable.
+
+All dependency preparation, activation and private-copy commands in a project
+hold a cross-process capacity lock. The npm child inherits that lock, so a killed
+supervisor cannot admit another dependency copy while npm continues writing.
+The activation record retains the full-copy estimate, actual copied file count
+and allocated bytes, sharing mode, reserve and observed free capacity.
+
+Managed sessions additionally require a current Server grant from
+`/internal/dependency-storage`, authenticated with the existing project broker
+capability. Measured activation and private copies reserve their complete copy
+bound; central npm preparation reserves the Server's conservative preparation
+estimate because a lockfile does not bound downloaded or unpacked bytes. These
+grants share capacity accounting with other projects and build reservations.
+Each request has a 30-second deadline; missing or stale protocol support blocks
+additional dependency work. Standalone tools without a managed session retain
+the local filesystem checks.
+
+The helper reserves one operation identity, opens its root-owned lock read-only,
+acquires a shared kernel lock and obtains a start acknowledgement before writing
+additional dependency data. Lost replies are checked against the same identity.
+Descriptor 4 carries the holder through the package wrapper and native npm; a
+trusted preload forwards it through Node's asynchronous and synchronous child
+process APIs, including children with explicit environments. A conflicting use
+of descriptor 4 is refused rather than dropping the holder. This supports
+legitimate npm descendants; it is not a sandbox for hostile package processes.
+The holder survives a killed helper while an inherited writer remains alive.
+Settlement is only a hint: the Server releases the reservation after exclusive
+lock acquisition proves all holders closed. A missing acknowledgement or a
+surviving child leaves the reservation uncertain and charged for reconciliation.
+A stopped, replaced or removed sandbox whose broker evidence is unavailable
+remains uncertain. Neither a reused container name nor an empty inventory on a
+possibly changed Docker daemon proves termination of the original writer.
+Automatic release across those transitions requires a durable original-daemon
+identity and independently verified termination; this protocol retains the
+allowance until it can prove retirement through the original generation.
+
+Legacy builds without host admission retain their own durable operation journal.
+Disposing a local call cannot release dependency admission while its remote
+outcome or any recorded child process group is still unconfirmed. These journals
+survive Server restarts and use the existing build reconciliation evidence;
+unaccounted host admission markers also keep new dependency work paused.
+
+Admission estimates and live free-space checks are conservative safeguards,
+not filesystem quotas or a guarantee against unrelated writers consuming the
+reserve afterward. Existing installations and recovery files are never removed
+to manufacture capacity for an admission.

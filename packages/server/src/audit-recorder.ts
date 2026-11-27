@@ -36,6 +36,7 @@ export interface BuildIntent {
   baseImageRef: string | null;
   configFingerprint: string;
   features: string[];
+  snapshotFingerprint?: string;
 }
 
 interface BuildAudit {
@@ -209,6 +210,10 @@ export function createAuditRecorder(
             configFingerprint: /^[0-9a-f]{8,128}$/.test(intent.configFingerprint)
               ? intent.configFingerprint
               : createHash('sha256').update(intent.configFingerprint, 'utf8').digest('hex'),
+            ...(intent.snapshotFingerprint !== undefined &&
+            /^[0-9a-f]{64}$/.test(intent.snapshotFingerprint)
+              ? { snapshotFingerprint: intent.snapshotFingerprint }
+              : {}),
             features: intent.features
               .filter((feature) => feature.length > 0)
               .slice(0, 20)

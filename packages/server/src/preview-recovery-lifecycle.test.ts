@@ -8,19 +8,23 @@ describe('preview recovery lifecycle wiring', () => {
   // owner can adopt them, even when both managers pass their isolated tests.
   it('restores local ownership before orphan cleanup, after the key handover', async () => {
     const embedded = await source('./embedded.ts');
-    const recovery = embedded.slice(embedded.indexOf('if (localPreviewManager && projectDocker)'));
+    const recovery = await source('./embedded-preview-recovery.ts');
     expect(recovery).toMatch(
-      /const reconcileLocal = async[^]*?if \(secretCipher\.isSealed\(\)\) return;[^]*?await localPreviewManager\.reconcile\(\);\s*previewRecoveryReady = true;\s*await sweepLocalConnectors\(\);/,
+      /const reconcileLocal = async[^]*?if \(secretCipher\.isSealed\(\)\) return;[^]*?await localPreviewManager\.reconcile\(\);\s*setPreviewRecoveryReady\(true\);\s*await sweepLocalConnectors\(\);/,
     );
-    expect(embedded.indexOf('await adoptHandedOffSecretKey(')).toBeGreaterThan(-1);
-    expect(embedded.indexOf('await adoptHandedOffSecretKey(')).toBeLessThan(
-      embedded.indexOf('await reconcileLocal()'),
+    const unlock = await source('./embedded-secret-unlock.ts');
+    expect(unlock).toMatch(
+      /export async function activateEmbeddedSecretHandoff[^]*?await adoptHandedOffSecretKey\(/,
+    );
+    expect(embedded.indexOf('await activateEmbeddedSecretHandoff(')).toBeGreaterThan(-1);
+    expect(embedded.indexOf('await activateEmbeddedSecretHandoff(')).toBeLessThan(
+      embedded.indexOf('await installEmbeddedLocalPreviewRecovery('),
     );
     expect(embedded).toMatch(
       /canSupervise: \(\) => previewRecoveryReady && !secretCipher\.isSealed\(\)/,
     );
-    expect(embedded.indexOf('await localPreviewManager.reconcile()')).toBeLessThan(
-      embedded.indexOf('previewRecoveryReady = true;'),
+    expect(embedded).toMatch(
+      /setPreviewRecoveryReady: \(ready\) => \{\s*previewRecoveryReady = ready;/,
     );
     expect(embedded).toMatch(/if \(!localPreviewManager\) previewRecoveryReady = true;/);
   });
@@ -42,25 +46,24 @@ describe('preview recovery lifecycle wiring', () => {
     const embedded = await source('./embedded.ts');
     const bootStart = 'if (!secretCipher.isSealed()) uplinkControl?.start();';
     expect(embedded.indexOf(bootStart)).toBeGreaterThan(
-      embedded.indexOf('await adoptHandedOffSecretKey('),
+      embedded.indexOf('await activateEmbeddedSecretHandoff('),
     );
-    const unlock = embedded.slice(
-      embedded.indexOf('onSecretUnlocked: async () => {'),
-      embedded.indexOf('    authRegistry,', embedded.indexOf('onSecretUnlocked: async () => {')),
-    );
-    expect(unlock).toContain('uplinkControl?.start();');
-    expect(embedded.match(/uplinkControl\?\.start\(\);/g)).toHaveLength(2);
+    expect(embedded).toMatch(/onSecretUnlocked: createEmbeddedSecretUnlock\(\{[^]*?uplinkControl,/);
+    const unlock = await source('./embedded-secret-unlock.ts');
+    expect(unlock).toMatch(/return async \(\) => \{[^]*?uplinkControl\?\.start\(\);/);
+    expect(embedded.match(/uplinkControl\?\.start\(\);/g)).toHaveLength(1);
+    expect(unlock.match(/uplinkControl\?\.start\(\);/g)).toHaveLength(1);
   });
 
   // Closing edges or stopping Uplink while a watchdog still restores resources
   // can resurrect a connector after the serving generation has closed.
   it('gates online recovery on unlock and drains both watchdogs before teardown', async () => {
-    const embedded = await source('./embedded.ts');
+    const embedded = await source('./embedded-preview-recovery.ts');
     expect(embedded).toMatch(
       /const reconcile = async[^]*?if \(secretCipher\.isSealed\(\)\) return;\s*await previewShareManager\.reconcile\(\);/,
     );
     expect(embedded).toMatch(
-      /previewRecoveryReady = false;\s*await stopLocalReconciler\(\);\s*await managedDevServerManager\?\.close\(\);\s*await localPreviewManager\.close\(\);/,
+      /setPreviewRecoveryReady\(false\);\s*await stopLocalReconciler\(\);\s*await managedDevServerManager\?\.close\(\);\s*await localPreviewManager\.close\(\);/,
     );
     expect(embedded).toMatch(/await stopPreviewReconciler\(\);\s*await uplinkControl\?\.stop\(\);/);
   });

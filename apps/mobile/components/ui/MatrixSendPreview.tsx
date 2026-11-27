@@ -1,4 +1,4 @@
-import { ScrollView, View } from 'react-native';
+import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { spellOutBidiControls, type MatrixSendSummary } from '@verity/mobile';
 import { Card } from './Card';
@@ -21,9 +21,10 @@ export function MatrixSendPreview({ summary }: { summary: MatrixSendSummary }) {
         <Text variant="code" selectable>
           {spellOutBidiControls(summary.roomId)}
         </Text>
-        <ScrollView style={styles.body} nestedScrollEnabled testID="matrix-send-body">
-          <Text selectable>{spellOutBidiControls(summary.body)}</Text>
-        </ScrollView>
+        {/* The approval card scrolls the whole preview; a box of its own would trap the swipe. */}
+        <Text selectable testID="matrix-send-body">
+          {spellOutBidiControls(summary.body)}
+        </Text>
         <Text variant="footnote">
           Approves this message only. Sent confirms Matrix acceptance; delivery through a bridge is
           separate.
@@ -35,5 +36,4 @@ export function MatrixSendPreview({ summary }: { summary: MatrixSendSummary }) {
 
 const styles = StyleSheet.create((theme) => ({
   content: { flex: 1, minWidth: 0, flexDirection: 'column', gap: theme.spacing.sm },
-  body: { maxHeight: 240 },
 }));

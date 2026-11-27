@@ -5,7 +5,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ZodError } from 'zod';
 
-import { executeTasksTool, registerTasksRoutes } from './tasks-routes.js';
+import { DONE_TASK_LIST_WINDOW_MS, executeTasksTool, registerTasksRoutes } from './tasks-routes.js';
 
 const ADMIN = '00000000-0000-4000-8000-000000000001';
 const MEMBER = '00000000-0000-4000-8000-000000000002';
@@ -177,6 +177,45 @@ describe('tasks routes', () => {
     expect((await app.inject({ method: 'GET', url: '/tasks' })).json().tasks).toHaveLength(2);
   });
 
+  it('observes task revisions without serializing the task payload', async () => {
+    const detail = 'Long task description. '.repeat(500);
+    await store.tasks.upsert({ id: T1, ownerUserId: ADMIN, origin: 'user', title: 'Task', detail });
+    const full = await app.inject({ url: '/tasks?origin=user' });
+    const sample = () => app.inject({ url: '/tasks?origin=user&view=revisions' });
+    const before = await sample();
+    expect(full.json().tasks[0]?.detail).toBe(detail.trim());
+    expect(before.json().tasks).toEqual([
+      {
+        id: T1,
+        revision: 1,
+        createdAt: full.json().tasks[0]?.createdAt,
+        projectId: null,
+        sessionId: null,
+        sourceSessionId: null,
+      },
+    ]);
+    expect(Buffer.byteLength(before.body)).toBeLessThan(Buffer.byteLength(full.body) / 50);
+    const edited = await app.inject({
+      method: 'PATCH',
+      url: `/tasks/${T1}`,
+      payload: { detail: 'Changed' },
+    });
+    expect(edited.statusCode).toBe(200);
+    expect((await sample()).json().tasks[0]?.revision).toBe(2);
+  });
+
+  it('lists the operator tasks apart from the steps agents recorded', async () => {
+    await store.tasks.upsert({ id: T1, ownerUserId: ADMIN, origin: 'user', title: 'Mine' });
+    await store.tasks.upsert({ id: T2, ownerUserId: ADMIN, origin: 'agent', title: 'Step' });
+    // Clients list their own tasks with `origin=user`; without the filter every
+    // step any agent ever recorded travels along with them.
+    const mine = await app.inject({ method: 'GET', url: '/tasks?origin=user' });
+    expect(ids(mine.json())).toEqual([T1]);
+    const steps = await app.inject({ method: 'GET', url: '/tasks?origin=agent&status=open' });
+    expect(ids(steps.json())).toEqual([T2]);
+    expect((await app.inject({ method: 'GET', url: '/tasks?origin=bot' })).statusCode).toBe(400);
+  });
+
   it('blocks edits to assigned tasks after project access is revoked', async () => {
     await grantMember({ read: true, execute: true });
     await store.tasks.upsert({
@@ -326,6 +365,27 @@ describe('tasks routes', () => {
     expect((await app.inject({ method: 'GET', url, headers: asMember })).statusCode).toBe(404);
     await store.tasks.patch(T1, MEMBER, { projectId: null });
     expect((await app.inject({ method: 'GET', url, headers: asMember })).statusCode).toBe(200);
+  });
+
+  it('serves HTML task attachments as inert downloads', async () => {
+    const html = '<!doctype html><title>Mockup</title>';
+    const hash = await store.putAttachment('text/html', Buffer.from(html).toString('base64'));
+    await store.tasks.upsert({
+      id: T1,
+      ownerUserId: MEMBER,
+      origin: 'user',
+      title: 'With HTML',
+      attachments: [{ hash, filename: 'mockup.html', mimeType: 'text/html' }],
+    });
+    const response = await app.inject({
+      method: 'GET',
+      url: `/tasks/${T1}/attachments/${hash}`,
+      headers: asMember,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-disposition']).toContain('attachment');
+    expect(response.headers['content-security-policy']).toBe("sandbox; default-src 'none'");
+    expect(response.body).toBe(html);
   });
 
   it('cannot substitute a future revision for the authorized HTTP snapshot', async () => {
@@ -1031,3 +1091,37 @@ it.each([{ detail: null }, { detail: '' }, { sessionId: 's1' }, { status: 'done'
     expect(queryTitle).not.toHaveBeenCalled();
   },
 );
+
+// Every client and the live observer re-read the unfiltered list on each change. Returning
+// all history there made each refresh carry every task ever closed; a filtered read must
+// still reach that history.
+it('lists only what clients show by default, and full history on an explicit status', async () => {
+  const T3 = '33333333-3333-4333-8333-333333333333';
+  const T4 = '44444444-4444-4444-8444-444444444444';
+  const task = (id: string, status: TaskRecord['status']) =>
+    store.tasks.upsert({ id, ownerUserId: ADMIN, origin: 'user', title: id, status });
+  await task(T1, 'open');
+  await task(T2, 'dropped');
+  await task(T3, 'done');
+  await task(T4, 'done');
+  const outsideWindow = new Date(Date.now() - DONE_TASK_LIST_WINDOW_MS - 60_000);
+  await ctx.db
+    .updateTable('tasks')
+    .set({ completed_at: outsideWindow.toISOString() })
+    .where('id', '=', T4)
+    .execute();
+
+  const T5 = '55555555-5555-4555-8555-555555555555';
+  await task(T5, 'done');
+  await ctx.db.updateTable('tasks').set({ completed_at: null }).where('id', '=', T5).execute();
+
+  const list = async (url: string) => ids((await app.inject({ method: 'GET', url })).json()).sort();
+  expect(await list('/tasks')).toEqual([T1, T3, T5]);
+  expect(await list('/tasks?status=done')).toEqual([T3, T4, T5]);
+  expect(await list('/tasks?status=open,in_progress,done,dropped')).toEqual([T1, T2, T3, T4, T5]);
+  const since = encodeURIComponent(new Date(Date.now() - DONE_TASK_LIST_WINDOW_MS).toISOString());
+  expect(await list(`/tasks?status=done,dropped&doneSince=${since}`)).toEqual([T2, T3, T5]);
+  expect((await app.inject({ method: 'GET', url: '/tasks?doneSince=yesterday' })).statusCode).toBe(
+    400,
+  );
+});

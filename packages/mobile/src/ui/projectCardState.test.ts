@@ -53,12 +53,24 @@ describe('projectCardState', () => {
     expect(projectCardState(project).state).toBe(expected);
   });
 
+  // The project page puts a spinner beside a transient note; one that kept
+  // spinning on a sleeping project, or a start without it, would misreport it.
+  it.each(LIFECYCLE_STATES)(
+    'marks %s as transient exactly when its badge pulses',
+    (lifecycleState) => {
+      const project: CardProject = { ...running, lifecycleState };
+      expect(projectCardState(project).note?.transient === true).toBe(
+        projectLifecycleBadge(project).pulsing,
+      );
+    },
+  );
+
   it('reads setup that has not started as on its way up', () => {
     expect(
       projectCardState({ state: 'absent', provisionError: null, setupStatus: 'pending' }),
     ).toEqual({
       state: 'paused',
-      note: { label: 'Preparing…', tone: 'muted' },
+      note: { label: 'Preparing…', tone: 'muted', transient: true },
     });
     expect(projectCardState({ state: 'absent', provisionError: null })).toEqual({
       state: 'paused',

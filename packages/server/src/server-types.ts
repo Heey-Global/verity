@@ -1,3 +1,4 @@
+import type { ChangeSubmissionView } from './change-submissions.js';
 import type { AgentEvent, Attachment, RateLimitState, UsageTotals } from '@verity/events';
 import type {
   EventStore,
@@ -18,6 +19,7 @@ import type { OpenChoices, PendingPermissionRequest } from './session-inbox-fact
 import type { SessionStatus } from './status.js';
 import type { ToolkitCarrier, ToolkitDriftVerdict } from './toolkit-drift.js';
 import type { VulnerabilitySummary } from './vulnerability-session.js';
+import type { ProjectQASummary } from '@verity/store';
 
 /** What the reconciler knows about a sandbox update that the image checker cannot:
  *  whether the automatic repair has given up, and whether it is being held off by
@@ -168,6 +170,8 @@ export interface PublicProjectRecord extends Omit<
   latestReleaseUrl: string | null;
   latestReleasePublishedAt: string | null;
   vulnerabilitySummary?: VulnerabilitySummary | undefined;
+  /** The project's QA role at a glance; absent when QA does not watch the project. */
+  qaSummary?: ProjectQASummary | undefined;
   sandboxUpdate: SandboxUpdateStatus;
   /** Whether this project's recorded attestation verdict still holds against the
    *  toolkit this Server ships — `null` for every row the drift report declines
@@ -312,6 +316,17 @@ export interface SessionSummary extends SessionRecord {
   /** The current turn's unanswered `verity:choices` block, while the session waits
    * on it. Absent while running, after an answer, and on sessions without one. */
   openChoices?: OpenChoices;
+  /** The person the current turn runs for. Used to address the session's requests;
+   *  the session list leaves it out. */
+  requestInitiator?: string;
+  /** Session list only, per person: whether the session's questions, plans and
+   *  mockups are for the requester (ADR 0023). A permission prompt the server cannot
+   *  describe stays unaddressed and is shown to everyone. Absent without accounts,
+   *  where everything is for the one operator. */
+  addressedToViewer?: boolean;
+  /** Session list only: changes a member submitted here for review (ADR 0023), and,
+   *  per person, whether checking them waits on the requester. */
+  changeSubmission?: ChangeSubmissionView & { addressedToViewer?: boolean };
   /** Cumulative token usage across the session's turns (§13a). */
   usage: UsageTotals;
   /** Latest 5-hour rate-limit state observed in the session log, if any. */
@@ -340,6 +355,8 @@ export interface SessionSummary extends SessionRecord {
   agentTextCounterVersion?: 'agent-text-v2';
   /** Timestamp of the newest canonical event, for metadata-only recency displays. */
   lastActivityAt: number | null;
+  /** Most recent user or agent message; technical events do not affect recency. */
+  lastMessageAt?: number | null;
   /**
    * Conditions about THIS session worth interrupting the operator for — currently
    * only `sandbox_disconnected` (see `attention.ts`). Absent when there is
@@ -358,6 +375,9 @@ export interface SessionSummary extends SessionRecord {
   /** The session's recurring automation, so the overview can mark sessions with
    * scheduled work. Absent when the session has none. */
   automation?: { status: SessionAutomationStatus };
+  /** The revision of the last `session.summary` published before this row was
+   * read; a view applies only newer ones over it. Absent when none is known. */
+  summaryRev?: number;
 }
 
 /**

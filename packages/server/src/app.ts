@@ -1,3 +1,6 @@
+import { createServerMonitor } from './metrics/server-monitor.js';
+import type { MonitoringSettingsStore } from './metrics/monitoring-control.js';
+import { SERVER_VERSION } from './server-support.js';
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
 import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
@@ -56,9 +59,12 @@ import { createSessionChangeFeed } from './live/live-hub.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 
 export interface ControlPlaneDeps {
+  dependencyCapacity?: ServerDeps['dependencyCapacity'];
   sessionStorage?: ServerDeps['sessionStorage'];
   backup?: ServerDeps['backup'];
   eventStore: EventStore;
+  /** Stored monitoring settings (ADR 0032); absent, changes stay in memory. */
+  serverMonitoringSettings?: MonitoringSettingsStore | undefined;
   /** Durable server root for filesystem-backed project Knowledge. Forwarded to
    * the route layer; provisioning the same folder does not make it visible to
    * HTTP handlers unless this value crosses the composition boundary too. */
@@ -230,8 +236,12 @@ export interface ControlPlaneDeps {
    * Omit → no PR chip. (Previously declared only on {@link buildServer}'s deps and
    * dropped here — now forwarded so the embedded composition actually wires it.) */
   branchPr?: ((branch: string, worktree: string) => Promise<number | null>) | undefined;
-  /** Compact PR strip status for a branch: title, URL, check counts and mergeability. */
-  invalidateProjectPrStatus?: (projectId: string) => void;
+  /** Forget observed PR status; `branches` limits it to those branches. */
+  invalidateProjectPrStatus?: (projectId: string, branches?: readonly string[]) => void;
+  /** True while background PR polling of a project should yield GitHub API quota. */
+  deferBackgroundForgeReads?: (projectId: string) => Promise<boolean>;
+  /** Bounded GitHub API usage and rate-limit evidence for Control diagnostics. */
+  githubDiagnostics?: () => unknown;
   repairPullRequest?: (
     project: ProjectRecord,
     number: number,
@@ -282,7 +292,12 @@ export interface ControlPlaneDeps {
    * {@link dopplerListProjects}. Omit → `{ error: 'not configured' }`. */
   dopplerListConfigs?:
     ((token: string, project: string) => Promise<DopplerConfigSummary[]>) | undefined;
-  dopplerCredentialReader?: (() => Promise<Uint8Array | undefined>) | undefined;
+  /** The Doppler connection Secret Jobs resolve through (ADR 0031). */
+  secretJobDopplerConnectionId?: string | undefined;
+  dopplerCredentialReader?:
+    ((connectionId?: string) => Promise<Uint8Array | undefined>) | undefined;
+  dopplerWorkplace?:
+    ((token: string) => Promise<{ slug: string | null; name: string | null }>) | undefined;
   /** Exchanges a GitHub App manifest `code` for the created App for the manifest
    * one-click onboarding routes (#320, `/github/app/manifest/*`). Omit → the
    * callback route renders an error page (manifest onboarding not configured). */
@@ -389,7 +404,12 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
   // Filled by the session routes; every turn start converts a legacy Documents session.
   const codeWorkspaceTurns: NonNullable<ServerDeps['codeWorkspaceTurns']> = {};
   return buildServer({
+    ...(deps.dependencyCapacity ? { dependencyCapacity: deps.dependencyCapacity } : {}),
     eventStore: deps.eventStore,
+    serverMonitor: createServerMonitor({
+      store: deps.serverMonitoringSettings,
+      version: SERVER_VERSION,
+    }),
     codeWorkspaceTurns,
     ...(deps.backup ? { backup: deps.backup } : {}),
     sessionChanges,
@@ -557,6 +577,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.invalidateProjectPrStatus !== undefined
       ? { invalidateProjectPrStatus: deps.invalidateProjectPrStatus }
       : {}),
+    ...(deps.deferBackgroundForgeReads !== undefined
+      ? { deferBackgroundForgeReads: deps.deferBackgroundForgeReads }
+      : {}),
+    ...(deps.githubDiagnostics !== undefined ? { githubDiagnostics: deps.githubDiagnostics } : {}),
     ...(deps.repairPullRequest ? { repairPullRequest: deps.repairPullRequest } : {}),
     ...(deps.qaAnalysisRead !== undefined ? { qaAnalysisRead: deps.qaAnalysisRead } : {}),
     ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),
@@ -583,12 +607,16 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.dopplerListProjects !== undefined
       ? { dopplerListProjects: deps.dopplerListProjects }
       : {}),
+    ...(deps.secretJobDopplerConnectionId !== undefined
+      ? { secretJobDopplerConnectionId: deps.secretJobDopplerConnectionId }
+      : {}),
     ...(deps.dopplerListConfigs !== undefined
       ? { dopplerListConfigs: deps.dopplerListConfigs }
       : {}),
     ...(deps.dopplerCredentialReader !== undefined
       ? { dopplerCredentialReader: deps.dopplerCredentialReader }
       : {}),
+    ...(deps.dopplerWorkplace !== undefined ? { dopplerWorkplace: deps.dopplerWorkplace } : {}),
     ...(deps.manifestConvert !== undefined ? { manifestConvert: deps.manifestConvert } : {}),
     ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
     ...(deps.listProjects !== undefined ? { listProjects: deps.listProjects } : {}),

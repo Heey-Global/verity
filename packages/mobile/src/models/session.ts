@@ -1,3 +1,8 @@
+import {
+  permissionDecisionFailure,
+  reconcileSessionPermissions,
+  scopedDecisionNotice,
+} from './sessionPermissions.js';
 import { normalizeDetailRateLimit, toDisplayAttachment } from './sessionDetailNormalize.js';
 import {
   markSessionSwitch,
@@ -1043,9 +1048,7 @@ export class SessionModel {
         activityRequest > this._mockupDecisionAfterActivityRequest &&
         !sameMockupReview(activity.mockupReview ?? undefined, this._mockupReview);
       if (mockupChanged) this._mockupReview = activity.mockupReview ?? undefined;
-      if (activity.pendingPermissions !== undefined) {
-        this.stream.reconcilePendingPermissions(activity.pendingPermissions, seqAtRequest);
-      }
+      reconcileSessionPermissions(this.stream, activity, seqAtRequest);
       // The poll is now the authoritative `_busy` source — stop `loadDetail` from
       // seeding it. Set BEFORE the no-change short-circuit so a first poll that
       // matches the initial `false` still counts as "landed".
@@ -1177,9 +1180,7 @@ export class SessionModel {
       this._people = detail.people;
       this._viewerUserId = detail.viewerUserId;
       this._detailLoaded = true;
-      if (detail.pendingPermissions !== undefined) {
-        this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);
-      }
+      reconcileSessionPermissions(this.stream, detail, seqAtRequest);
       this._name = detail.name;
       this._projectId = detail.projectId ?? null;
       // Seed the working indicator so the Stop button + activity line are correct on
@@ -1520,10 +1521,7 @@ export class SessionModel {
         decision,
         ...(allowTiming ? ([{ trace: allowTiming }] as const) : []),
       );
-      if (result.scopeSaved === false) {
-        this._permissionError =
-          'Request allowed, but the reusable permission could not be saved. Future requests will ask again.';
-      }
+      this._permissionError = scopedDecisionNotice(result);
       markSessionSwitch(allowTiming, 'allow-model-response');
       this.stream.resolvePermission(toolUseId);
       this.opts.onPermissionSettled?.(toolUseId, true);
@@ -1537,8 +1535,7 @@ export class SessionModel {
         this.stream.resolvePermission(toolUseId);
         this.opts.onPermissionSettled?.(toolUseId, false);
       } else {
-        this._permissionError =
-          error instanceof VerityApiError ? error.message : 'failed to send the decision';
+        this._permissionError = permissionDecisionFailure(error);
       }
     } finally {
       this._decidingPermission = undefined;

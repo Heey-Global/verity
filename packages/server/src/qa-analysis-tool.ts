@@ -38,17 +38,20 @@ export async function executeQAAnalysis(
   },
 ) {
   const request = qaAnalysisRequestSchema.parse(input.request);
+  // A project's QA reads only its own project.
   const requireRole = async () => {
     const qa = await deps.eventStore.repairs.qa();
-    if (!qa.enabled || qa.session_id !== input.sessionId)
+    const role = await deps.eventStore.repairs.projectQA.roleForSession(input.sessionId);
+    if (!qa.enabled || !role)
       throw new ControlPlaneSessionAuthorityError(
         'QA analysis is disabled or unavailable to this session.',
       );
-    return qa;
+    return role;
   };
   await requireRole();
   const authorize = async (projectId: string) => {
-    await requireRole();
+    if ((await requireRole()).project_id !== projectId)
+      throw new ControlPlaneSessionAuthorityError('QA reads only its own project.');
     const user = await deps.initiator(input.sessionId, input.turnId);
     // Interactive reads never borrow the background sponsor's authority.
     const mandate = await deps.eventStore.repairs.mandate(projectId);
@@ -66,7 +69,9 @@ export async function executeQAAnalysis(
   };
   if (request.action === 'projects') {
     const projects = [];
+    const own = (await requireRole()).project_id;
     for (const mandate of await deps.eventStore.repairs.mandates()) {
+      if (mandate.project_id !== own) continue;
       try {
         const p = await authorize(mandate.project_id);
         projects.push({

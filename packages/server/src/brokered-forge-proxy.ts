@@ -51,6 +51,15 @@ const ALL_ACTIONS: ReadonlySet<ForgeAction> = new Set([
   'repository-rules-read',
   'packages-read',
 ]);
+// What adds changes to the project's code: pushing, pull-request writes (merging
+// included) and releases. The person a turn acts for needs Code for these (ADR 0023 §1).
+const CODE_WRITE_ACTIONS: ReadonlySet<ForgeAction> = new Set([
+  'git-write',
+  'pulls-write',
+  'releases-write',
+]);
+const CODE_PERMISSION_REFUSAL =
+  'The person this turn works for needs the Code permission in this project to push or change pull requests and releases. Leave the changes in the session for a project member with Code permission.';
 export const FORGE_PROXY_CA_FILE = '/run/verity/forge-proxy/ca.crt';
 // Never log upstream messages, URLs, headers or error objects: they can contain credentials.
 const SAFE_TRANSPORT_CODES = new Set([
@@ -113,14 +122,18 @@ function capability(request: IncomingMessage): string | undefined {
     ? credential.slice(FORGE_PLACEHOLDER_PREFIX.length)
     : undefined;
 }
-function fail(response: ServerResponse, status: number): void {
+function fail(response: ServerResponse, status: number, message?: string): void {
   if (response.headersSent) {
     response.destroy();
     return;
   }
   if (status === 401) response.setHeader('www-authenticate', 'Basic realm="Verity forge broker"');
   response.writeHead(status, { 'content-type': 'application/json', connection: 'close' });
-  response.end('{"error":"forge broker request rejected"}');
+  response.end(
+    message === undefined
+      ? '{"error":"forge broker request rejected"}'
+      : JSON.stringify({ error: 'forge broker request rejected', message }),
+  );
 }
 async function bufferedBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -159,6 +172,9 @@ export function createBrokeredForgeProxy(options: {
     path: string,
   ) => Promise<RepositoryBinding | RepositoryBinding[] | undefined>;
   adapter: BrokeredForgeAdapter;
+  /** Whether the person a request acts for may add changes to the project's code.
+   *  Without it, pushes and pull-request or release writes are refused. */
+  mayWriteCode?: ((projectId: string, userId: string) => Promise<boolean>) | undefined;
   enabled(projectId: string): boolean;
   actions?(projectId: string): ReadonlySet<ForgeAction>;
   transport?: BrokeredHttpStreamTransport;
@@ -293,6 +309,9 @@ export function createBrokeredForgeProxy(options: {
             generationSignal?.removeEventListener('abort', retire);
             abort.abort();
           });
+          // Set when a write was refused only because its person lacks Code, so the
+          // refusal can say so instead of looking like any other policy refusal.
+          let refusedForCode = false;
           void (async () => {
             if (
               hostname === 'ghcr.io' &&
@@ -413,6 +432,14 @@ export function createBrokeredForgeProxy(options: {
             }
             let auth: Awaited<ReturnType<BrokeredForgeAdapter['authorize']>> | undefined;
             let rejected: unknown;
+            // Every candidate belongs to the sandbox's project (filtered above) and acts
+            // for the same person; a turn without one keeps the project default, which
+            // no member's rights narrow. A failing check throws and fails the request.
+            const actingUserId = binding.actingUserId;
+            const codeWritesRefused =
+              typeof actingUserId === 'string' &&
+              options.mayWriteCode !== undefined &&
+              !(await options.mayWriteCode(identity.projectId, actingUserId));
             for (const candidate of candidates) {
               try {
                 auth = await options.adapter.authorize(
@@ -423,7 +450,14 @@ export function createBrokeredForgeProxy(options: {
                     ...(Buffer.isBuffer(body) ? { body } : {}),
                   },
                   candidate,
-                  options.actions?.(candidate.projectId) ?? ALL_ACTIONS,
+                  codeWritesRefused
+                    ? new WithoutCodeWrites(
+                        options.actions?.(candidate.projectId) ?? ALL_ACTIONS,
+                        () => {
+                          refusedForCode = true;
+                        },
+                      )
+                    : (options.actions?.(candidate.projectId) ?? ALL_ACTIONS),
                   abort.signal,
                 );
                 chosen = candidate;
@@ -574,7 +608,13 @@ export function createBrokeredForgeProxy(options: {
               if (!(error instanceof ForgePolicyError)) {
                 report(phase, error);
               }
-              fail(response, error instanceof ForgePolicyError ? 403 : 502);
+              fail(
+                response,
+                error instanceof ForgePolicyError ? 403 : 502,
+                error instanceof ForgePolicyError && refusedForCode
+                  ? CODE_PERMISSION_REFUSAL
+                  : undefined,
+              );
             })
             .finally(() => {
               clearTimeout(timeout);
@@ -598,4 +638,21 @@ export function createBrokeredForgeProxy(options: {
       });
     },
   };
+}
+
+/** The allowed actions without code writes. It reports when an adapter asked for a
+ *  code write the project would otherwise allow, which is a refusal for Code. */
+class WithoutCodeWrites extends Set<ForgeAction> {
+  constructor(
+    private readonly allowed: ReadonlySet<ForgeAction>,
+    private readonly onRefused: () => void,
+  ) {
+    super([...allowed].filter((action) => !CODE_WRITE_ACTIONS.has(action)));
+  }
+
+  override has(action: ForgeAction): boolean {
+    if (super.has(action)) return true;
+    if (CODE_WRITE_ACTIONS.has(action) && this.allowed.has(action)) this.onRefused();
+    return false;
+  }
 }

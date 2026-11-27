@@ -1,3 +1,5 @@
+import type { DiagnosticReport } from './metrics/diagnostic-report.js';
+import type { ServerMonitor } from './metrics/server-monitor.js';
 import { z } from 'zod';
 import {
   resolveRuntimeWindow,
@@ -6,6 +8,7 @@ import {
   type RuntimeWindow,
 } from './runtime-diagnostics.js';
 import { importDiagnosticSchema } from './integrations/routes.js';
+import { GITHUB_CALLER_CATEGORIES } from './github-rate-budget.js';
 import type { createControlPlaneSessionTools } from './session-handoff-tool.js';
 
 type ControlPlaneSessionCall = Parameters<
@@ -33,7 +36,7 @@ export const diagnosticsRequestSchema = z
   );
 
 export const DIAGNOSTICS_TOOL_DESCRIPTION =
-  'Read a bounded Control-only diagnostic snapshot of server version, runtime readiness and Uplink state, plus managed builder migration status, local resources, scoped container lifecycle, memory/health, recent Docker events, classified infrastructure errors and exported historical host kernel/runtime evidence. Optional runtime {since,until} uses ISO timestamps with offsets, defaults to the last hour and accepts at most 24 hours. Source availability, coverage, stale timestamps and truncation are explicit; never infer OOM from exit code 137 or current RAM alone. Select projectId for safe Matrix import failure codes, event IDs and retry state, with optional matrixEvent {accountId,sourceId,eventId} for a content-free persisted event receipt; optionally select one project session by sessionId for structured technical failures. Process failures may include a bounded credential-redacted stderr tail. Returns no secrets, environment values or chat message contents. Unknown data is explicit; status codes alone do not prove a cause. Use on demand, never poll. Changes belong in a project-session handoff; verify the affected state after remediation.';
+  'Read a bounded Control-only diagnostic snapshot of server version, runtime readiness and Uplink state, plus managed builder migration status, local resources, scoped container lifecycle, memory/health, recent Docker events, classified infrastructure errors and exported historical host kernel/runtime evidence, and the in-memory server monitoring report (requests, latency, response bytes per route, client and session, live connections and process resources since measurement started). Optional runtime {since,until} uses ISO timestamps with offsets, defaults to the last hour and accepts at most 24 hours. Source availability, coverage, stale timestamps and truncation are explicit; never infer OOM from exit code 137 or current RAM alone. Select projectId for safe Matrix import failure codes, event IDs and retry state, with optional matrixEvent {accountId,sourceId,eventId} for a content-free persisted event receipt; optionally select one project session by sessionId for structured technical failures. Process failures may include a bounded credential-redacted stderr tail. Returns no secrets, environment values or chat message contents. Unknown data is explicit; status codes alone do not prove a cause. Use on demand, never poll. Changes belong in a project-session handoff; verify the affected state after remediation.';
 
 export const controlDiagnosticRecordSchema = z.object({
   seq: z.number().int(),
@@ -77,6 +80,72 @@ const uplinkSchema = z.object({
     .optional(),
 });
 
+const githubCountsSchema = z.object({
+  requests: z.number().int().nonnegative(),
+  notModified: z.number().int().nonnegative(),
+  limited: z.number().int().nonnegative(),
+  suppressed: z.number().int().nonnegative(),
+});
+const githubLimitKind = z.enum(['primary', 'secondary']);
+/** Only counters, quota headers and coarse targets; never URLs, queries or tokens. */
+const githubDiagnosticSchema = z.object({
+  observedAt: z.string(),
+  windowMinutes: z.number().int().positive(),
+  categories: z.object(
+    Object.fromEntries(
+      GITHUB_CALLER_CATEGORIES.map((name) => [name, githubCountsSchema]),
+    ) as Record<(typeof GITHUB_CALLER_CATEGORIES)[number], typeof githubCountsSchema>,
+  ),
+  quotas: z
+    .array(
+      z.object({
+        account: z.string().max(100),
+        resource: z.string().max(40),
+        limit: z.number().nullable(),
+        remaining: z.number().nullable(),
+        used: z.number().nullable(),
+        resetAt: z.string().nullable(),
+        observedAt: z.string(),
+        lockedUntil: z.string().nullable(),
+        lockKind: githubLimitKind.nullable(),
+      }),
+    )
+    .max(256),
+  events: z
+    .array(
+      z.object({
+        at: z.string(),
+        category: z.enum(GITHUB_CALLER_CATEGORIES),
+        kind: githubLimitKind,
+        status: z.number().int(),
+        account: z.string().max(100),
+        repo: z.string().max(100).optional(),
+        endpoint: z.string().max(40),
+        resource: z.string().max(40),
+        retryAt: z.string(),
+      }),
+    )
+    .max(20),
+});
+
+/** Server-wide evidence sources the Control diagnostics snapshot reads. */
+export function diagnosticSources(deps: {
+  secretJobRuntimeReadiness?: (() => Promise<void>) | undefined;
+  uplinkDiagnostics?: (() => unknown) | undefined;
+  githubDiagnostics?: (() => unknown) | undefined;
+  serverMonitor?: Pick<ServerMonitor, 'report'> | undefined;
+}) {
+  const monitor = deps.serverMonitor;
+  return {
+    runtimeReadiness: deps.secretJobRuntimeReadiness,
+    uplinkDiagnostics: deps.uplinkDiagnostics,
+    githubDiagnostics: deps.githubDiagnostics,
+    // Control is the installation's own diagnosis surface: it sees session IDs
+    // so it can hand a finding to the right project session.
+    monitoringReport: monitor === undefined ? undefined : () => monitor.report('raw'),
+  };
+}
+
 export function createControlDiagnosticsTool(deps: {
   authorizeCaller: (input: ControlPlaneSessionCall) => Promise<void>;
   readProgress: (input: ControlPlaneSessionCall) => Promise<Record<string, unknown>>;
@@ -95,6 +164,8 @@ export function createControlDiagnosticsTool(deps: {
   publicPreviewsEnabled: () => boolean;
   runtimeReadiness?: (() => Promise<void>) | undefined;
   uplinkDiagnostics?: (() => unknown) | undefined;
+  githubDiagnostics?: (() => unknown) | undefined;
+  monitoringReport?: (() => DiagnosticReport) | undefined;
 }) {
   return async (input: ControlPlaneSessionCall) => {
     await deps.authorizeCaller(input);
@@ -115,6 +186,30 @@ export function createControlDiagnosticsTool(deps: {
       if (parsed.success) uplink = parsed.data;
     } catch {
       // A diagnostic source failure must not expose its exception or hide other evidence.
+    }
+    let github: z.infer<typeof githubDiagnosticSchema> | { state: 'unavailable' | 'failed' } = {
+      state: 'unavailable',
+    };
+    if (deps.githubDiagnostics !== undefined) {
+      try {
+        const snapshot = deps.githubDiagnostics();
+        if (snapshot !== undefined) {
+          const parsed = githubDiagnosticSchema.safeParse(snapshot);
+          github = parsed.success ? parsed.data : { state: 'failed' };
+        }
+      } catch {
+        github = { state: 'failed' };
+      }
+    }
+    let monitoring: DiagnosticReport | { state: 'unavailable' | 'failed' } = {
+      state: 'unavailable',
+    };
+    if (deps.monitoringReport !== undefined) {
+      try {
+        monitoring = deps.monitoringReport();
+      } catch {
+        monitoring = { state: 'failed' };
+      }
     }
     let publicPreviews: boolean | null = null;
     try {
@@ -188,6 +283,8 @@ export function createControlDiagnosticsTool(deps: {
       capabilities: { pushEnabled: deps.pushEnabled, publicPreviewsEnabled: publicPreviews },
       secretJobRuntime: { state: runtime },
       uplink,
+      github,
+      monitoring,
       session,
       matrix,
       infrastructure,
@@ -198,6 +295,9 @@ export function createControlDiagnosticsTool(deps: {
         'Matrix diagnostics contain at most 20 sources and the connector reports at most 20 active failed imports; additional failures may be omitted.',
         'Free-form errors, message contents, backend labels and environment values are omitted.',
         'Job inventory, queue depth and GitOps comparison are unavailable. Runtime timestamps support correlation but do not establish causality.',
+        'GitHub usage covers server-side REST requests since the last restart, at most the latest 60 minutes and 20 limit events; quota values are the last headers GitHub returned.',
+        'Monitoring counters cover the time since measurement was last switched on or the server restarted; bytes are response bodies as sent, without HTTP headers.',
+        'Outbound calls cover fetch and node:http requests of the server process; child processes (git, gh, docker CLIs), agents in sandboxes and connections that fail before a request is sent are not counted.',
         'No root cause is inferred from state or status codes; corroborate with other evidence.',
       ],
     };

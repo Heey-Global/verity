@@ -11,7 +11,7 @@ try {
   // Credentials, response bodies and host paths never become project build output.
   const diagnostic = protectedBuildFailure(error);
   process.stderr.write(
-    `Protected build control failed (${diagnostic.reason}${diagnostic.correlationId ? `; reference ${diagnostic.correlationId}` : ''}); remote termination is unconfirmed\n`,
+    `Protected build control failed (${diagnostic.reason}${diagnostic.detail ? `: ${diagnostic.detail}` : ''}${diagnostic.correlationId ? `; reference ${diagnostic.correlationId}` : ''}); remote termination is unconfirmed\n`,
   );
   process.exitCode = 1;
 }

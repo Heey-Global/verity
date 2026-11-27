@@ -1,16 +1,18 @@
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { EventStore } from '@verity/store';
+import { EventStore, MOCKUP_HTML_ATTACHMENT } from '@verity/store';
 import { Conductor, type Backend, type RunTurnOptions } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { registerAttachmentRoute } from './attachment-route.js';
 import {
   createSessionMockups,
   mockupImage,
   nextMockupRound,
+  presentMockupsRequestSchema,
   registerMockupRoutes,
   type SessionMockupActions,
 } from './mockups.js';
@@ -37,6 +39,16 @@ function jpeg(width: number, height: number): Buffer {
   sof.writeUInt16BE(width, 7);
   return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof]);
 }
+
+describe('presentMockupsRequestSchema', () => {
+  it('requires exactly one file path per screen', () => {
+    for (const input of [{}, { path: 'image.png', htmlPath: 'demo.html' }]) {
+      expect(
+        presentMockupsRequestSchema.safeParse({ screens: [{ name: 'Demo', ...input }] }).success,
+      ).toBe(false);
+    }
+  });
+});
 
 describe('mockupImage', () => {
   it('reads the size of PNG and JPEG images', () => {
@@ -133,6 +145,9 @@ beforeEach(async () => {
   mockups = createSessionMockups({ eventStore: store });
   app = Fastify();
   registerMockupRoutes(app, { mockups });
+  registerAttachmentRoute(app, {
+    getAttachment: (hash, maxBytes) => store.getAttachment(hash, maxBytes),
+  });
 });
 afterEach(async () => {
   await app.close();
@@ -151,6 +166,98 @@ const post = (payload: Record<string, unknown>) =>
 const queuedTurns = () => ctx.db.selectFrom('queued_turns').selectAll().execute();
 
 describe('presenting mockups', () => {
+  it('serves HTML snapshots as inert downloads on the API origin', async () => {
+    const html = '<!doctype html><title>Mockup</title>';
+    const hash = await store.putAttachment('text/html', Buffer.from(html).toString('base64'));
+    const res = await app.inject({ method: 'GET', url: `/attachments/${hash}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toBe('text/html');
+    expect(res.headers['content-disposition']).toBe('attachment; filename="mockup.html"');
+    expect(res.headers['content-security-policy']).toBe("sandbox; default-src 'none'");
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.body).toBe(html);
+  });
+
+  it('preserves generic uploads labeled with the reserved mockup MIME type', async () => {
+    const bytes = Buffer.from('use an ordinary attachment');
+    const hash = await store.putAttachment(MOCKUP_HTML_ATTACHMENT, bytes.toString('base64'));
+    const response = await app.inject(`/attachments/${hash}`);
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toBe('application/octet-stream');
+    expect(response.rawPayload).toEqual(bytes);
+  });
+
+  it('refuses to preview an oversized HTML attachment uploaded outside review', async () => {
+    const bytes = Buffer.alloc(2 * 1024 * 1024 + 1);
+    const hash = await store.putAttachment(MOCKUP_HTML_ATTACHMENT, bytes.toString('base64'), 's1');
+    expect((await app.inject(`/sessions/s1/mockup-attachments/${hash}`)).statusCode).toBe(404);
+  });
+
+  it('snapshots a mixed HTML and image round', async () => {
+    const html =
+      '<!doctype html><html><head><title>Demo</title></head><body>Original</body></html>';
+    const path = join(worktree, 'demo.html');
+    writeFileSync(path, html);
+    const generic = await store.putAttachment(
+      'application/octet-stream',
+      Buffer.from(html).toString('base64'),
+    );
+    const request = presentMockupsRequestSchema.parse({
+      screens: [
+        { name: 'Demo', htmlPath: 'demo.html' },
+        { name: 'Home', path: 'home.png' },
+      ],
+    });
+    const round = await mockups.present('s1', request);
+    writeFileSync(path, html.replace('Original', 'Changed'));
+    const htmlAttachment = round.screens[0]!.attachment;
+    expect(htmlAttachment).not.toBe(generic);
+    expect((await app.inject(`/attachments/${htmlAttachment}`)).statusCode).toBe(404);
+    expect(
+      (await app.inject(`/sessions/other/mockup-attachments/${htmlAttachment}`)).statusCode,
+    ).toBe(404);
+    const preview = await app.inject(`/sessions/s1/mockup-attachments/${htmlAttachment}`);
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body).toContain('Original');
+    expect(round.screens.map((screen) => screen.mediaType)).toEqual(['text/html', 'image/png']);
+    expect(await store.getAttachment(round.screens[0]!.attachment)).toEqual({
+      mediaType: MOCKUP_HTML_ATTACHMENT,
+      bytes: Buffer.from(html),
+    });
+    expect((await store.getSession('s1'))?.mockupReview).toEqual(round);
+  });
+
+  it('preserves a generic upload of the same bytes after HTML publication', async () => {
+    const html = '<!doctype html><title>Demo</title>';
+    writeFileSync(join(worktree, 'demo.html'), html);
+    const round = await mockups.present('s1', {
+      screens: [{ name: 'Demo', htmlPath: 'demo.html' }],
+    });
+    const generic = await store.putAttachment(
+      'application/octet-stream',
+      Buffer.from(html).toString('base64'),
+    );
+    expect(generic).not.toBe(round.screens[0]!.attachment);
+    expect(await store.getAttachment(generic)).toEqual({
+      mediaType: 'application/octet-stream',
+      bytes: Buffer.from(html),
+    });
+  });
+
+  it.each([
+    ['missing doctype', Buffer.from('<p>Draft</p>'), /doctype/],
+    ['invalid UTF-8', Buffer.from([0xff]), /utf-8/i],
+    ['oversized document', Buffer.alloc(2 * 1024 * 1024 + 1), /2 MiB/],
+  ])('refuses HTML with %s before publishing a round', async (_label, bytes, error) => {
+    writeFileSync(join(worktree, 'demo.html'), bytes);
+    await expect(
+      mockups.present('s1', {
+        screens: [{ name: 'Demo', htmlPath: 'demo.html' }],
+      }),
+    ).rejects.toThrow(error);
+    expect((await store.getSession('s1'))?.mockupReview).toBeUndefined();
+  });
+
   it('rejects a presentation overtaken by a planning restart', async () => {
     const put = store.putAttachment.bind(store);
     vi.spyOn(store, 'putAttachment').mockImplementationOnce(async (...args) => {

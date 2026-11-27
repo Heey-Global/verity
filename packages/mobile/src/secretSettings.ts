@@ -4,7 +4,8 @@
 // draft→patch builder for the new write-only secret fields — is unit-tested by the
 // existing vitest run without pulling in React Native. The `settings.tsx` screen
 // is a thin consumer of these; it never re-implements the rules below.
-import type { VeritySettingsPatch, SecretStatus } from './api.js';
+import type { VeritySettingsPatch } from './api.js';
+import type { SecretStatus } from './secret-status.js';
 
 /** How the secret-store section renders for a given {@link SecretStatus}:
  *  `set` = first-run password+confirm form; `unlock` = password form; `ready` =

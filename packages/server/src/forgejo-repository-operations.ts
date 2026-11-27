@@ -49,6 +49,7 @@ function pullView(row: ForgejoPullRow): ForgePullRequestView {
     state: row.merged ? 'merged' : row.state === 'closed' ? 'closed' : 'open',
     draft: WIP_PREFIX.test(row.title),
     head: row.head.ref,
+    ...(row.head.repo === undefined ? {} : { headRepository: row.head.repo?.full_name ?? null }),
     base: row.base.ref,
     body: row.body ?? '',
   };

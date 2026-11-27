@@ -29,6 +29,124 @@ const serverDeps = () => ({
   branchPrStatus: vi.fn(async () => failingPr()),
 });
 
+it('returns branch metadata while repair reconciliation is waiting', async () => {
+  await createExistingSession('s1');
+  branchSvc.current.mockResolvedValue('feature');
+  branchSvc.switchable.mockResolvedValue(['main']);
+  let releaseRepair!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    releaseRepair = resolve;
+  });
+  runWhenIdle.mockImplementation(async () => pending);
+  const server = buildServer(serverDeps());
+  const read = server.inject({ method: 'GET', url: '/sessions/s1/branches' }).then((res) => res);
+  try {
+    await vi.waitFor(() => expect(runWhenIdle).toHaveBeenCalled());
+    let response: Awaited<typeof read> | undefined;
+    void read.then((result) => {
+      response = result;
+    });
+    await vi.waitFor(() => expect(response?.statusCode).toBe(200));
+    expect(response?.json()).toMatchObject({
+      current: 'feature',
+      switchable: ['main'],
+      currentPr: 119,
+    });
+    expect((await server.inject({ url: '/sessions/s1/branches' })).statusCode).toBe(200);
+    expect(runWhenIdle).toHaveBeenCalledTimes(1);
+  } finally {
+    releaseRepair();
+    await read;
+    await server.close();
+  }
+});
+
+it('returns branch metadata before a slow PR lookup and exposes the PR after it finishes', async () => {
+  await createExistingSession('s1');
+  branchSvc.current.mockResolvedValue('feature');
+  branchSvc.switchable.mockResolvedValue(['main']);
+  let releaseLookup!: (status: ReturnType<typeof failingPr>) => void;
+  const pending = new Promise<ReturnType<typeof failingPr>>((resolve) => {
+    releaseLookup = resolve;
+  });
+  const branchPrStatus = vi.fn(() => pending);
+  const server = buildServer({ ...serverDeps(), branchPrStatus });
+  const url = '/sessions/s1/branches';
+  const read = server.inject({ url }).then((res) => res);
+  try {
+    let first: Awaited<typeof read> | undefined;
+    void read.then((response) => {
+      first = response;
+    });
+    await vi.waitFor(() => expect(first?.statusCode).toBe(200), { timeout: 2_000 });
+    expect(first?.json()).toMatchObject({ current: 'feature', switchable: ['main'] });
+    expect(first?.json()).not.toHaveProperty('currentPr');
+    expect(branchPrStatus).toHaveBeenCalledTimes(1);
+
+    releaseLookup(failingPr());
+    const refreshed = await server.inject({ url });
+    expect(refreshed.json()).toMatchObject({ current: 'feature', currentPr: 119 });
+  } finally {
+    releaseLookup(failingPr());
+    await read;
+    await server.close();
+  }
+});
+
+it('marks cached checks and mergeability as unknown during a slow PR refresh', async () => {
+  await createExistingSession('s1');
+  await ctx.store.upsertProject({
+    id: 'p1',
+    owner: 'team',
+    repo: 'app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await ctx.store.setSessionProject('s1', 'p1');
+  branchSvc.current.mockResolvedValue('feature');
+  branchSvc.switchable.mockResolvedValue(['main']);
+  let now = 0;
+  let releaseLookup!: (status: ReturnType<typeof failingPr>) => void;
+  const pending = new Promise<ReturnType<typeof failingPr>>((resolve) => {
+    releaseLookup = resolve;
+  });
+  const branchPrStatus = vi
+    .fn()
+    .mockResolvedValueOnce({
+      ...failingPr(),
+      pipeline: 'success',
+      checks: { completed: 1, total: 1, failed: 0, successful: 1, pending: 0 },
+    })
+    .mockReturnValue(pending);
+  const server = buildServer({
+    ...serverDeps(),
+    branchPrStatus,
+    pullRequestCacheNow: () => now,
+    projectPullRequests: {
+      list: vi.fn().mockResolvedValue({ webUrl: '', pulls: [] }),
+      status: vi.fn().mockResolvedValue(null),
+      merge: vi.fn().mockResolvedValue(false),
+    },
+  });
+  const url = '/sessions/s1/branches';
+  try {
+    expect((await server.inject({ url })).json()).toMatchObject({
+      pullRequest: { pipeline: 'success', mergeable: true },
+      pullRequests: [{ number: 119, pipeline: 'success', mergeable: true }],
+    });
+    now = 60_000;
+    expect((await server.inject({ url })).json()).toMatchObject({
+      pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+      pullRequests: [
+        { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+      ],
+    });
+  } finally {
+    releaseLookup(failingPr());
+    await server.close();
+  }
+});
+
 it('recovers a completed repair after task updates hide its completion from the projection tail', async () => {
   await createExistingSession('s1');
   await ctx.store.upsertProject({

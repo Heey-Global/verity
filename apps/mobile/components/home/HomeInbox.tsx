@@ -159,7 +159,14 @@ export function HomeInbox({
         // Meetings belong to no project; everything else is the same list a
         // project's page draws, across all projects.
         leadingRows={meetingItems.map((item) => (
-          <FeedCard key={item.key} feed={feed} item={item} selected={false} />
+          // Led by a tile like every other entry of the list.
+          <FeedCard
+            key={item.key}
+            feed={feed}
+            item={item}
+            selected={false}
+            leading={{ icon: 'video' }}
+          />
         ))}
         onSectionsChange={onSectionsChange}
         onOpenSession={onOpenSession}

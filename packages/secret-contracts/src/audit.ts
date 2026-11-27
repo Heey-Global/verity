@@ -102,6 +102,7 @@ export const gatewayToolNameSchema = z.enum([
   'verity_session_handoff',
   'verity_send_session_message',
   'verity_project_inquiry',
+  'verity_session_coordinate',
   'verity_list_linked_sessions',
   'verity_session_progress',
   'verity_recent_session_messages',

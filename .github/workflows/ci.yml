@@ -83,7 +83,7 @@ jobs:
         if: github.event_name != 'push' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
         # renovate: datasource=github-actions depName=actions/create-github-app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -238,7 +238,7 @@ jobs:
           (startsWith(github.head_ref, 'release-please--branches--main--components--') ||
           startsWith(github.head_ref, 'automation/promote-')))
         # renovate: datasource=github-actions depName=actions/create-github-app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -559,7 +559,8 @@ jobs:
                   test=true
                   server_image=true
                   ;;
-                packages/mobile/*)
+                # Plus the screens whose labels packages/mobile suites check.
+                packages/mobile/*|apps/mobile/app/settings/index.tsx|apps/mobile/app/settings/services/index.tsx|apps/mobile/app/project/\[id\]/settings/*)
                   case $file in */src/api.ts) contract_test=true;; esac
                   lint=true
                   typecheck=true
@@ -673,7 +674,7 @@ jobs:
                   test=true
                   ;;
                 # Guides the app help catalog cites; a suite checks they exist.
-                docs/attendee-live-meetings.md|docs/connections.md|docs/file-connections.md|docs/getting-started.md|docs/google-calendar.md|docs/knowledge.md|docs/matrix-knowledge-connector.md)
+                docs/assistant.md|docs/attendee-live-meetings.md|docs/connections.md|docs/file-connections.md|docs/getting-started.md|docs/google-calendar.md|docs/knowledge.md|docs/matrix-knowledge-connector.md|docs/session-coordination.md)
                   test=true
                   ;;
                 # Mobile auth callback authorization is covered by a root test.
@@ -978,6 +979,22 @@ jobs:
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # On pull requests the test checkout is the merge commit. Its first
+          # parent provides the architecture debt baseline without full history.
+          fetch-depth: 2
+      - name: Select Store architecture baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          base=$(git rev-parse HEAD^1)
+          echo "STORE_ARCHITECTURE_BASE=$base" >> "$GITHUB_ENV"
+      - name: Ensure GNU inventory tools
+        run: |
+          if [[ ! -x /usr/bin/gnutimeout ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends gnu-coreutils findutils
+          fi
+          /usr/bin/gnutimeout --version
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -1066,6 +1083,20 @@ jobs:
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - name: Select Store architecture baseline
+        if: github.event_name == 'pull_request'
+        run: |
+          base=$(git rev-parse HEAD^1)
+          echo "STORE_ARCHITECTURE_BASE=$base" >> "$GITHUB_ENV"
+      - name: Ensure GNU inventory tools
+        run: |
+          if [[ ! -x /usr/bin/gnutimeout ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends gnu-coreutils findutils
+          fi
+          /usr/bin/gnutimeout --version
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -1104,7 +1135,7 @@ jobs:
     timeout-minutes: 10
     env:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
-      VERITY_INSTALLER_IMAGE: node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
+      VERITY_INSTALLER_IMAGE: node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad11b29e9285da1d2e54798c9
       VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
       # Mount-only root fixture: no user namespace/uid_map, host mounts or Docker socket.
       VERITY_BACKUP_TEST_SANDBOX: --rm --cap-drop ALL --cap-add SYS_ADMIN --network none --security-opt seccomp=unconfined --security-opt apparmor=unconfined
@@ -1255,6 +1286,13 @@ jobs:
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Ensure GNU inventory tools
+        run: |
+          if [[ ! -x /usr/bin/gnutimeout ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends gnu-coreutils findutils
+          fi
+          /usr/bin/gnutimeout --version
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

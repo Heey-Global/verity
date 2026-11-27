@@ -5,7 +5,11 @@ import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 import { createSecretCipher } from './crypto.js';
 import { migrationProvider } from './migrations.js';
 import { EventStore } from './store.js';
-import { UserDopplerConnectionStore } from './user-doppler-connection.js';
+import {
+  DopplerProjectAccessChangedError,
+  DopplerTokenRevalidationRequiredError,
+  UserDopplerConnectionStore,
+} from './user-doppler-connection.js';
 import { createRawDb, createTestDb, truncateAll, type TestDb } from './testing.js';
 
 const ADMIN = '00000000-0000-4000-8000-000000000001';
@@ -35,26 +39,83 @@ beforeEach(async () => {
     });
 });
 
-// One person's token must never answer for another person or another project.
-it('keeps each Doppler token to its person and project, encrypted at rest', async () => {
+// One person's token must never answer for another person, project or connection.
+it('keeps each Doppler token to its person, project and connection, encrypted at rest', async () => {
+  await ctx.db
+    .insertInto('doppler_connections')
+    .values([
+      { id: 'c1', label: 'Platform' },
+      { id: 'c2', label: 'Payments' },
+    ])
+    .execute();
   const connections = new UserDopplerConnectionStore(ctx.db, createSecretCipher('cd'.repeat(32)));
-  await connections.set('lena', 'p1', 'dp.st.lena-p1');
-  await connections.set('mia', 'p1', 'dp.st.mia-p1');
+  await connections.set('lena', 'p1', 'c1', 'dp.st.lena-p1');
+  await connections.set('mia', 'p1', 'c1', 'dp.st.mia-p1');
+  await connections.set('lena', 'p1', 'c2', 'dp.st.lena-p1-payments');
 
-  expect((await connections.tokenBytes('lena', 'p1'))?.toString()).toBe('dp.st.lena-p1');
-  expect((await connections.tokenBytes('mia', 'p1'))?.toString()).toBe('dp.st.mia-p1');
-  expect(await connections.tokenBytes('lena', 'p2')).toBeUndefined();
-  expect(await connections.status('lena', 'p2')).toBeUndefined();
-  expect(await connections.status('lena', 'p1')).toMatchObject({ updatedAt: expect.any(Date) });
+  expect((await connections.tokenBytes('lena', 'p1', 'c1'))?.toString()).toBe('dp.st.lena-p1');
+  expect((await connections.tokenBytes('lena', 'p1', 'c2'))?.toString()).toBe(
+    'dp.st.lena-p1-payments',
+  );
+  expect((await connections.tokenBytes('mia', 'p1', 'c1'))?.toString()).toBe('dp.st.mia-p1');
+  expect(await connections.tokenBytes('mia', 'p1', 'c2')).toBeUndefined();
+  expect(await connections.tokenBytes('lena', 'p2', 'c1')).toBeUndefined();
+  expect((await connections.statuses('lena', 'p2')).size).toBe(0);
+  expect([...(await connections.statuses('lena', 'p1')).keys()].sort()).toEqual(['c1', 'c2']);
 
   const stored = await ctx.db.selectFrom('user_doppler_connections').select('token').execute();
   expect(stored.map((row) => row.token).join()).not.toContain('dp.st.');
 
-  await connections.set('lena', 'p1', 'dp.st.lena-rotated');
-  expect((await connections.tokenBytes('lena', 'p1'))?.toString()).toBe('dp.st.lena-rotated');
-  await connections.delete('lena', 'p1');
-  expect(await connections.tokenBytes('lena', 'p1')).toBeUndefined();
-  expect((await connections.tokenBytes('mia', 'p1'))?.toString()).toBe('dp.st.mia-p1');
+  await connections.set('lena', 'p1', 'c1', 'dp.st.lena-rotated');
+  expect((await connections.tokenBytes('lena', 'p1', 'c1'))?.toString()).toBe('dp.st.lena-rotated');
+  await connections.delete('lena', 'p1', 'c1');
+  expect(await connections.tokenBytes('lena', 'p1', 'c1')).toBeUndefined();
+  expect(await connections.tokenBytes('lena', 'p1', 'c2')).toBeDefined();
+  expect((await connections.tokenBytes('mia', 'p1', 'c1'))?.toString()).toBe('dp.st.mia-p1');
+  await connections.deleteAll('lena', 'p1');
+  expect(await connections.tokenBytes('lena', 'p1', 'c2')).toBeUndefined();
+});
+
+it('only returns a scoped token for a binding it was validated against', async () => {
+  await ctx.db.insertInto('doppler_connections').values({ id: 'c1', label: 'Platform' }).execute();
+  const bindings = ctx.store.projectDopplerBindings;
+  const dev = await bindings.add('p1', {
+    connectionId: 'c1',
+    dopplerProject: 'portal',
+    dopplerConfig: 'dev',
+  });
+  const connections = new UserDopplerConnectionStore(ctx.db, createSecretCipher('cd'.repeat(32)));
+  await connections.set('lena', 'p1', 'c1', 'scoped-token-fixture', [dev.id]);
+  const stage = await bindings.add('p1', {
+    connectionId: 'c1',
+    dopplerProject: 'portal',
+    dopplerConfig: 'stg',
+  });
+
+  expect((await connections.tokenBytes('lena', 'p1', 'c1', dev))?.toString()).toBe(
+    'scoped-token-fixture',
+  );
+  await expect(connections.tokenBytes('lena', 'p1', 'c1', stage)).rejects.toBeInstanceOf(
+    DopplerTokenRevalidationRequiredError,
+  );
+  await connections.set('lena', 'p1', 'c1', 'revalidated-token-fixture', [dev.id, stage.id]);
+  expect((await connections.tokenBytes('lena', 'p1', 'c1', stage))?.toString()).toBe(
+    'revalidated-token-fixture',
+  );
+});
+
+it('rejects saving a validated token after a member lost project execution access', async () => {
+  await ctx.db.insertInto('doppler_connections').values({ id: 'c1', label: 'Platform' }).execute();
+  const connections = new UserDopplerConnectionStore(ctx.db, createSecretCipher('cd'.repeat(32)));
+  const binding = await ctx.store.projectDopplerBindings.add('p1', {
+    connectionId: 'c1',
+    dopplerProject: 'portal',
+    dopplerConfig: 'dev',
+  });
+  await expect(
+    connections.set('lena', 'p1', 'c1', 'dp.st.lena', [binding.id], null, true),
+  ).rejects.toBeInstanceOf(DopplerProjectAccessChangedError);
+  expect(await connections.statuses('lena', 'p1')).toEqual(new Map());
 });
 
 // Standing grants become one person's consent. The ones that exist were approved

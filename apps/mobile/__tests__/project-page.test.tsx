@@ -22,6 +22,7 @@ jest.mock('../lib/taskPreferences', () => ({ useTaskPreferences: () => ({ enable
 jest.mock('../lib/tasksStore', () => ({
   taskAccountScope: () => null,
   useTasks: () => ({ tasks: [], pending: [], conflicts: [] }),
+  useTaskView: () => undefined,
 }));
 const mockDesign = { value: true as boolean | undefined };
 const mockWide = { value: false };
@@ -109,6 +110,7 @@ function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> =
     unknown
   >;
   Object.assign(client, {
+    decidePermission: jest.fn(),
     listHttpMcpConnections: jest.fn().mockResolvedValue([]),
     listProjectMcpBindings: jest.fn().mockResolvedValue([]),
     listProjectDriveFolders: jest.fn().mockResolvedValue([]),
@@ -440,6 +442,7 @@ describe('project page', () => {
       await act(async () => undefined);
       const loadsBefore = (client.getProject as jest.Mock).mock.calls.length;
       const input = screen.getByTestId('project-name-input');
+      expect(input.props.value).toBe('Verity Plattform');
       fireEvent.changeText(input, '  Verity Mobile  ');
       fireEvent(input, 'submitEditing');
       await waitFor(() =>
@@ -545,8 +548,10 @@ describe('project page', () => {
       const { client, updateProjectProfile } = managed('Agent workspace');
       render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
       fireEvent.press(await screen.findByLabelText('Description: Agent workspace'));
-      fireEvent.changeText(screen.getByTestId('project-line-input'), '');
-      fireEvent(screen.getByTestId('project-line-input'), 'submitEditing');
+      const input = screen.getByTestId('project-line-input');
+      expect(input.props.value).toBe('Agent workspace');
+      fireEvent.changeText(input, '');
+      fireEvent(input, 'submitEditing');
       await waitFor(() =>
         expect(updateProjectProfile).toHaveBeenCalledWith('p/1', { description: null }),
       );
@@ -672,7 +677,9 @@ describe('project page', () => {
     const dismissible = { ...question, inboxDismissed: [] as string[] };
     const { client, onOpenSession } = await renderPage([asking, dismissible]);
     const needs = within(screen.getByTestId('work-needs-you'));
-    expect(needs.getByTestId('inbox-item-permission')).toBeTruthy();
+    // Nothing is decided here, so it is a row with its tag, not a card.
+    expect(needs.queryByTestId('inbox-item-permission')).toBeNull();
+    expect(needs.getByText('Permission')).toBeTruthy();
     expect(needs.queryByRole('button', { name: 'Allow once' })).toBeNull();
     expect(needs.queryByTestId('inbox-line-code')).toBeNull();
     fireEvent.press(needs.getByRole('button', { name: 'Review' }));
@@ -682,6 +689,35 @@ describe('project page', () => {
     expect(client.setSessionInboxDismissed).toHaveBeenCalled();
     fireEvent.press(await screen.findByRole('button', { name: '1 hidden' }));
     expect(screen.getByTestId('inbox-hidden-question')).toBeTruthy();
+  });
+
+  it('reviews unknown permission details with the same compact card as Home', async () => {
+    const { client, onOpenSession } = await renderPage([
+      session('firewall', {
+        status: 'awaiting_input',
+        permissionAwaitingInput: true,
+        pendingPermissions: ['repair'],
+        pendingPermissionRequests: [
+          {
+            toolUseId: 'repair',
+            tool: 'unknown_repair',
+            riskClass: 'ask',
+            input: {
+              summary: 'The investigation found the build failure. '.repeat(40),
+              changes: ['DNS helper'],
+            },
+          },
+        ],
+      }),
+    ]);
+    const needs = within(screen.getByTestId('work-needs-you'));
+    expect(needs.getAllByTestId('inbox-item-permission')).toHaveLength(1);
+    expect(needs.getAllByText(/^The investigation/)).toHaveLength(1);
+    expect(needs.queryByTestId('inbox-request')).toBeNull();
+    expect(needs.queryByRole('button', { name: 'Allow once' })).toBeNull();
+    fireEvent.press(needs.getByRole('button', { name: 'Review' }));
+    expect(onOpenSession).toHaveBeenCalledWith('firewall');
+    expect(client.decidePermission).not.toHaveBeenCalled();
   });
 
   it('draws a session with a question and a ready pull request as one row', async () => {
@@ -1166,23 +1202,20 @@ describe('project page', () => {
     expect(onSessionChanged).toHaveBeenCalledWith('login', false);
   });
 
-  it('links a session from Work through the session settings', async () => {
+  it('opens session settings from Work without a manual linking entry', async () => {
     const linked = session('pair', { linked: true });
     const { client } = await renderPage([running, linked]);
     Object.assign(client, {
       listProjects: jest.fn().mockResolvedValue([makeDetail().project]),
-      listSessions: jest.fn().mockResolvedValue([running, linked]),
-      listSessionLinks: jest.fn().mockResolvedValue([]),
     });
     // The linked session is quiet, so only All lists it with its marker.
     fireEvent.press(screen.getByRole('tab', { name: 'All' }));
     await act(async () => fireEvent.press(screen.getAllByLabelText('Edit')[0]!));
-    expect(screen.getByText('Linked sessions')).toBeTruthy();
-    // The link marker on a row goes straight to its links.
-    fireEvent.press(screen.getByLabelText('Close session settings'));
+    expect(screen.getByLabelText('Close session settings')).toBeTruthy();
+    // Links arise from coordination only: neither the sheet nor the row marker links by hand.
     expect(screen.queryByText('Linked sessions')).toBeNull();
-    await act(async () => fireEvent.press(screen.getByLabelText('Open linked sessions')));
-    expect(screen.getByText('Linked sessions')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('Close session settings'));
+    expect(screen.queryByLabelText('Open linked sessions')).toBeNull();
   });
 
   it('deletes a session after confirmation and tells the host which one', async () => {

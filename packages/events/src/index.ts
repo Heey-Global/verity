@@ -17,6 +17,7 @@ export {
   rateLimitWindowSchema,
   resultTelemetrySchema,
   riskClassSchema,
+  secretApprovalSourceSchema,
   toolResultRefSchema,
   usageSchema,
 } from './events.js';
@@ -148,9 +149,15 @@ export {
   type AppHelpTopic,
 } from './app-help.js';
 export {
+  ASSISTANT_GRANT_INSTRUCTIONS,
+  ASSISTANT_GRANT_LABELS,
+  ASSISTANT_GRANT_PATH,
+  ASSISTANT_SWITCH_PATH,
   ASSISTANT_SYSTEM_PROMPT,
   ASSISTANT_TOOL,
   ASSISTANT_TOOL_DESCRIPTION,
+  DELEGATED_RESULTS_MAX_AGE_DAYS,
+  DELEGATED_RESULTS_MAX_ENTRIES,
   assistantRequestSchema,
   type AssistantRequest,
 } from './assistant-tool.js';
@@ -228,6 +235,23 @@ export {
 } from './live.js';
 
 export { liveResourceInterval } from './live-resources.js';
+export {
+  DOMAIN_TOPIC_KINDS,
+  LIVE_MAX_TOPIC_SUBSCRIPTIONS,
+  TOPIC_ENDED_REASONS,
+  SESSION_SUMMARY_FIELDS,
+  domainEventSchema,
+  domainTopic,
+  domainTopicSchema,
+  parseDomainTopic,
+  PROJECTS_COLLECTION_TOPIC,
+  topicSubscriptionSchema,
+  type DomainEvent,
+  type DomainTopic,
+  type DomainTopicKind,
+  type TopicEndedReason,
+  type TopicSubscription,
+} from './domain-events.js';
 export {
   socketEvidenceRecordSchema,
   socketEvidenceMetadataSchema,
@@ -308,3 +332,12 @@ export {
   type WikiProposalDecision,
   type WikiProposalSummary,
 } from './wiki-proposals.js';
+export {
+  managedServerProviderSnapshotSchema,
+  type ManagedServerProviderSnapshot,
+} from './managed-server-provider.js';
+export {
+  formatProjectInquiryAnswerTurn,
+  parseProjectInquiryAnswerTurn,
+  type ProjectInquiryAnswerTurn,
+} from './project-inquiry-answer.js';

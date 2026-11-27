@@ -14,6 +14,7 @@ jest.mock('expo-router', () => ({
 }));
 jest.mock('../lib/tasksStore', () => ({
   useTasks: jest.fn(),
+  useTaskView: jest.fn(),
   patchTask: jest.fn(),
   refreshTasks: jest.fn(),
   removeTask: jest.fn(),
@@ -52,7 +53,7 @@ import {
 } from '../components/project/ProjectTasksRow';
 import { createVerityClient } from '../lib/client';
 import { dispatchTasks } from '../lib/taskDispatch';
-import { patchTask, useTasks } from '../lib/tasksStore';
+import { patchTask, useTaskView, useTasks } from '../lib/tasksStore';
 import { dispatchVerityShortcut } from '../lib/voiceShortcut';
 
 function task(id: string, over: Partial<Task>): Task {
@@ -284,6 +285,8 @@ it('leaves the row out while tasks are switched off', () => {
   mockEnabled.value = false;
   render(<ProjectTasksRow client={{} as VerityClient} project={projects[0]!} />);
   expect(screen.queryByText('Tasks')).toBeNull();
+  // A hidden row must not keep the task list loading and followed.
+  expect(useTaskView).toHaveBeenLastCalledWith(null, false);
 });
 
 it('adds a task through Verity from the screen’s header', () => {

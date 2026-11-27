@@ -17,6 +17,7 @@ import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
 import type { SessionStorage } from './session-storage.js';
+import { followGitHubOrigin } from './clone-origin.js';
 
 /** Why a module checkout could not be opened. A closed set, so the category can
  *  reach the sandbox and the log without carrying git output, URLs or paths. */
@@ -222,7 +223,20 @@ export function createSessionRepositories(deps: {
       const existing = (await deps.store.listSessionRepositoryWorkspaces(sessionId)).find(
         (workspace) => workspace.repositoryId === repositoryId,
       );
-      if (existing) return { workspace: existing };
+      if (existing) {
+        // A module checkout made before its repository was renamed on GitHub still
+        // names the old URL, which the broker no longer assigns. Best effort: a
+        // checkout that cannot be updated still opens as it is.
+        if (deps.cloneRoot && deps.git && repository.kind === 'github') {
+          const git = deps.git(project, projectClonePath(deps.cloneRoot, project));
+          await followGitHubOrigin(
+            async (args) => ({ stdout: await git(args), stderr: '' }),
+            existing.worktree,
+            `https://github.com/${repository.owner}/${repository.repo}.git`,
+          ).catch(() => undefined);
+        }
+        return { workspace: existing };
+      }
       if (!deps.cloneRoot || !deps.git)
         throw new RepositoryCheckoutError(
           'project sandbox unavailable',

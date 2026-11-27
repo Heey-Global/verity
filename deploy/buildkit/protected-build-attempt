@@ -69,6 +69,103 @@ def write_json(path, value):
         temporary.unlink(missing_ok=True)
 
 
+
+RUN = Path('/run')
+RESOLVER = Path('/etc/resolv.conf')
+
+
+class ResolverSetupError(ValueError):
+    """Only fixed, non-secret reason codes are carried into diagnostics."""
+    pass
+
+
+def resolver_target():
+    """Only populate resolver targets hidden by the unit's private /run tmpfs."""
+    info = RESOLVER.lstat()
+    if not stat.S_ISLNK(info.st_mode):
+        trusted(RESOLVER)
+        if not stat.S_ISREG(info.st_mode):
+            raise ResolverSetupError('invalid_resolver_file')
+        return RESOLVER
+    target = Path(os.path.normpath(RESOLVER.parent / os.readlink(RESOLVER)))
+    allowed = {RUN / name for name in (
+        'systemd/resolve/stub-resolv.conf', 'systemd/resolve/resolv.conf',
+        'NetworkManager/resolv.conf', 'NetworkManager/no-stub-resolv.conf',
+        'resolvconf/resolv.conf',
+    )}
+    if target not in allowed:
+        raise ResolverSetupError('unsupported_resolver_target')
+    # Never create a missing target on the host's /run. The launch contract
+    # supplies a private tmpfs; refuse if that contract is absent or shared.
+    mounts = [line.split() for line in Path('/proc/self/mountinfo').read_text().splitlines()]
+    if not any(len(fields) > 6 and fields[4] == str(RUN)
+               and fields[fields.index('-') + 1] == 'tmpfs'
+               and not any(value.startswith(('shared:', 'master:')) for value in fields[6:fields.index('-')])
+               for fields in mounts):
+        raise ResolverSetupError('private_runtime_missing')
+    trusted(RUN, True)
+    parent = RUN
+    for component in target.relative_to(RUN).parts[:-1]:
+        parent = parent / component
+        parent.mkdir(mode=0o755, exist_ok=True)
+        trusted(parent, True)
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        trusted(target)
+        if not stat.S_ISREG(target.lstat().st_mode):
+            raise ResolverSetupError('invalid_resolver_target')
+    else:
+        os.close(fd)
+    return target
+
+
+def mount_resolver(directory):
+    target = resolver_target()
+    resolv = directory / 'resolv.conf'
+    fd = os.open(resolv, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        stream.write('nameserver 127.0.0.1\noptions ndots:0\n')
+    subprocess.run(['/usr/bin/mount', '--bind', str(resolv), str(target)], check=True, timeout=10)
+    subprocess.run(['/usr/bin/mount', '-o', 'remount,bind,ro', str(target)], check=True, timeout=10)
+
+
+def record_failure(directory, phase, error):
+    """Fixed codes only: exception messages, argv, streams and env may contain secrets."""
+    if isinstance(error, ResolverSetupError):
+        detail = str(error) if str(error) in {
+            'invalid_resolver_file', 'unsupported_resolver_target',
+            'private_runtime_missing', 'invalid_resolver_target',
+        } else 'invalid_setup'
+    elif isinstance(error, subprocess.CalledProcessError):
+        detail = 'command_exit=' + str(int(error.returncode))
+    elif isinstance(error, subprocess.TimeoutExpired):
+        detail = 'command_timeout'
+    elif isinstance(error, OSError):
+        detail = 'os_errno=' + str(error.errno if isinstance(error.errno, int) else 'unknown')
+    elif isinstance(error, ValueError):
+        detail = 'invalid_setup'
+    else:
+        detail = 'operation_failed'
+    diagnostic = ('Protected build phase=' + phase + ' failed: ' + detail + '\n').encode()
+    # Build output was already credential-redacted before being written. Early
+    # setup has no output file, so it still gets a durable, bounded diagnostic.
+    previous = b''
+    path = directory / 'build.log'
+    if path.exists():
+        trusted(path)
+        with path.open('rb') as stream:
+            previous = stream.read(262144)
+    temporary = directory / 'build.log.tmp'
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(diagnostic + previous[:262144 - len(diagnostic)])
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def dns_answer(query, socket_path):
     """Answer only a single ordinary A/AAAA question from host-admitted records."""
     if len(query) < 12 or len(query) > 4096:
@@ -178,74 +275,85 @@ def run(descriptor_id):
     workspace = trusted(directory / 'workspace', True)
     project = hashlib.sha256(request['projectId'].encode()).hexdigest()
     cache = trusted(trusted(ROOT / 'projects', True) / project, True)
-    # Only the host supervisor enters this outer Docker namespace. The anchor
-    # supplies identity, never a Docker socket or workload filesystem.
-    expected_namespace = load(directory / 'namespace.json')
-    if set(expected_namespace) != {'identity'} or os.readlink('/proc/self/ns/net') != expected_namespace['identity']:
-        raise ValueError('Protected build namespace mismatch')
-    runtime = directory / 'run'
-    runtime.mkdir(mode=0o700, exist_ok=True)
-    trusted(runtime, True)
-    Path('/run/verity-buildkit').mkdir(mode=0o755, exist_ok=True)
-    subprocess.run(['/usr/bin/mount', '--bind', str(runtime), '/run/verity-buildkit'], check=True, timeout=10)
-    resolv = directory / 'resolv.conf'
-    resolv.write_text('nameserver 127.0.0.1\noptions ndots:0\n')
-    os.chmod(resolv, 0o600)
-    subprocess.run(['/usr/bin/mount', '--bind', str(resolv), '/etc/resolv.conf'], check=True, timeout=10)
-    subprocess.run(['/usr/bin/mount', '-o', 'remount,bind,ro', '/etc/resolv.conf'], check=True, timeout=10)
-    dns_servers = start_dns(directory / 'n')
-    config_dir = directory / 'docker-config'
-    config_dir.mkdir(mode=0o700, exist_ok=True)
-    auth = load(directory / 'registry.json') if (directory / 'registry.json').exists() else {'auths': {}}
-    if set(auth) != {'auths'} or not isinstance(auth['auths'], dict) or set(auth['auths']) - {'ghcr.io'}:
-        raise ValueError('Invalid protected build registry scope')
-    for value in auth['auths'].values():
-        if not isinstance(value, dict) or set(value) != {'auth'} or not isinstance(value['auth'], str):
-            raise ValueError('Invalid protected build registry credential')
-    auth['cliPluginsExtraDirs'] = [str(TOOLS)]
-    write_json(config_dir / 'config.json', auth)
-    env = {'PATH': str(TOOLS) + ':/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': str(config_dir),
-           'DOCKER_HOST': 'unix://' + str(directory / 'd'), 'DOCKER_CONFIG': str(config_dir),
-           'DOCKER_BUILDKIT': '1', 'BUILDX_BUILDER': 'verity-protected'}
-    # Separate metadata daemon: image/feature resolution cannot make the host
-    # Engine perform unrestricted pulls on this attempt's behalf.
-    write_json(directory / 'daemon.json', {})
-    dockerd = ['/usr/bin/dockerd', '--config-file', str(directory / 'daemon.json'),
-               '--host', env['DOCKER_HOST'], '--data-root', str(cache / 'docker'),
-               '--exec-root', '/run/verity-buildkit/docker-exec', '--pidfile', str(directory / 'docker.pid'),
-               '--bridge=none', '--iptables=false', '--ip6tables=false', '--ip-forward=false',
-               '--ip-masq=false', '--userland-proxy=false']
-    cni = load(directory / 'cni.json')
-    # The host writes a fixed CNI contract; never accept plugin executables or
-    # plugin arguments from the snapshot/descriptor.
-    if cni != {'cniVersion': '1.0.0', 'name': 'verity-protected-build', 'plugins': [
-        {'type': 'bridge', 'bridge': 'vbki0', 'isGateway': True, 'ipMasq': True,
-         'ipam': {'type': 'host-local', 'subnet': '10.215.0.0/24', 'routes': [{'dst': '0.0.0.0/0'}], 'dataDir': str(directory / 'cni-state')}},
-        {'type': 'loopback'}]}:
-        raise ValueError('Invalid protected build CNI contract')
-    toml = ('root = ' + json.dumps(str(cache / 'buildkit')) + '\ninsecure-entitlements = []\n'
-            '[grpc]\naddress = [' + json.dumps('unix://' + str(directory / 'b')) + ']\n'
-            '[dns]\nnameservers = ["10.215.0.1"]\noptions = ["ndots:0"]\n'
-            '[worker.oci]\nenabled = true\nnetworkMode = "cni"\n'
-            'cniConfigPath = ' + json.dumps(str(directory / 'cni.json')) + '\n'
-            'cniBinaryPath = "/usr/local/libexec/verity-buildkit/cni"\n'
-            'binary = "/usr/local/libexec/verity-buildkit/runsc"\n'
-            'snapshotter = "auto"\nmax-parallelism = 1\nnoProcessSandbox = false\ngc = true\n'
-            '[worker.containerd]\nenabled = false\n')
-    (directory / 'buildkitd.toml').write_text(toml)
-    os.chmod(directory / 'buildkitd.toml', 0o600)
+    run_attempt(directory, workspace, cache, request, feature, policy)
+
+
+def run_attempt(directory, workspace, cache, request, feature, policy):
+    phase = 'namespace_check'
     children = []
+    dns_servers = []
+    config_dir = directory / 'docker-config'
     succeeded = False
     try:
+        # Only the host supervisor enters this outer Docker namespace. The anchor
+        # supplies identity, never a Docker socket or workload filesystem.
+        expected_namespace = load(directory / 'namespace.json')
+        if set(expected_namespace) != {'identity'} or os.readlink('/proc/self/ns/net') != expected_namespace['identity']:
+            raise ValueError('Protected build namespace mismatch')
+        phase = 'runtime_mount'
+        runtime = directory / 'run'
+        runtime.mkdir(mode=0o700, exist_ok=True)
+        trusted(runtime, True)
+        (RUN / 'verity-buildkit').mkdir(mode=0o755, exist_ok=True)
+        subprocess.run(['/usr/bin/mount', '--bind', str(runtime), '/run/verity-buildkit'], check=True, timeout=10)
+        phase = 'resolver_mount'
+        mount_resolver(directory)
+        phase = 'dns_start'
+        dns_servers = start_dns(directory / 'n')
+        phase = 'daemon_config'
+        config_dir = directory / 'docker-config'
+        config_dir.mkdir(mode=0o700, exist_ok=True)
+        auth = load(directory / 'registry.json') if (directory / 'registry.json').exists() else {'auths': {}}
+        if set(auth) != {'auths'} or not isinstance(auth['auths'], dict) or set(auth['auths']) - {'ghcr.io'}:
+            raise ValueError('Invalid protected build registry scope')
+        for value in auth['auths'].values():
+            if not isinstance(value, dict) or set(value) != {'auth'} or not isinstance(value['auth'], str):
+                raise ValueError('Invalid protected build registry credential')
+        auth['cliPluginsExtraDirs'] = [str(TOOLS)]
+        write_json(config_dir / 'config.json', auth)
+        env = {'PATH': str(TOOLS) + ':/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'HOME': str(config_dir),
+               'DOCKER_HOST': 'unix://' + str(directory / 'd'), 'DOCKER_CONFIG': str(config_dir),
+               'DOCKER_BUILDKIT': '1', 'BUILDX_BUILDER': 'verity-protected'}
+        # Separate metadata daemon: image/feature resolution cannot make the host
+        # Engine perform unrestricted pulls on this attempt's behalf.
+        write_json(directory / 'daemon.json', {})
+        dockerd = ['/usr/bin/dockerd', '--config-file', str(directory / 'daemon.json'),
+                   '--host', env['DOCKER_HOST'], '--data-root', str(cache / 'docker'),
+                   '--exec-root', '/run/verity-buildkit/docker-exec', '--pidfile', str(directory / 'docker.pid'),
+                   '--bridge=none', '--iptables=false', '--ip6tables=false', '--ip-forward=false',
+                   '--ip-masq=false', '--userland-proxy=false']
+        cni = load(directory / 'cni.json')
+        # The host writes a fixed CNI contract; never accept plugin executables or
+        # plugin arguments from the snapshot/descriptor.
+        if cni != {'cniVersion': '1.0.0', 'name': 'verity-protected-build', 'plugins': [
+            {'type': 'bridge', 'bridge': 'vbki0', 'isGateway': True, 'ipMasq': True,
+             'ipam': {'type': 'host-local', 'subnet': '10.215.0.0/24', 'routes': [{'dst': '0.0.0.0/0'}], 'dataDir': str(directory / 'cni-state')}},
+            {'type': 'loopback'}]}:
+            raise ValueError('Invalid protected build CNI contract')
+        toml = ('root = ' + json.dumps(str(cache / 'buildkit')) + '\ninsecure-entitlements = []\n'
+                '[grpc]\naddress = [' + json.dumps('unix://' + str(directory / 'b')) + ']\n'
+                '[dns]\nnameservers = ["10.215.0.1"]\noptions = ["ndots:0"]\n'
+                '[worker.oci]\nenabled = true\nnetworkMode = "cni"\n'
+                'cniConfigPath = ' + json.dumps(str(directory / 'cni.json')) + '\n'
+                'cniBinaryPath = "/usr/local/libexec/verity-buildkit/cni"\n'
+                'binary = "/usr/local/libexec/verity-buildkit/runsc"\n'
+                'snapshotter = "auto"\nmax-parallelism = 1\nnoProcessSandbox = false\ngc = true\n'
+                '[worker.containerd]\nenabled = false\n')
+        (directory / 'buildkitd.toml').write_text(toml)
+        os.chmod(directory / 'buildkitd.toml', 0o600)
+        phase = 'daemon_start'
         for command in [dockerd, [str(LIB / 'buildkitd'), '--config', str(directory / 'buildkitd.toml'), '--otel-socket-path', str(directory / 'o')]]:
             children.append(subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        phase = 'daemon_ready'
         deadline = time.monotonic() + 60
         while not (directory / 'd').is_socket() or not (directory / 'b').is_socket():
             if any(child.poll() is not None for child in children) or time.monotonic() > deadline:
                 raise RuntimeError('Protected build daemons did not become ready')
             time.sleep(.1)
+        phase = 'buildx_prepare'
         subprocess.run(['/usr/bin/docker', 'buildx', 'create', '--name', 'verity-protected', '--driver', 'remote', 'unix://' + str(directory / 'b')], env=env, check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(['/usr/bin/docker', 'buildx', 'inspect', 'verity-protected', '--bootstrap'], env=env, check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        phase = 'image_build'
         command = [str(TOOLS / 'node'), str(TOOLS / 'devcontainer.js'), 'build', '--workspace-folder', str(workspace), '--config', str(workspace / '.devcontainer/devcontainer.json'), '--image-name', request['image'], '--additional-features', json.dumps({policy['nodeFeature']: policy['nodeOptions'], feature: policy['toolkitOptions']}), '--output', 'type=docker,dest=' + str(directory / 'image.tar')]
         if request['noCache']:
             command.append('--no-cache')
@@ -277,6 +385,9 @@ def run(descriptor_id):
             raise RuntimeError('Protected devcontainer build failed')
         trusted(directory / 'image.tar')
         succeeded = True
+    except Exception as error:
+        record_failure(directory, phase, error)
+        raise
     finally:
         for child in reversed(children):
             if child.poll() is None:
@@ -295,8 +406,6 @@ def run(descriptor_id):
             server.server_close()
         for secret in [directory / 'registry.json', config_dir / 'config.json']:
             secret.unlink(missing_ok=True)
-    if not succeeded:
-        raise RuntimeError('Protected build failed')
 
 
 if __name__ == '__main__':

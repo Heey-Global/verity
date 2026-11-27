@@ -466,8 +466,17 @@ on-demand reads under D2: every invocation raises a fresh card, neither supports
 a standing grant, and callers must not poll them.
 
 Handoffs no longer use a project name to choose among multiple sessions. The
-Control session lists the eligible sessions and presents those exact ids plus a
-New session option. The approved handoff then names either that `sessionId` or
+Control session lists the eligible sessions and presents their visible names plus
+a New session option. Duplicate or missing names are distinguished by project and
+last activity; unresolved ambiguity requires clarification. IDs remain internal
+routing keys. The approval-gated listing includes visible names, including
+auto-generated titles, which can reveal conversation context and are treated as
+untrusted display data. Caller and target access checks remain unchanged. An
+optional `sessionName` on an existing-session target requires its listed
+`sessionProject` and `sessionLastActivityAt` as distinguishing approval-card
+context. All three must match before delivery, and the displayed context must
+identify exactly one accessible session in that project. Stale or colliding
+context fails closed; legacy ID-only targets remain supported. The approved handoff then names either that `sessionId` or
 `newSession.project`; the latter creates the session and delivers the briefing as
 its first turn. A bare project target remains compatible only when exactly one
 eligible session exists and fails closed otherwise.

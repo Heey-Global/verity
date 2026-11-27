@@ -170,6 +170,7 @@ export const PROJECT_UDS_ROUTES: ReadonlySet<string> = new Set([
   // `verity-repo`: pull requests and issues through the project's code host.
   'POST /internal/project/repo',
   'POST /internal/package-install',
+  'POST /internal/dependency-storage',
   'GET /internal/package-artifacts/*',
   'HEAD /internal/package-artifacts/*',
   'HEAD /internal/package-artifacts/authority',

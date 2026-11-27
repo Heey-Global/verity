@@ -427,7 +427,7 @@ export function startWatchInbox(): () => void {
         .pendingInboxActions()
         .then(async (requests) => {
           for (const request of requests) {
-            const result = await performWatchInboxAction(request, createVerityClient());
+            const result = await performWatchInboxAction(request, createVerityClient('watch'));
             await native.completeInboxAction!(request.id, result);
           }
         })

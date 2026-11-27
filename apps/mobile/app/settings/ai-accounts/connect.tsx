@@ -33,9 +33,16 @@ export default function ConnectProviderScreen() {
   return <ConnectProviderView client={client} provider={provider} />;
 }
 
-/** Where the sign-in page lives, without the scheme, for the button label. */
-function shortUri(uri: string): string {
-  return uri.replace(/^https?:\/\//u, '');
+/**
+ * The sign-in page's host, for the button label. Claude's authorization URL
+ * runs to several hundred characters of query and would fill the screen.
+ */
+function signInHost(uri: string): string {
+  try {
+    return new URL(uri).host || 'the sign-in page';
+  } catch {
+    return 'the sign-in page';
+  }
 }
 
 export function ConnectProviderView({
@@ -125,7 +132,7 @@ export function ConnectProviderView({
             1 · Open the sign-in page
           </Text>
           <Button
-            label={`Open ${shortUri(login.verificationUri)}`}
+            label={`Open ${signInHost(login.verificationUri)}`}
             onPress={() => void Linking.openURL(login.verificationUri ?? '')}
             fullWidth
           />

@@ -268,6 +268,8 @@ printf '%s\\n' '2: eth0 inet 10.0.0.10/24 scope global eth0' '3: eth1 inet 192.1
       `if [ -e "$volume_removed" ] && [[ $argv == volume\\ ls* ]]; then exit 0; fi\n` +
       `if [[ $argv == version* ]]; then echo '27.1.0'; exit 0; fi\n` +
       branches +
+      // An early exit can give the pairing URI writer SIGPIPE under pipefail.
+      `if [[ $1 == run && $argv == *packages/server/dist/pairing-qr.js ]]; then cat >/dev/null; exit $?; fi\n` +
       `if [[ $argv == ps*label=com.docker.compose.service=postgres* ]]; then echo 'verity-postgres-1'; exit 0; fi\n` +
       `exit 0\n`,
     { mode: 0o755 },

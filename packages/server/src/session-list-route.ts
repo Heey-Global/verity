@@ -1,7 +1,24 @@
+import { conditionalJsonRoute } from './conditional-json.js';
+import { planningPresented } from './session-row.js';
 import { measureLatencyPhase, type EventStore, type SessionRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import type { AttentionSignal } from './attention.js';
+import {
+  openSubmissionViews,
+  submissionAddressedTo,
+  type ChangeSubmissionStore,
+  type ChangeSubmissionView,
+  type SubmissionListDeps,
+} from './change-submissions.js';
 import type { SessionSummary, SessionListEnvelope } from './server-types.js';
+import {
+  addressedTo,
+  addressRequests,
+  holdsCode,
+  viewerCodeRights,
+  type RequestAddressing,
+  type RequestAddressingDeps,
+} from './session-request-addressees.js';
 import { viewerId } from './view-state-routes.js';
 
 export interface SessionListRouteDeps {
@@ -10,6 +27,8 @@ export interface SessionListRouteDeps {
   pruneBranchCache: (liveWorktrees: ReadonlySet<string>) => void;
   summarizeSessions: (sessions: SessionRecord[]) => Promise<SessionSummary[]>;
   collectAttention: () => Promise<AttentionSignal[]>;
+  /** The revision each session's latest `session.summary` took. */
+  summaryRevision?: (sessionId: string) => number | undefined;
   /** Sessions the server runs for itself (Wiki maintenance); no list shows them. */
   hiddenSessionIds?: () => Promise<ReadonlySet<string>>;
   /**
@@ -22,9 +41,34 @@ export interface SessionListRouteDeps {
   ) => Promise<
     { all: true } | { all: false; projectIds: ReadonlySet<string>; unassigned: boolean }
   >;
+  /** Address each session's requests to a person (ADR 0023). Absent → every
+   *  request is for everyone, as for the single operator. */
+  requestAddressing?: RequestAddressingDeps;
+  /** Changes members submitted for review (ADR 0023). Absent → none listed. */
+  changeSubmissions?: SubmissionListDeps;
 }
 
-export function registerSessionListRoute(app: FastifyInstance, deps: SessionListRouteDeps): void {
+interface SessionListLoad {
+  summaries: SessionSummary[];
+  addressing: ReadonlyMap<string, RequestAddressing>;
+  submissions: ReadonlyMap<string, ChangeSubmissionView>;
+}
+
+/**
+ * Sessions as one person's lists show them: every session they may see, or
+ * those of one project. `/sessions` and the project page both answer with it,
+ * so the app's one copy of a session (ADR 0033) has the same fields whichever
+ * list read it last, and both leave out the same sessions.
+ */
+export type SessionListReader = (
+  localUserId: string | null | undefined,
+  projectId?: string,
+) => Promise<SessionSummary[]>;
+
+export function registerSessionListRoute(
+  app: FastifyInstance,
+  deps: SessionListRouteDeps,
+): SessionListReader {
   /**
    * The session list, and — only when the client asks for the envelope — the
    * server-level {@link AttentionSignal}s alongside it.
@@ -39,28 +83,62 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
    */
   // Only concurrent computations share work; a completed read is never cached.
   // Authentication hooks still run independently before every handler invocation.
-  let inFlight: Promise<SessionSummary[]> | undefined;
-  const load = async (): Promise<SessionSummary[]> => {
+  let inFlight: Promise<SessionListLoad> | undefined;
+  // One project's sessions (the project page) are loaded on their own; only
+  // the full list knows which worktrees are gone from the caches.
+  const load = async (projectId?: string): Promise<SessionListLoad> => {
     const [all, hidden] = await Promise.all([
       measureLatencyPhase('session_list', () => deps.store.listSessions()),
       deps.hiddenSessionIds?.(),
     ]);
-    const sessions = all.filter((session) => !hidden?.has(session.sessionId));
-    const liveWorktrees = new Set(sessions.map((s) => s.worktree));
-    deps.prunePrSummaryCache(liveWorktrees);
-    deps.pruneBranchCache(liveWorktrees);
+    const sessions = all.filter(
+      (session) =>
+        !hidden?.has(session.sessionId) &&
+        (projectId === undefined || session.projectId === projectId),
+    );
+    if (projectId === undefined) {
+      const liveWorktrees = new Set(sessions.map((s) => s.worktree));
+      deps.prunePrSummaryCache(liveWorktrees);
+      deps.pruneBranchCache(liveWorktrees);
+    }
+    // Taken before the rows are computed: the revision of the latest row whose
+    // computation began. A row that began later has a higher revision and may
+    // hold a later state, so views apply it; one that began before is dropped,
+    // and a change after it schedules a later row.
+    const revisions = new Map(
+      sessions.map((session) => [session.sessionId, deps.summaryRevision?.(session.sessionId)]),
+    );
     const summaries = await measureLatencyPhase('session_summaries', () =>
       deps.summarizeSessions(sessions),
     );
+    for (const summary of summaries) {
+      const revision = revisions.get(summary.sessionId);
+      if (revision !== undefined) summary.summaryRev = revision;
+    }
     const linked = await deps.store.linkedSessionIds();
     for (const summary of summaries) {
       if (linked.has(summary.sessionId)) summary.linked = true;
     }
     const orders = await deps.store.sessionSortOrders(sessions);
     for (const summary of summaries) summary.sortOrder = orders.get(summary.sessionId) ?? null;
-    return summaries;
+    // Addressing only narrows Home; a failed rights check must not take the list
+    // down for everyone, so it falls back to everything for everyone.
+    const addressing = deps.requestAddressing
+      ? await addressRequests(deps.requestAddressing, summaries).catch((error: unknown) => {
+          app.log.warn({ err: error }, 'verity: could not address session requests');
+          return new Map<string, RequestAddressing>();
+        })
+      : new Map<string, RequestAddressing>();
+    // Like addressing, a failed read leaves the list up without submissions.
+    const submissions = deps.changeSubmissions
+      ? await openSubmissionViews(deps.changeSubmissions, summaries).catch((error: unknown) => {
+          app.log.warn({ err: error }, 'verity: could not read change submissions');
+          return new Map<string, ChangeSubmissionView>();
+        })
+      : new Map<string, ChangeSubmissionView>();
+    return { summaries, addressing, submissions };
   };
-  const sharedLoad = (): Promise<SessionSummary[]> => {
+  const sharedLoad = (): Promise<SessionListLoad> => {
     if (inFlight !== undefined) return inFlight;
     const read = load();
     inFlight = read;
@@ -71,10 +149,10 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
       .catch(() => undefined);
     return read;
   };
-  app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
-    const viewer = viewerId(request);
-    const [all, views, scope] = await Promise.all([
-      sharedLoad(),
+  const listAs = async (localUserId: string | null | undefined, projectId?: string) => {
+    const viewer = viewerId({ localUserId });
+    const [{ summaries: all, addressing, submissions }, views, scope] = await Promise.all([
+      projectId === undefined ? sharedLoad() : load(projectId),
       deps.store.viewState.sessionViews(viewer),
       deps.visibleTo?.(viewer) ?? Promise.resolve({ all: true as const }),
     ]);
@@ -87,30 +165,83 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
     // The shared load may serve several people at once, so each answer gets its
     // own copies carrying the requester's read mark and dismissed Home items.
     // A session this person never touched is unread-neutral and hides nothing.
-    const summaries = shared.map(({ planningPlan, ...summary }): SessionSummary => {
-      const view = views.get(summary.sessionId);
-      return {
-        ...summary,
-        // The plan text can run to pages and this route is polled by every
-        // device; an overview only needs to know that a plan waits for approval.
-        ...(summary.planning === 'active' && planningPlan != null
-          ? { planningPresented: true as const }
-          : {}),
-        lastSeenEventCount: view?.lastSeenEventCount ?? null,
-        inboxDismissed: view?.inboxDismissed ?? [],
-      };
-    });
-    if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
-    // Server attention signals are the administrator's to act on.
-    const attention =
-      scope.all || scope.unassigned
-        ? await measureLatencyPhase('session_attention', deps.collectAttention)
-        : [];
-    // Absent when healthy, so the envelope stays quiet in the steady state.
-    return {
-      sessions: summaries,
-      sessionReordering: true,
-      ...(attention.length > 0 ? { attention } : {}),
+    // Without accounts every request is the one operator's, so nothing is addressed.
+    const personal =
+      deps.requestAddressing !== undefined && localUserId != null
+        ? { holdsCode: viewerCodeRights(deps.requestAddressing, viewer) }
+        : undefined;
+    const reviewers = new Map<string | null, Promise<boolean>>();
+    const reviewerRights = (store: ChangeSubmissionStore, sessionProject: string | null) => {
+      let held = reviewers.get(sessionProject);
+      if (held === undefined) {
+        held = holdsCode(store, viewer, sessionProject).catch(() => false);
+        reviewers.set(sessionProject, held);
+      }
+      return held;
     };
-  });
+    const submissionFor = async (
+      summary: SessionSummary,
+    ): Promise<Pick<SessionSummary, 'changeSubmission'>> => {
+      const view = submissions.get(summary.sessionId);
+      if (view === undefined) return {};
+      if (personal === undefined || deps.changeSubmissions === undefined)
+        return { changeSubmission: view };
+      // Unlike a permission prompt, a review is only offered on confirmed Code.
+      const holds = await reviewerRights(deps.changeSubmissions.store, summary.projectId);
+      return {
+        changeSubmission: {
+          ...view,
+          addressedToViewer: submissionAddressedTo(viewer, view, holds),
+        },
+      };
+    };
+    const summaries = await Promise.all(
+      shared.map(
+        async ({
+          planningPlan,
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure-omit
+          requestInitiator,
+          ...summary
+        }): Promise<SessionSummary> => {
+          const view = views.get(summary.sessionId);
+          return {
+            ...summary,
+            ...planningPresented({ planning: summary.planning, planningPlan }),
+            lastSeenEventCount: view?.lastSeenEventCount ?? null,
+            inboxDismissed: view?.inboxDismissed ?? [],
+            ...(await submissionFor(summary)),
+            ...(personal === undefined
+              ? {}
+              : await addressedTo(
+                  viewer,
+                  summary,
+                  addressing.get(summary.sessionId),
+                  personal.holdsCode,
+                )),
+          };
+        },
+      ),
+    );
+    return { summaries, scope };
+  };
+  app.get(
+    '/sessions',
+    conditionalJsonRoute,
+    async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
+      const { summaries, scope } = await listAs(request.localUserId);
+      if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
+      // Server attention signals are the administrator's to act on.
+      const attention =
+        scope.all || scope.unassigned
+          ? await measureLatencyPhase('session_attention', deps.collectAttention)
+          : [];
+      // Absent when healthy, so the envelope stays quiet in the steady state.
+      return {
+        sessions: summaries,
+        sessionReordering: true,
+        ...(attention.length > 0 ? { attention } : {}),
+      };
+    },
+  );
+  return async (localUserId, projectId) => (await listAs(localUserId, projectId)).summaries;
 }

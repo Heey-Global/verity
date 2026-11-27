@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { ProtectedBuildFailure, ProtectedBuildStageError } from './project-egress-build-error.js';
+import {
+  ProtectedBuildFailure,
+  ProtectedBuildStageError,
+  protectedBuildAuthorityFailureStep,
+} from './project-egress-build-error.js';
 import {
   protectedBuildRequest,
   type ProtectedBuildRequest,
@@ -151,14 +155,39 @@ export function createProtectedBuildRuntime(io: ProtectedBuildRuntimeIO): Protec
         });
       const saved: ProtectedBuildRuntimeState = { request, anchor, launched: false };
       await io.save(saved);
-      await io.authority.prepare(anchor).catch((cause: unknown) => {
-        throw new ProtectedBuildFailure('authority_prepare_failed', { cause });
-      });
-      await io
-        .prepareFiles(request, protectedBuildLaunch(request, anchor))
-        .catch((cause: unknown) => {
+      const launch = protectedBuildLaunch(request, anchor);
+      try {
+        await io.authority.prepare(anchor).catch((cause: unknown) => {
+          throw new ProtectedBuildFailure('authority_prepare_failed', {
+            cause,
+            detail: protectedBuildAuthorityFailureStep(cause),
+          });
+        });
+        await io.prepareFiles(request, launch).catch((cause: unknown) => {
           throw new ProtectedBuildFailure('files_prepare_failed', { cause });
         });
+      } catch (error) {
+        const failure = error as ProtectedBuildFailure;
+        // Nothing was launched or admitted yet: the bridge is outside the active
+        // set, so the bootstrap fence still drops its traffic. Remove the attempt
+        // now instead of leaving its anchor, network, inspection binding and state
+        // to the cleanup sweep. A failed step keeps the saved state, so the regular
+        // removal retries it with the same identity checks.
+        try {
+          await io.authority.release(anchor);
+          await io.networks.remove(anchor, () => io.ended(launch.unit));
+          await io.cleanup(request, launch);
+        } catch (rollback) {
+          throw new ProtectedBuildFailure(failure.reason, {
+            cause: new AggregateError([
+              failure.cause,
+              new ProtectedBuildStageError('prepare.rollback', { cause: rollback }),
+            ]),
+            detail: failure.detail,
+          });
+        }
+        throw failure;
+      }
     },
     async renew(request) {
       const saved = await state(request);

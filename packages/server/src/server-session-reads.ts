@@ -1,4 +1,5 @@
 import { registerAttachmentRoute } from './attachment-route.js';
+import { diskSpaceAt } from './disk-space.js';
 import type { FastifyInstance } from 'fastify';
 import {
   attentionSignals,
@@ -24,7 +25,7 @@ import type { SessionDetail } from './server-types.js';
 import type { ServerUpdateController } from './server-update-routes.js';
 import { sessionGoogleStatus } from './session-google-status.js';
 import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
-import { registerSessionListRoute } from './session-list-route.js';
+import { registerSessionListRoute, type SessionListReader } from './session-list-route.js';
 import { recentSessionDiagnostics } from './session-observation.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
@@ -38,9 +39,11 @@ type HasMeetingJob = (sessionId: string) => boolean;
 export interface SessionListWiring {
   codexUsage: Pick<CodexUsageService, 'health'>;
   wikiMaintenanceSessions: Set<string>;
+  /** See `SessionListRouteDeps.summaryRevision`. */
+  summaryRevision: (sessionId: string) => number | undefined;
   sessionOverview: Pick<
     SessionOverview,
-    'prunePrSummaryCache' | 'pruneBranchCache' | 'summarizeSessions'
+    'prunePrSummaryCache' | 'pruneBranchCache' | 'summarizeSessions' | 'sessionPrCache'
   >;
 }
 
@@ -52,8 +55,8 @@ export interface SessionListWiring {
 export function installSessionList(
   app: FastifyInstance,
   ctx: ServerContext,
-  { codexUsage, wikiMaintenanceSessions, sessionOverview }: SessionListWiring,
-): { readSecretStatus: () => Promise<SecretStatus> } {
+  { codexUsage, wikiMaintenanceSessions, sessionOverview, summaryRevision }: SessionListWiring,
+): { readSecretStatus: () => Promise<SecretStatus>; listSessionsAs: SessionListReader } {
   const { deps } = ctx;
   const { prunePrSummaryCache, pruneBranchCache, summarizeSessions } = sessionOverview;
   // Project list / status badges + token totals — a read-time projection over
@@ -122,6 +125,23 @@ export function installSessionList(
    * unreadable probe degrades to "nothing to report" for that one condition.
    */
   let codexHealthReadFailed = false;
+  // Measured at most once a minute: the list is polled every two seconds per
+  // device, and disk space does not change meaningfully faster than that.
+  let storage: { freeBytes: number; totalBytes: number } | undefined;
+  let storageReadAt = 0;
+  const dataRoot = deps.dataRoot;
+  const diskSpace =
+    deps.diskSpace ?? (dataRoot === undefined ? undefined : () => diskSpaceAt(dataRoot));
+  const readStorage = async () => {
+    if (diskSpace === undefined || Date.now() - storageReadAt < 60_000) return storage;
+    storageReadAt = Date.now();
+    // Inside the promise chain, so a probe that throws before returning its
+    // promise degrades like one that rejects instead of failing the list.
+    storage = await Promise.resolve()
+      .then(diskSpace)
+      .catch(() => undefined);
+    return storage;
+  };
   const collectAttention = async (): Promise<AttentionSignal[]> => {
     const secretStatus = await readSecretStatus().catch((): SecretStatus => 'unmanaged');
     const controller = deps.serverUpdateController;
@@ -156,12 +176,19 @@ export function installSessionList(
       else app.log.warn({ err }, 'verity: codex usage health read failed; omitting from attention');
       codexHealthReadFailed = true;
     }
-    return attentionSignals({ secretStatus, updater, codexUsage: usage, now: Date.now() });
+    return attentionSignals({
+      secretStatus,
+      updater,
+      codexUsage: usage,
+      storage: await readStorage(),
+      now: Date.now(),
+    });
   };
 
   registerSessionOrderRoute(app, { store: deps.eventStore });
-  registerSessionListRoute(app, {
+  const listSessionsAs = registerSessionListRoute(app, {
     store: deps.eventStore,
+    summaryRevision,
     visibleTo: async (viewer) => {
       if (await deps.eventStore.isActiveAdministrator(viewer)) return { all: true };
       return {
@@ -170,6 +197,11 @@ export function installSessionList(
         unassigned: false,
       };
     },
+    requestAddressing: { store: deps.eventStore },
+    changeSubmissions: {
+      store: deps.eventStore,
+      pullRequest: (session) => sessionOverview.sessionPrCache.get(session),
+    },
     prunePrSummaryCache,
     pruneBranchCache,
     summarizeSessions,
@@ -177,15 +209,20 @@ export function installSessionList(
     // From the store, so a session another server generation created is hidden
     // too; the local set covers one created moments ago and not yet recorded.
     hiddenSessionIds: async () => {
-      const recorded = await deps.eventStore.wikiMaintenance.sessionIds();
-      for (const id of recorded) wikiMaintenanceSessions.add(id);
-      for (const id of wikiMaintenanceSessions) recorded.add(id);
-      return recorded;
+      const { wikiSessionIds, assistantSessionId } =
+        await deps.eventStore.wikiMaintenance.sessionListExclusions();
+      for (const id of wikiSessionIds) wikiMaintenanceSessions.add(id);
+      for (const id of wikiMaintenanceSessions) wikiSessionIds.add(id);
+      // Verity's conversation lives behind the V, approvals included; listing its session
+      // too put each approval in two places. Switched off, it is listed again, so its
+      // history stays reachable while the V cannot open it.
+      if (assistantSessionId !== null) wikiSessionIds.add(assistantSessionId);
+      return wikiSessionIds;
     },
   });
 
   registerMessageSearchRoute(app, { eventStore: deps.eventStore });
-  return { readSecretStatus };
+  return { readSecretStatus, listSessionsAs };
 }
 
 /** Closures `buildServer` still owns that the session reads depend on. */
@@ -247,6 +284,7 @@ export function installSessionReads(
     getSession: async (id, viewer): Promise<SessionDetail | undefined> => {
       const session = await deps.eventStore.getSession(id);
       if (!session) return undefined;
+      await conductor.refreshDetachedPermissions?.(id);
       // Opening a session hits this route first, and the transcript arrives over a
       // separate paged read — so hydrating the whole log here bought nothing but
       // latency in front of the first paint. The header's status, usage,
@@ -270,7 +308,7 @@ export function installSessionReads(
         facts.lastEventSeq === 0 ? 0 : 1,
       );
       const status =
-        pendingLinks.length > 0
+        pendingPermissions.length > 0
           ? 'awaiting_input'
           : projectedStatus === 'awaiting_input' &&
               permissionEventAwaitsInput(events) &&
@@ -291,6 +329,7 @@ export function installSessionReads(
         googleStatus: await sessionGoogleStatus(deps.eventStore, id, viewer ?? undefined),
         status,
         pendingPermissions,
+        pendingPermissionRequests: conductor.detachedPermissionRequests?.(id) ?? [],
         ...(status === 'awaiting_input' && pendingPermissions.length > 0
           ? { permissionAwaitingInput: true as const }
           : {}),
@@ -301,6 +340,7 @@ export function installSessionReads(
         eventCount: facts.eventCount,
         agentTextCounterVersion: 'agent-text-v2',
         lastActivityAt: facts.lastActivityAt,
+        lastMessageAt: facts.lastMessageAt,
         busy: conductor.isBusy(id) || hasMeetingJob(id),
         queued: conductor.queuedItems(id),
       };
@@ -344,12 +384,14 @@ export function installSessionHistory(
   app.register((instance, _opts, done) => {
     registerSessionHistoryRoutes(instance, {
       activity: async (reply, id) => {
+        await conductor.refreshDetachedPermissions?.(id);
         const pendingLinks =
           (await deps.eventStore.pendingSessionLinkMessageIds([id])).get(id) ?? [];
         const base = {
           busy: conductor.isBusy(id) || hasMeetingJob(id),
           queued: conductor.queuedItems(id),
           pendingPermissions: [...new Set([...conductor.pendingPermissions(id), ...pendingLinks])],
+          pendingPermissionRequests: conductor.detachedPermissionRequests?.(id) ?? [],
           modelSwitchPending:
             conductor.hasDeferredAfterCurrentTurn(id) || conductor.isBackendHandoffPending(id),
           // Busy for a reason the operator cannot see otherwise: a stop that could not
@@ -486,6 +528,6 @@ export function installSessionAttachments(app: FastifyInstance, ctx: ServerConte
   // Content-addressed → the bytes for a given id never change, so it's cached
   // forever (immutable). 404 for an unknown hash.
   registerAttachmentRoute(app, {
-    getAttachment: (hash) => ctx.deps.eventStore.getAttachment(hash),
+    getAttachment: (hash, maxBytes) => ctx.deps.eventStore.getAttachment(hash, maxBytes),
   });
 }

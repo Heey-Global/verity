@@ -25,7 +25,11 @@ export function normalizeDisplayName(input: string): string {
 
 /** A person's own profile, keyed by authenticated identity, never a device. */
 export class UserProfileStore {
-  constructor(private readonly db: Kysely<Database>) {}
+  constructor(private readonly database: Kysely<Database> | (() => Kysely<Database>)) {}
+
+  private get db(): Kysely<Database> {
+    return typeof this.database === 'function' ? this.database() : this.database;
+  }
 
   async read(userId: string): Promise<UserProfile | undefined> {
     const row = await this.db
@@ -57,5 +61,15 @@ export class UserProfileStore {
       .where('id', 'in', [...new Set(userIds)])
       .execute();
     return new Map(rows.map((row) => [row.id, row.display_name]));
+  }
+
+  async nonBlankDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
+    const names = await this.displayNames(userIds);
+    const result = new Map<string, string>();
+    for (const [userId, displayName] of names) {
+      const trimmed = displayName?.trim();
+      if (trimmed) result.set(userId, trimmed);
+    }
+    return result;
   }
 }

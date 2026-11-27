@@ -10,6 +10,7 @@ import {
   providerName,
   modelDisplayName,
   projectBadge,
+  type ProjectDopplerBinding,
   type VerityClient,
 } from '@verity/mobile';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -88,6 +89,7 @@ function ProjectSettingsIndexView({
   const {
     available,
     usage,
+    dopplerBindings,
     driveFolderNames,
     forgeConnections,
     refresh: refreshConnections,
@@ -252,11 +254,8 @@ function ProjectSettingsIndexView({
             <SettingsNavRow
               icon="key"
               title="Doppler"
-              subtitle="Choose the environment for this project"
-              status={{
-                intent: detail.settings?.dopplerConfig ? 'ready' : 'optional',
-                label: detail.settings?.dopplerConfig ?? 'Not selected',
-              }}
+              subtitle="Doppler projects and configs this project reads secrets from"
+              status={dopplerStatus(dopplerBindings)}
               onPress={() => toService('doppler')}
             />
           ) : null}
@@ -392,4 +391,16 @@ function ProjectSettingsIndexView({
       {textPrompt.dialog}
     </SettingsScaffold>
   );
+}
+
+/** The default binding, and how many more there are (ADR 0031). */
+function dopplerStatus(bindings: readonly ProjectDopplerBinding[] | null): {
+  intent: 'ready' | 'optional';
+  label: string;
+} {
+  const first = bindings?.find((binding) => binding.isDefault) ?? bindings?.[0];
+  if (bindings === null || first === undefined)
+    return { intent: 'optional', label: 'Not selected' };
+  const more = bindings.length - 1;
+  return { intent: 'ready', label: more > 0 ? `${first.reference} +${more}` : first.reference };
 }

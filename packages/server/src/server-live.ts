@@ -8,12 +8,14 @@ import {
   requestCredential,
   wsOriginAllowed,
 } from './auth.js';
+import type { DomainEventBus } from './live/domain-events.js';
 import { LiveHub } from './live/live-hub.js';
 import { ResourceObserver } from './live/resource-observer.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import type { ServerContext, ServerLifecycle } from './server-context.js';
 import type { ServerDeps } from './server-deps.js';
+import type { TrafficLedger } from './traffic-ledger.js';
 
 /**
  * One-time tickets that authorize opening the live WebSocket. A ticket is
@@ -72,9 +74,26 @@ export function createLiveTickets(deps: Pick<ServerDeps, 'authRegistry'>) {
 export function createServerLiveHub(
   app: FastifyInstance,
   deps: ServerDeps,
-  { resources, lifecycle }: { resources: ResourceObserver; lifecycle: ServerLifecycle },
+  {
+    resources,
+    lifecycle,
+    trafficLedger,
+    domainEvents,
+  }: {
+    resources: ResourceObserver;
+    lifecycle: ServerLifecycle;
+    trafficLedger?: TrafficLedger | undefined;
+    domainEvents?: DomainEventBus | undefined;
+  },
 ): LiveHub {
   const liveHub = new LiveHub({
+    domainEvents,
+    ...(trafficLedger
+      ? {
+          onFrameSent: (kind: string, bytes: number) =>
+            trafficLedger.record(`WS live ${kind}`, { bodyBytes: bytes }),
+        }
+      : {}),
     watchResource: (identity, resource, changed) =>
       resources.watch(
         identity.userId ?? '',
@@ -85,9 +104,17 @@ export function createServerLiveHub(
             (!identity.credential || !deps.authRegistry.verify(identity.credential))
           )
             return { statusCode: 401, body: '' };
+          let url = target.path;
+          const [path, query] = url.split(/\?(.*)/su);
+          if (path === '/tasks') {
+            // The observer hashes the result and sends only an invalidation.
+            const params = new URLSearchParams(query);
+            params.set('view', 'revisions');
+            url = `/tasks?${params.toString()}`;
+          }
           const response = await app.inject({
             method: 'GET',
-            url: target.path,
+            url,
             headers: {
               ...(identity.credential ? { authorization: `Bearer ${identity.credential}` } : {}),
               ...(target.ownerToken ? { 'x-meeting-owner-token': target.ownerToken } : {}),
@@ -146,7 +173,7 @@ export function installLive(
   ctx: ServerContext,
   { tickets }: { tickets: ReturnType<typeof createLiveTickets> },
 ): void {
-  const { deps, liveHub } = ctx;
+  const { deps, liveHub, monitor } = ctx;
   const { mint: mintLiveTicket, consume: consumeLiveTicket } = tickets;
   // The app-wide live connection: one WebSocket per paired device carrying the
   // multiplexed session streams, overview hints, foreground presence and
@@ -195,6 +222,7 @@ export function installLive(
       }
       const registry = deps.authRegistry;
       if (registry?.isEnabled() !== true) {
+        monitor.observeLiveSocket(socket, request.headers);
         liveHub.attach(socket, {});
         return;
       }
@@ -203,6 +231,7 @@ export function installLive(
         socket.close(1008, 'unauthorized');
         return;
       }
+      monitor.observeLiveSocket(socket, request.headers);
       liveHub.attach(socket, identity);
     });
     done();

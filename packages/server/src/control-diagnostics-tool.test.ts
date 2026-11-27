@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createControlDiagnosticsTool } from './control-diagnostics-tool.js';
+import { createGitHubRateBudget } from './github-rate-budget.js';
 
 const input = {
   projectId: 'verity-control',
@@ -39,11 +40,42 @@ function setup() {
   };
 }
 describe('Control diagnostics', () => {
+  it('reports GitHub quota evidence from the shared budget without credentials', async () => {
+    const budget = createGitHubRateBudget();
+    budget.observe({
+      url: 'https://api.github.com/repos/team/app/pulls?head=team%3Ax&access_token=secret',
+      category: 'session-status',
+      status: 403,
+      headers: {
+        get: (name: string) =>
+          ({ 'x-ratelimit-limit': '5000', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '9' })[
+            name
+          ] ?? null,
+      },
+    });
+    // The real snapshot must satisfy the published schema, or Control sees only "failed".
+    const result = await createControlDiagnosticsTool({
+      ...setup(),
+      githubDiagnostics: () => ({ ...budget.snapshot(), token: 'secret' }),
+    })(input);
+    expect(result.github).toMatchObject({
+      categories: { 'session-status': { requests: 1, limited: 1 } },
+      quotas: [{ account: 'team', resource: 'core', remaining: 0, limit: 5000 }],
+      events: [{ kind: 'primary', account: 'team', repo: 'app', endpoint: 'pulls' }],
+    });
+    expect(JSON.stringify(result.github)).not.toContain('secret');
+    const absent = await createControlDiagnosticsTool({
+      ...setup(),
+      githubDiagnostics: () => undefined,
+    })(input);
+    expect(absent.github).toEqual({ state: 'unavailable' });
+  });
   it('reports unavailable evidence without inventing health or a cause', async () => {
     const deps = setup();
     const result = await createControlDiagnosticsTool(deps)(input);
     expect(result.secretJobRuntime).toEqual({ state: 'unknown' });
     expect(result.uplink).toEqual({ state: 'unknown' });
+    expect(result.github).toEqual({ state: 'unavailable' });
     expect(result.session).toBeNull();
     expect(result.server).toEqual({ version: deps.version });
     expect(deps.readProgress).not.toHaveBeenCalled();

@@ -11,7 +11,7 @@ import {
 } from '@verity/events';
 import { isCodexModel } from '@verity/session';
 import type { EventStore, VeritySettingsRecord } from '@verity/store';
-import { measureLatencyPhase, type ProjectRecord } from '@verity/store';
+import { isLocalProject, measureLatencyPhase, type ProjectRecord } from '@verity/store';
 import { type FastifyBaseLogger } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { z, ZodError } from 'zod';
@@ -94,6 +94,7 @@ const PROJECT_RELAY_HANDOFF_RETRY_WINDOW_MS = 30_000;
  *  `buildServer` and {@link ServerDeps.branchCacheTtlMs}. */
 export const BRANCH_TTL_MS = 10_000;
 export const IDLE_LIST_BRANCH_TTL_MS = 60_000;
+export const IDLE_KNOWN_LIST_BRANCH_TTL_MS = 15 * 60_000;
 
 /** Shared empty answer for a deployment whose provisioner does not classify
  *  sandboxes (tests, non-relay setups) — allocating one per session summary on a
@@ -479,6 +480,34 @@ export function recordReleaseSummary(project: ProjectRecord): ReleaseSummary | n
     url: project.latestReleaseUrl ?? '',
     publishedAt: project.latestReleasePublishedAt,
   };
+}
+
+/** Whether the project overview may list a project: a repository synced from
+ *  the installation stays `absent` and unlisted until someone adds it. */
+export function appearsInProjectOverview(
+  project: Pick<ProjectRecord, 'state' | 'overviewVisible'>,
+): boolean {
+  return project.state !== 'absent' || project.overviewVisible === true;
+}
+
+/** Whether a project enters the overview through the project collection
+ *  (`project.listed`): shown, not hidden, and not the control plane, which the
+ *  overview adds by a setting of its own. */
+export function listedInProjectCollection(
+  project: Pick<ProjectRecord, 'state' | 'overviewVisible' | 'hiddenAt' | 'kind'>,
+): boolean {
+  return (
+    project.hiddenAt === null &&
+    !isControlPlaneProject(project) &&
+    appearsInProjectOverview(project)
+  );
+}
+
+/** Whether a project can have forge releases to show. Neither the
+ *  control-plane workspace nor a project without a GitHub repository has any;
+ *  looking them up would just mint tokens and 404. */
+export function projectHasReleases(project: Pick<ProjectRecord, 'kind'>): boolean {
+  return !isControlPlaneProject(project) && !isLocalProject(project) && project.kind !== 'forgejo';
 }
 
 /** Whether a settled release lookup (`ReleaseSummary`, or `null` for a confirmed

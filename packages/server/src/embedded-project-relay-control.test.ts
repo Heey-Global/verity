@@ -49,21 +49,26 @@ function fixture() {
     reactivate: vi.fn<Lifecycle['reactivate']>(async () => activation),
     stop: vi.fn<NonNullable<ReturnType<Control['getLifecycle']>>['stop']>(async () => undefined),
     isActive: vi.fn<NonNullable<ReturnType<Control['getLifecycle']>>['isActive']>(() => true),
+    heldRelays: vi.fn<Lifecycle['heldRelays']>(() => []),
   };
   let lifecycle: ReturnType<Control['getLifecycle']>;
   const inspectContainer = vi.fn<(name: string) => Promise<ContainerInspect>>(async () => ({
     id: 'relay',
     running: true,
   }));
+  const stopContainer = vi.fn<(id: string) => Promise<void>>(async () => undefined);
+  const removeContainer = vi.fn<(id: string) => Promise<void>>(async () => undefined);
   const context: Control = {
     projectRelayEnabled: true,
     getLifecycle: () => lifecycle,
-    projectDocker: { inspectContainer },
+    projectDocker: { inspectContainer, stopContainer, removeContainer },
   };
   const control = createEmbeddedProjectRelayControl(context)!;
   return {
     installed,
     inspectContainer,
+    stopContainer,
+    removeContainer,
     context,
     control,
     activate: () => {
@@ -232,5 +237,56 @@ describe('embedded relay control', () => {
         containerGeneration: identity.containerGeneration,
       }),
     ).rejects.toBe(error);
+  });
+
+  // A parked Sandbox's relay outlives the generation that is now served. Removing
+  // it must never reach a relay this process still holds or a container whose
+  // labels name another project or generation.
+  describe('discardGeneration', () => {
+    const generation = { projectId: 'project', containerGeneration: 'parked' };
+    const owned: ContainerInspect = {
+      id: 'relay-parked',
+      running: false,
+      labels: { 'verity.project-id': 'project', 'verity.container-generation': 'parked' },
+    };
+
+    it('removes the relay container of exactly that generation', async () => {
+      const f = fixture();
+      f.activate();
+      f.inspectContainer.mockResolvedValue(owned);
+      await f.control.discardGeneration!(generation);
+      expect(f.inspectContainer).toHaveBeenCalledWith(projectRelayContainerName(generation));
+      expect(f.removeContainer).toHaveBeenCalledWith('relay-parked');
+    });
+
+    it('treats a relay that is already gone as discarded', async () => {
+      const f = fixture();
+      f.activate();
+      f.inspectContainer.mockRejectedValue(
+        new DockerError({ kind: 'container_not_found', id: 'gone' }),
+      );
+      await expect(f.control.discardGeneration!(generation)).resolves.toBeUndefined();
+      expect(f.removeContainer).not.toHaveBeenCalled();
+    });
+
+    it('refuses a generation the lifecycle still holds', async () => {
+      const f = fixture();
+      f.activate();
+      f.installed.heldRelays.mockReturnValue([generation]);
+      f.inspectContainer.mockResolvedValue(owned);
+      await expect(f.control.discardGeneration!(generation)).rejects.toThrow('still held');
+      expect(f.removeContainer).not.toHaveBeenCalled();
+    });
+
+    it('refuses a container whose labels do not prove the generation', async () => {
+      const f = fixture();
+      f.activate();
+      f.inspectContainer.mockResolvedValue({
+        ...owned,
+        labels: { 'verity.project-id': 'project', 'verity.container-generation': 'other' },
+      });
+      await expect(f.control.discardGeneration!(generation)).rejects.toThrow('unproven');
+      expect(f.removeContainer).not.toHaveBeenCalled();
+    });
   });
 });

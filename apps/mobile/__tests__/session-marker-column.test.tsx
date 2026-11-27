@@ -72,7 +72,7 @@ describe('SessionMarkerColumn', () => {
   });
 });
 
-it('marks linked sessions between automation and sharing and opens their settings', () => {
+it('marks linked sessions between automation and sharing without a manual link entry', () => {
   const markers = sessionMarkers({
     favorite: true,
     automation: 'enabled',
@@ -87,8 +87,7 @@ it('marks linked sessions between automation and sharing and opens their setting
   ]);
   expect(markerIcon({ kind: 'linked' })).toBe('link');
   expect(sessionMarkersLabel([{ kind: 'linked' }])).toBe('linked sessions');
-  const open = jest.fn();
-  render(<SessionMarkerColumn markers={markers} previewUrl={null} onOpenLinks={open} />);
-  fireEvent.press(screen.getByLabelText('Open linked sessions'));
-  expect(open).toHaveBeenCalledTimes(1);
+  render(<SessionMarkerColumn markers={markers} previewUrl={null} />);
+  // Links arise from coordination only; the marker must not offer a manual entry point.
+  expect(screen.queryByLabelText('Open linked sessions')).toBeNull();
 });

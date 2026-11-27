@@ -9,6 +9,24 @@ export {
 } from './wire.js';
 export { SessionReducer, reduceFrames, type SessionState } from './reducer.js';
 export { publishSettledPermission, subscribeSettledPermissions } from './permissionSettlement.js';
+export { clearConditionalReads } from './conditionalReads.js';
+export {
+  applyOverviewEvent,
+  appliesToEarlierReads,
+  keptWithout,
+  RevisionGate,
+  withPullRequest,
+  type OverviewEventEffect,
+} from './live/overviewEvents.js';
+export { projectEventUpdate, type ProjectEventUpdate } from './live/projectEvents.js';
+export {
+  OverviewStore,
+  type OverviewEventOutcome,
+  type OverviewRead,
+  type OverviewReadScope,
+} from './live/overviewStore.js';
+export type { LiveTopicSink } from './live/topics.js';
+export type { DomainEvent } from '@verity/events';
 export {
   publishPullRequestStatusMutation,
   subscribePullRequestStatusMutations,
@@ -16,12 +34,10 @@ export {
 } from './pullRequestStatusMutation.js';
 export {
   publishDevServerStatusMutation,
-  publishProjectStatusMutation,
   publishSessionStatusMutation,
   publishServerUpdateStatusMutation,
   publishSessionAutomationMutation,
   subscribeDevServerStatusMutations,
-  subscribeProjectStatusMutations,
   subscribeSessionAutomationMutations,
   subscribeSessionStatusMutations,
   subscribeServerUpdateStatusMutations,
@@ -242,6 +258,7 @@ export {
   type GmailSendAttachment,
   type GmailSendSummary,
 } from './ui/gmailSendSummary.js';
+export { permissionOverview, type PermissionOverview } from './ui/permissionOverview.js';
 export {
   briefingExtent,
   listSessionsSentence,
@@ -373,6 +390,7 @@ export {
   agentLoginProviderSchema,
   agentLoginSchema,
   branchListSchema,
+  type SessionPullRequestStatus,
   branchSwitchedSchema,
   modelListSchema,
   sessionDirectorySchema,
@@ -494,8 +512,11 @@ export type {
   UserTextMessage,
 } from './happy/message.js';
 export { formatChoiceAnswer, type ChoicesOption, type RiskClass } from '@verity/events';
+export { parseProjectInquiryAnswerTurn } from '@verity/events';
 export type { PlanDecision } from '@verity/events';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
+export { PROJECTS_COLLECTION_TOPIC } from '@verity/events';
+export { ASSISTANT_HANDOFF_DECLINED } from '@verity/events';
 export { END_PLANNING_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 export {
   reprovisionActiveProjects,
@@ -542,7 +563,8 @@ export {
   sameProjectSettingsDraft,
   type ProjectSettingsDraft,
 } from './projectSettings.js';
-export { secretStatusSchema, type SecretStatus } from './api.js';
+export { secretStatusSchema, type SecretStatus } from './secret-status.js';
+export { hostResourcesSchema, usedPercent, type HostResources } from './host-resources-api.js';
 export {
   providerConnectionsSchema,
   type ProviderConnection,
@@ -605,6 +627,16 @@ export {
   type DopplerProjectsResult,
   type DopplerConfigsResult,
 } from './api.js';
+export {
+  dopplerConnectionSchema,
+  dopplerConnectionUsageSchema,
+  personalDopplerTokensSchema,
+  projectDopplerBindingSchema,
+  type DopplerConnection,
+  type DopplerConnectionUsage,
+  type PersonalDopplerTokens,
+  type ProjectDopplerBinding,
+} from './doppler-api.js';
 export { signingKeyGenerateSchema, type SigningKeyGenerateResult } from './api.js';
 export {
   driveFileSchema,
@@ -637,6 +669,7 @@ export {
   parsePushPayload,
   parseServerUpdatePush,
   parseVulnerabilityPush,
+  parseQAPush,
   pushPayloadSchema,
   serverUpdatePushSchema,
   type PushKind,
@@ -719,6 +752,7 @@ export {
   type BubbleRest,
 } from './tasks.js';
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';
+export { isViewedTask, listTaskView } from './taskView.js';
 
 export { type ProjectGitHubIssues, type ProjectGitHubIssue, type RepositoryIssues } from './api.js';
 export {
@@ -777,6 +811,23 @@ export type {
 } from './audit.js';
 
 export { qaAssignmentView } from './ui/qaAssignment.js';
+export type {
+  ProjectQASummary,
+  ProjectQAState,
+  QAIssue,
+  QAIssueDecision,
+  QAIssueReason,
+  QAMode,
+  QASettings,
+} from './project-qa-api.js';
+export {
+  QA_FRESH_MS,
+  qaIssueLabel,
+  qaRowView,
+  qaStopReason,
+  type QARowState,
+  type QARowView,
+} from './ui/qaRole.js';
 export {
   mockupBarView,
   mockupProgress,
@@ -790,6 +841,7 @@ export {
 export { projectEgressPolicySchema, type ProjectEgressPolicy } from './projectEgress.js';
 export type {
   AssistantConversation,
+  AssistantApproval,
   AssistantConversationItem,
   AssistantDelivery,
   AssistantQuestion,
@@ -798,8 +850,26 @@ export type {
 export {
   type ProjectRepository,
   type ProjectInquiry,
+  type ProjectInquiryGrant,
+  type InquiryDecision,
   type RepositoryInstructions,
 } from './projectCollaboration.js';
+export {
+  type CollaborationEntry,
+  type CollaborationDirection,
+  type CollaborationState,
+} from './sessionCollaboration.js';
+export {
+  projectNoun,
+  type ChangeSubmission,
+  type ChangeSubmissionPerson,
+  type ChangeSubmissionState,
+} from './changeSubmissions.js';
+export {
+  changeSubmissionBar,
+  openPullRequestPrompt,
+  type ChangeSubmissionBarModel,
+} from './ui/changeSubmissionBar.js';
 export {
   PULL_REQUEST_STATES,
   pullRequestAction,
@@ -836,6 +906,7 @@ export {
   type SessionWorkEntry,
   type SessionWorkSections,
 } from './ui/sessionWork.js';
+export { teamRightLabel, toggleTeamRight, type TeamRight, type TeamRights } from './teamRights.js';
 export {
   invitationLinkFieldsSchema,
   projectTeamSchema,
@@ -857,3 +928,17 @@ export {
   type ConnectionReporter,
   type ServerConnectionState,
 } from './connection.js';
+export type {
+  KnowledgeBacklinks,
+  KnowledgeFilesScope,
+  KnowledgeFileUploaded,
+  KnowledgeRelocated,
+} from './knowledge-files-api.js';
+export {
+  DETAIL_MODE_MINUTES,
+  diagnosticReportSchema,
+  monitoringStateSchema,
+  type DetailModeMinutes,
+  type DiagnosticReport,
+  type MonitoringState,
+} from './server-monitoring-api.js';

@@ -77,6 +77,8 @@ export interface ConductorDeps {
         target: string;
         channel: BrokeredGrantChannel;
         bindingId?: string;
+        /** The tool input, so a check without `bindingId` sees every reference it reads. */
+        request?: Record<string, unknown> | undefined;
       }) => Promise<boolean>)
     | undefined;
   /** ADR 0011 D2: persist a scoped brokered-secret grant after an operator allow.

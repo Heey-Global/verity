@@ -18,6 +18,7 @@ import {
   parseMeetingPush,
   parseServerUpdatePush,
   resolveMeetingPushResponse,
+  parseQAPush,
   parseVulnerabilityPush,
   resolvePushResponse,
   type VerityClient,
@@ -238,6 +239,7 @@ export async function handlePushResponse(
   navigateToSettings?: () => void,
   navigateToVulnerabilities?: (projectId: string | null) => void,
   openMeetingPrompt?: (prompt: MeetingPrompt) => void,
+  navigateToProjectQA?: (projectId: string | null, issueId?: string) => void,
 ): Promise<void> {
   const data: unknown = response.notification.request.content.data;
   // Calendar meetings carry no `sessionId` either. The pairing check matters more here:
@@ -277,6 +279,12 @@ export async function handlePushResponse(
     if (vulnerability.deviceId !== expectedDeviceId) return;
     if (vulnerability.sessionId) navigateToSession(vulnerability.sessionId);
     else navigateToVulnerabilities?.(vulnerability.projectId);
+    return;
+  }
+  const qa = parseQAPush(data);
+  if (qa !== null) {
+    if (qa.deviceId !== expectedDeviceId) return;
+    navigateToProjectQA?.(qa.projectId, qa.issueId);
     return;
   }
   const serverUpdate = parseServerUpdatePush(data);

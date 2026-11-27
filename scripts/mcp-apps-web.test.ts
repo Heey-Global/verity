@@ -7,7 +7,7 @@ import { McpAppCard } from '../apps/mobile/components/McpAppCard.web.js';
 import type { McpAppCardEvent } from '../apps/mobile/components/McpAppCard.shared.js';
 
 const mocks = vi.hoisted(() => ({
-  getMcpAppDocument: vi.fn(),
+  createMcpAppDocumentUrl: vi.fn(),
   callMcpAppTool: vi.fn(),
   theme: { theme: { colors: { surface: '#fff' } }, rt: { themeName: 'dark' } },
 }));
@@ -27,6 +27,13 @@ const awaitReact = React;
 let root: Root;
 let container: HTMLDivElement;
 beforeEach(() => {
+  // jsdom replaces contentWindow on URL assignment instead of retaining the browser WindowProxy.
+  vi.spyOn(HTMLIFrameElement.prototype, 'src', 'set').mockImplementation(function (
+    this: HTMLIFrameElement,
+    value: string,
+  ) {
+    this.setAttribute('data-document-url', value);
+  });
   vi.stubGlobal('React', React);
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal(
@@ -36,9 +43,9 @@ beforeEach(() => {
       disconnect() {}
     },
   );
-  mocks.getMcpAppDocument
+  mocks.createMcpAppDocumentUrl
     .mockReset()
-    .mockResolvedValue('<!doctype html><html><body>Dashboard</body></html>');
+    .mockResolvedValue('https://verity.example/mcp-app-document?ticket=fixture');
   mocks.callMcpAppTool.mockReset().mockResolvedValue({
     content: [{ type: 'text', text: 'Count: 2' }],
     structuredContent: { count: 2 },
@@ -51,6 +58,7 @@ afterEach(async () => {
   await React.act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 const event: McpAppCardEvent = {
@@ -82,6 +90,10 @@ it('uses the real SDK handshake, sends saved data, refreshes through the scoped 
   const iframe = container.querySelector('iframe')!;
   expect(iframe).not.toBeNull();
   expect(iframe.getAttribute('sandbox')).toBe('allow-scripts');
+  expect(iframe.getAttribute('data-document-url')).toBe(
+    'https://verity.example/mcp-app-document?ticket=fixture',
+  );
+  expect(iframe.hasAttribute('srcdoc')).toBe(false);
   expect(iframe.getAttribute('referrerpolicy')).toBe('no-referrer');
   const target = iframe.contentWindow!;
   const posted = vi.spyOn(target, 'postMessage');
@@ -161,12 +173,12 @@ it('uses the real SDK handshake, sends saved data, refreshes through the scoped 
     );
     await tick();
   });
-  expect(mocks.getMcpAppDocument).toHaveBeenCalledTimes(2);
+  expect(mocks.createMcpAppDocumentUrl).toHaveBeenCalledTimes(2);
   expect(mocks.callMcpAppTool).toHaveBeenCalledTimes(1);
 });
 
 it('retains text fallback when the app resource is revoked or unavailable', async () => {
-  mocks.getMcpAppDocument.mockRejectedValue(new Error('revoked'));
+  mocks.createMcpAppDocumentUrl.mockRejectedValue(new Error('revoked'));
   await React.act(async () => {
     root.render(React.createElement(McpAppCard, { event }));
     await tick();

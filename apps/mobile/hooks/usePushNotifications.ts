@@ -73,6 +73,15 @@ export function usePushNotifications(client: VerityClient | null, baseUrl: strin
           else router.push('/');
         },
         requestMeetingPrompt,
+        (projectId, issueId) => {
+          if (!projectId) router.push('/settings/repairs');
+          else if (issueId)
+            router.push({
+              pathname: '/project/[id]/qa/[issue]',
+              params: { id: projectId, issue: issueId },
+            });
+          else router.push({ pathname: '/project/[id]/qa', params: { id: projectId } });
+        },
       );
     };
 

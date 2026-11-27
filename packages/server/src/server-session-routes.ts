@@ -1,7 +1,13 @@
+import type { PullRequestStatus } from './forge-provider.js';
+import { mayAllowPermission } from './permission-decision-authority.js';
 import { NO_PERSONAL_MODEL, personModelRefusal } from './turn-sandbox.js';
 import { isVulnerabilityWorkspace } from './vulnerability-project.js';
 import { buildVulnerabilityFixPrompt } from './vulnerability-fix.js';
-import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
+import {
+  measureBranchReadStage,
+  withinBranchReadBudget,
+  type BranchReadStage,
+} from './branch-read-diagnostics.js';
 import { appendExternalPromptData } from '@verity/events';
 import {
   QueueFullError,
@@ -34,8 +40,9 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionLinkRoutes } from './session-link-routes.js';
 import { registerSessionMergeRoutes } from './session-merge-routes.js';
+import { FRESH_MIN_MS, unavailablePullRequestStatus } from './session-pr-cache.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
-import { sessionParams } from './session-route-schemas.js';
+import { branchReadQuery, sessionParams } from './session-route-schemas.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
 import { legacyAdministratorId } from './view-state-routes.js';
 import {
@@ -72,6 +79,7 @@ export interface SessionRoutesWiring {
     | 'withPrVisibility'
     | 'invalidatePrSummaryAction'
     | 'invalidateBranchCache'
+    | 'resolvePullRequests'
   >;
   beginProjectSpawn: (projectId: string) => () => void;
   pushFirePoints: PushFirePoints | undefined;
@@ -124,7 +132,41 @@ export function installSessionRoutes(
     withPrVisibility,
     invalidatePrSummaryAction,
     invalidateBranchCache,
+    resolvePullRequests,
   } = sessionOverview;
+  const repositoryPRReads = new Map<
+    string,
+    {
+      read: Promise<Awaited<ReturnType<typeof resolvePullRequests>> | null>;
+      expires: number;
+      /** Set when the read settles; a failed read keeps its TTL even when asked fresh. */
+      settled?: { at: number; failed: boolean };
+      waitingForResult: boolean;
+      invalidated: boolean;
+    }
+  >();
+  const pendingBranchPrRefreshes = new WeakSet<Promise<PullRequestStatus | null>>();
+  type RepairObservation = {
+    session: Parameters<typeof maybeDispatchPrRepairTurns>[0];
+    read: Promise<PullRequestStatus | null>;
+    branch: string;
+  };
+  const branchPrRepairs = new Map<string, { latest: RepairObservation; done: Promise<void> }>();
+  const invalidateRepositoryPRRead = (key: string): void => {
+    const entry = repositoryPRReads.get(key);
+    if (entry?.expires === Infinity) entry.invalidated = true;
+    else repositoryPRReads.delete(key);
+  };
+  const stopRepositoryPRInvalidation = ctx.resources.onInvalidate((path, source) => {
+    const [, collection, id, resource] = path.split('/');
+    if (collection !== 'sessions' || !id || resource !== 'branches') return;
+    if (source === 'pr-status') invalidateRepositoryPRRead(id);
+    else repositoryPRReads.delete(id);
+  });
+  app.addHook('onClose', (_instance, done) => {
+    stopRepositoryPRInvalidation();
+    done();
+  });
   installCodeWorkspaces(app, ctx, { invalidateBranchCache });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
@@ -364,6 +406,8 @@ export function installSessionRoutes(
     conductor,
     cancelMeetingJobs,
     permissionResolved: (id, toolUseId) => pushFirePoints?.permissionResolved(id, toolUseId),
+    mayAllowPermission: (request, id, toolUseId) =>
+      mayAllowPermission({ store: deps.eventStore, conductor }, request, id, toolUseId),
     ...(decidePendingLinkedMessage === undefined ? {} : { decidePendingLinkedMessage }),
   });
   registerSessionLinkRoutes(app, deps.eventStore);
@@ -391,6 +435,9 @@ export function installSessionRoutes(
   registerSessionBranchReadRoute(app, {
     list: async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
+      // The app opened the session: its pull request is read from the forge
+      // now (see FRESH_MIN_MS), and the result reaches every device as an event.
+      const fresh = branchReadQuery.parse(request.query ?? {}).fresh === '1';
       const session = await deps.eventStore.getSession(id);
       if (!session) {
         reply.code(404);
@@ -401,40 +448,85 @@ export function installSessionRoutes(
         reply.code(503);
         return { error: 'branch switching is not configured' };
       }
-      if (!(await worktreeExists(session.worktree))) {
-        return {
-          current: '',
-          switchable: [],
-          previewable: [],
-          workspaceMissing: true,
-          currentPr: null,
-          pullRequest: null,
-        };
-      }
       const readStage = <T>(stage: BranchReadStage, read: () => Promise<T>): Promise<T> =>
         measureBranchReadStage(stage, read, (timing) =>
           request.log.info(timing, 'verity: slow branch read stage'),
         );
-      const branchState = await readStage('metadata', () =>
-        readBranchMetadata(branches, session.worktree).catch((error: unknown) => {
-          request.log.warn(
-            {
-              sessionId: id,
-              worktree: session.worktree,
-              errorType: error instanceof Error ? error.constructor.name : typeof error,
-              message: error instanceof Error ? error.message : String(error),
-            },
-            'verity: branch list degraded because git metadata is unavailable',
-          );
-          return null;
-        }),
-      );
+      const branchState = (await worktreeExists(session.worktree))
+        ? await readStage('metadata', () =>
+            readBranchMetadata(branches, session.worktree).catch((error: unknown) => {
+              request.log.warn(
+                {
+                  sessionId: id,
+                  worktree: session.worktree,
+                  errorType: error instanceof Error ? error.constructor.name : typeof error,
+                  message: error instanceof Error ? error.message : String(error),
+                },
+                'verity: branch list degraded because git metadata is unavailable',
+              );
+              return null;
+            }),
+          )
+        : null;
+      const readRepositoryPRs = (pullRequest?: PullRequestStatus | null) =>
+        readStage('pr', async () => {
+          const key = encodeURIComponent(session.sessionId);
+          let entry = repositoryPRReads.get(key);
+          const settled = entry?.settled;
+          if (
+            !entry ||
+            entry.expires < Date.now() ||
+            (fresh && settled?.failed === false && Date.now() - settled.at >= FRESH_MIN_MS)
+          ) {
+            const started: NonNullable<ReturnType<typeof repositoryPRReads.get>> = {
+              read: resolvePullRequests(session, pullRequest),
+              expires: Infinity,
+              waitingForResult: false,
+              invalidated: false,
+            };
+            repositoryPRReads.set(key, started);
+            if (repositoryPRReads.size > 512)
+              repositoryPRReads.delete(repositoryPRReads.keys().next().value!);
+            started.read = started.read
+              .catch((err: unknown) => {
+                request.log.warn(
+                  { err, sessionId: id },
+                  'Session repository pull requests unavailable',
+                );
+                started.settled = { at: Date.now(), failed: true };
+                return null;
+              })
+              .finally(() => {
+                started.settled ??= { at: Date.now(), failed: false };
+                started.expires = started.settled.at + 5000;
+                if (repositoryPRReads.get(key) !== started) return;
+                if (started.invalidated) repositoryPRReads.delete(key);
+                if (started.invalidated || started.waitingForResult)
+                  ctx.resources.refresh(`/sessions/${key}/branches`);
+              });
+            entry = started;
+          }
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          const budget = new Promise<null>((resolve) => {
+            timeout = setTimeout(() => {
+              entry.waitingForResult = true;
+              resolve(null);
+            }, 100);
+          });
+          return Promise.race([entry.read, budget])
+            .then((rows) => (entry.invalidated ? null : rows))
+            .finally(() => clearTimeout(timeout));
+        });
       if (branchState === null) {
+        const pullRequests = await readRepositoryPRs();
         return {
           current: '',
           switchable: [],
           previewable: [],
           workspaceMissing: true,
+          ...(pullRequests === undefined
+            ? {}
+            : { pullRequests: pullRequests?.map((row) => row.status) ?? null }),
           currentPr: null,
           pullRequest: null,
         };
@@ -450,26 +542,106 @@ export function installSessionRoutes(
       // number-only dep. Newer deployments return the compact PR status for the
       // composer strip; older deps can still provide only the number. Failures
       // degrade to null, never failing the list.
-      const rawPullRequest =
+      const prRead =
         deps.branchPrStatusForBranches !== undefined || deps.branchPrStatus !== undefined
-          ? await readStage('pr', () =>
-              sessionPrCache.get(session, {
-                priority: true,
-                load: () => sessionPrStatus(session, current),
-              }),
-            )
+          ? sessionPrCache.get(session, {
+              priority: true,
+              fresh,
+              load: () => sessionPrStatus(session, current),
+            })
           : undefined;
+      // Repair reconciliation can wait on another session. Branch metadata is
+      // ready to return while reconciliation finishes on the server.
+      let repair = branchPrRepairs.get(id);
+      if (prRead) {
+        const observation = { session, read: prRead, branch: current };
+        if (repair) {
+          repair.latest = observation;
+        } else {
+          const reconcile = async () => {
+            let previousStatus: PullRequestStatus | null | undefined;
+            let previous: RepairObservation | undefined;
+            let next: RepairObservation | undefined = observation;
+            try {
+              while (next) {
+                const processed: RepairObservation = next;
+                const status = await processed.read;
+                const target = processed.session;
+                if (
+                  status !== previousStatus ||
+                  target.projectId !== previous?.session.projectId ||
+                  target.worktree !== previous?.session.worktree ||
+                  processed.branch !== previous?.branch
+                ) {
+                  await readStage('repair', async () => {
+                    const active = await deps.eventStore.getSession(id);
+                    if (
+                      !active ||
+                      active.projectId !== target.projectId ||
+                      active.worktree !== target.worktree ||
+                      (await readBranchMetadata(branches, target.worktree)).current !==
+                        processed.branch
+                    )
+                      return;
+                    const latest = branchPrRepairs.get(id)?.latest;
+                    if (
+                      latest?.read === processed.read &&
+                      latest.session.projectId === target.projectId &&
+                      latest.session.worktree === target.worktree &&
+                      latest.branch === processed.branch
+                    ) {
+                      previousStatus = status;
+                      previous = processed;
+                      await maybeDispatchPrRepairTurns(active, status);
+                    }
+                  }).catch((err: unknown) =>
+                    request.log.warn({ err }, 'Session PR repair check failed'),
+                  );
+                }
+                next = branchPrRepairs.get(id)?.latest;
+                if (next === processed) return;
+              }
+            } finally {
+              branchPrRepairs.delete(id);
+            }
+          };
+          repair = { latest: observation, done: reconcile() };
+          branchPrRepairs.set(id, repair);
+        }
+      }
+      const rawPullRequest =
+        prRead === undefined
+          ? undefined
+          : await withinBranchReadBudget(
+              readStage('pr', () => prRead),
+              500,
+            );
+      const prPending = prRead !== undefined && rawPullRequest === undefined;
+      if (prPending && !pendingBranchPrRefreshes.has(prRead)) {
+        pendingBranchPrRefreshes.add(prRead);
+        const key = encodeURIComponent(id);
+        invalidateRepositoryPRRead(key);
+        void prRead.then(() => {
+          invalidateRepositoryPRRead(key);
+          ctx.resources.refresh(`/sessions/${key}/branches`);
+        });
+      }
+      const cachedStatus = sessionPrCache.peek(session.worktree);
       const pullRequest =
-        rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
+        rawPullRequest !== undefined
+          ? (cachedStatus ?? null)
+          : cachedStatus
+            ? unavailablePullRequestStatus(cachedStatus)
+            : cachedStatus;
+      const pullRequests = await readRepositoryPRs(pullRequest);
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)
-          : deps.branchPr
+          : prRead === undefined && deps.branchPr
             ? await readStage('pr', () =>
                 deps.branchPr!(current, session.worktree).catch(() => null),
               )
             : undefined;
-      await maybeDispatchPrRepairTurns(session, rawPullRequest);
       // Best-effort GitHub identity (#161): owner/repo for the mobile header to build
       // tappable Issue/PR chip URLs. Omitted entirely when there's no resolver or no
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the
@@ -523,12 +695,17 @@ export function installSessionRoutes(
             : false;
         return { localBase, hasChanges };
       });
+      if (repair !== undefined && rawPullRequest !== undefined)
+        await withinBranchReadBudget(repair.done, 100);
       return {
         current,
         switchable,
         previewable,
         ...(currentPr !== undefined ? { currentPr } : {}),
         ...(pullRequest !== undefined ? { pullRequest } : {}),
+        ...(pullRequests === undefined
+          ? {}
+          : { pullRequests: pullRequests?.map(({ status }) => status) ?? null }),
         ...(identity !== null ? { owner: identity.owner, repo: identity.repo } : {}),
         ...(forgeHost !== null && forgeHost !== 'unknown'
           ? { codeHost: { provider: 'forgejo' as const, baseUrl: forgeHost.baseUrl } }
@@ -541,6 +718,10 @@ export function installSessionRoutes(
   const { mergeLocalSession } = registerSessionMergeRoutes(app, {
     eventStore: deps.eventStore,
     mergePr: deps.mergePr,
+    projectPullRequests: deps.projectPullRequests,
+    resolvePullRequests,
+    invalidateBranchResource: (id) =>
+      ctx.resources.invalidate(`/sessions/${encodeURIComponent(id)}/branches`),
     provisioner: deps.provisioner,
     branchPrStatus: deps.branchPrStatus,
     branchPrStatusForBranches: deps.branchPrStatusForBranches,

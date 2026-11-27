@@ -4,6 +4,7 @@ import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 import type { DockerClient } from './docker.js';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
+import { assertQuerySandboxAllowed } from './query-sandbox-policy.js';
 import { projectClonePath, type ProjectImageRefSource } from './provisioner.js';
 import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
 import {
@@ -24,9 +25,20 @@ export function createEmbeddedBranches(
     EmbeddedServerConfig,
     'repoDir' | 'hostCloneRoot' | 'dockerBaseUrl' | 'controlPlaneRunner' | 'dataVolume'
   >,
-  eventStore: Pick<EventStore, 'listSessions' | 'getProject'>,
+  eventStore: Pick<
+    EventStore,
+    'getSession' | 'getSessionByWorktree' | 'getProject' | 'sessionRepositoryWorkspaceSessionId'
+  >,
   runtime: EmbeddedBranchRuntime,
 ) {
+  const sessionForWorktree = async (worktree: string | undefined) => {
+    if (!worktree) return undefined;
+    // Every git call resolves its session here, so it must not load the whole list.
+    const primary = await eventStore.getSessionByWorktree(worktree);
+    if (primary) return primary;
+    const owner = await eventStore.sessionRepositoryWorkspaceSessionId(worktree);
+    return owner === undefined ? undefined : eventStore.getSession(owner);
+  };
   // Branch switcher for each session's worktree (#91). A dev checkout may provide
   // one global repo root; the multi-project runner deliberately sets VERITY_REPO_DIR=''
   // and instead resolves repo-wide git operations through each session worktree.
@@ -40,9 +52,7 @@ export function createEmbeddedBranches(
                 withGit: async (worktree, operation) => {
                   const docker = runtime.projectDocker;
                   if (!docker) throw new Error('Project Docker runtime is unavailable');
-                  const session = (await eventStore.listSessions()).find(
-                    (s) => s.worktree === worktree,
-                  );
+                  const session = await sessionForWorktree(worktree);
                   if (!session) throw new Error('Git requires persistent session context');
                   const project = await eventStore.getProject(
                     session.projectId ?? CONTROL_PLANE_PROJECT_ID,
@@ -54,6 +64,7 @@ export function createEmbeddedBranches(
                       : project.containerName;
                   const hostRoot = projectClonePath(config.hostCloneRoot!, project);
                   if (!(await sandboxIsRunning(() => docker.inspectContainer(containerName)))) {
+                    assertQuerySandboxAllowed();
                     if (config.dataVolume && !runtime.dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return withSleepingSessionGit(
@@ -99,9 +110,7 @@ export function createEmbeddedBranches(
                   // Repository helpers must run with the same privileges as the agent.
                   const index = args.indexOf('-C');
                   const path = index < 0 ? undefined : args[index + 1];
-                  const session = (await eventStore.listSessions()).find(
-                    (row) => row.worktree === path,
-                  );
+                  const session = await sessionForWorktree(path);
                   const projectDocker = runtime.projectDocker;
                   if (!session || !projectDocker)
                     throw new Error('Git operation has no project session context');
@@ -131,6 +140,7 @@ export function createEmbeddedBranches(
                     readOnly &&
                     !(await sandboxIsRunning(() => projectDocker.inspectContainer(containerName)))
                   ) {
+                    assertQuerySandboxAllowed();
                     if (config.dataVolume && !runtime.dataVolumeRoot)
                       throw new Error('Data volume root is unavailable');
                     return createSleepingSessionGit({

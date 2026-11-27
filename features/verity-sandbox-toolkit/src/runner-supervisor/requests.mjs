@@ -1,3 +1,4 @@
+import { validateCapacityLeaseRequest } from '../spawn-broker/capacity-leases.mjs';
 import { randomUUID } from 'node:crypto';
 import { createConnection, createServer } from 'node:net';
 import { chmod, opendir, rm } from 'node:fs/promises';
@@ -214,6 +215,15 @@ export async function handleSupervisorRequest(
   const skillsManifestHash =
     request.kind === 'status' ? await installedSkillsManifestHash() : undefined;
   switch (request.kind) {
+    case 'capacity-lease':
+      validateCapacityLeaseRequest(request);
+      return await brokerStorageRequest({
+        protocolVersion: 1,
+        kind: 'capacity-lease',
+        action: request.action,
+        operationId: request.operationId,
+        generation: request.generation,
+      });
     case 'stack-health':
       return await brokerStorageRequest({ protocolVersion: 1, kind: 'stack-health' });
     case 'egress-readiness':
@@ -230,6 +240,7 @@ export async function handleSupervisorRequest(
         ...(skillsManifestHash ? { builtInSkillsManifestHash: skillsManifestHash } : {}),
         persistentSessionHomes: true,
         cacheMaintenanceVersion: 2,
+        capacityLeaseVersion: 1,
         turnOwnershipVersion: 1,
         planningIsolation: capabilities.scriptIsolation,
         knowledgeIsolation: capabilities.scriptIsolation,

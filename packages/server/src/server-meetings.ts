@@ -10,6 +10,7 @@ import {
   type CalendarMeetingDeps,
 } from './calendar-meeting-watcher.js';
 import { registerCalendarWatchRoutes } from './calendar-watch-routes.js';
+import { configuredLiveAudioTranscription } from './live-audio-transcription.js';
 import { registerLiveMeetingIntakeRoutes } from './live-meeting-intake.js';
 import { meetingKnowledgeExcerpts } from './live-meeting-knowledge.js';
 import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
@@ -36,6 +37,19 @@ import type { SpawnSession } from './session-create-route.js';
 type MeetingTranscripts = ReturnType<typeof createMeetingTranscriptController>;
 type DirectQueries = ReturnType<typeof peopleDirectQueries>;
 
+function meetingTranscriptionSettingsReader(deps: ServerDeps) {
+  return async () => {
+    if (!hasVeritySettingsStore(deps.eventStore)) return undefined;
+    try {
+      return await veritySettingsStore(deps.eventStore).getVeritySettings();
+    } catch (error) {
+      if (!(error instanceof SealedError)) throw error;
+      const raw = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
+      return meetingTranscriptionSettingsWhileSealed(raw ?? undefined);
+    }
+  };
+}
+
 /**
  * The meeting transcript jobs, on the transcriber the settings choose. Built
  * before the routes because session status and deletion read its job state.
@@ -46,26 +60,7 @@ export function createMeetingTranscripts(
 ): MeetingTranscripts {
   const meetingTranscriber =
     deps.meetingTranscriber ??
-    configuredMeetingTranscriber(async () => {
-      if (!hasVeritySettingsStore(deps.eventStore)) return undefined;
-      try {
-        return await veritySettingsStore(deps.eventStore).getVeritySettings();
-      } catch (error) {
-        if (error instanceof SealedError) {
-          const raw = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
-          // Local mode does not need any decrypted secret and remains safe while
-          // sealed. External mode must fail closed: returning undefined here
-          // would bypass the explicit choice and inherit an arbitrary endpoint.
-          if (raw?.transcribeBackendMode !== null && raw?.transcribeBackendMode !== undefined) {
-            return meetingTranscriptionSettingsWhileSealed(raw);
-          }
-          // Null mode is the pre-chooser legacy state and intentionally retains
-          // the historical environment/sidecar fallback.
-          return undefined;
-        }
-        throw error;
-      }
-    });
+    configuredMeetingTranscriber(meetingTranscriptionSettingsReader(deps));
   return createMeetingTranscriptController(app, deps, meetingTranscriber);
 }
 
@@ -189,6 +184,7 @@ export function installMeetings(
     store: deps.eventStore,
     ...(deps.attendeeEdge ? { edge: deps.attendeeEdge } : {}),
     ingest: meetingController.ingest,
+    ...configuredLiveAudioTranscription(meetingTranscriptionSettingsReader(deps)),
     spoken: attendeeResearchHints({ store: deps.eventStore, classify: meetingController.spoken }),
     log: app.log,
   });

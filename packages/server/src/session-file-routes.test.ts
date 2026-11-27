@@ -44,3 +44,91 @@ it('normalizes Wiki and Raw Sources aliases without changing write protection', 
     await app.close();
   }
 });
+
+// Changing the code working copy by hand is part of the Code permission; a
+// member without it still edits Documents and still reads the worktree, where
+// the agent's generated files are linked from the conversation.
+it('needs Code to change worktree files, and only those', async () => {
+  const app = Fastify();
+  const write = vi.fn(async () => ({ ok: true }));
+  const remove = vi.fn(async () => undefined);
+  const move = vi.fn(async () => undefined);
+  const upload = vi.fn(async () => undefined);
+  const content = vi.fn(async () => ({ text: 'readable' }));
+  const createFolder = vi.fn(async () => ({ path: 'new' }));
+  const mayChangeCode = vi.fn(async () => false);
+  let workspaceKind: 'documents' | 'code' = 'code';
+  registerSessionFileRoutes(app, {
+    workspaceKind: async () => workspaceKind,
+    resolveRoot: async (_session, root) => `/files/${root}`,
+    list: async () => [],
+    upload,
+    history: async () => undefined,
+    content,
+    download: async () => undefined,
+    remove,
+    move,
+    write,
+    createFolder,
+    mayChangeCode,
+  });
+  const put = (root: string) =>
+    app.inject({
+      method: 'PUT',
+      url: '/sessions/s/files/content',
+      payload: { root, path: 'a.md', content: 'x', expectedVersion: null },
+    });
+  try {
+    expect((await put('worktree')).statusCode).toBe(403);
+    expect(
+      (await app.inject({ method: 'DELETE', url: '/sessions/s/files?path=a.md' })).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/sessions/s/files/move',
+          payload: { root: 'worktree', path: 'a.md', toRoot: 'worktree', toPath: 'b' },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (await app.inject({ method: 'POST', url: '/sessions/s/files?fileName=a.png', payload: '' }))
+        .statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/sessions/s/files/folders',
+          payload: { root: 'worktree', name: 'new' },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (await app.inject({ method: 'DELETE', url: '/sessions/s/files?root=worktree&path=a.md' }))
+        .statusCode,
+    ).toBe(403);
+    expect(createFolder).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(move).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+
+    expect((await app.inject('/sessions/s/files/content?path=a.md')).statusCode).toBe(200);
+    expect((await put('documents')).statusCode).toBe(200);
+    expect(write).toHaveBeenCalledTimes(1);
+
+    // A Documents session keeps its documents in the worktree; they stay editable.
+    workspaceKind = 'documents';
+    expect((await put('worktree')).statusCode).toBe(200);
+    expect(write).toHaveBeenCalledTimes(2);
+    workspaceKind = 'code';
+
+    mayChangeCode.mockResolvedValue(true);
+    expect((await put('worktree')).statusCode).toBe(200);
+    expect(write).toHaveBeenCalledTimes(3);
+  } finally {
+    await app.close();
+  }
+});

@@ -14,7 +14,7 @@ export default function DeviceCodeMockup() {
         <Text variant="label" tone="muted">
           1 · Open the sign-in page
         </Text>
-        <Button label="Open auth.openai.com/codex/device" onPress={ignore} fullWidth />
+        <Button label="Open auth.openai.com" onPress={ignore} fullWidth />
         <Text variant="label" tone="muted">
           2 · Enter this code
         </Text>

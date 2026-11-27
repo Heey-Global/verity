@@ -1,3 +1,4 @@
+import { createSessionRepositoryPullRequests } from './session-repository-pull-requests.js';
 import { aggregateUsage, type AgentEvent, type RateLimitState } from '@verity/events';
 import { worktreeExists } from '@verity/session';
 import type { SequencedEvent, SessionProjectionFacts, SessionRecord } from '@verity/store';
@@ -19,6 +20,7 @@ import { startPullRequestReadyMonitor, type PushSessionContext } from './pr-read
 import { projectClonePath } from './provisioner.js';
 import { type PushFirePoints } from './push-fire-points.js';
 import { type PushRouter } from './push-router.js';
+import type { PrRepairTurns } from './server-pr-repair.js';
 import type { ServerDeps } from './server-deps.js';
 import type { ActivityProjection, SessionPrSummary, SessionSummary } from './server-types.js';
 import { createPrBackgroundPolicy } from './pr-background-policy.js';
@@ -31,13 +33,18 @@ import {
   sessionHasOpenTasks,
   type SessionStatus,
 } from './status.js';
+import { liveOpenChoices, pickPermissionRequests } from './session-inbox-facts.js';
 import {
-  openChoicesFromProjection,
-  pendingPermissionRequestsFromProjection,
-} from './session-inbox-facts.js';
+  LOG_PROJECTION_CACHE_MAX_SESSIONS,
+  projectSessionLog,
+  SessionLogProjectionCache,
+  type SessionLogProjection,
+  type SummaryLogFacts,
+} from './session-log-projection.js';
 import type { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import {
   BRANCH_TTL_MS,
+  IDLE_KNOWN_LIST_BRANCH_TTL_MS,
   IDLE_LIST_BRANCH_TTL_MS,
   NO_DISCONNECTED_SANDBOXES,
   isControlPlaneProject,
@@ -45,6 +52,7 @@ import {
   ACTIVITY_BUSY_CACHE_MAX_SESSIONS,
 } from './server-support.js';
 import type { Conductor } from '@verity/session';
+import { withoutQuerySandbox } from './query-sandbox-policy.js';
 
 type BranchMetadata = { current: string; switchable: string[]; previewableRaw: string[] };
 
@@ -55,14 +63,13 @@ export interface ServerSessionOverviewOptions {
   resources: Pick<ResourceObserver, 'invalidate'>;
   reconcileSessionRepairs: (projectId: string) => Promise<void>;
   sessionsBeingReaped: ReadonlySet<string>;
-  maybeDispatchPrRepairTurns: (
-    session: SessionRecord,
-    pr: PullRequestStatus | null | undefined,
-  ) => Promise<void>;
+  maybeDispatchPrRepairTurns: PrRepairTurns['maybeDispatchPrRepairTurns'];
   pushRouter: PushRouter | undefined;
   pushFirePoints: PushFirePoints | undefined;
   describePushSession: (session: SessionRecord) => Promise<PushSessionContext>;
   vulnerabilitySessions: Pick<ReturnType<typeof createVulnerabilitySessionMonitor>, 'attention'>;
+  /** Told every pull request status the session cache presents (ADR 0033). */
+  onPrStatus?: (session: SessionRecord, status: PullRequestStatus | null) => void;
 }
 
 export interface ServerSessionOverview {
@@ -73,6 +80,7 @@ export interface ServerSessionOverview {
   compactPr: (status: PullRequestStatus | null) => SessionPrSummary | null;
   applyPrSummaryAction: (session: SessionRecord, pr: SessionPrSummary | null) => void;
   sessionPrCache: ReturnType<typeof createSessionPrCache>;
+  resolvePullRequests: ReturnType<typeof createSessionRepositoryPullRequests>;
   sessionPrStatus: (session: SessionRecord, current?: string) => Promise<PullRequestStatus | null>;
   summarizeSessions: (sessions: readonly SessionRecord[]) => Promise<SessionSummary[]>;
   emptyProjectionFacts: () => SessionProjectionFacts;
@@ -116,7 +124,11 @@ export interface ServerSessionOverview {
   ) => Promise<{ basePath: string; project: ProjectRecord } | undefined>;
   prCleanupPending: Set<string>;
   withPrVisibility: <T>(session: SessionRecord, action: () => Promise<T>) => Promise<T>;
-  invalidatePrSummaryAction: (session: SessionRecord, retainStatus?: boolean) => boolean;
+  invalidatePrSummaryAction: (
+    session: SessionRecord,
+    retainStatus?: boolean,
+    branches?: readonly string[],
+  ) => boolean;
   invalidateBranchCache: (worktree: string) => void;
 }
 
@@ -132,6 +144,7 @@ export function createServerSessionOverview({
   pushFirePoints,
   describePushSession,
   vulnerabilitySessions,
+  onPrStatus,
 }: ServerSessionOverviewOptions): ServerSessionOverview {
   // A session's live status badge. The event log lags the conductor: between a
   // turn being dispatched and claude emitting its first `status: running` event,
@@ -155,11 +168,11 @@ export function createServerSessionOverview({
     sessionId: string,
     events: readonly AgentEvent[],
     totalEventCount: number,
-  ): SessionStatus => {
-    const derived = deriveSessionStatusFromProjection(events, totalEventCount);
-    if (!AWAITING.has(derived) && conductor.isBusy(sessionId, { turnOnly: true })) return 'running';
-    return derived;
-  };
+  ): SessionStatus =>
+    liveStatusOfDerived(sessionId, deriveSessionStatusFromProjection(events, totalEventCount));
+  /** The live half of {@link liveStatusFromProjection}, for an already derived status. */
+  const liveStatusOfDerived = (sessionId: string, derived: SessionStatus): SessionStatus =>
+    !AWAITING.has(derived) && conductor.isBusy(sessionId, { turnOnly: true }) ? 'running' : derived;
 
   // PR-status enrichment for the overview markers (#387). CI status moves on the
   // order of minutes, but the session list polls every ~2s — resolving each
@@ -230,18 +243,29 @@ export function createServerSessionOverview({
    */
   const branchTtlMs = deps.branchCacheTtlMs ?? BRANCH_TTL_MS;
   const branchCache = new Map<string, { branch: string; at: number }>();
-  // A fleet-wide list must not launch one Docker exec per retained worktree at once.
-  let branchReads = 0;
-  const branchReadQueue: (() => void)[] = [];
-  const limitBranchRead = async <T>(read: () => Promise<T>): Promise<T> => {
-    if (branchReads >= 2) await new Promise<void>((resolve) => branchReadQueue.push(resolve));
-    else branchReads++;
+  // A fleet-wide list must not launch one Docker exec per retained worktree at once:
+  // each lane runs at most two git reads. The list's speculative refreshes get their
+  // own lane, so at most four run in total; sharing one queue put the
+  // branch menu of the session someone is looking at behind every retained
+  // worktree's refresh, and it waited up to a minute for its turn.
+  const branchReadLanes = {
+    foreground: { running: 0, queue: [] as (() => void)[] },
+    background: { running: 0, queue: [] as (() => void)[] },
+  };
+  type BranchReadLane = keyof typeof branchReadLanes;
+  const limitBranchRead = async <T>(
+    read: () => Promise<T>,
+    laneName: BranchReadLane = 'foreground',
+  ): Promise<T> => {
+    const lane = branchReadLanes[laneName];
+    if (lane.running >= 2) await new Promise<void>((resolve) => lane.queue.push(resolve));
+    else lane.running++;
     try {
       return await read();
     } finally {
-      const next = branchReadQueue.shift();
+      const next = lane.queue.shift();
       if (next) next();
-      else branchReads--;
+      else lane.running--;
     }
   };
   const branchMetadata = new Map<string, { value: BranchMetadata; at: number }>();
@@ -257,7 +281,10 @@ export function createServerSessionOverview({
    *  correct it. Marking the token beats comparing map presence, because another
    *  read may have repopulated the entry in the meantime and a `delete` leaves no
    *  trace. */
-  const branchInFlight = new Map<string, { disowned: boolean; read: Promise<string> }>();
+  const branchInFlight = new Map<
+    string,
+    { disowned: boolean; background: boolean; read: Promise<string> }
+  >();
   const disownBranchRefresh = (worktree: string): void => {
     const running = branchInFlight.get(worktree);
     if (running !== undefined) running.disowned = true;
@@ -271,7 +298,11 @@ export function createServerSessionOverview({
   };
   /** Read git for this worktree, or join the read already running for it, and
    *  write the answer back unless it was disowned meanwhile. */
-  const readBranch = (branches: GitBranchService, worktree: string): Promise<string> => {
+  const readBranch = (
+    branches: GitBranchService,
+    worktree: string,
+    background = false,
+  ): Promise<string> => {
     const metadata = branchMetadataInFlight.get(worktree);
     if (branches.metadata && metadata && !metadata.disowned) {
       return metadata.read.then((value) => value.current);
@@ -280,8 +311,18 @@ export function createServerSessionOverview({
     // An invalidation disowns the pre-switch read immediately, but the promise
     // can remain unsettled for arbitrarily long. A poll arriving in that window
     // must start a post-switch read rather than joining the known-stale one.
-    if (running !== undefined && !running.disowned) return running.read;
-    const token = { disowned: false, read: limitBranchRead(() => branches.current(worktree)) };
+    // A foreground read does not join a background one either: that one waits in
+    // the slower lane and declines to wake a sleeping sandbox.
+    if (running !== undefined && !running.disowned && (background || !running.background))
+      return running.read;
+    if (running !== undefined) running.disowned = true;
+    const token = {
+      disowned: false,
+      background,
+      read: background
+        ? limitBranchRead(() => withoutQuerySandbox(() => branches.current(worktree)), 'background')
+        : limitBranchRead(() => branches.current(worktree)),
+    };
     branchInFlight.set(worktree, token);
     token.read
       .then((branch) => {
@@ -365,8 +406,12 @@ export function createServerSessionOverview({
   };
   /**
    * The branch for the session LIST, answered from {@link branchCache} only.
-   * Idle summaries refresh at most once a minute; active sessions keep the
-   * header cadence. Turn completion and explicit branch changes invalidate both.
+   * Idle summaries with a known label are re-read every 15 minutes, idle ones
+   * without one at most once a minute; active sessions keep the header cadence.
+   * These reads run in the background lane and never wake a sleeping sandbox. A
+   * declined read keeps a known label as it was; a missing one is retried at the
+   * idle cadence (one container inspect, no git) and fills in once the sandbox
+   * runs, or at once when the session is opened.
    *
    * The overview derives a session's issue chip from it, but the list is polled
    * every 2 s for every session at once, so unlike the header it never awaits
@@ -386,14 +431,22 @@ export function createServerSessionOverview({
     if (!exists || deps.branches === undefined) return undefined;
     if (deps.projectWorktreeBranchesOnly === true && session.projectId === null) return undefined;
     const cached = branchCache.get(worktree);
-    const ttlMs = active ? branchTtlMs : Math.max(branchTtlMs, IDLE_LIST_BRANCH_TTL_MS);
+    // An idle session's branch moves through a turn's tool activity or an explicit
+    // switch, both of which invalidate this entry, and opening the session refreshes
+    // it through the header. A known label is therefore only re-read on a long
+    // backstop for changes nothing here sees, such as git run from a terminal;
+    // re-reading it every minute cost a git call per retained worktree.
+    const known = cached !== undefined && cached.branch !== '';
+    const ttlMs = active
+      ? branchTtlMs
+      : Math.max(branchTtlMs, known ? IDLE_KNOWN_LIST_BRANCH_TTL_MS : IDLE_LIST_BRANCH_TTL_MS);
     if (cached === undefined || Date.now() - cached.at >= ttlMs) {
       void branchesForSession(session)
         .then((branches) => {
           // A project without branch reads (control plane) is stamped empty too,
           // so it is not asked for its project record on every poll either.
           if (branches === undefined) branchCache.set(worktree, { branch: '', at: Date.now() });
-          else return readBranch(branches, worktree);
+          else return readBranch(branches, worktree, true);
         })
         .catch(() => {
           // `readBranch` re-stamps an existing entry on failure; only a cold one is left.
@@ -457,6 +510,25 @@ export function createServerSessionOverview({
     }
     return null;
   };
+  const resolvePullRequests = createSessionRepositoryPullRequests(deps, branchesForSession);
+  const observedPullRequests = new Map<string, string>();
+  const observePullRequests = async (session: SessionRecord) => {
+    const rows = await resolvePullRequests(session);
+    if (!rows) return rows;
+    const snapshot = JSON.stringify(
+      rows
+        .map(({ status }) => status)
+        .sort((a, b) => a.repository.id.localeCompare(b.repository.id) || a.number - b.number),
+    );
+    if (observedPullRequests.get(session.worktree) !== snapshot) {
+      observedPullRequests.set(session.worktree, snapshot);
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(session.sessionId)}/branches`,
+        'pr-status',
+      );
+    }
+    return rows;
+  };
   const prCleanupPending = new Set<string>();
   const prVisibilityWrites = new Map<string, Promise<void>>();
   const withPrVisibility = async <T>(
@@ -505,6 +577,7 @@ export function createServerSessionOverview({
     now: deps.pullRequestCacheNow,
     onChange: (session, status) => {
       prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
+      onPrStatus?.(session, status);
       // A merged change is when the product changed. The occasion is recorded once
       // per pull request; a cache refilled after a restart reports it again. It
       // names the pull request only: the session's conversation is kept for the
@@ -523,7 +596,10 @@ export function createServerSessionOverview({
         );
       // Cache completion is not an HTTP mutation; without this the overview waits
       // for a later observation even though the opened session already knows the PR.
-      resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
+      resources.invalidate(
+        `/sessions/${encodeURIComponent(session.sessionId)}/branches`,
+        'pr-status',
+      );
     },
   });
   const backgroundPr = createPrBackgroundPolicy({
@@ -542,6 +618,11 @@ export function createServerSessionOverview({
   let prRepairStopped = false;
   let prRepairSweep: Promise<void> | undefined;
   let prRepairTimer: ReturnType<typeof setInterval> | undefined;
+  // A failing quota check must not abort the sweep; it only forgoes the deferral.
+  const deferForgeReads = (projectId: string): Promise<boolean> =>
+    Promise.resolve()
+      .then(() => deps.deferBackgroundForgeReads?.(projectId) ?? false)
+      .catch(() => false);
   const sweepPrRepairs = (): Promise<void> | undefined => {
     if (prRepairStopped || prRepairSweep !== undefined) return prRepairSweep;
     prRepairSweep = (async () => {
@@ -554,16 +635,55 @@ export function createServerSessionOverview({
         await reconcileSessionRepairs(projectId);
       const live = new Set(allSessions.map((session) => session.worktree));
       backgroundPr.prune(live);
+      for (const worktree of observedPullRequests.keys())
+        if (!live.has(worktree)) observedPullRequests.delete(worktree);
       sessionPrCache.prune(live);
       prunePrSummaryCache(live);
       pruneBranchCache(live);
       for (const session of sessions) {
         if (prRepairStopped) break;
-        if (sessionsBeingReaped.has(session.sessionId) || !sessionPrCache.isDue(session, true))
+        if (
+          sessionsBeingReaped.has(session.sessionId) ||
+          (!deps.projectPullRequests && !sessionPrCache.isDue(session, true))
+        )
           continue;
+        // Near quota exhaustion background discovery yields to agents and open apps.
+        if (session.projectId && (await deferForgeReads(session.projectId))) continue;
+        let primary: PullRequestStatus | null = null;
         try {
-          if (!(await worktreeExists(session.worktree))) continue;
-          await maybeDispatchPrRepairTurns(session, await backgroundPrStatus(session));
+          if (await worktreeExists(session.worktree)) {
+            const status = await backgroundPrStatus(session);
+            await maybeDispatchPrRepairTurns(session, status);
+            primary = status;
+          }
+        } catch (err) {
+          app.log.warn({ err, sessionId: session.sessionId }, 'background primary PR check failed');
+        }
+        try {
+          const rows = await observePullRequests(session);
+          for (const row of rows ?? []) {
+            const pr = row.status;
+            if (pr.observationFailed || (pr.repository.isDefault && pr.number === primary?.number))
+              continue;
+            await maybeDispatchPrRepairTurns(session, pr, {
+              repositoryId: pr.repository.id,
+              isDefault: pr.repository.isDefault,
+              host: row.project.kind === 'forgejo' ? 'Forgejo' : 'GitHub',
+              read: async (current) =>
+                (
+                  await resolvePullRequests(
+                    current,
+                    undefined,
+                    undefined,
+                    pr.repository.id,
+                    pr.number,
+                  )
+                )?.find(
+                  ({ status }) =>
+                    status.repository.id === pr.repository.id && status.number === pr.number,
+                )?.status ?? null,
+            });
+          }
         } catch (err) {
           app.log.warn({ err, sessionId: session.sessionId }, 'background PR repair check failed');
         }
@@ -576,7 +696,12 @@ export function createServerSessionOverview({
     return prRepairSweep;
   };
   app.addHook('onReady', () => {
-    if (deps.branchPrStatus === undefined && deps.branchPrStatusForBranches === undefined) return;
+    if (
+      !deps.projectPullRequests &&
+      deps.branchPrStatus === undefined &&
+      deps.branchPrStatusForBranches === undefined
+    )
+      return;
     prRepairTimer = setInterval(
       () => void sweepPrRepairs(),
       deps.pullRequestRepairPollMs ?? 30_000,
@@ -597,8 +722,24 @@ export function createServerSessionOverview({
         resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
         return;
       }
-      if (!invalidatePrSummaryAction(session, true)) return;
-      await backgroundPrStatus(session);
+      // Tool activity can only change this session's branches. Forgetting the whole
+      // repository here re-read every other session's pull request on each tool call.
+      // The checked-out branch always counts; an empty or failed lookup falls back
+      // to forgetting the whole repository rather than serving a stale status.
+      const branches = await branchesForSession(session)
+        .then(async (service) => {
+          if (!service) return undefined;
+          const listed = await service.sessionBranches(session.worktree);
+          const all = [...new Set([await service.current(session.worktree), ...listed])];
+          return all.filter((branch) => branch !== '');
+        })
+        .then((all) => (all && all.length > 0 ? all : undefined))
+        .catch(() => undefined);
+      if (!invalidatePrSummaryAction(session, true, branches)) return;
+      // Near quota exhaustion the stale status is still forgotten, so the next
+      // interactive read is fresh; only the speculative background read is skipped.
+      if (!session.projectId || !(await deferForgeReads(session.projectId)))
+        await backgroundPrStatus(session);
       resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
     },
     onError: (err, sessionId) => app.log.warn({ err, sessionId }, 'PR activity refresh failed'),
@@ -694,10 +835,14 @@ export function createServerSessionOverview({
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.set(worktree, { pr, at: Date.now() });
   };
-  const invalidatePrSummaryAction = (session: SessionRecord, retainStatus = false): boolean => {
+  const invalidatePrSummaryAction = (
+    session: SessionRecord,
+    retainStatus = false,
+    branches?: readonly string[],
+  ): boolean => {
     const { worktree } = session;
     if (!sessionPrCache.invalidate(worktree, retainStatus)) return false;
-    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
+    if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId, branches);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     if (!retainStatus) prSummaryCache.delete(worktree);
     return true;
@@ -781,7 +926,9 @@ export function createServerSessionOverview({
   const emptyProjectionFacts = (): SessionProjectionFacts => ({
     eventCount: 0,
     lastEventSeq: 0,
+    revision: '',
     lastActivityAt: null,
+    lastMessageAt: null,
     events: [],
     eventsTruncated: false,
     rateLimitEvents: [],
@@ -835,13 +982,25 @@ export function createServerSessionOverview({
    * of them: four batched queries per 500 sessions, and the only part that still
    * carries payloads is bounded to `PROJECTION_TAIL` events per session.
    */
+  const logProjections = new SessionLogProjectionCache(LOG_PROJECTION_CACHE_MAX_SESSIONS);
   const summarizeSessions = async (
     sessions: readonly SessionRecord[],
   ): Promise<SessionSummary[]> => {
     const ids = sessions.map((session) => session.sessionId);
+    // A constant-size marker per log decides which logs moved; only those are
+    // read and derived again (see `SessionLogProjectionCache`).
+    const stats = await measureLatencyPhase('session_log_stats', () =>
+      deps.eventStore.sessionProjections.listSessionEventStats(ids),
+    );
+    const logs = new Map<string, { facts: SummaryLogFacts; projection: SessionLogProjection }>();
+    for (const id of ids) {
+      const unchanged = logProjections.get(id, stats.get(id));
+      if (unchanged !== undefined) logs.set(id, unchanged);
+    }
+    const changed = ids.filter((id) => !logs.has(id));
     const [facts, pendingLinks, automations] = await Promise.all([
       measureLatencyPhase('session_projection', () =>
-        deps.eventStore.listSessionProjectionFacts(ids, PROJECTION_TAIL),
+        deps.eventStore.listSessionProjectionFacts(changed, PROJECTION_TAIL),
       ),
       measureLatencyPhase('session_links', () => deps.eventStore.pendingSessionLinkMessageIds(ids)),
       measureLatencyPhase('session_automations', () =>
@@ -857,7 +1016,13 @@ export function createServerSessionOverview({
     }
     const restorable = await deps.sessionStorage?.canRestoreMany(missing);
     for (const [id, value] of restorable ?? []) resumable.set(id, value);
-    const fallbackIds = ids.filter((id) => {
+    const remember = (id: string, events: readonly AgentEvent[], keep = true): void => {
+      const read = facts.get(id) ?? emptyProjectionFacts();
+      const projection = projectSessionLog(events, read);
+      if (keep) logProjections.set(id, read, projection);
+      logs.set(id, { facts: read, projection });
+    };
+    const fallbackIds = changed.filter((id) => {
       const entry = facts.get(id);
       return (
         entry?.eventsTruncated &&
@@ -865,43 +1030,42 @@ export function createServerSessionOverview({
       );
     });
     const boundaries = new Map(fallbackIds.map((id) => [id, facts.get(id)!.lastEventSeq]));
-    const byId = new Map(sessions.map((session) => [session.sessionId, session]));
-    const prepared = new Map<string, SessionSummary>();
-    const prepare = (session: SessionRecord, events: AgentEvent[]) =>
-      summarizeSessionWithFacts(
-        session,
-        facts.get(session.sessionId) ?? emptyProjectionFacts(),
-        pendingLinks.get(session.sessionId) ?? [],
-        automations.get(session.sessionId),
-        events,
-        resumable.get(session.sessionId) ?? false,
-      );
-    const fallbackRead = fullProjectionReadTail.then(async () => {
-      await yieldToEventLoop();
-      await deps.eventStore.visitSessionProjectionEvents(boundaries, async (id, events) => {
-        prepared.set(
-          id,
-          await prepare(
-            byId.get(id)!,
+    if (boundaries.size > 0) {
+      const fallbackRead = fullProjectionReadTail.then(async () => {
+        await yieldToEventLoop();
+        // Derive each full log as it arrives, so only one is held at a time.
+        await deps.eventStore.visitSessionProjectionEvents(boundaries, (id, events) => {
+          remember(
+            id,
             events.map(({ event }) => event),
-          ),
-        );
+          );
+          return Promise.resolve();
+        });
       });
-    });
-    fullProjectionReadTail = fallbackRead.then(
-      () => undefined,
-      () => undefined,
-    );
-    await fallbackRead;
+      fullProjectionReadTail = fallbackRead.then(
+        () => undefined,
+        () => undefined,
+      );
+      await fallbackRead;
+    }
+    for (const id of changed) {
+      // A fallback log the full read did not return is answered from its tail for
+      // this response only, as before; caching it would keep that answer.
+      if (!logs.has(id))
+        remember(id, facts.get(id)?.events.map(({ event }) => event) ?? [], !boundaries.has(id));
+    }
     return Promise.all(
-      sessions.map(
-        async (session) =>
-          prepared.get(session.sessionId) ??
-          (await prepare(
-            session,
-            facts.get(session.sessionId)?.events.map(({ event }) => event) ?? [],
-          )),
-      ),
+      sessions.map((session) => {
+        const log = logs.get(session.sessionId)!;
+        return summarizeSessionWithFacts(
+          session,
+          log.facts,
+          log.projection,
+          pendingLinks.get(session.sessionId) ?? [],
+          automations.get(session.sessionId),
+          resumable.get(session.sessionId) ?? false,
+        );
+      }),
     );
   };
 
@@ -1016,9 +1180,11 @@ export function createServerSessionOverview({
       deps.eventStore.pendingSessionLinkMessageIds([session.sessionId]),
       deps.eventStore.listSessionAutomationStatuses([session.sessionId]),
     ]);
+    const read = facts.get(session.sessionId) ?? emptyProjectionFacts();
     return summarizeSessionWithFacts(
       session,
-      facts.get(session.sessionId) ?? emptyProjectionFacts(),
+      read,
+      projectSessionLog(await projectionEventsFor(session.sessionId, read), read),
       pendingLinks.get(session.sessionId) ?? [],
       automations.get(session.sessionId),
     );
@@ -1030,13 +1196,13 @@ export function createServerSessionOverview({
 
   const summarizeSessionWithFacts = async (
     session: SessionRecord,
-    facts: SessionProjectionFacts,
-    pendingLinks: readonly string[] = [],
-    automationStatus?: SessionAutomationStatus,
-    preparedEvents?: AgentEvent[],
+    facts: SummaryLogFacts,
+    log: SessionLogProjection,
+    pendingLinks: readonly string[],
+    automationStatus: SessionAutomationStatus | undefined,
     preparedResumable?: boolean,
   ): Promise<SessionSummary> => {
-    const events = preparedEvents ?? (await projectionEventsFor(session.sessionId, facts));
+    await conductor.refreshDetachedPermissions?.(session.sessionId);
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
     const resumable = preparedResumable ?? (await sessionResumable(session));
@@ -1047,37 +1213,28 @@ export function createServerSessionOverview({
     const rateLimit = rateLimits[0];
     const conductorPermissions = conductor.pendingPermissions(session.sessionId);
     const pendingPermissions = [...new Set([...conductorPermissions, ...pendingLinks])];
-    const pendingPermissionRequests = pendingPermissionRequestsFromProjection(
-      events,
-      conductorPermissions,
-    );
-    // Unread counts include only agent text; the seq still identifies a nonempty log.
-    const projectedStatus = liveStatusFromProjection(
-      session.sessionId,
-      events,
-      facts.lastEventSeq === 0 ? 0 : 1,
-    );
-    // A permission event is durable so reconnect can rebuild its card, but its
-    // answer travels over the live runner channel. Once that channel no longer
-    // reports the prompt, do not let the historical event keep the overview in
-    // "Needs input" while the approved operation continues or settles.
+    const pendingPermissionRequests = [
+      ...new Map(
+        [
+          ...pickPermissionRequests(log.permissionRequests, conductorPermissions),
+          ...(conductor.detachedPermissionRequests?.(session.sessionId) ?? []),
+        ].map((request) => [request.toolUseId, request]),
+      ).values(),
+    ];
+    const projectedStatus = liveStatusOfDerived(session.sessionId, log.status);
     const status =
-      pendingLinks.length > 0
+      pendingPermissions.length > 0
         ? 'awaiting_input'
         : projectedStatus === 'awaiting_input' &&
-            permissionEventAwaitsInput(events) &&
+            log.awaitsPermission &&
             pendingPermissions.length === 0
           ? conductor.isBusy(session.sessionId, { turnOnly: true })
             ? 'running'
             : 'completed'
           : projectedStatus;
     const busy = conductor.isBusy(session.sessionId);
-    const branch = listBranchFor(
-      session,
-      resumable,
-      busy || status === 'running' || sessionHasOpenTasks(events),
-    );
-    const openChoices = openChoicesFromProjection(events, status, busy);
+    const branch = listBranchFor(session, resumable, busy || status === 'running' || log.openTasks);
+    const openChoices = liveOpenChoices(log.choices, status, busy);
     // A `Set` the relay reconciler already maintains; this adds one `Set.has` per
     // session and no I/O, so it is safe on a route polled every 2 s per device.
     const attention = sessionAttentionSignals({
@@ -1089,7 +1246,7 @@ export function createServerSessionOverview({
     return {
       ...session,
       status,
-      ...(AWAITING.has(status) && sessionHasOpenTasks(events) ? { backgroundWorking: true } : {}),
+      ...(AWAITING.has(status) && log.openTasks ? { backgroundWorking: true } : {}),
       pendingPermissions,
       ...(status === 'awaiting_input' && pendingPermissions.length > 0
         ? { permissionAwaitingInput: true as const }
@@ -1097,11 +1254,13 @@ export function createServerSessionOverview({
       // Both absent in the common case, so a quiet session's summary is unchanged.
       ...(pendingPermissionRequests.length > 0 ? { pendingPermissionRequests } : {}),
       ...(openChoices !== undefined ? { openChoices } : {}),
+      ...withRequestInitiator(log.requestInitiator),
       // Summed in SQL over the whole log rather than folded out of `events`: the
       // slice is on its way to being a bounded tail, and a total taken from a
       // tail would quietly shrink as a session got longer.
       usage: facts.usage,
       lastActivityAt: facts.lastActivityAt,
+      lastMessageAt: facts.lastMessageAt,
       ...(rateLimit ? { rateLimit } : {}),
       ...(rateLimits.length > 0 ? { rateLimits } : {}),
       resumable,
@@ -1129,6 +1288,7 @@ export function createServerSessionOverview({
     applyPrSummaryAction,
     sessionPrCache,
     sessionPrStatus,
+    resolvePullRequests,
     summarizeSessions,
     emptyProjectionFacts,
     projectionEventsFor,
@@ -1148,4 +1308,8 @@ export function createServerSessionOverview({
     invalidatePrSummaryAction,
     invalidateBranchCache,
   };
+}
+
+function withRequestInitiator(userId: string | undefined): { requestInitiator?: string } {
+  return userId === undefined ? {} : { requestInitiator: userId };
 }

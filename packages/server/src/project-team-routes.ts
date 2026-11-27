@@ -20,16 +20,23 @@ const inviteBody = z
     inviteeName: z.string().trim().min(1).max(80),
     /** "Can edit"; without it the person can read. */
     canExecute: z.boolean(),
+    /** "Can work with code"; only with `canExecute`. Absent from apps that predate it. */
+    canCode: z.boolean().optional(),
     /** The inviter's own name, as invited people see it (asked once). */
     inviterName: z.string().trim().min(1).max(80).optional(),
   })
   .strict();
-const rightsBody = z.object({ canExecute: z.boolean(), canManage: z.boolean() }).strict();
+// Without `canCode` (an app that predates it) the store keeps the member's Code
+// where their other rights still allow it.
+const rightsBody = z
+  .object({ canExecute: z.boolean(), canCode: z.boolean().optional(), canManage: z.boolean() })
+  .strict();
 
 const publicInvitation = (invitation: ProjectInvitation) => ({
   id: invitation.id,
   inviteeName: invitation.inviteeName,
   canExecute: invitation.canExecute,
+  canCode: invitation.canCode,
   state: invitation.state,
   expiresAt: invitation.expiresAt.toISOString(),
   createdAt: invitation.createdAt.toISOString(),
@@ -40,6 +47,7 @@ const publicMember = (member: ProjectMember) => ({
   displayName: member.displayName,
   canRead: member.canRead,
   canExecute: member.canExecute,
+  canCode: member.canCode,
   canManage: member.canManage,
   creator: member.creator,
   joinedAt: member.joinedAt.toISOString(),
@@ -82,7 +90,8 @@ export function registerProjectTeamRoutes(
   const sharing = () => (deps.teamSharing === undefined ? {} : { teamSharing: deps.teamSharing() });
   const refusal = (error: unknown) => {
     if (!(error instanceof ProjectTeamError)) throw error;
-    const status = error.code === 'member_not_found' ? 404 : 409;
+    const status =
+      error.code === 'member_not_found' ? 404 : error.code === 'invalid_rights' ? 400 : 409;
     return { status, body: { error: error.message, code: error.code } };
   };
   const linkFields = async (invitation: ProjectInvitation, projectId: string, viewer: string) => {
@@ -142,6 +151,7 @@ export function registerProjectTeamRoutes(
         inviterUserId: viewer,
         inviteeName: body.inviteeName,
         canExecute: body.canExecute,
+        ...(body.canCode === undefined ? {} : { canCode: body.canCode }),
       });
       reply.header('cache-control', 'no-store').code(201);
       return {

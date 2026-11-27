@@ -47,16 +47,19 @@ export function installProjectPullRequests(
             ...(pr ? { number: pr.number } : {}),
             name: session.name,
           },
-          ...workspaces[index]!.map((workspace): SessionPullRequestLink => {
-            const number = (workspace.pullRequest as { number?: unknown } | null | undefined)
-              ?.number;
-            return {
+          ...workspaces[index]!.flatMap((workspace): SessionPullRequestLink[] => {
+            const link = {
               sessionId: session.sessionId,
               repositoryId: workspace.repositoryId,
-              branch: workspace.branch,
-              ...(typeof number === 'number' ? { number } : {}),
               name: session.name,
             };
+            return [
+              { ...link, branch: workspace.branch },
+              ...(workspace.pullRequests ?? []).flatMap((value) => {
+                const pr = value as { number?: unknown } | null;
+                return typeof pr?.number === 'number' ? [{ ...link, number: pr.number }] : [];
+              }),
+            ];
           }),
         ];
       });

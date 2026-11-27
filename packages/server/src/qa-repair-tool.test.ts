@@ -32,7 +32,8 @@ beforeEach(async () => {
       model: 'claude',
     });
   await ctx.store.repairs.configureQA(true, 'admin');
-  await ctx.store.repairs.qaSession('qa');
+  await ctx.store.repairs.projectQA.ensureRole('p');
+  await ctx.store.repairs.projectQA.attachSession('p', 'qa');
   await ctx.store.repairs.configure('p', 'user', 'monitor');
 });
 const caller = { sessionId: 'qa', userId: 'user' };
@@ -155,7 +156,7 @@ it('refuses an arbitrary target, ambiguous branches, forks, and another caller',
   deps.inspect = async (...args) => ({ ...(await old(...args))!, fork: true });
   expect(await service.resolve(caller, 'p', 2120)).toMatchObject({ status: 'blocked' });
 });
-it('shares the ownership transaction with automatic claims', async () => {
+it('runs a manual repair beside an automatic one within the project limit', async () => {
   await ctx.store.repairs.configure('p', 'user', 'automatic');
   const { deps, service, resolve } = setup();
   deps.busy = () => true;
@@ -167,10 +168,10 @@ it('shares the ownership transaction with automatic claims', async () => {
     service.request(caller, 'p', id),
     ctx.store.repairs.claim(incident.id, 'automatic-target', mandate.revision, qa.revision),
   ]);
-  const manual = outcomes[0].status === 'queued';
-  expect(Number(manual) + Number(!!outcomes[1])).toBe(1);
+  expect(outcomes[0].status).toBe('queued');
+  expect(outcomes[1]).toBeDefined();
   expect((await ctx.store.repairs.incidents('p')).filter((i) => i.owner_session_id)).toHaveLength(
-    1,
+    2,
   );
 });
 it('does not invent acceptance when delivery is uncertain', async () => {

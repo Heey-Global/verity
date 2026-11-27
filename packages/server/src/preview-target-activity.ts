@@ -1,6 +1,15 @@
+import { projectNetworkName } from './provisioner.js';
 import { DockerError } from './docker.js';
-import type { ProjectRecord, PublicPreviewShareRecord } from '@verity/store';
+import type {
+  EventStore,
+  ProjectRecord,
+  PublicPreviewShareRecord,
+  SessionRecord,
+} from '@verity/store';
+import type { SessionDevServer } from './listening-ports.js';
+import { managedPreviewInstance, managedRunProviderCurrent } from './managed-dev-server-secrets.js';
 import type { PreviewShareManagerOptions } from './preview-share-manager.js';
+import { PreviewShareConflictError } from './preview-network-policy.js';
 
 /** A retained URL is intent, not evidence that its target is serving. Probe the
  * target on every activity check; an offline connector can itself be healthy. */
@@ -9,7 +18,11 @@ async function previewTargetEvidence(
   options: PreviewShareManagerOptions,
   probes: {
     sandbox: (project: ProjectRecord, managedInstanceId: string | null) => Promise<ProjectRecord>;
-    sessionPort: (project: ProjectRecord, worktree: string, port: number) => Promise<boolean>;
+    sessionPort: (
+      project: ProjectRecord,
+      session: SessionRecord,
+      port: number,
+    ) => Promise<SessionDevServer | undefined>;
     staticDirectory: (
       project: ProjectRecord,
       worktree: string | undefined,
@@ -35,7 +48,8 @@ async function previewTargetEvidence(
       instance.projectId !== project.id ||
       instance.sessionId !== share.sessionId ||
       instance.desired !== 'running' ||
-      instance.state !== 'running'
+      instance.state !== 'running' ||
+      !(await managedRunProviderCurrent(options.store, instance))
     )
       return false;
     if (!options.listListeningProcesses)
@@ -65,7 +79,13 @@ async function previewTargetEvidence(
   return (
     !!session &&
     share.targetPort !== null &&
-    (await probes.sessionPort(target, session.worktree, share.targetPort))
+    (await authorizedPreviewPort(
+      options.store,
+      project.id,
+      session.sessionId,
+      await probes.sessionPort(target, session, share.targetPort),
+      null,
+    ))
   );
 }
 
@@ -105,4 +125,87 @@ export async function previewConnectorIsLive(
     if (error instanceof DockerError && error.kind === 'container_not_found') return false;
     throw error;
   }
+}
+
+export async function authorizedPreviewPort(
+  store: EventStore,
+  projectId: string,
+  sessionId: string,
+  target: SessionDevServer | undefined,
+  expectedInstanceId?: string | null,
+): Promise<boolean> {
+  if (!target) return false;
+  if (expectedInstanceId === null) return target.managedInstanceId === undefined;
+  if (expectedInstanceId && expectedInstanceId !== target.managedInstanceId) return false;
+  const managed = await managedPreviewInstance(store, {
+    sessionId,
+    managedInstanceId: expectedInstanceId ?? target.managedInstanceId,
+  });
+  return !managed || (managed.projectId === projectId && managed.sandboxPort === target.port);
+}
+
+export async function previewSandboxFor(
+  options: PreviewShareManagerOptions,
+  project: ProjectRecord,
+  managedInstanceId: string | null | undefined,
+): Promise<ProjectRecord & { previewNetwork: string }> {
+  const instance = managedInstanceId
+    ? await options.store.managedDevServers.getInstance(managedInstanceId)
+    : undefined;
+  if (!instance || !options.sandboxFor)
+    return { ...project, previewNetwork: projectNetworkName(project.id) };
+  const target = await options.sandboxFor(project, instance.lastRunUserId);
+  return { ...project, containerName: target.containerName, previewNetwork: target.networkName };
+}
+
+export async function authorizedManagedPreviewPort(
+  options: PreviewShareManagerOptions,
+  sandbox: ProjectRecord,
+  sessionId: string,
+  port: number,
+  managedInstanceId: string,
+): Promise<boolean> {
+  const instance = await managedPreviewInstance(options.store, { sessionId, managedInstanceId });
+  return (
+    instance?.projectId === sandbox.id &&
+    instance.sandboxPort === port &&
+    (await options.listListeningProcesses?.(sandbox, { fresh: true }))?.some(
+      (listener) =>
+        listener.instanceId === managedInstanceId &&
+        listener.port === port &&
+        (listener.bind === 'any' ||
+          listener.reachable === true ||
+          (listener.bind === 'loopback' && options.prepareTargetPort !== undefined)),
+    ) === true
+  );
+}
+
+/** Right before a connector starts forwarding, the managed instance must still own
+ * the sandbox and port captured in its spec, with its own tagged listener up there.
+ * The instance can restart elsewhere while Docker creates the connector. */
+export async function assertManagedConnectorTarget(
+  options: PreviewShareManagerOptions,
+  share: Pick<
+    PublicPreviewShareRecord,
+    'projectId' | 'sessionId' | 'managedInstanceId' | 'targetPort'
+  >,
+  targetContainerName: string,
+): Promise<void> {
+  if (!share.managedInstanceId) return;
+  const project = await options.store.getProject(share.projectId);
+  const sandbox = project && (await previewSandboxFor(options, project, share.managedInstanceId));
+  if (
+    !sandbox ||
+    sandbox.containerName !== targetContainerName ||
+    share.targetPort === null ||
+    !share.sessionId ||
+    !(await authorizedManagedPreviewPort(
+      options,
+      sandbox,
+      share.sessionId,
+      share.targetPort,
+      share.managedInstanceId,
+    ))
+  )
+    throw new PreviewShareConflictError('managed server ownership or port changed');
 }

@@ -49,8 +49,16 @@ it('keeps exact-scope approvals, reusable targets and revocation durable', async
     'different request',
   );
   expect(await inquiries.decide('request', 'source', true, null)).toBe(false);
+  expect(await inquiries.decide('request', 'target', true, null, true)).toBe(false);
   expect(await inquiries.decide('request', 'target', true, null)).toBe(true);
   expect(await inquiries.decide('request', 'target', true, null)).toBe(false);
+  // The decision only releases provisioning; the human approval carries the change through it.
+  expect((await inquiries.get('request'))?.status).toBe('provisioning');
+  await inquiries.completeProvisioning('request');
+  expect(await inquiries.get('request')).toMatchObject({
+    status: 'approved',
+    humanApproved: true,
+  });
   expect(await inquiries.isReadOnlyTarget('target')).toBe(true);
   await inquiries.activate('request');
   expect(await inquiries.isReadOnlyTarget('target')).toBe(false);
@@ -63,10 +71,19 @@ it('keeps exact-scope approvals, reusable targets and revocation durable', async
   await inquiries.create({ ...input, id: 'question', kind: 'question', status: 'approved' });
   await inquiries.activate('question');
   expect(await inquiries.isReadOnlyTarget('target')).toBe(true);
-  await inquiries.create({ ...input, id: 'revoked' });
+  // Revoking stops questions the grant admitted, not requests waiting for a person.
+  await inquiries.create({
+    ...input,
+    id: 'revoked',
+    kind: 'question',
+    status: 'provisioning',
+  });
+  expect((await inquiries.get('revoked'))?.status).toBe('provisioning');
+  await inquiries.create({ ...input, id: 'waiting', status: 'provisioning' });
   await inquiries.setGrant('source', 'target', false);
   expect((await inquiries.get('revoked'))?.status).toBe('blocked');
   expect(await inquiries.decide('revoked', 'target', true, null)).toBe(false);
+  expect((await inquiries.get('waiting'))?.status).toBe('pending');
   await ctx.store.deleteSession('source');
   expect(await inquiries.isTarget('target')).toBe(true);
   expect(await inquiries.isReadOnlyTarget('target')).toBe(true);
@@ -175,4 +192,53 @@ it('rejects exhausted admission and conflicting retries before provisioning targ
   expect(await inquiries.list()).toHaveLength(20);
   await ctx.store.deleteSession('target');
   expect(await inquiries.list()).toEqual([]);
+});
+
+it('keeps ungranted questions pending and stores a grant only on "Always allow"', async () => {
+  for (const id of ['source', 'target']) {
+    await ctx.store.createProject({
+      id,
+      owner: 'team',
+      repo: id,
+      containerName: id,
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: id,
+      projectId: id,
+      worktree: `/${id}`,
+      model: 'test',
+    });
+  }
+  const inquiries = ctx.store.projectInquiries;
+  const input = {
+    id: 'once',
+    sourceSessionId: 'source',
+    targetSessionId: 'target',
+    sourceProjectId: 'source',
+    targetProjectId: 'target',
+    title: 'Backup',
+    body: 'Are documents excluded?',
+    kind: 'question' as const,
+    status: 'provisioning' as const,
+    userId: null,
+  };
+  expect((await inquiries.create(input)).status).toBe('pending');
+  // A pending request reserves no delivery: nothing may reach the target yet.
+  expect(await inquiries.undelivered()).toEqual([]);
+  expect(await inquiries.decide('once', 'target', true, 'user')).toBe(true);
+  expect(await inquiries.allowed('source', 'target')).toBe(false);
+  await inquiries.completeProvisioning('once');
+  expect((await inquiries.get('once'))?.status).toBe('approved');
+
+  expect((await inquiries.create({ ...input, id: 'always' })).status).toBe('pending');
+  expect(await inquiries.decide('always', 'target', true, 'user', true)).toBe(true);
+  expect(await inquiries.allowed('source', 'target')).toBe(true);
+  expect((await inquiries.create({ ...input, id: 'next' })).status).toBe('provisioning');
+  // A grant never admits a change.
+  expect((await inquiries.create({ ...input, id: 'change', kind: 'change' })).status).toBe(
+    'pending',
+  );
+  expect(await inquiries.decide('change', 'target', false, 'user')).toBe(true);
+  expect((await inquiries.get('change'))?.status).toBe('rejected');
 });

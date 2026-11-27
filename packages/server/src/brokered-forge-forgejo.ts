@@ -96,7 +96,9 @@ export function createForgejoForgeAdapter(options: {
             : ['POST', 'PATCH'].includes(request.method)
               ? 'issues-write'
               : undefined;
-        else if (/^\/pulls(?:\/\d+(?:\/(?:merge|commits|files))?)?$/u.test(suffix))
+        // Only a person merges, through the app's server-side routes; never a sandbox.
+        else if (/^\/pulls\/\d+\/merge$/u.test(suffix)) action = read ? 'pulls-read' : undefined;
+        else if (/^\/pulls(?:\/\d+(?:\/(?:commits|files))?)?$/u.test(suffix))
           action = read
             ? 'pulls-read'
             : ['POST', 'PATCH'].includes(request.method)

@@ -2,7 +2,7 @@ import {
   type ManagedDevServerSecretBinding,
   type ManagedDevServerInstanceRecord,
 } from '@verity/store';
-import type { ManagedServerProviderSnapshot } from './managed-dev-server-manager.js';
+import type { ManagedServerProviderSnapshot } from '@verity/events';
 
 // What the app sees of a managed dev server and its running instances.
 

@@ -1,12 +1,5 @@
-import type {
-  DevServer,
-  ProjectRecord,
-  ServerUpdateStatus,
-  SessionAutomation,
-  SessionStatus,
-} from './api.js';
+import type { DevServer, ServerUpdateStatus, SessionAutomation, SessionStatus } from './api.js';
 
-type ProjectListener = (project: ProjectRecord) => void;
 type ServerUpdateListener = (status: ServerUpdateStatus) => void;
 type SessionAutomationListener = (sessionId: string, automation: SessionAutomation | null) => void;
 export type DevServerStatusMutation = Pick<DevServer, 'id' | 'projectId'> &
@@ -14,20 +7,10 @@ export type DevServerStatusMutation = Pick<DevServer, 'id' | 'projectId'> &
 type DevServerListener = (mutation: DevServerStatusMutation) => void;
 type SessionStatusListener = (sessionId: string, status: SessionStatus) => void;
 
-const projectListeners = new Set<ProjectListener>();
 const serverUpdateListeners = new Set<ServerUpdateListener>();
 const sessionAutomationListeners = new Set<SessionAutomationListener>();
 const devServerListeners = new Set<DevServerListener>();
 const sessionStatusListeners = new Set<SessionStatusListener>();
-
-export function publishProjectStatusMutation(project: ProjectRecord): void {
-  for (const listener of projectListeners) listener(project);
-}
-
-export function subscribeProjectStatusMutations(listener: ProjectListener): () => void {
-  projectListeners.add(listener);
-  return () => projectListeners.delete(listener);
-}
 
 export function publishServerUpdateStatusMutation(status: ServerUpdateStatus): void {
   for (const listener of serverUpdateListeners) listener(status);

@@ -1,93 +1,22 @@
+import type {
+  ProjectRepositoriesTable,
+  SessionRepositoryWorkspacesTable,
+} from './schema-project-repositories.js';
+import type { BrokeredApprovalDatabase, SecretKeyMetaTable } from './schema-brokered-approvals.js';
+export type { SecretKeyMetaTable } from './schema-brokered-approvals.js';
+import type { AssistantDatabase } from './schema-assistant.js';
 import type { PeopleDatabase } from './schema-people.js';
-import type { SandboxDatabase } from './schema-sandbox.js';
+import type { DopplerDatabase } from './schema-doppler.js';
+import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
+import type { ProjectInquiryDatabase } from './schema-project-inquiries.js';
+import type { SandboxDatabase, SandboxRepairIntentsTable } from './schema-sandbox.js';
+export type { SandboxRepairIntentsTable } from './schema-sandbox.js';
+import type { CapacityLeaseDatabase } from './schema-capacity-leases.js';
+import type { ProjectQADatabase } from './schema-project-qa.js';
+import type { WikiDatabase } from './schema-wiki.js';
+import type { ServerMonitoringDatabase } from './schema-server-monitoring.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
-export interface ProjectInquiryGrantsTable {
-  source_project_id: string;
-  target_project_id: string;
-  enabled: Generated<boolean>;
-  created_at: Generated<Date>;
-}
-
-export interface ProjectInquirySessionsTable {
-  source_session_id: string;
-  target_project_id: string;
-  target_session_id: string;
-  change_approved: Generated<boolean>;
-}
-
-export interface WikiOccasionsTable {
-  id: string;
-  project_id: string;
-  kind: 'source' | 'meeting' | 'decision' | 'chat' | 'session' | 'merge';
-  ref: string;
-  title: string;
-  body: string | null;
-  created_at: Generated<Date>;
-  closed_at: Date | null;
-}
-
-/** The quiet session a project's Wiki is maintained in, and its last run. */
-export interface WikiMaintenanceTable {
-  project_id: string;
-  session_id: string | null;
-  last_run_at: Date | null;
-}
-
-/** An automatic Sandbox repair still owed to a project after a failed recreate. */
-export interface SandboxRepairIntentsTable {
-  project_id: string;
-  version: number;
-  attempt_id: string;
-  status: string;
-  source_generation: string | null;
-  target_image_ref: string | null;
-  failures: number;
-  retry_at: Date;
-  storage_refused: boolean;
-  last_failure_at: Date;
-  last_failure_message: string;
-}
-
-export interface ProjectInquiriesTable {
-  id: string;
-  source_session_id: string;
-  target_session_id: string;
-  source_project_id: string;
-  target_project_id: string;
-  title: string;
-  body: string;
-  kind: 'question' | 'change';
-  status: 'provisioning' | 'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
-  created_at: Generated<Date>;
-  answer: string | null;
-  answer_delivered: Generated<boolean>;
-  user_id: string | null;
-  decided_by: string | null;
-}
-
-export interface ProjectRepositoriesTable {
-  id: string;
-  project_id: string;
-  name: string;
-  kind: 'github' | 'forgejo';
-  owner: string;
-  repo: string;
-  forge_connection_id: string | null;
-  default_branch: string | null;
-  removed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
-}
-
-export interface SessionRepositoryWorkspacesTable {
-  session_id: string;
-  repository_id: string;
-  project_id: string;
-  worktree: string;
-  branch: string;
-  pull_request: ColumnType<unknown, unknown, unknown>;
-  created_at: Generated<Date>;
-}
-
 /**
  * Postgres schema for the durable source of truth (concept §5a): an append-only
  * canonical-event log plus the session registry. The {@link EventStore} API
@@ -465,10 +394,11 @@ export interface ProjectsTable {
   /** App-generated UUID; stable across re-provisioning of the same repo. */
   id: string;
   created_by_user_id: ColumnType<string, string | undefined, never>;
-  /** Lowercase canonical owner (`heey-global`). */
+  /** Lowercase canonical owner and repo (`heey-global`/`verity`); follow GitHub renames. */
   owner: string;
-  /** Lowercase canonical repo (`verity`). */
   repo: string;
+  /** GitHub's rename-stable repository ID, once learned; NULL for other code hosts. */
+  github_repository_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** The project's own name, shown wherever the project is named. NULL only
    *  for rows written before migration 0204 by an older writer. */
   name: ColumnType<string | null, string | null | undefined, string | null>;
@@ -480,12 +410,9 @@ export interface ProjectsTable {
   /** `github` or `forgejo` for repository projects; `control_plane` for Verity's
    *  internal advanced workspace; `local` for a project created without a remote. */
   kind: ColumnType<string, string | undefined, string>;
-  /** Host clone-directory NAME under the clone root, when it must not be derived
-   *  from `(owner, repo)`. NULL = derive `<owner>-<repo>` (every pre-existing row).
-   *  Written when a `local` project is created, and DELIBERATELY kept when that
-   *  project is later linked to a GitHub repo: sessions persist ABSOLUTE worktree
-   *  paths under this directory, so moving the clone on link would orphan every
-   *  session the project already has. */
+  /** Host clone-directory NAME under the clone root; NULL = derive `<owner>-<repo>`.
+   *  Pinned before `(owner, repo)` changes (link, disconnect, GitHub rename): sessions
+   *  persist ABSOLUTE worktree paths under it, so moving the clone would orphan them. */
   clone_dir: ColumnType<string | null, string | null | undefined, string | null>;
   /** Resolved image ref for the project container; NULL = resolve Verity default
    *  at build time (§19.5 — not frozen at registration). */
@@ -581,9 +508,7 @@ export interface ProjectSettingsTable {
   project_id: string;
   doppler_token_ref: ColumnType<string | null, string | null | undefined, string | null>;
   doppler_token: ColumnType<string | null, string | null | undefined, string | null>;
-  /** Operator-authorized Doppler binding (#320): the Doppler project + config a
-   *  scoped read-only token is minted against at provision time. Plaintext
-   *  (non-secret config, not credentials). */
+  /** Mirror of the default `project_doppler_bindings` row (ADR 0031), plaintext. */
   doppler_project: ColumnType<string | null, string | null | undefined, string | null>;
   doppler_config: ColumnType<string | null, string | null | undefined, string | null>;
   /** Cached scoped read-only per-project Doppler token minted from the global
@@ -762,22 +687,6 @@ export interface VeritySettingsTable {
 }
 
 /**
- * Master-password key-derivation metadata (singleton, id='global'). Non-secret:
- * the scrypt `salt` and a `verifier` (a fixed marker encrypted under the derived
- * key). Kept in its OWN table, not in {@link VeritySettingsTable}, so it can be
- * read while the store is SEALED — reading verity_settings decrypts the secret
- * columns and would itself require an unlocked cipher. The raw key is never
- * persisted; it lives only in server memory after unlock.
- */
-export interface SecretKeyMetaTable {
-  id: string;
-  salt: string;
-  verifier: string;
-  created_at: ColumnType<Date, string | undefined, never>;
-  updated_at: ColumnType<Date, string | undefined, string | undefined>;
-}
-
-/**
  * Per-device API bearer tokens for the control-plane auth gate (C1). A token is
  * minted when a device proves the master password; only its SHA-256 hash is
  * persisted (the raw token is returned once and lives in the device keychain).
@@ -912,8 +821,8 @@ export interface QueuedTurnOpts {
   disallowedTools?: string[];
   attachments?: Attachment[];
   displayPrompt?: string;
+  origin?: 'secret-approval';
   peer?: { sessionId: string; projectId: string; label: string; message: string };
-  /** The local user the queued turn runs for; stamped on its `prompt` event. */
   initiatedBy?: { userId: string };
 }
 
@@ -1351,14 +1260,14 @@ export interface TaskAttachment {
   filename: string;
   mimeType: string;
 }
-
-/** One managed dev server bound to one session's worktree. */
 export interface ManagedDevServerInstancesTable {
   last_run_secret_bindings: ColumnType<
     import('./managed-dev-servers.js').ManagedDevServerSecretBinding[],
     string | undefined,
     string
   >;
+  last_run_provider_authority: ColumnType<string | null, string | null | undefined, string | null>;
+  previous_run_sandbox_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   id: string;
   server_id: ColumnType<string, string, never>;
   project_id: ColumnType<string, string, never>;
@@ -1794,12 +1703,19 @@ interface VulnerabilityFixesTable {
   failed: Generated<boolean>;
 }
 
-export interface Database extends PeopleDatabase, SandboxDatabase {
-  project_inquiry_grants: ProjectInquiryGrantsTable;
-  project_inquiry_sessions: ProjectInquirySessionsTable;
-  project_inquiries: ProjectInquiriesTable;
-  wiki_occasions: WikiOccasionsTable;
-  wiki_maintenance: WikiMaintenanceTable;
+export interface Database
+  extends
+    AssistantDatabase,
+    PeopleDatabase,
+    DopplerDatabase,
+    SandboxDatabase,
+    CapacityLeaseDatabase,
+    SessionCoordinationDatabase,
+    ProjectQADatabase,
+    BrokeredApprovalDatabase,
+    ProjectInquiryDatabase,
+    WikiDatabase,
+    ServerMonitoringDatabase {
   sandbox_repair_intents: SandboxRepairIntentsTable;
   vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
@@ -1811,18 +1727,13 @@ export interface Database extends PeopleDatabase, SandboxDatabase {
   qa_assignment_notifications: QAAssignmentNotificationsTable;
   repair_resource_budgets: RepairResourceBudgetsTable;
   repair_mandates: RepairMandatesTable;
-  repair_incidents: RepairIncidentsTable;
   repair_workflow_heads: RepairWorkflowHeadsTable;
   repair_attempts: RepairAttemptsTable;
   repair_session_history: RepairSessionHistoryTable;
   repair_session_origins: RepairSessionOriginsTable;
-  qa_coordinator: QACoordinatorTable;
   qa_inbox: QAInboxTable;
   qa_proposals: QAProposalsTable;
   qa_decisions: QADecisionsTable;
-  assistant_settings: AssistantSettingsTable;
-  assistant_project_grants: AssistantProjectGrantsTable;
-  assistant_requests: AssistantRequestsTable;
   scheduling_requests: SchedulingRequestsTable;
   scheduling_holds: SchedulingHoldsTable;
   vuln_digests: VulnDigestsTable;
@@ -2037,21 +1948,6 @@ interface RepairMandatesTable {
   health: Generated<string>;
   checked_at: Date | null;
 }
-interface RepairIncidentsTable {
-  verified_success: Generated<boolean>;
-  repair_pr: number | null;
-  id: string;
-  project_id: string;
-  resource: string;
-  revision: string;
-  evidence: string;
-  state: Generated<import('./repair-supervision.js').RepairIncident['state']>;
-  owner_session_id: string | null;
-  last_session_id: string | null;
-  attempts: Generated<number>;
-  dispatch_id: string | null;
-  updated_at: Generated<Date>;
-}
 interface RepairWorkflowHeadsTable {
   project_id: string;
   workflow: string;
@@ -2076,30 +1972,6 @@ interface RepairSessionHistoryTable {
   project_id: string;
   resource: string;
   session_id: string;
-  created_at: Generated<Date>;
-}
-interface AssistantSettingsTable {
-  id: number;
-  enabled: Generated<boolean>;
-  revision: Generated<number>;
-  sponsor_user_id: string | null;
-  session_id: string | null;
-  updated_at: Generated<Date>;
-}
-interface AssistantProjectGrantsTable {
-  project_id: string;
-  mode: import('./assistant.js').AssistantMode;
-  sponsor_user_id: string;
-  revision: Generated<number>;
-  updated_at: Generated<Date>;
-}
-interface AssistantRequestsTable {
-  request_id: string;
-  session_id: string;
-  user_id: string;
-  kind: import('./assistant.js').AssistantRequestKind;
-  question_id: string | null;
-  state: Generated<'pending' | 'accepted'>;
   created_at: Generated<Date>;
 }
 interface SchedulingRequestsTable {
@@ -2154,20 +2026,6 @@ interface SchedulingHoldsTable {
   next_attempt_at: Date | null;
   last_error: string | null;
   updated_at: Generated<Date>;
-}
-interface QACoordinatorTable {
-  id: number;
-  enabled: Generated<boolean>;
-  revision: Generated<number>;
-  sponsor: string | null;
-  session_id: string | null;
-  health: Generated<string>;
-  active_dispatch: string | null;
-  active_seq: ColumnType<string | null, string | number | null, string | number | null>;
-  active_revision: number | null;
-  active_snapshot: string | null;
-  wake_day: string | null;
-  wakes: Generated<number>;
 }
 interface QAInboxTable {
   project_id: string;

@@ -1,5 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
-import { authorizePairedRoute, type PairedRoutePolicyStore } from './paired-route-policy.js';
+import {
+  authorizePairedRoute,
+  pairedRoutePolicy,
+  type PairedRoutePolicyStore,
+} from './paired-route-policy.js';
 
 it('requires execute access to mark or end a session mockup review', async () => {
   const store: PairedRoutePolicyStore = {
@@ -14,6 +19,13 @@ it('requires execute access to mark or end a session mockup review', async () =>
           ? { projectId: 'other' }
           : undefined,
   };
+  const preview = '/sessions/:id/mockup-attachments/:hash';
+  expect(await authorizePairedRoute(store, 'reader', 'GET', preview, { id: 'session' })).toBe(
+    'allow',
+  );
+  expect(await authorizePairedRoute(store, 'reader', 'GET', preview, { id: 'foreign' })).toBe(
+    'forbidden',
+  );
   expect(
     await authorizePairedRoute(store, 'reader', 'POST', '/sessions/:id/mockups', { id: 'session' }),
   ).toBe('forbidden');
@@ -274,6 +286,28 @@ it('requires project management permission to delete Wiki entries', async () => 
   ).toBe('allow');
 });
 
+// Read from the route module rather than listed: a knowledge route added there
+// later must land in the same split, or managers lose it silently (nothing
+// declared means administrator-only) or a member gains write access to Shared.
+it('lets project members read and managers change project knowledge, Shared only administrators', () => {
+  const source = readFileSync(new URL('./knowledge-file-routes.ts', import.meta.url), 'utf8');
+  const routes = [...source.matchAll(/\bapp\.(get|post|put|delete)\(\s*'([^']+)'/g)].map(
+    ([, method, url]) => [method!.toUpperCase(), url!] as const,
+  );
+  const shared = routes.filter(([, url]) => url.startsWith('/knowledge/shared/'));
+  const project = routes.filter(([, url]) => url.startsWith('/projects/:id/knowledge/'));
+  expect(shared.length).toBeGreaterThan(8);
+  expect(project.length).toBe(shared.length);
+  for (const [method, url] of shared)
+    expect(pairedRoutePolicy(method, url), `${method} ${url}`).toEqual({ kind: 'administrator' });
+  for (const [method, url] of project)
+    expect(pairedRoutePolicy(method, url), `${method} ${url}`).toEqual({
+      kind: 'project',
+      parameter: 'id',
+      permission: method === 'GET' ? 'read' : 'manage',
+    });
+});
+
 it('lets a reader keep their own view state but hides resources they cannot read', async () => {
   const store: PairedRoutePolicyStore = {
     isActiveLocalUser: async () => true,
@@ -358,4 +392,53 @@ it.each([
   // Removed from the project, or deactivated: creating it no longer counts.
   expect(await decide('removed-creator')).toBe('forbidden');
   expect(await decide('disabled-creator')).toBe('forbidden');
+});
+
+// Edit lets a member work with the agent; adding the session's changes to the
+// project's code needs Code (ADR 0023 §1). A route left on execute would let an
+// Edit-only member merge while the team settings say they cannot.
+it('requires Code, not only execute, to add changes to the project code', async () => {
+  const integrating = [
+    ['POST', '/sessions/:id/merge'],
+    ['POST', '/sessions/:id/pull-request/merge'],
+    ['POST', '/sessions/:id/save-to-project'],
+    ['POST', '/sessions/:id/branch'],
+    ['POST', '/sessions/:id/code-workspace/restore'],
+    ['POST', '/sessions/:id/repositories/:repositoryId/open'],
+    ['POST', '/projects/:id/pull-requests/:repositoryId/:number/merge'],
+    ['POST', '/projects/:id/pull-requests/:repositoryId/:number/fix'],
+    ['POST', '/projects/:id/qa/issues/:issueId/decision'],
+    ['POST', '/projects/:id/repairs/approval'],
+    ['POST', '/projects/:id/repairs/retry'],
+    ['POST', '/projects/:id/vulnerability-fix'],
+    ['POST', '/projects/:id/vulnerability-scan'],
+  ] as const;
+  const store = (permissions: string[]): PairedRoutePolicyStore => ({
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (_user, projectId, permission) =>
+      projectId === 'p' && permissions.includes(permission),
+    getSession: async (id) => (id === 's' ? { projectId: 'p' } : undefined),
+  });
+  const editor = store(['read', 'execute']);
+  const developer = store(['read', 'execute', 'code']);
+  for (const [method, url] of integrating) {
+    const params = url.startsWith('/sessions/') ? { id: 's' } : { id: 'p' };
+    expect(pairedRoutePolicy(method, url)).toMatchObject({ permission: 'code' });
+    expect(await authorizePairedRoute(editor, 'mara', method, url, params)).toBe('forbidden');
+    expect(await authorizePairedRoute(developer, 'alex', method, url, params)).toBe('allow');
+  }
+  // Working with the agent and the preview stays with execute.
+  expect(
+    await authorizePairedRoute(editor, 'mara', 'POST', '/sessions/:id/turns', { id: 's' }),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(
+      editor,
+      'mara',
+      'POST',
+      '/sessions/:sessionId/managed-dev-servers/:serverId/start',
+      { sessionId: 's', serverId: 'web' },
+    ),
+  ).toBe('allow');
 });

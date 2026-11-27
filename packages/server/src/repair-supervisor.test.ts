@@ -76,6 +76,22 @@ function harness() {
   return { deps, observation, supervisor: createRepairSupervisor(deps) };
 }
 describe('repair supervision', () => {
+  it('skips repository discovery while the forge quota is reserved for interactive reads', async () => {
+    await ctx.store.repairs.configure('a', 'user', 'monitor');
+    const h = harness();
+    // Background monitoring spending the last quota left agents without CI status.
+    const deferred = vi.fn(async () => true);
+    await createRepairSupervisor({ ...h.deps, deferred }).sweep();
+    expect(deferred).toHaveBeenCalledWith('a');
+    expect(h.deps.discover).not.toHaveBeenCalled();
+    deferred.mockResolvedValue(false);
+    await createRepairSupervisor({ ...h.deps, deferred }).sweep();
+    expect(h.deps.discover).toHaveBeenCalledTimes(1);
+    // A failing quota check forgoes the deferral instead of aborting the sweep.
+    deferred.mockRejectedValue(new Error('provider unavailable'));
+    await createRepairSupervisor({ ...h.deps, deferred }).sweep();
+    expect(h.deps.discover).toHaveBeenCalledTimes(2);
+  });
   it('discovers a sessionless Renovate failure without running agents in monitor mode', async () => {
     await ctx.store.repairs.configure('a', 'user', 'monitor');
     const h = harness();
@@ -92,6 +108,27 @@ describe('repair supervision', () => {
     expect(h.deps.spawn).toHaveBeenCalledTimes(1);
     expect(h.deps.dispatch).toHaveBeenCalledTimes(1);
     expect((await ctx.store.repairs.incidents('a'))[0]?.state).toBe('working');
+  });
+  it('stops after two repair rounds and tells the user once', async () => {
+    await ctx.store.repairs.configure('a', 'user', 'automatic');
+    const h = harness();
+    const stopped = vi.fn<NonNullable<RepairSupervisorDeps['stopped']>>();
+    h.deps.stopped = stopped;
+    // Every repair attempt ends, and the pull request keeps failing on the same head.
+    vi.mocked(h.deps.terminated).mockResolvedValue(true);
+    const supervisor = createRepairSupervisor(h.deps);
+    for (let n = 0; n < 10; n++) await supervisor.sweep();
+    expect(h.deps.dispatch).toHaveBeenCalledTimes(2);
+    expect(stopped).toHaveBeenCalledTimes(1);
+    const [projectId, issues] = stopped.mock.calls[0]!;
+    expect(projectId).toBe('a');
+    expect(issues).toEqual([
+      expect.objectContaining({ key: 'pr:42', state: 'needs_you', reason: 'rounds-exhausted' }),
+    ]);
+    // Another round from the user lets exactly one more repair start.
+    await ctx.store.repairs.projectQA.decide('a', issues[0]!.id, 'another_round');
+    for (let n = 0; n < 4; n++) await supervisor.sweep();
+    expect(h.deps.dispatch).toHaveBeenCalledTimes(3);
   });
   it('respects active project sessions and revoked grants', async () => {
     await ctx.store.repairs.configure('a', 'user', 'automatic');

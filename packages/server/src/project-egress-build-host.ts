@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { createDevcontainerBuildSnapshot } from './devcontainer-build-boundary.js';
 import { createProtectedBuildAdmission } from './project-egress-build-admission.js';
+import { protectedBuildAuthorityStepRun } from './project-egress-build-error.js';
 import { egressBuildProtectedNetworks } from './project-egress-host-authority.js';
 import { inspectProjectFenceAttachment } from './project-egress-attachment.js';
 import type { ProjectFenceBinding, ProjectFenceDependencies } from './project-egress-fence.js';
@@ -983,12 +984,14 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     authority: {
       async prepare(anchor) {
         const value = binding(anchor);
-        await privateWrite(join(INSPECTION, bindingKey(value) + '.json'), {
-          version: 1,
-          binding: value,
-          namespace: anchor.namespacePath,
-          bootId: await bootId(),
-        });
+        await protectedBuildAuthorityStepRun('inspection_record', async () =>
+          privateWrite(join(INSPECTION, bindingKey(value) + '.json'), {
+            version: 1,
+            binding: value,
+            namespace: anchor.namespacePath,
+            bootId: await bootId(),
+          }),
+        );
         await admission(anchor).prepare();
       },
       async renew(anchor) {

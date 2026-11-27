@@ -59,9 +59,7 @@ export function markerIcon(marker: SessionMarker): IconName {
 export function SessionMarkerColumn({
   markers,
   previewUrl,
-  onOpenLinks,
 }: {
-  onOpenLinks?: () => void;
   markers: readonly SessionMarker[];
   /** Where the share entry leads; null while a public share has no origin yet. */
   previewUrl: string | null;
@@ -95,17 +93,6 @@ export function SessionMarkerColumn({
             <View style={[styles.bar, { backgroundColor: color }]} />
           </View>
         );
-        if (marker.kind === 'linked')
-          return (
-            <Pressable
-              key={marker.kind}
-              onPress={onOpenLinks}
-              accessibilityRole="button"
-              accessibilityLabel="Open linked sessions"
-            >
-              {entry}
-            </Pressable>
-          );
         if (marker.kind !== 'shared') {
           return (
             <View

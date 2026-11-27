@@ -36,15 +36,16 @@ export function createQAAssignmentTool(deps: QAAssignmentDeps) {
   const store = deps.store.qaAssignments;
   let sweeping = false;
   async function authorize(c: Caller, projectId: string) {
-    const [qa, mandate, project, session] = await Promise.all([
+    const [qa, role, mandate, project, session] = await Promise.all([
       deps.store.repairs.qa(),
+      deps.store.repairs.projectQA.roleForSession(c.sessionId),
       deps.store.repairs.mandate(projectId),
       deps.store.getProject(projectId),
       deps.store.getSession(c.sessionId),
     ]);
     if (
       !qa.enabled ||
-      qa.session_id !== c.sessionId ||
+      role?.project_id !== projectId ||
       !session ||
       session.planning === 'active' ||
       !mandate ||

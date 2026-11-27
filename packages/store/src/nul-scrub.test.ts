@@ -51,6 +51,13 @@ describe('scrubNulEscapes', () => {
     expect(parsed.delta).toBe(`path${BACKSLASH}${REPLACEMENT}tail`);
   });
 
+  it('preserves long backslash runs while distinguishing literal and actual NUL content', () => {
+    const run = BACKSLASH.repeat(100_000);
+    const delta = run + ' / ' + run + LITERAL_ESCAPE + run + NUL;
+    const expected = run + ' / ' + run + LITERAL_ESCAPE + run + REPLACEMENT;
+    expect(JSON.parse(scrubNulEscapes(JSON.stringify(delta)))).toBe(expected);
+  });
+
   it('scrubs a NUL that follows text spelling the escape', () => {
     const delta = `${LITERAL_ESCAPE}${NUL}`;
     const parsed = JSON.parse(scrubNulEscapes(JSON.stringify({ t: 'text', delta }))) as {

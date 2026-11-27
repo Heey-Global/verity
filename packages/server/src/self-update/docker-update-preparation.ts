@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import {
   HostRuntimeRenewalError,
   HOST_RUNTIME_SERVICE_LABEL,
+  ProjectEgressProvisioningError,
   parseRuntimeServiceRequirements,
   renewHostRuntimeService,
   runtimeRenewalMayHaveStarted,
@@ -573,10 +574,21 @@ export async function dockerUpdatePreparation(
             'Network protection: host provisioning completed; authenticated readiness is checked separately.',
           );
       } catch (error) {
+        // Only a helper that proved it stopped before host submission leaves the
+        // host unchanged; every other failure, verification included, may follow
+        // an earlier attempt's host work and stays conservative.
+        const unchanged =
+          error instanceof ProjectEgressProvisioningError && error.hostWork === 'none';
         (options.log ?? console.warn)(
-          'Network protection: automatic host provisioning failed; recovery is required.',
+          unchanged
+            ? 'Network protection: automatic host provisioning failed before host submission; no host changes were made.'
+            : 'Network protection: automatic host provisioning failed; recovery is required.',
         );
-        await writeHostPreparation(options.managedRoot, journal, 'recovery-required');
+        await writeHostPreparation(
+          options.managedRoot,
+          journal,
+          unchanged ? 'unchanged' : 'recovery-required',
+        );
         throw error;
       }
       await writeHostPreparation(options.managedRoot, journal, 'ready');

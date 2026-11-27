@@ -13,7 +13,12 @@ export function managedServerApproval(server: ManagedDevServer) {
     ...(server.secretBindings.length > 0
       ? {
           secretBindings: server.secretBindings.map((binding) => ({ ...binding })),
-          providerSnapshot: { ...server.providerSnapshot! },
+          providerSnapshot: {
+            ...server.providerSnapshot!,
+            ...(server.providerSnapshot!.sources === undefined
+              ? {}
+              : { sources: server.providerSnapshot!.sources.map((source) => ({ ...source })) }),
+          },
         }
       : {}),
   };
@@ -21,7 +26,22 @@ export function managedServerApproval(server: ManagedDevServer) {
 
 export function managedServerSecretDescription(seen: ReturnType<typeof managedServerApproval>) {
   if (!seen.secretBindings?.length) return '';
-  return `\n\nSecrets: ${seen.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}\nProvider: Doppler · ${seen.providerSnapshot!.project} / ${seen.providerSnapshot!.config}`;
+  const snapshot = seen.providerSnapshot!;
+  const sources =
+    snapshot.sources?.map(({ project, config, connectionId, connectionLabel, workplaceSlug }) => {
+      const clean = (value: string) => value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').trim();
+      const name = clean(connectionLabel ?? '') || 'Connection';
+      const identity = workplaceSlug ? `workplace ${clean(workplaceSlug)}` : clean(connectionId);
+      return `${clean(project)} / ${clean(config)} · ${name} (${identity})`;
+    }) ??
+    new Set(
+      seen.secretBindings.map(({ secretAlias }) =>
+        secretAlias.includes('/')
+          ? secretAlias.split('/').slice(0, 2).join(' / ')
+          : `${snapshot.project} / ${snapshot.config}`,
+      ),
+    );
+  return `\n\nSecrets: ${seen.secretBindings.map((binding) => `${binding.secretAlias} → ${binding.env}`).join(', ')}\nProvider: Doppler · ${[...sources].join(', ')}`;
 }
 
 /** Both entry points use the same displayed snapshot and native confirmation. */

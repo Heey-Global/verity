@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BuildStorageLease } from './build-storage.js';
+import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { createProtectedDevcontainerBuilder } from './protected-devcontainer-builder.js';
 const { health } = vi.hoisted(() => ({
   health: vi.fn(async () => ({ version: 1, available: true })),
@@ -103,6 +104,34 @@ describe('protected devcontainer Server executor', () => {
     );
     expect(f.run).toHaveBeenCalledTimes(1);
   });
+  it('names the refused packet authority step next to its reference', async () => {
+    const f = fixture();
+    const correlationId = '9b1b10d5-b165-4e4e-bb68-69225a977e53';
+    f.run.mockResolvedValue({
+      stdout: JSON.stringify({
+        success: false,
+        failure: { reason: 'authority_prepare_failed', detail: 'packet_revoke', correlationId },
+      }),
+      stderr: '',
+    });
+    await expect(f.build(f.args)).rejects.toThrow(
+      `(authority_prepare_failed: packet_revoke; reference ${correlationId})`,
+    );
+  });
+  it('keeps the reason and reference when the host names an unknown step', async () => {
+    const f = fixture();
+    const correlationId = '9b1b10d5-b165-4e4e-bb68-69225a977e53';
+    f.run.mockResolvedValue({
+      stdout: JSON.stringify({
+        success: false,
+        failure: { reason: 'authority_prepare_failed', detail: 'future_step', correlationId },
+      }),
+      stderr: '',
+    });
+    await expect(f.build(f.args)).rejects.toThrow(
+      `(authority_prepare_failed; reference ${correlationId})`,
+    );
+  });
   it('passes bounded post-termination diagnostics into the existing failure recorder', async () => {
     const f = fixture();
     f.run.mockImplementation(async () => {
@@ -114,6 +143,25 @@ describe('protected devcontainer Server executor', () => {
       return { stdout: '{"success":false}', stderr: '' };
     });
     await expect(f.build(f.args)).rejects.toMatchObject({ stderr: 'destination was not approved' });
+    expect(f.run).toHaveBeenCalledTimes(1);
+  });
+  it('persists an early resolver mount failure under the audit operation id', async () => {
+    const f = fixture();
+    const text = 'Protected build phase=resolver_mount failed: command_exit=32\n';
+    f.run.mockImplementation(async () => {
+      writeFileSync(join(f.directory, 'protected-build/build.log'), text, { mode: 0o600 });
+      return { stdout: '{"success":false}', stderr: '' };
+    });
+    const diagnostics = createBuildDiagnosticStore(join(f.root, 'diagnostics'));
+    const operationId = '11111111-1111-4111-8111-111111111111';
+    await f.build(f.args).catch(async (cause: unknown) => {
+      await diagnostics.save(operationId, cause, [f.args.registryToken]);
+    });
+    expect(await diagnostics.read(operationId)).toMatchObject({
+      operationId,
+      text,
+      truncated: false,
+    });
     expect(f.run).toHaveBeenCalledTimes(1);
   });
   it('retains private inputs when remote execution is uncertain', async () => {

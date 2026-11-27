@@ -20,7 +20,7 @@ import {
 } from 'node:net';
 import Fastify from 'fastify';
 import { startProjectInternalUnixListener } from './internal-listener.js';
-import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type TurnCredentials } from './turn-credentials.js';
 import { createBrokeredForgeProxy } from './brokered-http-tool.js';
 import { createGitHubForgeAdapter, type ForgeAction } from './brokered-forge-github.js';
@@ -145,6 +145,7 @@ async function harness(
     /** Serve a person's own sandbox instead of the project's default one. */
     sandboxUser?: string;
     authorizationRecheck?: { intervalMs?: number; unconfirmedLimitMs?: number };
+    mayWriteCode?: (projectId: string, userId: string) => Promise<boolean>;
   } = {},
 ) {
   const upstreamPort = await listen(
@@ -219,6 +220,7 @@ async function harness(
     ...(options.resolveRepository ? { resolveRepository: options.resolveRepository } : {}),
     ...(options.turnCredentials ? { turnCredentials: options.turnCredentials } : {}),
     ...(options.authorizationRecheck ? { authorizationRecheck: options.authorizationRecheck } : {}),
+    ...(options.mayWriteCode ? { mayWriteCode: options.mayWriteCode } : {}),
     enabled: () => options.enabled ?? true,
     actions: () => options.actions ?? allActions,
   });
@@ -511,4 +513,52 @@ it('validates GraphQL against additional current assignments and rechecks revoca
   assigned = false;
   expect((await call(h.port, '/graphql', undefined, 'api.github.com', body)).status).not.toBe(200);
   expect(h.received).toHaveLength(1);
+});
+
+describe('Code permission of the person a request acts for', () => {
+  // Lena's own sandbox: requests act for her, so her project rights narrow them.
+  const lena = {
+    sandboxUser: 'lena',
+    personalTokens: { lena: 'ghu_lena_personal' },
+    capabilities: {
+      ...capabilities,
+      resolve: async (value: string) =>
+        value === cap ? { ...binding, userId: 'lena' } : undefined,
+    },
+  };
+  const writes = async (port: number) => [
+    (await call(port, '/repos/acme/app/pulls', undefined, undefined, '{"title":"t"}')).status,
+    (await call(port, '/acme/app.git/git-receive-pack', undefined, 'github.com', 'x')).status,
+    (await call(port, '/repos/acme/app/pulls')).status,
+  ];
+
+  it('refuses pushes and pull-request writes without Code but keeps reads', async () => {
+    const mayWriteCode = vi.fn(async () => false);
+    const h = await harness((_req, res) => res.end('{}'), { ...lena, mayWriteCode });
+    expect(await writes(h.port)).toEqual([403, 403, 200]);
+    const refusal = await call(h.port, '/repos/acme/app/pulls', undefined, undefined, '{}');
+    expect(JSON.parse(refusal.body).message).toMatch(/needs the Code permission/);
+    expect(h.received.map((r) => r.path)).toEqual(['/repos/acme/app/pulls']);
+    expect(mayWriteCode).toHaveBeenCalledWith('p1', 'lena');
+  });
+
+  it('forwards the same writes for a person with Code', async () => {
+    const h = await harness((_req, res) => res.end('{}'), {
+      ...lena,
+      mayWriteCode: async () => true,
+    });
+    expect(await writes(h.port)).toEqual([200, 200, 200]);
+    expect(h.received).toHaveLength(3);
+  });
+
+  it('keeps the plain refusal when the project policy, not Code, forbids the write', async () => {
+    const h = await harness((_req, res) => res.end('{}'), {
+      ...lena,
+      mayWriteCode: async () => false,
+      actions: new Set<ForgeAction>(['pulls-read']),
+    });
+    const refusal = await call(h.port, '/repos/acme/app/pulls', undefined, undefined, '{}');
+    expect(refusal.status).toBe(403);
+    expect(JSON.parse(refusal.body)).toEqual({ error: 'forge broker request rejected' });
+  });
 });

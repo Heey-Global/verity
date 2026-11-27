@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import { error as reportError } from 'node:console';
-import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
+import { accessSync, constants, fstatSync, readFileSync, realpathSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { delimiter, resolve } from 'node:path';
 import { clearInterval, setInterval } from 'node:timers';
 import { URL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { configurePackageArtifacts } from './verity-package-artifacts.mjs';
 import {
   npmInstallPlan,
@@ -33,9 +34,27 @@ const filteredArgs = originalArgs.filter(
 const args = prepareOnly && filteredArgs.length === 0 ? ['ci'] : filteredArgs;
 
 function run(executable, childArgs, environment, lockFd) {
+  const storage = process.env.VERITY_DEPENDENCY_STORAGE_FD === '4';
+  if (storage) {
+    if (!fstatSync(4).isFile()) throw new Error('Dependency capacity holder is unavailable.');
+    const preload = fileURLToPath(
+      new URL('./verity-dependency-storage-preload.mjs', import.meta.url),
+    );
+    environment = {
+      ...environment,
+      VERITY_DEPENDENCY_STORAGE_FD: '4',
+      VERITY_DEPENDENCY_STORAGE_LEASE_ID: process.env.VERITY_DEPENDENCY_STORAGE_LEASE_ID,
+      VERITY_DEPENDENCY_PREPARATION_FD: lockFd === undefined ? undefined : '3',
+      NODE_OPTIONS: `${environment.NODE_OPTIONS ?? ''} --import=${JSON.stringify(preload)}`.trim(),
+    };
+  }
   return new Promise((done, reject) => {
     const child = spawn(executable, childArgs, {
-      stdio: lockFd === undefined ? 'inherit' : ['inherit', 'inherit', 'inherit', lockFd],
+      stdio: storage
+        ? ['inherit', 'inherit', 'inherit', lockFd ?? 'ignore', 4]
+        : lockFd === undefined
+          ? 'inherit'
+          : ['inherit', 'inherit', 'inherit', lockFd],
       env: environment,
     });
     const signals = ['SIGINT', 'SIGTERM'];

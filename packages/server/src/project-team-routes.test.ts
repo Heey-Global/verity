@@ -157,6 +157,47 @@ describe('project team routes', () => {
     expect((await as(app, ADMIN, 'DELETE', `/projects/p1/invitations/${id}`)).statusCode).toBe(204);
     expect((await as(app, ADMIN, 'DELETE', `/projects/p1/invitations/${id}`)).statusCode).toBe(404);
   });
+  // The app shows Code from these answers; an inconsistent body is a client
+  // fault, answered as one rather than as a conflict with the team's state.
+  it('reports and changes Code, and refuses it without Edit', async () => {
+    const { app } = server();
+    const coded = await as(app, ADMIN, 'PATCH', '/projects/p1/members/reader', {
+      canExecute: true,
+      canCode: true,
+      canManage: false,
+    });
+    expect(coded.json()).toMatchObject({ member: { canExecute: true, canCode: true } });
+    const team = await as(app, ADMIN, 'GET', '/projects/p1/team');
+    expect(team.json()).toMatchObject({
+      members: [
+        { userId: ADMIN, canCode: true },
+        { userId: 'reader', canCode: true },
+      ],
+    });
+    const refused = await as(app, ADMIN, 'PATCH', '/projects/p1/members/reader', {
+      canExecute: false,
+      canCode: true,
+      canManage: false,
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toMatchObject({ code: 'invalid_rights' });
+    const invited = await as(app, ADMIN, 'POST', '/projects/p1/invitations', {
+      inviteeName: 'Kim',
+      canExecute: true,
+      canCode: true,
+    });
+    expect(invited.json()).toMatchObject({ invitation: { canExecute: true, canCode: true } });
+    expect(
+      (
+        await as(app, ADMIN, 'POST', '/projects/p1/invitations', {
+          inviteeName: 'Kim',
+          canExecute: false,
+          canCode: true,
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
   // The inviter's app completes the link with the pin and its server address;
   // everything else has to match the contract's link envelope exactly.
   it('hands the inviter every link field Core holds, but no pin or address', async () => {

@@ -51,6 +51,7 @@ export const projectInquirySchema = z.object({
   sourceProjectId: z.string(),
   targetProjectId: z.string(),
   sourceProjectName: z.string().optional(),
+  sourceSessionName: z.string().nullable().optional(),
   targetProjectName: z.string().optional(),
   title: z.string(),
   body: z.string(),
@@ -60,3 +61,15 @@ export const projectInquirySchema = z.object({
   answer: z.string().nullable(),
 });
 export type ProjectInquiry = z.infer<typeof projectInquirySchema>;
+
+/** A standing "Always allow" for questions from one project to another. */
+export const projectInquiryGrantSchema = z.object({
+  sourceProjectId: z.string(),
+  targetProjectId: z.string(),
+  enabled: z.boolean(),
+  createdAt: z.string(),
+});
+export type ProjectInquiryGrant = z.infer<typeof projectInquiryGrantSchema>;
+
+/** "Allow once", "Always allow" (questions only) or "Reject" on a request's card. */
+export type InquiryDecision = 'approve' | 'approve_always' | 'reject';

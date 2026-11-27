@@ -6,6 +6,11 @@ import {
   type ProtectedBuildRuntimeState,
 } from './project-egress-build-runtime.js';
 import type { ProtectedBuildRequest } from './project-egress-build.js';
+import {
+  ProtectedBuildAuthorityError,
+  ProtectedBuildStageError,
+  type ProtectedBuildFailure,
+} from './project-egress-build-error.js';
 import type { ProtectedBuildAnchor } from './project-egress-build-network.js';
 const request: ProtectedBuildRequest = {
   projectId: 'project-a',
@@ -190,7 +195,10 @@ it.each([
 ] as const)(
   'identifies a failed %s preparation step without disclosing its cause',
   async (step, reason) => {
-    const { io } = fixture();
+    const f = fixture();
+    const { io } = f;
+    // No unit was launched, so the prepare rollback can prove termination.
+    f.ended();
     const failure = new Error('private daemon details');
     if (step === 'network')
       io.networks.create = async () => {
@@ -289,4 +297,82 @@ it('attempts each partial containment step after bootstrap and unit stop failure
     ],
   });
   expect(stopAnchor).toHaveBeenCalledOnce();
+});
+
+describe('failed protected build preparation', () => {
+  // Before the rollback, a refused authority step left the anchor container,
+  // its network, runtime.json and the inspection binding behind, and every
+  // retry was refused while the sweep failed to remove them.
+  it.each(['authority', 'files'] as const)(
+    'removes the %s attempt it allocated so a retry starts clean',
+    async (step) => {
+      const f = fixture();
+      f.ended();
+      let state: ProtectedBuildRuntimeState | undefined;
+      const save = f.io.save.bind(f.io);
+      f.io.save = async (value) => {
+        state = structuredClone(value);
+        await save(value);
+      };
+      f.io.load = async () => state && structuredClone(state);
+      f.io.cleanup = async () => {
+        f.calls.push('cleanup');
+        state = undefined;
+      };
+      const refused = new ProtectedBuildAuthorityError('packet_revoke', {
+        cause: new Error('Missing authoritative expiry tombstones'),
+      });
+      if (step === 'authority')
+        f.io.authority.prepare = async () => {
+          f.calls.push('prepare-policy');
+          throw refused;
+        };
+      else
+        f.io.prepareFiles = async () => {
+          f.calls.push('files');
+          throw new Error('snapshot');
+        };
+      const runtime = createProtectedBuildRuntime(f.io);
+      const caught = (await runtime.prepare(request).catch((e: unknown) => e)) as Error;
+      expect(f.calls).toEqual([
+        'create',
+        'save-prepare',
+        'prepare-policy',
+        ...(step === 'files' ? ['files'] : []),
+        'release-policy',
+        'remove-network',
+        'cleanup',
+      ]);
+      expect(await f.io.load(request)).toBeUndefined();
+      expect(caught).toMatchObject(
+        step === 'authority'
+          ? { reason: 'authority_prepare_failed', detail: 'packet_revoke', cause: refused }
+          : { reason: 'files_prepare_failed', detail: undefined },
+      );
+      expect(caught.message).not.toContain('tombstones');
+    },
+  );
+
+  it('keeps the attempt for the regular removal when its rollback cannot finish', async () => {
+    const f = fixture();
+    const refused = new ProtectedBuildAuthorityError('packet_guard', { cause: new Error('veth') });
+    f.io.authority.prepare = async () => {
+      throw refused;
+    };
+    const runtime = createProtectedBuildRuntime(f.io);
+    // Termination of the never-launched unit is not yet proven: nothing is removed.
+    const caught = (await runtime
+      .prepare(request)
+      .catch((e: unknown) => e)) as ProtectedBuildFailure;
+    expect(caught).toMatchObject({ reason: 'authority_prepare_failed', detail: 'packet_guard' });
+    const causes = (caught.cause as AggregateError).errors;
+    expect(causes[0]).toBe(refused);
+    expect(causes[1]).toBeInstanceOf(ProtectedBuildStageError);
+    expect((causes[1] as ProtectedBuildStageError).stage).toBe('prepare.rollback');
+    expect(f.calls).not.toContain('remove-network');
+    expect(await f.io.load(request)).toMatchObject({ anchor, launched: false });
+    f.ended();
+    await runtime.remove(request);
+    expect(f.calls.slice(-3)).toEqual(['release-policy', 'remove-network', 'cleanup']);
+  });
 });

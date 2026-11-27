@@ -3,7 +3,11 @@ import type { ProjectRecord } from '@verity/store';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ListeningProcess } from './listening-ports.js';
 import type { LocalPreviewShare } from './local-preview-manager.js';
-import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
+import {
+  createManagedDevServerSecretResolver,
+  managedDevServerProviderSnapshot,
+  managedRunProviderCurrent,
+} from './managed-dev-server-secrets.js';
 import {
   ManagedDevServerManager,
   type ManagedDevServerRuntime,
@@ -158,30 +162,64 @@ const instanceOf = async (sessionId = 's1') => (await manager.view(sessionId))[0
 
 describe('managed servers with secret bindings', () => {
   const secretBindings = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }];
+  let projectBindings: typeof ctx.store.projectDopplerBindings;
   const withResolver = async (
     resolveSecrets: NonNullable<
       ConstructorParameters<typeof ManagedDevServerManager>[0]['resolveSecrets']
     >,
     agentPerson?: (sessionId: string) => Promise<string | null | undefined>,
+    localShares?: ManagedLocalShares,
+    wakeSandbox?: () => Promise<void>,
   ) => {
     await manager.close();
+    projectBindings = ctx.store.projectDopplerBindings;
+    if (!(await projectBindings.list('p1')).length)
+      await ctx.store.updateProjectSettings('p1', {
+        dopplerProject: 'test',
+        dopplerConfig: 'test',
+      });
     manager = new ManagedDevServerManager({
       store: ctx.store,
       runtime: sandbox.runtime,
       resolveSecrets,
       ...(agentPerson !== undefined ? { agentPerson } : {}),
-      providerAuthority: async (projectId) => {
-        const settings = await ctx.store.getProjectSettings(projectId);
-        return JSON.stringify([
-          settings?.dopplerProject ?? 'test',
-          settings?.dopplerConfig ?? 'test',
-        ]);
-      },
+      ...(localShares !== undefined ? { localShares } : {}),
+      ...(wakeSandbox !== undefined ? { wakeSandbox } : {}),
+      providerSnapshot: async (projectId, bindings) =>
+        managedDevServerProviderSnapshot(await projectBindings.list(projectId), bindings),
       networkPorts: [8100, 8101],
       sandboxWorktree: (_project, worktree) => worktree.replace('/clone', '/work'),
       now: () => now,
     });
   };
+
+  it('does not launch when the queued approval changes while the sandbox wakes', async () => {
+    const resolve = vi.fn(async () => [{ env: 'API_KEY', value: 'synthetic' }]);
+    await withResolver(resolve, undefined, undefined, async () => {});
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    const approve = async () => {
+      await manager.approve('s1', 'api', {
+        command: entry.command,
+        workdir: '.',
+        secretBindings,
+        providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+      });
+    };
+    await approve();
+    await ctx.store.updateProjectState('p1', 'sleeping');
+    await manager.start('s1', 'api', 'operator');
+    await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'other' });
+    await approve();
+    await ctx.store.updateProjectState('p1', 'active');
+    await manager.tick();
+    expect(sandbox.started).toHaveLength(0);
+    expect(resolve).not.toHaveBeenCalled();
+    expect((await instanceOf()).state).toBe('stopped');
+  });
 
   it('rejects a provider change between display and confirmation without saving approval', async () => {
     await ctx.store.updateProjectSettings('p1', {
@@ -207,7 +245,7 @@ describe('managed servers with secret bindings', () => {
     expect(resolveSecrets).not.toHaveBeenCalled();
     expect(sandbox.started).toHaveLength(0);
     const refreshed = (await manager.view('s1'))[0]!;
-    expect(refreshed.providerSnapshot).toEqual({
+    expect(refreshed.providerSnapshot).toMatchObject({
       provider: 'doppler',
       project: 'demo',
       config: 'production',
@@ -238,7 +276,7 @@ describe('managed servers with secret bindings', () => {
         manager = new ManagedDevServerManager({
           store: ctx.store,
           runtime: sandbox.runtime,
-          providerAuthority: async () => {
+          providerSnapshot: async () => {
             if (failure === 'lookup-error') throw new Error('private diagnostic');
             return undefined;
           },
@@ -269,14 +307,7 @@ describe('managed servers with secret bindings', () => {
         });
         await withResolver(
           createManagedDevServerSecretResolver({
-            getProjectBinding: async (projectId) => {
-              const settings = await ctx.store.getProjectSettings(projectId);
-              if (!settings?.dopplerProject || !settings.dopplerConfig) return undefined;
-              return {
-                dopplerProject: settings.dopplerProject,
-                dopplerConfig: settings.dopplerConfig,
-              };
-            },
+            getProjectBindings: (projectId) => ctx.store.projectDopplerBindings.list(projectId),
             resolveSecret,
           }),
         );
@@ -294,6 +325,7 @@ describe('managed servers with secret bindings', () => {
         await manager.start('s1', 'api', 'agent');
         expect(resolveSecret).toHaveBeenCalledWith({
           projectId: 'p1',
+          connectionId: 'legacy-doppler',
           dopplerProject: 'demo',
           dopplerConfig: 'staging',
           secretName: 'ATTENDEE_API_KEY',
@@ -337,7 +369,7 @@ describe('managed servers with secret bindings', () => {
     expect(resolveSecrets).toHaveBeenCalledWith(
       'p1',
       secretBindings,
-      JSON.stringify(['test', 'test']),
+      (await manager.view('s1'))[0]!.providerSnapshot?.authority,
       null,
     );
     expect(sandbox.started[0]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value-1' }]);
@@ -376,13 +408,11 @@ describe('managed servers with secret bindings', () => {
       if (change === 'legacy')
         await ctx.db
           .updateTable('managed_dev_servers')
-          .set({ approved_provider_authority: null })
+          .set({ approved_provider_authority: JSON.stringify(['demo', 'staging']) })
           .where('id', '=', entry.id)
           .execute();
       else if (change === 'lookup-error')
-        vi.spyOn(ctx.store, 'getProjectSettings').mockRejectedValueOnce(
-          new Error('lookup unavailable'),
-        );
+        vi.spyOn(projectBindings, 'list').mockRejectedValueOnce(new Error('lookup unavailable'));
       else await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
       if (change === 'recovery') await manager.tick();
       else await manager.start('s1', 'api', 'agent');
@@ -399,6 +429,195 @@ describe('managed servers with secret bindings', () => {
       expect(resolveSecrets).toHaveBeenCalledOnce();
     });
   }
+
+  it.each(['replacement', 'rotation', 'recreation'] as const)(
+    'requires new approval after %s of a referenced connection',
+    async (change) => {
+      await ctx.store.updateProjectSettings('p1', { dopplerProject: 'demo', dopplerConfig: 'dev' });
+      const resolveSecrets = vi.fn(async () => []);
+      await withResolver(resolveSecrets);
+      await ctx.db
+        .insertInto('doppler_connections')
+        .values([
+          { id: 'billing', label: 'Billing', token: null },
+          { id: 'other', label: 'Other', token: null },
+        ])
+        .execute();
+      const target = { dopplerProject: 'billing', dopplerConfig: 'production' };
+      const binding = await ctx.store.projectDopplerBindings.add('p1', {
+        ...target,
+        connectionId: 'billing',
+      });
+      const qualified = [
+        ...secretBindings,
+        { secretAlias: 'billing/production/API_KEY', env: 'BILLING_KEY' },
+      ];
+      const entry = await manager.add('s1', {
+        name: 'api',
+        command: 'node server.mjs',
+        secretBindings: qualified,
+      });
+      const seen = {
+        command: entry.command,
+        workdir: '.',
+        secretBindings: qualified,
+        providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+      };
+      await manager.approve('s1', 'api', seen);
+
+      // Approval covers only the connections used by the requested secrets.
+      await ctx.db
+        .updateTable('doppler_connections')
+        .set({ token_revision: '00000000-0000-4000-8000-000000000010' })
+        .where('id', '=', 'other')
+        .execute();
+      expect((await manager.view('s1'))[0]!.approved).toBe(true);
+      if (change !== 'rotation') {
+        await ctx.store.projectDopplerBindings.remove('p1', binding.id);
+        await ctx.store.projectDopplerBindings.add('p1', {
+          ...target,
+          connectionId: change === 'replacement' ? 'other' : 'billing',
+        });
+      } else {
+        await ctx.db
+          .updateTable('doppler_connections')
+          .set({ token_revision: '00000000-0000-4000-8000-000000000011' })
+          .where('id', '=', 'billing')
+          .execute();
+      }
+      const refreshed = (await manager.view('s1'))[0]!;
+      expect(refreshed.approved).toBe(false);
+      expect(refreshed.providerSnapshot?.project).toBe(seen.providerSnapshot?.project);
+      expect(refreshed.providerSnapshot?.config).toBe(seen.providerSnapshot?.config);
+      expect(refreshed.providerSnapshot?.authority).not.toBe(seen.providerSnapshot?.authority);
+      await expect(manager.approve('s1', 'api', seen)).rejects.toThrow('provider');
+      await manager.start('s1', 'api', 'agent');
+      expect(resolveSecrets).not.toHaveBeenCalled();
+      expect(sandbox.started).toHaveLength(0);
+
+      await manager.approve('s1', 'api', { ...seen, providerSnapshot: refreshed.providerSnapshot });
+      await manager.start('s1', 'api', 'agent');
+      expect(sandbox.started).toHaveLength(1);
+    },
+  );
+
+  it('uses effective provider approval for the instance and its local switch', async () => {
+    await withResolver(async () => [{ env: 'API_KEY', value: 'synthetic' }]);
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    await manager.approve('s1', 'api', {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    });
+    await manager.start('s1', 'api', 'agent');
+    const run = sandbox.started[0]!;
+    sandbox.listen(run.instanceId, Number(run.env.PORT));
+    await manager.tick();
+    expect((await manager.view('s1'))[0]).toMatchObject({
+      approved: true,
+      instance: { state: 'running', awaitingApproval: false, localOn: true },
+    });
+    await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
+    expect((await manager.view('s1'))[0]).toMatchObject({
+      approved: false,
+      instance: { state: 'running', awaitingApproval: true, localOn: false },
+    });
+  });
+
+  it.each(['drift', 'reapproved', 'legacy', 'retry stop'] as const)(
+    'stops obsolete secret-bearing runs and removes local access after %s',
+    async (change) => {
+      await withResolver(
+        async () => [{ env: 'API_KEY', value: 'synthetic' }],
+        undefined,
+        shares.local,
+      );
+      const entry = await manager.add('s1', {
+        name: 'api',
+        command: 'node server.mjs',
+        secretBindings,
+      });
+      const approve = async () => {
+        const view = (await manager.view('s1'))[0]!;
+        await manager.approve('s1', 'api', {
+          command: entry.command,
+          workdir: '.',
+          secretBindings,
+          providerSnapshot: view.providerSnapshot,
+        });
+        return view.providerSnapshot?.authority;
+      };
+      const authority = await approve();
+      await manager.start('s1', 'api', 'agent');
+      const run = sandbox.started[0]!;
+      sandbox.listen(run.instanceId, Number(run.env.PORT));
+      await manager.tick();
+      expect(shares.shares).toHaveLength(1);
+      expect(
+        (await ctx.store.managedDevServers.getInstance(run.instanceId))?.lastRunProviderAuthority,
+      ).toBe(authority);
+
+      if (change === 'legacy')
+        await ctx.store.managedDevServers.updateInstance(run.instanceId, {
+          lastRunProviderAuthority: null,
+        });
+      else await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
+      if (change === 'reapproved') expect(await approve()).not.toBe(authority);
+      expect((await manager.view('s1'))[0]!.instance).toMatchObject({
+        localOn: false,
+        awaitingApproval: true,
+        url: null,
+        localShareId: null,
+      });
+      expect(sandbox.started).toHaveLength(1);
+      if (change === 'retry stop') {
+        sandbox.stop.mockRejectedValueOnce(new Error('Docker unavailable'));
+        await manager.tick();
+        expect((await instanceOf()).desired).toBe('running');
+        expect(shares.shares).toHaveLength(0);
+      }
+      await manager.tick();
+      expect(shares.shares).toHaveLength(0);
+      expect(sandbox.stop).toHaveBeenCalledWith(expect.anything(), run.instanceId);
+      expect((await instanceOf()).state).toBe('stopped');
+      if (change === 'reapproved') {
+        await manager.start('s1', 'api', 'agent');
+        expect(sandbox.started).toHaveLength(2);
+      }
+    },
+  );
+
+  it('keeps the approved authority after a failed launch so the next start still applies', async () => {
+    await withResolver(async () => [{ env: 'API_KEY', value: 'synthetic' }]);
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    await manager.approve('s1', 'api', {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    });
+    vi.spyOn(sandbox.runtime, 'startManagedServer').mockResolvedValueOnce({
+      ok: false,
+      reason: 'port busy',
+    });
+    await manager.start('s1', 'api', 'agent');
+    const failed = (await ctx.store.managedDevServers.listInstances({ serverId: entry.id }))[0]!;
+    expect(failed.state).toBe('crashed');
+    // A null authority read as "Doppler access changed": the public link was revoked
+    // and the person was asked to approve a server whose access never changed.
+    expect(await managedRunProviderCurrent(ctx.store, failed)).toBe(true);
+    await manager.start('s1', 'api', 'agent');
+    expect(sandbox.started).toHaveLength(1);
+  });
 
   it('never launches a partial secret set or stores resolver diagnostics', async () => {
     await withResolver(async () => {
@@ -446,9 +665,10 @@ describe('managed servers with secret bindings', () => {
     sandbox.recreate();
     now += 6000;
     await manager.tick();
+    const authority = await ctx.store.managedDevServers.approvedProviderAuthority(entry.id);
     expect(resolveSecrets.mock.calls).toEqual([
-      ['p1', secretBindings, JSON.stringify(['test', 'test']), null],
-      ['p1', secretBindings, JSON.stringify(['test', 'test']), null],
+      ['p1', secretBindings, authority, null],
+      ['p1', secretBindings, authority, null],
     ]);
     expect(sandbox.started[1]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value' }]);
     await expect(manager.restart('s1', 'api', 'agent')).rejects.toThrow('approve');

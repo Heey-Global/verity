@@ -241,7 +241,7 @@ export interface GitBranchService {
    * case is unchanged. Used to find a session's PR when it lives on a branch other
    * than the worktree HEAD.
    */
-  sessionBranches(worktreePath: string): Promise<string[]>;
+  sessionBranches(worktreePath: string, includeConfiguredBase?: boolean): Promise<string[]>;
   /** Whether the worktree has uncommitted (or untracked) changes. */
   isDirty(worktreePath: string): Promise<boolean>;
   /** Uncommitted files or committed file changes since branching from the project base. */
@@ -287,8 +287,8 @@ export interface GitBranchService {
    */
   resetToMergedBase(
     worktreePath: string,
-    opts?: { base?: string },
-  ): Promise<{ base: string; deletedBranch?: string }>;
+    opts?: { base?: string; expectedHead?: { branch: string; sha: string } },
+  ): Promise<{ base: string; deletedBranch?: string; skipped?: true }>;
   /**
    * Merge a session branch into the project's base branch WITHOUT GitHub — the
    * merge path for `local` projects, which have no remote and therefore no pull
@@ -538,14 +538,23 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     return (await git(['-C', worktreePath, 'rev-parse', '--short', 'HEAD'])).trim();
   }
 
-  async function sessionBranches(worktreePath: string): Promise<string[]> {
+  async function sessionBranches(
+    worktreePath: string,
+    includeConfiguredBase = false,
+  ): Promise<string[]> {
     if (opts.withGit) {
       const { withGit, ...scopedOptions } = opts;
       return withGit(worktreePath, (scopedGit) =>
-        createGitBranchService({ ...scopedOptions, git: scopedGit }).sessionBranches(worktreePath),
+        createGitBranchService({ ...scopedOptions, git: scopedGit }).sessionBranches(
+          worktreePath,
+          includeConfiguredBase,
+        ),
       );
     }
-    const here = await current(worktreePath);
+    // Repository association requires an attached ref, not a display label inferred from a detached commit.
+    const here = includeConfiguredBase
+      ? await attachedBranch(worktreePath, git)
+      : await current(worktreePath);
     let extra: string[] = [];
     try {
       // The worktree's OWN HEAD reflog records every checkout that happened here — a
@@ -569,11 +578,13 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       }
       // A long session can leave hundreds of reflog candidates. One refs listing
       // filters detached SHAs without spawning one Docker exec per candidate.
-      const named = candidates.filter((name) => name !== here && name !== baseBranch);
+      const named = candidates.filter(
+        (name) => name !== here && (includeConfiguredBase || name !== baseBranch),
+      );
       if (named.length > 0) {
         const refs = await git([
           '-C',
-          opts.repoDir ?? worktreePath,
+          worktreePath,
           'for-each-ref',
           '--format=%(refname)',
           'refs/heads',
@@ -584,11 +595,12 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     } catch {
       // No reflog / git error → just the current branch (single-branch behavior).
     }
-    return [here, ...extra];
+    return here === undefined ? extra : [here, ...extra];
   }
 
   async function isDirty(worktreePath: string): Promise<boolean> {
-    const out = await git(['-C', worktreePath, 'status', '--porcelain']);
+    const read = (runner: GitOutput) => runner(['-C', worktreePath, 'status', '--porcelain']);
+    const out = await (opts.withGit ? opts.withGit(worktreePath, read) : read(git));
     return out.trim().length > 0;
   }
 
@@ -785,8 +797,8 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
 
   async function resetToMergedBase(
     worktreePath: string,
-    opts: { base?: string } = {},
-  ): Promise<{ base: string; deletedBranch?: string }> {
+    opts: { base?: string; expectedHead?: { branch: string; sha: string } } = {},
+  ): Promise<{ base: string; deletedBranch?: string; skipped?: true }> {
     // The branch the merge actually landed on. It reaches argv of the commands
     // below, so an argument is checked against git's ref grammar first — every
     // argument, with no shortcut for one that happens to equal the configured base,
@@ -803,15 +815,18 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
     // resolves to a remote name or short SHA (see `current`) — `branchExists`
     // below then finds no local branch and we skip the delete.
     const feature = await current(worktreePath);
-    if (!isValidBranchName(feature)) return { base };
+    if (!isValidBranchName(feature)) return { base, skipped: true };
     const featureTip =
       feature !== base && feature !== baseBranch && (await branchExists(worktreePath, feature))
         ? (await git(['-C', worktreePath, 'rev-parse', `refs/heads/${feature}`])).trim()
         : undefined;
+    const expectedHead = opts.expectedHead;
+    if (expectedHead && (feature !== expectedHead.branch || featureTip !== expectedHead.sha))
+      return { base, skipped: true };
     // An idle observation can race a new turn. Refuse before changing HEAD when
     // tracked work has appeared, and let the unforced checkout below enforce the
     // same invariant across the remaining window.
-    if (await hasTrackedChanges(worktreePath, git)) return { base };
+    if (await hasTrackedChanges(worktreePath, git)) return { base, skipped: true };
     // Pull the merged base tip into this worktree's object store. Both refs are
     // fully qualified so nothing in the name can be read as syntax: a bare
     // `fetch origin +foo` would parse the `+` as the refspec's force marker and
@@ -828,6 +843,12 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       'origin',
       `+refs/heads/${base}:${remoteRef}`,
     ]);
+    if (
+      expectedHead &&
+      ((await attachedBranch(worktreePath, git)) !== expectedHead.branch ||
+        (await git(['-C', worktreePath, 'rev-parse', 'HEAD'])).trim() !== expectedHead.sha)
+    )
+      return { base, skipped: true };
     // Detach onto the merged tip: never claims the `base` branch name (so it can't
     // block a parallel worktree), and `-f` discards the merged feature branch's now
     // stale working tree. `current()` still reports "<base>" for this detached HEAD
@@ -838,8 +859,12 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
       ...untrustedRepo(worktreePath),
       'checkout',
       '--detach',
+      '--no-overwrite-ignore',
       remoteRef,
     ]);
+    // A scoped checkout can share refs with another worktree. Preserving the ref
+    // avoids a compare-and-delete racing with a checkout of that same revision.
+    if (expectedHead) return { base };
     // Delete the merged local feature branch — only when it was a real local branch
     // (not a base, not a detached/preview label). Both bases are excluded: the merge
     // target because the worktree now sits on it, and the project base because it is

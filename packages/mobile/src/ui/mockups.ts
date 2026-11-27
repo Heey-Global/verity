@@ -27,7 +27,7 @@ const ATTACHMENT = /^[a-f0-9]{64}$/;
 
 /**
  * The round a `verity_present_mockups` call showed, read from its confirmed
- * result. The result names the images, so an older round keeps showing what was
+ * result. The result names the attachments, so an older round keeps showing what was
  * reviewed after the next one replaced the session's review. Verdicts come from
  * `current` while it is the same round.
  */

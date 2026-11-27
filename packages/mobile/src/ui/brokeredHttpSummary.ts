@@ -172,7 +172,7 @@ export function brokeredHttpTitle(summary: BrokeredHttpSummary): string {
 export function brokeredAuthSentence(summary: BrokeredHttpSummary): string {
   if (summary.auth.kind === 'static') {
     const scheme = summary.auth.scheme === null ? '' : ` using ${summary.auth.scheme}`;
-    return `Verity sends ${summary.secretAlias} in the ${summary.auth.header} header${scheme} to ${summary.host}. The secret stays server-side; the agent gets the status and the response with the secret redacted.`;
+    return `Verity sends ${summary.secretAlias} in the ${summary.auth.header} header${scheme} to ${summary.host}. Verity returns the status and the response to the agent with the secret redacted.`;
   }
   const claims = summary.auth.claims.map((entry) => `${entry.claim} ${entry.source}`).join(', ');
   const lifetime =

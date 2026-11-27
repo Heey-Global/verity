@@ -29,11 +29,14 @@ export function KnowledgeScreen({
   scope,
   folder = '',
   file,
+  edit = false,
   proposal,
 }: {
   scope: KnowledgeScope;
   folder?: string | undefined;
   file?: string | undefined;
+  /** Opens `file` in its editor, as "Edit text" and a new page do. */
+  edit?: boolean;
   /** A proposed Wiki change to review, by id. */
   proposal?: string | undefined;
 }) {
@@ -49,7 +52,15 @@ export function KnowledgeScreen({
   if (proposal && scope.kind === 'project')
     return <WikiProposalScreen client={client} projectId={scope.projectId} proposalId={proposal} />;
   if (file !== undefined && file !== '')
-    return <KnowledgeFileView client={client} scope={scope} file={file} chrome="stack" />;
+    return (
+      <KnowledgeFileView
+        client={client}
+        scope={scope}
+        file={file}
+        chrome="stack"
+        startEditing={edit}
+      />
+    );
   return (
     <SettingsScaffold
       title={folderTitle(scope, folder)}
@@ -71,6 +82,7 @@ export function KnowledgeScreen({
         folder={folder}
         onOpenFolder={(next) => pushKnowledge(scope, { folder: next })}
         onOpenFile={(next) => pushKnowledge(scope, { file: next })}
+        header="stack"
       />
     </SettingsScaffold>
   );

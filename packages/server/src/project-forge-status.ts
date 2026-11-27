@@ -29,27 +29,39 @@ export function createProjectForgeStatusReader(
     project: ProjectRecord,
     branch: string,
     remember = true,
+    number?: number,
+    reportUnavailable = false,
   ): Promise<PullRequestStatus | null> => {
     if (project.kind === 'local' || project.kind === 'control_plane') return null;
     const provider = await providerFor(project);
-    if (!provider?.repositoryPrService) return null;
+    if (!provider?.repositoryPrService) {
+      if (reportUnavailable) throw new Error('Forge pull request status unavailable');
+      return null;
+    }
     const identity = await statusIdentity(project, provider);
     if (remember) {
       scopes.delete(project.id);
       scopes.set(project.id, identity);
       while (scopes.size > 4096) scopes.delete(scopes.keys().next().value!);
     }
-    return shared.read(identity, branch, (observationScope) =>
-      provider.repositoryPrService!(project, observationScope).prStatusForBranch(branch),
+    return shared.read(
+      identity,
+      number === undefined ? branch : `${branch}\0${number}`,
+      (observationScope) =>
+        provider.repositoryPrService!(project, observationScope).prStatusForBranch(branch, number),
+      reportUnavailable,
     );
   };
   return {
     readProjectStatus,
     statusIdentity,
     invalidateStatus: (identity: ForgeStatusIdentity) => shared.invalidate(identity),
-    invalidateProjectStatus: (projectId: string) => {
+    /** Without branches this forgets the whole repository, as a mutation requires. */
+    invalidateProjectStatus: (projectId: string, branches?: readonly string[]) => {
       const identity = scopes.get(projectId);
-      if (identity) shared.invalidate(identity);
+      if (!identity) return;
+      if (branches === undefined) shared.invalidate(identity);
+      else shared.invalidateBranches(identity, branches);
     },
   };
 }

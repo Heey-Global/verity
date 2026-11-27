@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import type { BrokeredToolCall } from './brokered-http-tool.js';
+import type { BrokeredSecretResolver, BrokeredToolCall } from './brokered-http-tool.js';
 
 import { runAgentSpawnBroker } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import { runTrustedCliViaBroker } from '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs';
@@ -22,22 +22,30 @@ const dopplerProject = required('VERITY_SECRET_CANARY_DOPPLER_PROJECT');
 const dopplerConfig = required('VERITY_SECRET_CANARY_DOPPLER_CONFIG');
 const secretAlias = required('VERITY_SECRET_CANARY_ALIAS');
 const expectedHash = required('VERITY_SECRET_CANARY_SHA256');
-const binding = { dopplerProject, dopplerConfig };
+const binding = {
+  id: 'canary',
+  connectionId: 'canary',
+  dopplerProject,
+  dopplerConfig,
+  isDefault: true,
+};
 const sha256 = (value: string | Uint8Array): string =>
   createHash('sha256').update(value).digest('hex');
 const runtimeDir = await mkdtemp(join(tmpdir(), 'verity-secret-canary-'));
 const secretDir = join(runtimeDir, 'trusted-cli-secrets');
 const envHashEntryPath = resolve('packages/server/dist/doppler-secret-canary-env-hash.js');
 const envHashEntrySha256 = sha256(await readFile(envHashEntryPath));
-const resolveSecret = (input: {
-  projectId: string;
-  dopplerProject: string;
-  dopplerConfig: string;
-  secretName: string;
-}) => resolveDopplerProjectSecret({ ...input, token: Buffer.from(token, 'utf8') });
+const resolveSecret = (input: Parameters<BrokeredSecretResolver>[0]) =>
+  resolveDopplerProjectSecret({
+    projectId: input.projectId,
+    dopplerProject: input.dopplerProject,
+    dopplerConfig: input.dopplerConfig,
+    secretName: input.secretName,
+    token: Buffer.from(token, 'utf8'),
+  });
 
 const httpTool = createBrokeredHttpTool({
-  getProjectBinding: () => Promise.resolve(binding),
+  getProjectBindings: () => Promise.resolve([binding]),
   resolveSecret,
   consumeApproval: () => Promise.resolve(true),
   transport: async (request) => {
@@ -54,7 +62,7 @@ const httpTool = createBrokeredHttpTool({
 });
 
 const cliTool = createTrustedCliTool({
-  getProjectBinding: () => Promise.resolve(binding),
+  getProjectBindings: () => Promise.resolve([binding]),
   resolveSecret,
   consumeApproval: () => Promise.resolve(true),
 });

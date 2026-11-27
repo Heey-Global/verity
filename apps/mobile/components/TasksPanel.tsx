@@ -37,7 +37,13 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { openTaskAttachment } from '../lib/taskAttachments';
 import { dispatchTasks } from '../lib/taskDispatch';
-import { patchTask, removeTask, resolveTaskConflict, useTasks } from '../lib/tasksStore';
+import {
+  patchTask,
+  removeTask,
+  resolveTaskConflict,
+  useTaskView,
+  useTasks,
+} from '../lib/tasksStore';
 
 interface TaskGroup {
   key: string;
@@ -90,6 +96,7 @@ export function TaskListBody({
     projectId: selectedProjectId,
     sessionId: selectedProjectId === suppliedContext.projectId ? suppliedContext.sessionId : null,
   };
+  useTaskView(context.sessionId);
   const [issues, setIssues] = useState<{
     projectId: string;
     repositories: RepositoryIssues[];

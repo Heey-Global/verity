@@ -164,6 +164,8 @@ describe('task outbox', () => {
     expect(s.snapshot().conflicts).toEqual([task.id]);
     expect(s.snapshot().tasks[0]?.title).toBe('My edit');
     await s.queue.resolve(task.id, true);
+    // The default list omits dropped tasks: a conflict on one would read as a deletion.
+    expect(s.api.listTasks).toHaveBeenLastCalledWith('?status=open,in_progress,done,dropped');
     await s.queue.sync();
     expect(s.api.updateTask).toHaveBeenLastCalledWith(task.id, {
       title: 'My edit',

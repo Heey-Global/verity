@@ -5,13 +5,11 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { generatedFiles } from './file-size-guard.mjs';
 
-const SERVER = 'packages/server/src/server.ts';
 const SOURCE = 'packages/server/src/';
+const ROOTS = [`${SOURCE}server.ts`, `${SOURCE}embedded.ts`];
 // Outer composition roots and public entry points consume the server. These
 // exemptions apply only to origins: a domain -> index -> server path still fails.
 const ENTRY_POINTS = new Set([
-  'app.ts', // buildControlPlane constructs buildServer.
-  'embedded.ts', // Outer embedded composition root constructs buildControlPlane.
   'server-main.ts', // Executable startup constructs the embedded server.
   'main.ts', // Executable dispatcher loads server-main.
   'index.ts', // Public API preserves the buildServer export.
@@ -137,8 +135,12 @@ function specifiers(file, text) {
   return [...found];
 }
 
-/** @param {string} root @param {string[]} files */
-export function serverImportViolations(root, files) {
+/** @param {string} root @param {string[]} files
+ * @param {{ source?: string, roots?: string[], entries?: Set<string>, reportEdges?: boolean }} options */
+export function serverImportViolations(root, files, options = {}) {
+  const sourcePrefix = options.source ?? SOURCE;
+  const roots = options.roots ?? ROOTS;
+  const entries = options.entries ?? ENTRY_POINTS;
   const configPath = join(root, 'packages/server/tsconfig.json');
   const config = ts.readConfigFile(configPath, (f) => ts.sys.readFile(f));
   if (config.error)
@@ -152,7 +154,7 @@ export function serverImportViolations(root, files) {
         getNewLine: () => '\n',
       }),
     );
-  const localFiles = files.filter((f) => f.startsWith(SOURCE));
+  const localFiles = files.filter((f) => f.startsWith(sourcePrefix));
   const sources = new Set(files.map((f) => resolve(root, f)));
   /** @type {Map<string, string>} */
   const emitted = new Map();
@@ -244,25 +246,44 @@ export function serverImportViolations(root, files) {
   }
   // Reverse traversal finds a shortest diagnostic path for every consumer and
   // handles cycles without repeatedly walking the same subtree.
-  /** @type {Map<string, string[]>} */
-  const paths = new Map([[SERVER, [SERVER]]]);
-  const pending = [SERVER];
-  for (const target of pending) {
-    for (const file of reverse.get(target) ?? []) {
-      if (paths.has(file)) continue;
-      paths.set(file, [file, ...(paths.get(target) ?? [])]);
-      pending.push(file);
-    }
-  }
-  return [...paths.entries()]
-    .filter(
-      ([file]) =>
-        file.startsWith(SOURCE) &&
-        file !== SERVER &&
-        !ENTRY_POINTS.has(file.slice(SOURCE.length)) &&
-        !testConsumer(file),
-    )
-    .map(([, path]) => path.join(' -> '))
+  return roots
+    .flatMap((targetRoot) => {
+      /** @type {Map<string, string[]>} */
+      const paths = new Map([[targetRoot, [targetRoot]]]);
+      const pending = [targetRoot];
+      for (const target of pending) {
+        for (const file of reverse.get(target) ?? []) {
+          if (paths.has(file)) continue;
+          paths.set(file, [file, ...(paths.get(target) ?? [])]);
+          pending.push(file);
+        }
+      }
+      if (options.reportEdges) {
+        return [...paths.keys()].flatMap((target) =>
+          [...(reverse.get(target) ?? [])]
+            .filter(
+              (file) =>
+                file.startsWith(sourcePrefix) &&
+                file !== targetRoot &&
+                !entries.has(file.slice(sourcePrefix.length)) &&
+                !testConsumer(file),
+            )
+            .map((file) => file + ' -> ' + target),
+        );
+      }
+      return [...paths.entries()]
+        .filter(
+          ([file]) =>
+            file.startsWith(sourcePrefix) &&
+            file !== targetRoot &&
+            !entries.has(file.slice(sourcePrefix.length)) &&
+            !(
+              targetRoot === ROOTS[0] && [`${SOURCE}app.ts`, `${SOURCE}embedded.ts`].includes(file)
+            ) &&
+            !testConsumer(file),
+        )
+        .map(([, path]) => path.join(' -> '));
+    })
     .sort();
 }
 

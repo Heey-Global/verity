@@ -515,6 +515,10 @@ const demoFetchImpl: typeof fetch = async (input, init) => {
   const body =
     typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
   const path = url.pathname;
+  if (method === 'GET' && /^\/projects\/[^/]+\/doppler\/bindings$/.test(path))
+    return json({ bindings: [] });
+  if (method === 'GET' && /^\/projects\/[^/]+\/doppler\/connection$/.test(path))
+    return json({ connections: [] });
   const list = () => [...sessions.values()].map((session) => session.detail);
   if (path === '/settings/vulnerability-scan') {
     if (method === 'PATCH') Object.assign(scanSettings, body);

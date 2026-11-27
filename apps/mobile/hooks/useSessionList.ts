@@ -14,7 +14,8 @@ import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getVerityBaseUrl } from '../lib/client';
-import { useLiveHints } from '../lib/liveConnection';
+import { liveConnectionFor, useLiveHints } from '../lib/liveConnection';
+import { useOverviewStore, useOverviewTopics } from '../lib/overviewTopics';
 
 export interface UseSessionList extends SessionListState {
   /** Force an immediate reload (e.g. pull-to-refresh / retry button). `silent`
@@ -40,6 +41,11 @@ export interface UseSessionList extends SessionListState {
  * race guard, polling) lives in the model — this hook is just the glue.
  */
 export function useSessionList(client: VerityClient): UseSessionList {
+  // The same copy of the sessions as the project page and its settings
+  // (ADR 0033): Home lists each session as it holds it.
+  const store = useOverviewStore(getVerityBaseUrl());
+  const storeRef = useRef(store);
+  storeRef.current = store;
   // `onChange` is the React setter, wrapped so it resolves lazily (it's declared
   // below). This relies on the model emitting a FRESH state object on every change
   // so loading and time-dependent fields propagate even when sessions are unchanged.
@@ -48,6 +54,13 @@ export function useSessionList(client: VerityClient): UseSessionList {
       new SessionListModel({
         client: contextOverviewClient(client),
         pollIntervalMs: 0,
+        store: () => storeRef.current,
+        followsLive: (projectId) => {
+          const baseUrl = getVerityBaseUrl();
+          return (
+            baseUrl !== null && liveConnectionFor(baseUrl).followsTopic(`project:${projectId}`)
+          );
+        },
         onChange: (s) => {
           const finish = beginClientActivity('session-list-publish');
           try {
@@ -69,6 +82,21 @@ export function useSessionList(client: VerityClient): UseSessionList {
     setState({ ...model.state, loading: true });
   }, [model]);
 
+  // Set while Home is focused; it gates reads nobody asked for.
+  const focused = useRef(false);
+  const previousStore = useRef(store);
+  useEffect(() => {
+    // A replaced store (another account, or back to an earlier one) does not
+    // hold the list's last read: the list shows that read until it has read
+    // into this store.
+    if (store !== previousStore.current) {
+      previousStore.current = store;
+      if (focused.current) void model.refresh({ silent: true });
+    }
+    model.storeChanged();
+    return store.subscribe(() => model.storeChanged());
+  }, [model, store]);
+
   // The list refetches when the server says a session changed; its own poll is
   // only the safety net. Hints for a model that is not running are ignored.
   const onHints = useCallback(
@@ -78,6 +106,18 @@ export function useSessionList(client: VerityClient): UseSessionList {
     [model],
   );
   useLiveHints(getVerityBaseUrl(), onHints);
+  // Answered requests and questions leave every view at once, even while Home
+  // is not on screen (ADR 0033). Project-less sessions still follow hints.
+  const projectIds = useMemo(
+    () => state.sessions.flatMap((session) => (session.projectId ? [session.projectId] : [])),
+    [state.sessions],
+  );
+  useOverviewTopics(
+    getVerityBaseUrl(),
+    projectIds,
+    (event) => model.applyDomainEvent(event),
+    () => model.applyHints([]),
+  );
   useEffect(
     () =>
       subscribeLiveRefresh(
@@ -90,7 +130,6 @@ export function useSessionList(client: VerityClient): UseSessionList {
 
   // Focus only gates background requests; React state would redraw the entire
   // overview and embedded transcript during each navigation transition.
-  const focused = useRef(false);
   useFocusEffect(
     useCallback(() => {
       focused.current = true;

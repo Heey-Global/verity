@@ -22,6 +22,7 @@ export function createHandoffSessionCreator({
   isProjectSessionModel,
   isConfiguredProjectSessionModel,
   makeBranch,
+  runningTurnInitiator,
 }: Pick<
   ServerMcpRouteDeps,
   | 'deps'
@@ -33,16 +34,19 @@ export function createHandoffSessionCreator({
   | 'isProjectSessionModel'
   | 'isConfiguredProjectSessionModel'
   | 'makeBranch'
+  | 'runningTurnInitiator'
 >) {
   const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
   return async ({
     projectId,
     name,
     idempotencyKey,
+    caller,
   }: {
     projectId: string;
     name: string;
     idempotencyKey: string;
+    caller?: { sessionId: string; turnId: string };
   }) => {
     const existing = controlHandoffSessionCreates.get(idempotencyKey);
     if (existing !== undefined) return existing;
@@ -108,6 +112,15 @@ export function createHandoffSessionCreator({
             ...worktreeOpts,
           });
         await deps.refreshProjectToken?.(project);
+        // Attribution only addresses the session's requests; a failed lookup leaves
+        // them with the project's creator instead of failing the handoff.
+        const createdByUserId = caller
+          ? ((
+              await Promise.resolve()
+                .then(() => runningTurnInitiator(caller.sessionId, caller.turnId))
+                .catch(() => undefined)
+            )?.userId ?? null)
+          : null;
         const worktree = await provisioner.add(makeBranch(name));
         try {
           await deps.eventStore.createSession({
@@ -116,6 +129,7 @@ export function createHandoffSessionCreator({
             worktree,
             model: selectedModel,
             name,
+            createdByUserId,
           });
         } catch (error) {
           await provisioner.remove(worktree).catch(() => undefined);

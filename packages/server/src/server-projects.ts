@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { parseForgejoRepository, parseOwnerRepo } from './canonical.js';
 import { ensureControlPlaneProject } from './control-plane-project.js';
 import { type ReleaseSummary } from './forge-provider.js';
-import { ProjectAgentNotAllowedError } from './project-agent-policy.js';
+import { isModelAllowedForProject, ProjectAgentNotAllowedError } from './project-agent-policy.js';
 import { ownDefaultModel, setOwnDefaultModel } from './own-default-model.js';
 import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
@@ -34,6 +34,7 @@ import {
   type LinkCloneToGitHubResult,
 } from './provisioner.js';
 import { cachedTrustedToolkitIdentity } from './runner-boundary-attestation.js';
+import { createSandboxUpdateView } from './sandbox-update-view.js';
 import { type SandboxUpdateStatus } from './sandbox-updates.js';
 import { type ServerContext } from './server-context.js';
 import {
@@ -41,27 +42,26 @@ import {
   type ProjectSettingsRecord,
   type ProjectToolkitDrift,
   type PublicProjectRecord,
-  type SandboxRepairVerdicts,
   type SessionArtifactPurgeBudget,
-  type SessionSummary,
 } from './server-types.js';
-import { isDriftReportable, toolkitDriftEntryOf } from './toolkit-drift.js';
+import { reportedToolkitDrift } from './toolkit-drift.js';
 import {
   UNKNOWN_SANDBOX_UPDATE,
-  NO_UNREPAIRED_SANDBOXES,
   veritySettingsStore,
   projectSettingsStore,
   projectDeleteStore,
   publicProject,
   isUniqueViolation,
   isControlPlaneProject,
+  projectHasReleases,
+  appearsInProjectOverview,
   recordReleaseSummary,
   releaseDiffers,
   projectWithRelease,
   publicProjectSettings,
   SESSION_ARTIFACT_PURGE_TIMEOUT_MS,
 } from './server-support.js';
-import type { createServerSessionOverview } from './server-session-overview.js';
+import type { SessionListReader } from './session-list-route.js';
 
 /**
  * Closures `buildServer` still owns that the project routes depend on. Each one
@@ -75,7 +75,8 @@ export interface ProjectsWiring {
     exceptSessionIds?: ReadonlySet<string>,
   ) => Promise<ProjectActivitySnapshot>;
   hasMeetingJob: (sessionId: string) => boolean;
-  summarizeSessions: ReturnType<typeof createServerSessionOverview>['summarizeSessions'];
+  /** The project page lists its sessions exactly as `/sessions` does. */
+  listSessionsAs: SessionListReader;
   /** The teardown sets `ServerContext` exposes read-only; only the delete writes them. */
   projectsBeingDeleted: Set<string>;
   sessionsBeingReaped: Set<string>;
@@ -106,7 +107,7 @@ export function installProjects(
     presentProject,
     projectActivity,
     hasMeetingJob,
-    summarizeSessions,
+    listSessionsAs,
     projectsBeingDeleted,
     sessionsBeingReaped,
     projectDeletesInFlight,
@@ -116,6 +117,21 @@ export function installProjects(
   }: ProjectsWiring,
 ): InstalledProjects {
   const { deps, conductor } = ctx;
+  // Project states follow their sandbox containers from Docker's event stream
+  // for as long as the server runs.
+  const liveness = deps.containerLiveness;
+  const stopContainerLiveness = liveness?.start();
+  if (stopContainerLiveness !== undefined) ctx.lifecycle.onClose(stopContainerLiveness);
+  // While the stream vouches for them, the update checker reuses its container
+  // inspections: an overview read then inspects no running sandbox.
+  if (liveness?.following !== undefined && liveness.onContainerChange !== undefined) {
+    const source = liveness;
+    const stopTrusting = deps.sandboxUpdates?.trustInspections?.({
+      following: () => source.following?.() === true,
+      onContainerChange: (listener) => source.onContainerChange?.(listener) ?? (() => undefined),
+    });
+    if (stopTrusting !== undefined) ctx.lifecycle.onClose(stopTrusting);
+  }
   // A link keeps its original local identity reserved while the DB row
   // temporarily carries the GitHub target. This closes the only interval in
   // which a concurrent local create could steal the slug and block rollback.
@@ -127,11 +143,7 @@ export function installProjects(
     project: ProjectRecord,
     opts?: { awaitRefresh?: boolean },
   ): Promise<{ project: ProjectRecord; release: ReleaseSummary | null }> => {
-    // Neither the control-plane workspace nor a project without a GitHub
-    // repository has releases to look up; both would just mint tokens and 404.
-    if (isControlPlaneProject(project) || isLocalProject(project) || project.kind === 'forgejo') {
-      return { project, release: null };
-    }
+    if (!projectHasReleases(project)) return { project, release: null };
     // Trigger the in-memory release refresh + read its freshest SETTLED value.
     // Tristate (see GitHubReleaseService): `undefined` = unknown (cold cache /
     // no token) → keep the persisted value and don't write; `null` = confirmed
@@ -227,121 +239,26 @@ export function installProjects(
   const projectToolkitDrift = (
     project: ProjectRecord,
     current: string | undefined,
-  ): ProjectToolkitDrift | null => {
-    if (!isDriftReportable(project)) return null;
-    const { verdict, carrier } = toolkitDriftEntryOf(current, project);
-    // Base-image projects are never attested, so `unknown` is their permanent
-    // state, and a failed attestation already surfaces as a provision warning.
-    // Shown, it would be a banner that is always on and nothing clears.
-    if (verdict === 'unknown') return null;
-    return { verdict, carrier };
-  };
+  ): ProjectToolkitDrift | null => reportedToolkitDrift(project, current);
 
-  /**
-   * Qualify an update status with whether Verity's own repair is still working on it.
-   *
-   * The checker compares images and knows nothing about the reconciler, so it
-   * always reports `converging`. Only the provisioner knows which projects the
-   * automatic repair has given up on or will never pick up, and only that
-   * distinction makes `state: 'available'` worth showing. A Server restart resumes
-   * the existing Sandbox generation and queues its stale image until the project is
-   * idle, so that waiting period is genuinely an in-flight automatic repair. Optional throughout —
-   * a deployment whose provisioner does not reconcile (tests, non-relay setups)
-   * keeps `converging`.
-   *
-   * Normally applied only to an `available` status. The deliberate exception is
-   * a failed project the provisioner itself still owes a repair: its recreate may
-   * already have removed the old container, so the image checker honestly says
-   * `unknown` while the reconciler can still say, independently, that rebuilding
-   * has stalled. Other unknowns (custom image, registry failure) remain unknown
-   * and converging rather than acquiring a verdict nobody established.
-   */
-  const withSelfRepair = (
-    project: ProjectRecord,
-    status: SandboxUpdateStatus,
-    verdicts: SandboxRepairVerdicts,
-  ): SandboxUpdateStatus => {
-    // Reported together, because they answer the same question — is this gap
-    // closing on its own? — from the two sides the reconciler can be on. A
-    // turn-blocked sandbox also reads `stalled` so that a client which knows
-    // nothing of `turnBlocked` still surfaces it rather than showing the
-    // reassuring spinner forever; one that does know reads the flag and names the
-    // remedy. `available` only: a blocked update the checker cannot even see is
-    // not something to report a turn about.
-    const durable = deps.provisioner?.sandboxUpdateStates?.().get(project.id);
-    const blocked =
-      status.state === 'available' &&
-      (verdicts.turnBlocked.has(project.id) || !!durable?.reasons.length);
-    const unrepaired =
-      verdicts.unrepaired.has(project.id) &&
-      (status.state === 'available' || (project.state === 'failed' && status.state === 'unknown'));
-    // One expression for both reasons, deliberately: they set the SAME two fields,
-    // and split branches drifting apart is how a sandbox ends up reported as
-    // blocked without the `stalled` that older clients read.
-    // Carried with its time whatever the verdict: while a retry waits or builds,
-    // the status is `converging` and the failure is plainly an earlier one.
-    const failure = status.state === 'current' ? undefined : verdicts.lastFailures?.get(project.id);
-    const scheduledTonight =
-      !unrepaired &&
-      status.state === 'available' &&
-      durable?.reasons.length &&
-      durable.reasons.every((reason) => reason === 'dev_server' || reason === 'preview');
-    status = {
-      ...status,
-      ...(scheduledTonight ? { scheduledTonight: true } : {}),
-      ...(blocked && durable && Date.now() - durable.since >= 24 * 60 * 60_000
-        ? { overdue: true }
-        : {}),
-      ...((status.state === 'current' || durable?.recovery?.state === 'failed') && durable?.recovery
-        ? { recovery: durable.recovery }
-        : {}),
-    };
-    const withFailure =
-      failure === undefined
-        ? status
-        : {
-            ...status,
-            lastRepairFailure: { at: new Date(failure.at).toISOString(), message: failure.message },
-          };
-    if (!unrepaired && !blocked) return withFailure;
-    return {
-      ...withFailure,
-      selfRepair: 'stalled',
-      turnBlocked: blocked,
-      blockedBy: blocked
-        ? [...(durable?.reasons ?? verdicts.blockers?.get(project.id) ?? [])].filter(
-            (reason): reason is import('./project-idle-sleep.js').ProjectActivityReason =>
-              ['turn', 'dev_server', 'preview', 'unknown'].includes(reason),
-          )
-        : [],
-    };
-  };
-  const sandboxRepairVerdicts = (): SandboxRepairVerdicts => ({
-    unrepaired: deps.provisioner?.unrepairedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
-    turnBlocked: deps.provisioner?.turnBlockedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
-    ...(deps.provisioner?.sandboxUpdateBlockers
-      ? { blockers: deps.provisioner.sandboxUpdateBlockers() }
-      : {}),
-    ...(deps.provisioner?.sandboxRepairLastFailures
-      ? { lastFailures: deps.provisioner.sandboxRepairLastFailures() }
-      : {}),
-  });
+  const { withSelfRepair, sandboxRepairVerdicts } = createSandboxUpdateView(deps);
 
-  // Read marks and dismissed Home items of the person asking; a session they
-  // never touched is unread-neutral and hides nothing.
-  const sessionsAsSeenBy = async (
-    viewer: string,
-    summaries: SessionSummary[],
-  ): Promise<SessionSummary[]> => {
-    const views = await deps.eventStore.viewState.sessionViews(viewer);
-    return summaries.map((summary) => {
-      const view = views.get(summary.sessionId);
-      return {
-        ...summary,
-        lastSeenEventCount: view?.lastSeenEventCount ?? null,
-        inboxDismissed: view?.inboxDismissed ?? [],
-      };
-    });
+  // What this person may do in a project, so the app offers only that. The
+  // routes check again; this only spares an action the server would refuse.
+  // Without accounts the one operator may do everything, and the route policy
+  // lets an administrator use every route.
+  const viewerRights = async (viewer: string, projectId: string) => {
+    if (
+      deps.authRegistry?.isEnabled() !== true ||
+      (await deps.eventStore.isActiveAdministrator(viewer))
+    )
+      return { canExecute: true, canCode: true, canManage: true };
+    const [canExecute, canCode, canManage] = await Promise.all(
+      (['execute', 'code', 'manage'] as const).map((permission) =>
+        deps.eventStore.hasProjectPermission(viewer, projectId, permission),
+      ),
+    );
+    return { canExecute: canExecute!, canCode: canCode!, canManage: canManage! };
   };
   // Fold state and dismissed Home items belong to the person asking, never to the
   // project row, so one member folding a group leaves everyone else's open.
@@ -377,8 +294,11 @@ export function installProjects(
         ),
       )) ?? new Map<string, SandboxUpdateStatus>();
     const verdicts = sandboxRepairVerdicts();
-    return resolved.map(({ project, release }) =>
-      presentProject(
+    const qa = await deps.eventStore.repairs.projectQA.summaries(
+      (await deps.eventStore.repairs.qa()).enabled ? projects.map((project) => project.id) : [],
+    );
+    return resolved.map(({ project, release }) => ({
+      ...presentProject(
         project,
         release,
         isControlPlaneProject(project)
@@ -390,7 +310,8 @@ export function installProjects(
             ),
         projectToolkitDrift(project, toolkit),
       ),
-    );
+      qaSummary: qa.get(project.id),
+    }));
   };
   const advancedModeEnabled = async (): Promise<boolean> =>
     (await veritySettingsStore(deps.eventStore).getVeritySettingsRaw())?.advancedModeEnabled ===
@@ -409,9 +330,6 @@ export function installProjects(
       ...withoutControl,
     ];
   };
-
-  const appearsInProjectOverview = (project: ProjectRecord): boolean =>
-    project.state !== 'absent' || project.overviewVisible === true;
 
   registerProjectGitHubIssueRoutes(app, {
     store: deps.eventStore,
@@ -471,7 +389,7 @@ export function installProjects(
     isUniqueViolation,
   });
   registerProjectDetailRoutes(app, {
-    getDetail: async (id, viewer) => {
+    getDetail: async (id, viewer, localUserId) => {
       const cached = await deps.eventStore.getProject(id);
       if (cached === undefined) return undefined;
       const project = deps.reconcileProjectState
@@ -479,9 +397,6 @@ export function installProjects(
         : cached;
       const settings =
         (await projectSettingsStore(deps.eventStore).getProjectSettingsRaw(id)) ?? null;
-      const sessions = (await deps.eventStore.listSessions()).filter(
-        (session) => session.projectId === id,
-      );
       const resolved = await resolveProjectRelease(project);
       const sandboxUpdate = withSelfRepair(
         resolved.project,
@@ -490,12 +405,17 @@ export function installProjects(
       );
       // The project page shows this person's dismissed health items too, so the
       // project carries their view state just as its sessions do.
-      const presented = presentProject(
-        resolved.project,
-        resolved.release,
-        sandboxUpdate,
-        projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
-      );
+      const presented = {
+        ...presentProject(
+          resolved.project,
+          resolved.release,
+          sandboxUpdate,
+          projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
+        ),
+        qaSummary: (await deps.eventStore.repairs.qa()).enabled
+          ? (await deps.eventStore.repairs.projectQA.summaries([id])).get(id)
+          : undefined,
+      };
       const [seen] = await projectsAsSeenBy(viewer, [presented]);
       return {
         project: seen ?? presented,
@@ -507,14 +427,10 @@ export function installProjects(
                 // The viewer's own default, not anyone else's.
                 defaultModel: await ownDefaultModel(deps.eventStore, viewer, id, settings),
               },
-        sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
+        sessions: await listSessionsAs(localUserId, id),
         // What this person may change here, so the app offers only that. The
         // routes check again; this only spares an edit the server would refuse.
-        viewer: {
-          canManage:
-            deps.authRegistry?.isEnabled() !== true ||
-            (await deps.eventStore.hasProjectPermission(viewer, id, 'manage')),
-        },
+        viewer: await viewerRights(viewer, id),
       };
     },
     projectExists: async (id) => (await deps.eventStore.getProject(id)) !== undefined,
@@ -567,8 +483,10 @@ export function installProjects(
       const store = projectSettingsStore(deps.eventStore);
       // The default model is each person's own (ADR 0023 §3), never the project's.
       const { defaultModel, ...projectPatch } = patch;
-      if (defaultModel !== undefined)
-        await setOwnDefaultModel(deps.eventStore, id, viewer, defaultModel);
+      const model = defaultModel?.trim() || null;
+      if (model !== null && !isModelAllowedForProject(model, await store.getProjectSettings(id))) {
+        throw new ProjectAgentNotAllowedError(model);
+      }
       let settings: ProjectSettingsRecord | undefined;
       try {
         settings = await store.updateProjectSettings(id, projectPatch);
@@ -578,6 +496,8 @@ export function installProjects(
         }
         throw error;
       }
+      if (settings !== undefined && defaultModel !== undefined)
+        await deps.eventStore.userProviderConnections.setProjectDefaultModel(viewer, id, model);
       return settings === undefined
         ? undefined
         : {

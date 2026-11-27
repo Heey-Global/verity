@@ -1,8 +1,10 @@
-import type { Database } from '@verity/store';
+import { defaultDopplerGrantMember } from './brokered-doppler-binding.js';
+import { dopplerBindingGrantId, type Database } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { Kysely } from 'kysely';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { referencedSnapshot } from './brokered-http-tool.js';
 import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
 
 let ctx: TestDb;
@@ -42,6 +44,66 @@ const target = {
 };
 
 const acp = { ...target, channel: 'acp' as const };
+
+it('does not leave a grant when persistence overlaps removal of the binding', async () => {
+  const connectionId = await ctx.store.dopplerConnections.add({
+    label: 'Platform',
+    token: 'synthetic-test-token',
+    workplace: { slug: null, name: null },
+  });
+  const config = { connectionId, dopplerProject: 'app', dopplerConfig: 'prd' };
+  const binding = await ctx.store.projectDopplerBindings.add(target.projectId, config);
+  const grant = {
+    ...acp,
+    bindingId: dopplerBindingGrantId(binding),
+    approvedBinding: referencedSnapshot([binding], [acp.secretAlias]),
+    scope: 'project' as const,
+  };
+  const grants = createBrokeredHttpGrantStore(ctx.db, { requireCurrentDopplerBinding: true });
+  const [, removal] = await Promise.allSettled([
+    grants.grant(grant),
+    ctx.store.projectDopplerBindings.remove(target.projectId, binding.id),
+  ]);
+  expect(removal).toEqual({ status: 'fulfilled', value: true });
+  await ctx.store.projectDopplerBindings.add(target.projectId, config);
+  expect(await grants.check(grant)).toBe(false);
+  await expect(grants.grant(grant)).rejects.toThrow(
+    'Doppler access changed before saving approval',
+  );
+  expect(await grants.check(grant)).toBe(false);
+});
+
+it('rejects an approval that used the former default even for a qualified alias in the call', async () => {
+  const connectionId = await ctx.store.dopplerConnections.add({
+    label: 'Platform',
+    token: 'synthetic-test-token',
+    workplace: { slug: null, name: null },
+  });
+  const first = await ctx.store.projectDopplerBindings.add(target.projectId, {
+    connectionId,
+    dopplerProject: 'app',
+    dopplerConfig: 'prd',
+  });
+  const next = await ctx.store.projectDopplerBindings.add(target.projectId, {
+    connectionId,
+    dopplerProject: 'app',
+    dopplerConfig: 'stg',
+  });
+  const secretAlias = `app/prd/${acp.secretAlias}`;
+  const grant = {
+    ...acp,
+    secretAlias,
+    bindingId: dopplerBindingGrantId(first),
+    approvedBinding: referencedSnapshot([first, next], [secretAlias, acp.secretAlias]),
+    scope: 'project' as const,
+  };
+  const grants = createBrokeredHttpGrantStore(ctx.db, { requireCurrentDopplerBinding: true });
+  await ctx.store.projectDopplerBindings.setDefault(target.projectId, next.id);
+  await expect(grants.grant(grant)).rejects.toThrow(
+    'Doppler access changed before saving approval',
+  );
+  expect(await grants.check(grant)).toBe(false);
+});
 
 /**
  * The same database, except that writing a `brokered_grant_approvals` row always
@@ -110,8 +172,37 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
     await expect(store.check({ ...target, userId: 'mia' })).resolves.toBe(false);
     await store.grant({ ...target, userId: 'mia', scope: 'project' });
     await expect(store.check({ ...target, userId: 'mia' })).resolves.toBe(true);
-    const grants = await store.list('project-1', target.bindingId);
+    const grants = await store.list('project-1', new Set([target.bindingId]));
     expect(grants.map((grant) => grant.grantedBy).sort()).toEqual(['lena', 'mia']);
+  });
+
+  it('shows a qualified signing key grant as dormant when its bare claim source stops being default', async () => {
+    const store = createBrokeredHttpGrantStore(ctx.db);
+    await store.grant({
+      ...target,
+      secretAlias: 'portal/prd/SIGNING_KEY',
+      scope: 'project',
+      approvedBinding: {
+        bindings: [
+          {
+            bindingId: 'binding-row',
+            connectionId: 'connection',
+            dopplerProject: 'portal',
+            dopplerConfig: 'prd',
+            includesBareReference: true,
+          },
+        ],
+      },
+    });
+    await expect(
+      store.list(
+        'project-1',
+        new Set([target.bindingId, defaultDopplerGrantMember(target.bindingId)]),
+      ),
+    ).resolves.toMatchObject([{ appliesNow: true }]);
+    await expect(store.list('project-1', new Set([target.bindingId]))).resolves.toMatchObject([
+      { appliesNow: false },
+    ]);
   });
 
   it('covers matching requests after a project-scoped grant, keyed by alias + origin', async () => {
@@ -187,7 +278,7 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
       target: `v1:/usr/bin/python3#${'a'.repeat(64)}`,
       scope: 'project',
     });
-    const grants = await store.list('project-1', target.bindingId);
+    const grants = await store.list('project-1', new Set([target.bindingId]));
     expect(grants).toHaveLength(2);
     // An expired row is still `state = 'active'` until something renews it, but it no
     // longer auto-approves anything, so listing it would overstate the operator's exposure.
@@ -196,7 +287,7 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
       .set({ expires_at: new Date(Date.now() - 1_000).toISOString() })
       .where('scope', '=', 'project')
       .execute();
-    await expect(store.list('project-1', target.bindingId)).resolves.toHaveLength(0);
+    await expect(store.list('project-1', new Set([target.bindingId]))).resolves.toHaveLength(0);
   });
 
   it('lists rows it owns, and only those', async () => {
@@ -223,7 +314,7 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
         state: 'active',
       })
       .execute();
-    const grants = await store.list('project-1', target.bindingId);
+    const grants = await store.list('project-1', new Set([target.bindingId]));
     expect(grants).toHaveLength(1);
     expect(grants[0]).toMatchObject({ scope: 'project' });
 
@@ -232,15 +323,25 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
     // flagged, not hidden — because a grant the operator cannot see cannot be revoked.
     const current = 'project-doppler:replacement-binding';
     await expect(store.check({ ...target, bindingId: current })).resolves.toBe(false);
-    await expect(store.list('project-1', current)).resolves.toMatchObject([{ appliesNow: false }]);
-    await expect(store.list('project-1', target.bindingId)).resolves.toMatchObject([
-      { appliesNow: true },
+    await expect(store.list('project-1', new Set([current]))).resolves.toMatchObject([
+      { appliesNow: false },
     ]);
+    await expect(store.list('project-1', new Set([target.bindingId]))).resolves.toMatchObject([
+      { appliesNow: false },
+    ]);
+    await expect(
+      store.list(
+        'project-1',
+        new Set([target.bindingId, defaultDopplerGrantMember(target.bindingId)]),
+      ),
+    ).resolves.toMatchObject([{ appliesNow: true }]);
     // A project with no binding at all is the same situation, not an absent question:
     // nothing can auto-approve, so nothing may be reported as live.
-    await expect(store.list('project-1', null)).resolves.toMatchObject([{ appliesNow: false }]);
+    await expect(store.list('project-1', new Set())).resolves.toMatchObject([
+      { appliesNow: false },
+    ]);
     // And it really is revocable through the same route, before any such revival.
-    const [dormant] = await store.list('project-1', current);
+    const [dormant] = await store.list('project-1', new Set([current]));
     await expect(store.revoke('project-1', dormant!.id)).resolves.toBe(true);
     await expect(store.check(target)).resolves.toBe(false);
   });
@@ -269,7 +370,7 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
       })
       .execute();
     await expect(store.check(target)).resolves.toBe(false);
-    await expect(store.list('project-1', target.bindingId)).resolves.toEqual([]);
+    await expect(store.list('project-1', new Set([target.bindingId]))).resolves.toEqual([]);
     await expect(store.revoke('project-1', 'catalog-forever')).resolves.toBe(false);
   });
 
@@ -323,7 +424,7 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
 
     await expect(ctx.store.deleteSession(target.sessionId)).resolves.toBe(true);
     // The session grant is gone; the project-wide one is untouched by a session delete.
-    const remaining = await store.list('project-1', target.bindingId);
+    const remaining = await store.list('project-1', new Set([target.bindingId]));
     expect(remaining).toHaveLength(1);
     expect(remaining[0]).toMatchObject({ scope: 'project', sessionId: null });
     await ctx.db
@@ -345,7 +446,7 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
       state: 'active',
     });
     await store.grant({ ...target, scope: 'project' });
-    const [grant] = await store.list('project-1', target.bindingId);
+    const [grant] = await store.list('project-1', new Set([target.bindingId]));
     await expect(store.revoke('project-2', grant!.id)).resolves.toBe(false);
     await expect(store.check(target)).resolves.toBe(true);
   });
@@ -382,7 +483,7 @@ describe('brokered HTTP grant store (ADR 0011 D2)', () => {
     await ageAcpApprovals(25 * 60 * 60 * 1_000);
     // An upgrade must not revive consent that already aged out under the old policy.
     await expect(store.check(target)).resolves.toBe(false);
-    const legacy = await store.list(target.projectId, target.bindingId);
+    const legacy = await store.list(target.projectId, new Set([target.bindingId]));
     expect(legacy).toHaveLength(1);
     expect(legacy[0]?.appliesNow).toBe(false);
     await store.grant({ ...target, scope: 'session' });
@@ -419,7 +520,7 @@ describe('brokered grant channel ceiling (ADR 0014 D3)', () => {
 
     await expect(store.check(acp)).resolves.toBe(true);
     // The project grant remains usable and visible throughout its selected lifetime.
-    await expect(store.list('project-1', target.bindingId)).resolves.toHaveLength(1);
+    await expect(store.list('project-1', new Set([target.bindingId]))).resolves.toHaveLength(1);
 
     // Answering the card again restarts the window without minting a second grant.
     await store.grant({ ...acp, scope: 'project' });
@@ -518,7 +619,7 @@ describe('brokered grant channel ceiling (ADR 0014 D3)', () => {
   it('drops approval records with the grant they belong to', async () => {
     const store = createBrokeredHttpGrantStore(ctx.db);
     await store.grant({ ...acp, scope: 'project' });
-    const [granted] = await store.list('project-1', target.bindingId);
+    const [granted] = await store.list('project-1', new Set([target.bindingId]));
     await expect(store.revoke('project-1', granted!.id)).resolves.toBe(true);
     await expect(store.check(acp)).resolves.toBe(false);
 

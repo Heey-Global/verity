@@ -6,15 +6,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
   VerityApiError,
-  subscribeProjectStatusMutations,
+  projectEventUpdate,
   type VerityClient,
   type ProjectRecord,
   type DevServer,
   type DevServerDetection,
 } from '@verity/mobile';
 import { liveConnectionFor, subscribeLiveRefresh } from '../lib/liveConnection';
+import { getVerityBaseUrl } from '../lib/client';
+import { listedInOverview } from '../lib/overviewProjects';
+import { useOverviewStore, useOverviewTopics } from '../lib/overviewTopics';
+import { useProjectCollection } from '../lib/projectCollection';
 import { beginClientActivity } from '../lib/sessionSwitchTiming';
-import { mergeProjectStatusMutation } from '../lib/projectStatusMutation';
 import {
   localPreviewLinks,
   mergeSessionPreviewUrls,
@@ -26,7 +29,16 @@ import {
 
 // Project and preview changes arrive over the shared live connection.
 export function useProjects(client: VerityClient) {
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  // The same store as the project page (ADR 0033): a change saved or announced
+  // there shows here at once, and the other way round.
+  const baseUrl = getVerityBaseUrl();
+  const store = useOverviewStore(baseUrl);
+  const storeRef = useRef(store);
+  storeRef.current = store;
+  // The last read: the order of the list, and what it shows while the store
+  // could not take that read.
+  const [listed, setListed] = useState<ProjectRecord[]>([]);
+  const [listedInStore, setListedInStore] = useState(true);
   const [devServersByProject] = useState(() => new Map<string, DevServer[]>());
   const [detectionsByProject] = useState(() => new Map<string, DevServerDetection>());
   // Session id → the URL its preview icon opens; see mergeSessionPreviewUrls.
@@ -108,38 +120,21 @@ export function useProjects(client: VerityClient) {
     },
     [client],
   );
-  const pendingProjectMutations = useRef(
-    new Map<string, { project: ProjectRecord; generation: number }>(),
-  );
-
-  useEffect(
-    () =>
-      subscribeProjectStatusMutations((updated) => {
-        setProjects((current) => {
-          const existing = current.find((project) => project.id === updated.id);
-          const merged = mergeProjectStatusMutation(existing, updated);
-          pendingProjectMutations.current.set(updated.id, {
-            project: merged,
-            generation: loadGeneration.current,
-          });
-          return existing
-            ? current.map((project) => (project.id === updated.id ? merged : project))
-            : [...current, merged];
-        });
-      }),
-    [],
-  );
-
   // `silent` skips the loading-spinner flip so live refreshes update in
   // place (no flicker); the initial load + pull-to-refresh flip it as before.
+  // `retry` marks the one repeat of a read the store refused.
   const load = useCallback(
-    async (opts?: { silent?: boolean }) => {
+    async (opts?: { silent?: boolean; retry?: boolean }) => {
       projectsDirty.current = true;
       if (!focused.current || AppState.currentState !== 'active') return;
       projectsDirty.current = false;
       const generation = ++loadGeneration.current;
       clearTimeout(retryTimer.current);
       if (!opts?.silent) setLoading(true);
+      // Events and saves that arrive while the read is on its way stay on top
+      // of its answer.
+      const target = storeRef.current;
+      const read = target.beginRead();
       try {
         const nextProjects = await readContextProjects(client, true);
         const activeProjects = nextProjects.filter((project) => project.state === 'active');
@@ -158,19 +153,17 @@ export function useProjects(client: VerityClient) {
         const finishPublish = beginClientActivity('project-list-publish');
         try {
           publishPreviews();
-          const pending = new Map(
-            [...pendingProjectMutations.current].filter(
-              ([, entry]) => entry.generation >= generation,
-            ),
-          );
-          const seen = new Set(nextProjects.map((project) => project.id));
-          setProjects([
-            ...nextProjects.map((project) => pending.get(project.id)?.project ?? project),
-            ...[...pending.values()]
-              .map(({ project }) => project)
-              .filter((project) => !seen.has(project.id)),
-          ]);
-          pendingProjectMutations.current.clear();
+          // `/projects` is not filtered by the client: it speaks for every
+          // project the server lists on the overview, and only for those.
+          const applied = target.applyProjects(read, nextProjects, { covers: listedInOverview });
+          setListed(nextProjects);
+          // A store replaced while the read was out is not the one shown.
+          setListedInStore(applied && target === storeRef.current);
+          // Events this read would need replayed were dropped: read again
+          // once. Refused again, the list shows its own reads, with their
+          // events, until the next focus or refresh reads one the store takes.
+          if (!applied && !opts?.retry)
+            queueMicrotask(() => void loadRef.current({ silent: true, retry: true }));
         } finally {
           finishPublish();
         }
@@ -187,11 +180,37 @@ export function useProjects(client: VerityClient) {
           setFailures((count) => count + 1);
         else setFailures(0);
       } finally {
+        // Ends a read that failed or was superseded; after `applyProjects` it
+        // changes nothing.
+        target.endRead(read);
         if (generation === loadGeneration.current) setLoading(false);
       }
     },
     [client, publishPreviews],
   );
+  const loadRef = useRef(load);
+  loadRef.current = load;
+
+  // What the list shows: each project as the store holds it, in the order of
+  // the last read, then those the store learned of since that the overview
+  // lists (an action on a project page made one visible). Per-person fields
+  // come from reads only, which the store keeps when it adopts an action's
+  // answer.
+  const held = store.projects();
+  const projects = useMemo(() => {
+    if (!listedInStore) return listed;
+    let changed = false;
+    const shown = listed.map((own) => {
+      const copy = store.project(own.id) ?? own;
+      if (copy !== own) changed = true;
+      return copy;
+    });
+    const read = new Set(listed.map((project) => project.id));
+    const learned = held.filter((project) => !read.has(project.id) && listedInOverview(project));
+    if (learned.length > 0) return [...shown, ...learned];
+    return changed ? shown : listed;
+    // `held` changes whenever a project in the store does.
+  }, [listed, listedInStore, store, held]);
 
   // Retain invalidations while hidden, and reject responses admitted before blur.
   // Foreground catch-up also covers servers that cannot watch resources reliably.
@@ -254,6 +273,101 @@ export function useProjects(client: VerityClient) {
       ),
     [client, load],
   );
+
+  // A sandbox that starts, fails, sleeps or needs an update shows at once
+  // (ADR 0033); the read that follows adds what the event does not carry. A
+  // hidden list keeps the change and reads again when it is shown.
+  const listedProjectIds = useMemo(() => projects.map((project) => project.id), [projects]);
+  const readWhenShown = useCallback(() => {
+    if (focused.current) void load({ silent: true });
+    else projectsDirty.current = true;
+  }, [load]);
+  useOverviewTopics(
+    getVerityBaseUrl(),
+    listedProjectIds,
+    (event) => {
+      const update = projectEventUpdate(event);
+      if (update === undefined) return;
+      // Also kept on the list's own copy, which it shows while the store
+      // refuses its read.
+      setListed((current) =>
+        current.map((project) =>
+          project.id === update.projectId ? update.patch(project) : project,
+        ),
+      );
+      if (update.reload) readWhenShown();
+    },
+    readWhenShown,
+  );
+
+  // A project created, restored or removed on another device enters or leaves
+  // the list without reading it whole: only the project that changed is read.
+  const shownRef = useRef(projects);
+  shownRef.current = projects;
+  // Moves on with every announcement for a project: a listing still reading
+  // when the project was unlisted again must not bring it back.
+  const collectionTurns = useRef(new Map<string, number>());
+  // One counter for all projects: a number is never handed out twice, so a
+  // forgotten entry cannot make an old listing look current.
+  const turns = useRef(0);
+  const turn = useCallback((projectId: string): number => {
+    const next = ++turns.current;
+    collectionTurns.current.set(projectId, next);
+    return next;
+  }, []);
+  const listOne = useCallback(
+    async (projectId: string) => {
+      if (shownRef.current.some((project) => project.id === projectId)) return;
+      const mine = turn(projectId);
+      const target = storeRef.current;
+      const read = target.beginRead();
+      try {
+        const { project } = await client.getProject(projectId);
+        if (collectionTurns.current.get(projectId) !== mine) return;
+        if (!listedInOverview(project)) return;
+        target.applyProjects(read, [project], { covers: (p) => p.id === projectId });
+        setListed((current) =>
+          current.some((p) => p.id === projectId) ? current : [...current, project],
+        );
+      } catch (error) {
+        // Not readable after all: nothing to list. A read that failed for
+        // another reason leaves the list to decide, so it reads now.
+        if (!(error instanceof VerityApiError && (error.status === 403 || error.status === 404))) {
+          readWhenShown();
+        }
+      } finally {
+        target.endRead(read);
+        if (collectionTurns.current.get(projectId) === mine) {
+          collectionTurns.current.delete(projectId);
+        }
+      }
+    },
+    [client, readWhenShown, turn],
+  );
+  const unlistOne = useCallback(
+    (projectId: string) => {
+      // Moves on any listing still reading; nothing of its own waits.
+      turn(projectId);
+      collectionTurns.current.delete(projectId);
+      const target = storeRef.current;
+      const read = target.beginRead();
+      try {
+        target.applyProjects(read, [], { covers: (p) => p.id === projectId });
+      } finally {
+        target.endRead(read);
+      }
+      setListed((current) => current.filter((p) => p.id !== projectId));
+      // Before the next render: a `listed` right behind this one (a hide, then
+      // a restore) must not find the project still shown and skip it.
+      shownRef.current = shownRef.current.filter((p) => p.id !== projectId);
+    },
+    [turn],
+  );
+  useProjectCollection(getVerityBaseUrl(), {
+    listed: (projectId) => void listOne(projectId),
+    unlisted: unlistOne,
+    resync: readWhenShown,
+  });
 
   const activeProjectIds = JSON.stringify(
     projects

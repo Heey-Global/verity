@@ -1,8 +1,36 @@
 import { sql, type Kysely } from 'kysely';
 import type { SecretCipher } from './crypto.js';
+import { lockDopplerTopology } from './doppler-connections.js';
 import type { Database } from './schema.js';
 
-/** A person's own Doppler token for one project (ADR 0023 §3). */
+export class DopplerBindingsChangedError extends Error {
+  constructor() {
+    super('Doppler bindings changed. Try connecting your token again.');
+    this.name = 'DopplerBindingsChangedError';
+  }
+}
+
+export class DopplerTokenRevalidationRequiredError extends Error {
+  constructor() {
+    super('Reconnect your Doppler token to validate access to this config.');
+    this.name = 'DopplerTokenRevalidationRequiredError';
+  }
+}
+
+export class DopplerProjectAccessChangedError extends Error {
+  constructor() {
+    super('Your access to this project changed. Reload and try again.');
+    this.name = 'DopplerProjectAccessChangedError';
+  }
+}
+
+export interface DopplerTokenBindingScope {
+  dopplerProject: string;
+  dopplerConfig: string;
+}
+
+/** A person's own Doppler token for one project and one Doppler connection
+ *  (ADR 0023 §3, ADR 0031). */
 export class UserDopplerConnectionStore {
   constructor(
     private readonly db: Kysely<Database>,
@@ -10,41 +38,158 @@ export class UserDopplerConnectionStore {
   ) {}
 
   /** The token as owned, erasable bytes; only for resolving that person's secrets. */
-  async tokenBytes(userId: string, projectId: string): Promise<Buffer | undefined> {
-    const row = await this.db
+  async tokenBytes(
+    userId: string,
+    projectId: string,
+    connectionId: string,
+    scope?: DopplerTokenBindingScope,
+  ): Promise<Buffer | undefined> {
+    const query = this.db
       .selectFrom('user_doppler_connections')
       .select('token')
       .where('user_id', '=', userId)
       .where('project_id', '=', projectId)
+      .where('connection_id', '=', connectionId);
+    if (scope === undefined) {
+      const row = await query.executeTakeFirst();
+      return row === undefined ? undefined : this.cipher.decryptBytes(row.token);
+    }
+    const row = await query
+      .select((eb) =>
+        eb
+          .exists(
+            eb
+              .selectFrom('project_doppler_bindings as binding')
+              .select('binding.id')
+              .where('binding.project_id', '=', projectId)
+              .where('binding.connection_id', '=', connectionId)
+              .where('binding.doppler_project', '=', scope.dopplerProject)
+              .where('binding.doppler_config', '=', scope.dopplerConfig)
+              .where(
+                sql<boolean>`binding.id = any(user_doppler_connections.validated_binding_ids)`,
+              ),
+          )
+          .as('validated'),
+      )
       .executeTakeFirst();
-    return row === undefined ? undefined : this.cipher.decryptBytes(row.token);
+    if (row === undefined) return undefined;
+    if (!row.validated) throw new DopplerTokenRevalidationRequiredError();
+    return this.cipher.decryptBytes(row.token);
   }
 
-  /** Whether the person connected the project, without decrypting anything. */
-  async status(userId: string, projectId: string): Promise<{ updatedAt: Date } | undefined> {
-    const row = await this.db
+  /** The connections the person holds a token for in the project, without
+   *  decrypting anything. */
+  async statuses(
+    userId: string,
+    projectId: string,
+  ): Promise<Map<string, { updatedAt: Date; validatedBindingIds: readonly string[] }>> {
+    const rows = await this.db
       .selectFrom('user_doppler_connections')
-      .select('updated_at')
+      .select(['connection_id', 'updated_at', 'validated_binding_ids'])
       .where('user_id', '=', userId)
       .where('project_id', '=', projectId)
-      .executeTakeFirst();
-    return row === undefined ? undefined : { updatedAt: row.updated_at };
+      .execute();
+    return new Map(
+      rows.map((row) => [
+        row.connection_id,
+        {
+          updatedAt: row.updated_at,
+          validatedBindingIds: row.validated_binding_ids,
+        },
+      ]),
+    );
   }
 
-  async set(userId: string, projectId: string, token: string): Promise<void> {
+  async set(
+    userId: string,
+    projectId: string,
+    connectionId: string,
+    token: string,
+    expectedBindingIds?: readonly string[],
+    expectedTokenRevision?: string | null,
+    requireProjectAccess = false,
+  ): Promise<void> {
     const encrypted = this.cipher.encrypt(token);
+    const validatedBindingIds = [...(expectedBindingIds ?? [])];
+    await this.db.transaction().execute(async (tx) => {
+      await lockDopplerTopology(tx);
+      if (requireProjectAccess) {
+        const user = await tx
+          .selectFrom('users')
+          .select('role')
+          .where('id', '=', userId)
+          .where('status', '=', 'active')
+          .forUpdate()
+          .executeTakeFirst();
+        if (!user) throw new DopplerProjectAccessChangedError();
+        if (user.role !== 'administrator') {
+          const member = await tx
+            .selectFrom('project_memberships as m')
+            .innerJoin('projects as p', 'p.id', 'm.project_id')
+            .select('m.user_id')
+            .where('m.user_id', '=', userId)
+            .where('m.project_id', '=', projectId)
+            .where('m.can_execute', '=', true)
+            .where('p.kind', '<>', 'control_plane')
+            .forUpdate('m')
+            .executeTakeFirst();
+          if (!member) throw new DopplerProjectAccessChangedError();
+        }
+      }
+      if (expectedTokenRevision !== undefined) {
+        const connection = await tx
+          .selectFrom('doppler_connections')
+          .select('token_revision')
+          .where('id', '=', connectionId)
+          .executeTakeFirst();
+        if (connection?.token_revision !== expectedTokenRevision)
+          throw new DopplerBindingsChangedError();
+      }
+      if (expectedBindingIds !== undefined) {
+        const current = await tx
+          .selectFrom('project_doppler_bindings')
+          .select('id')
+          .where('project_id', '=', projectId)
+          .where('connection_id', '=', connectionId)
+          .execute();
+        if (
+          current.length === 0 ||
+          current.length !== expectedBindingIds.length ||
+          current.some(({ id }) => !expectedBindingIds.includes(id))
+        )
+          throw new DopplerBindingsChangedError();
+      }
+      await tx
+        .insertInto('user_doppler_connections')
+        .values({
+          user_id: userId,
+          project_id: projectId,
+          connection_id: connectionId,
+          token: encrypted,
+          validated_binding_ids: validatedBindingIds,
+        })
+        .onConflict((conflict) =>
+          conflict.columns(['user_id', 'project_id', 'connection_id']).doUpdateSet({
+            token: encrypted,
+            validated_binding_ids: validatedBindingIds,
+            updated_at: sql`now()`,
+          }),
+        )
+        .execute();
+    });
+  }
+
+  async delete(userId: string, projectId: string, connectionId: string): Promise<void> {
     await this.db
-      .insertInto('user_doppler_connections')
-      .values({ user_id: userId, project_id: projectId, token: encrypted })
-      .onConflict((conflict) =>
-        conflict
-          .columns(['user_id', 'project_id'])
-          .doUpdateSet({ token: encrypted, updated_at: sql`now()` }),
-      )
+      .deleteFrom('user_doppler_connections')
+      .where('user_id', '=', userId)
+      .where('project_id', '=', projectId)
+      .where('connection_id', '=', connectionId)
       .execute();
   }
 
-  async delete(userId: string, projectId: string): Promise<void> {
+  /** Every token of the person in the project, when they leave it. */
+  async deleteAll(userId: string, projectId: string): Promise<void> {
     await this.db
       .deleteFrom('user_doppler_connections')
       .where('user_id', '=', userId)

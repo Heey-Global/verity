@@ -9,6 +9,7 @@ import {
   openChoicesFromProjection,
   pendingPermissionRequestsFromProjection,
   PERMISSION_INPUT_MAX_BYTES,
+  requestInitiatorFromProjection,
 } from './session-inbox-facts.js';
 
 const prompt: AgentEvent = { t: 'prompt', text: 'Build the form' };
@@ -111,5 +112,19 @@ describe('pendingPermissionRequestsFromProjection', () => {
       ['a'],
     );
     expect(small?.input).toEqual({ body: 'short' });
+  });
+});
+
+describe('requestInitiatorFromProjection', () => {
+  it('names whoever opened the current turn, not a later steering prompt', () => {
+    const events = [
+      { t: 'prompt', text: 'old', initiatedBy: { userId: 'alex' } },
+      { t: 'prompt', text: 'new', initiatedBy: { userId: 'mara' } },
+      { t: 'prompt', text: 'steer', steered: true, initiatedBy: { userId: 'alex' } },
+    ] as AgentEvent[];
+    expect(requestInitiatorFromProjection(events)).toBe('mara');
+    expect(
+      requestInitiatorFromProjection([{ t: 'prompt', text: 'x' }] as AgentEvent[]),
+    ).toBeUndefined();
   });
 });

@@ -1,8 +1,16 @@
 import { randomUUID } from 'node:crypto';
 
 import type { BrokeredGrantChannel } from '@verity/events';
-import type { Database } from '@verity/store';
+import { lockDopplerTopology, ProjectDopplerBindingStore, type Database } from '@verity/store';
 import type { Kysely } from 'kysely';
+
+import {
+  brokeredDopplerBindingId,
+  brokeredGrantBindingApplies,
+  brokeredDopplerSnapshotApplies,
+  defaultDopplerGrantMember,
+  type BrokeredDopplerBinding,
+} from './brokered-doppler-binding.js';
 
 const PROJECT_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
@@ -18,6 +26,9 @@ const PROJECT_GRANT_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 // Longer-lived consent requires a new approval; legacy grants must not revive on upgrade.
 const LEGACY_GRANT_ISSUER = 'brokered-prompt';
 const GRANT_ISSUER = 'brokered-prompt-v2';
+// Prompt grants use a synthetic binding version. Version 2 records that a
+// single source also supplies at least one bare secret reference.
+const DEFAULT_BOUND_GRANT_VERSION = 2;
 const TRUSTED_CLI_GRANT_TARGET = /^v[12]:\/[^#]+#[a-f0-9]{64}$/u;
 
 function validGrantTarget(toolName: BrokeredGrantToolName, target: string): boolean {
@@ -49,9 +60,8 @@ export type { BrokeredGrantChannel } from '@verity/events';
  * It carries no secret material: the alias NAME is already operator-visible by ADR 0011 D3.
  *
  * `appliesNow` is false for a grant that would not auto-approve anything today because it
- * names a provider binding the project has since replaced. Such a grant is still listed, and
- * still revocable, precisely because it is not permanently dead: binding ids are derived
- * deterministically, so restoring the earlier binding brings the grant back into force.
+ * names a provider binding that is no longer applicable. Grant records affected by
+ * binding removal are deleted by the same transaction that removes the binding.
  */
 export interface BrokeredGrantRecord {
   id: string;
@@ -82,12 +92,16 @@ export interface BrokeredGrantRecord {
  * for the duration of its selected scope, and `forever` is refused outright.
  * The former native channel is retired and cannot reach this API.
  */
-export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
+export function createBrokeredHttpGrantStore(
+  db: Kysely<Database>,
+  options: { requireCurrentDopplerBinding?: boolean } = {},
+) {
   const inFlightGrants = new Map<string, Promise<void>>();
   return {
     async grant(input: {
       projectId: string;
       bindingId: string;
+      approvedBinding?: BrokeredDopplerBinding;
       sessionId: string;
       /** The person granting it; the grant applies only in their turns (ADR 0023 §3). */
       userId: string;
@@ -108,6 +122,9 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
         throw new Error('a permanent grant cannot be approved on the ACP channel');
       }
       const toolId = `${input.toolName}:${input.target}`;
+      const approved = input.approvedBinding;
+      const requiresDefault =
+        approved?.bindings.length === 1 && approved.bindings[0]?.includesBareReference === true;
       const sessionId = input.scope === 'session' ? input.sessionId : null;
       const key = [
         input.userId,
@@ -166,6 +183,15 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
         .catch(() => undefined)
         .then(() =>
           db.transaction().execute(async (tx) => {
+            if (options.requireCurrentDopplerBinding) {
+              await lockDopplerTopology(tx);
+              const current = await new ProjectDopplerBindingStore(tx).list(input.projectId);
+              if (approved === undefined || brokeredDopplerBindingId(approved) !== input.bindingId)
+                throw new Error('Doppler access changed before saving approval');
+              if (!brokeredDopplerSnapshotApplies(approved, current)) {
+                throw new Error('Doppler access changed before saving approval');
+              }
+            }
             // Expired rows remain historically active until renewal. Revoke matching
             // expired rows first so the partial unique index permits one replacement.
             await tx
@@ -184,11 +210,14 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
               .execute();
             const existing = await activeGrantId(tx);
             if (existing !== undefined) {
-              if (input.scope === 'project') {
+              if (input.scope === 'project' || requiresDefault) {
                 await tx
                   .updateTable('secret_provider_permissions')
                   .set({
-                    expires_at: new Date(Date.now() + PROJECT_GRANT_TTL_MS).toISOString(),
+                    ...(input.scope === 'project'
+                      ? { expires_at: new Date(Date.now() + PROJECT_GRANT_TTL_MS).toISOString() }
+                      : {}),
+                    ...(requiresDefault ? { binding_version: DEFAULT_BOUND_GRANT_VERSION } : {}),
                     updated_at: new Date().toISOString(),
                   })
                   .where('id', '=', existing)
@@ -206,7 +235,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
                 id: randomUUID(),
                 project_id: input.projectId,
                 binding_id: input.bindingId,
-                binding_version: 1,
+                binding_version: requiresDefault ? DEFAULT_BOUND_GRANT_VERSION : 1,
                 secret_name: input.secretAlias,
                 tool_id: toolId,
                 scope: input.scope,
@@ -259,18 +288,19 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
      * and binding ids are derived deterministically, so re-creating an earlier binding would
      * silently wake a hidden `forever` grant back up.
      *
-     * `appliesNow` is false when the grant names a provider binding other than the one the
-     * caller passes as current, mirroring {@link check}, which matches on that binding.
-     * `currentBindingId` is required and takes `null` for "this project has no binding right
-     * now", which makes every grant dormant — the two cases must not collapse into one
-     * argument, or a project whose binding is gone would report its grants as live.
+     * `appliesNow` is false when the grant names provider bindings the project no longer
+     * has, given the ids of its current bindings (ADR 0031), mirroring {@link check},
+     * which matches on the binding. An empty set makes every grant dormant.
      * Expired rows are the one exception and stay unlisted: nothing can bring them back,
      * since renewal revokes them outright.
      *
      * A `session` grant IS listed for a session that is not currently running: like `check`,
      * it stays valid for that session id, which a resumed session presents again.
      */
-    async list(projectId: string, currentBindingId: string | null): Promise<BrokeredGrantRecord[]> {
+    async list(
+      projectId: string,
+      currentBindingIds: ReadonlySet<string>,
+    ): Promise<BrokeredGrantRecord[]> {
       const rows = await db
         .selectFrom('secret_provider_permissions')
         .select([
@@ -280,6 +310,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
           'scope',
           'session_id',
           'binding_id',
+          'binding_version',
           'expires_at',
           'created_at',
           'issuer',
@@ -309,7 +340,16 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
             scope,
             sessionId: row.session_id,
             grantedBy: row.user_id,
-            appliesNow: row.issuer === GRANT_ISSUER && row.binding_id === currentBindingId,
+            appliesNow:
+              row.issuer === GRANT_ISSUER &&
+              brokeredGrantBindingApplies(
+                (row.binding_version === DEFAULT_BOUND_GRANT_VERSION ||
+                  !row.secret_name.includes('/')) &&
+                  row.binding_id.startsWith('project-doppler:')
+                  ? defaultDopplerGrantMember(row.binding_id)
+                  : row.binding_id,
+                currentBindingIds,
+              ),
             expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
             createdAt: new Date(row.created_at).toISOString(),
           },

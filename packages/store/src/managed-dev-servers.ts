@@ -19,7 +19,10 @@ export function normalizeManagedDevServerSecretBindings(
       if (
         !binding ||
         Object.keys(binding).some((key) => key !== 'secretAlias' && key !== 'env') ||
-        !/^[A-Z][A-Z0-9_]{0,127}$/u.test(binding.secretAlias) ||
+        // `NAME` or `project/config/NAME` (ADR 0031); resolved against the bindings at start.
+        !/^(?:[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}\/)?[A-Z][A-Z0-9_]{0,127}$/u.test(
+          binding.secretAlias,
+        ) ||
         !/^[A-Z_][A-Z0-9_]{0,127}$/u.test(binding.env) ||
         /^(?:VERITY_|DOPPLER_|LD_|DYLD_|MALLOC_|LC_|NODE_|PYTHON|BASH|ENV$|PATH$|HOME$|SHELL$|LANG$|USER$|LOGNAME$|HOSTALIASES$|LOCALDOMAIN$|RES_OPTIONS$|TMPDIR$|TZDIR$|PORT$|IFS$|CDPATH$|SHELLOPTS$|BASHOPTS$|GCONV_PATH$|GETCONF_DIR$|GLIBC_TUNABLES$|LOCPATH$|NLSPATH$|PERL|RUBY|JAVA_TOOL_OPTIONS$|_JAVA_OPTIONS$|JDK_JAVA_OPTIONS$)/u.test(
           binding.env,
@@ -81,6 +84,8 @@ export interface ManagedDevServerInstanceRecord {
   lastRunCommand: string | null;
   lastRunWorkdir: string | null;
   lastRunSecretBindings: ManagedDevServerSecretBinding[];
+  lastRunProviderAuthority: string | null;
+  previousRunSandboxUserId?: string | null;
   /** The person whose Doppler connection resolves this instance's secrets. */
   lastRunUserId: string | null;
   startedAt: Date | null;
@@ -200,6 +205,8 @@ function instanceRecord(
     lastRunCommand: row.last_run_command,
     lastRunWorkdir: row.last_run_workdir,
     lastRunSecretBindings: row.last_run_secret_bindings,
+    lastRunProviderAuthority: row.last_run_provider_authority,
+    previousRunSandboxUserId: row.previous_run_sandbox_user_id,
     lastRunUserId: row.last_run_user_id,
     startedAt: row.started_at,
     accessStartedAt: row.access_started_at,
@@ -215,6 +222,8 @@ export interface ManagedDevServerInstancePatch {
   lastRunCommand?: string | null;
   lastRunWorkdir?: string | null;
   lastRunSecretBindings?: ManagedDevServerSecretBinding[];
+  lastRunProviderAuthority?: string | null;
+  previousRunSandboxUserId?: string | null;
   lastRunUserId?: string | null;
   startedAt?: Date | null;
   accessStartedAt?: Date | null;
@@ -563,6 +572,12 @@ export class ManagedDevServerStore {
                 normalizeManagedDevServerSecretBindings(patch.lastRunSecretBindings),
               ),
             }
+          : {}),
+        ...(patch.lastRunProviderAuthority !== undefined
+          ? { last_run_provider_authority: patch.lastRunProviderAuthority }
+          : {}),
+        ...(patch.previousRunSandboxUserId !== undefined
+          ? { previous_run_sandbox_user_id: patch.previousRunSandboxUserId }
           : {}),
         ...(patch.lastRunUserId !== undefined ? { last_run_user_id: patch.lastRunUserId } : {}),
         ...(patch.startedAt !== undefined

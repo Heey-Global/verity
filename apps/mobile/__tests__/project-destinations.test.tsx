@@ -138,3 +138,23 @@ it('never renders a late response for a different project', async () => {
     'project-b',
   ]);
 });
+
+it('offers unanswered requests without a deadline after returning to settings', async () => {
+  const client = {
+    getProjectEgress: jest.fn().mockResolvedValue({
+      ...policy,
+      requests: { example: { ...request, createdAt: 1, expiresAt: null } },
+    }),
+    decideProjectEgress: jest.fn().mockResolvedValue(undefined),
+  };
+  render(<ProjectDestinations client={client as unknown as VerityClient} projectId="project-a" />);
+  await screen.findByText('Waiting for your decision');
+  fireEvent.press(screen.getByLabelText('Allow example.com · TCP 443 for one hour'));
+  await waitFor(() =>
+    expect(client.decideProjectEgress).toHaveBeenCalledWith('project-a', {
+      requestId: request.id,
+      revision: 7,
+      allow: true,
+    }),
+  );
+});

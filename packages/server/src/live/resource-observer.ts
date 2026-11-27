@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { liveResourceInterval, type LiveResource } from '@verity/events';
 
 type Reader = (resource: LiveResource) => Promise<{ statusCode: number; body: string }>;
+type InvalidationSource = 'pr-status';
 type Listener = { read: Reader; changed: () => void; initial: boolean };
 type Entry = {
   resource: LiveResource;
@@ -17,6 +18,9 @@ type Entry = {
  * the normal HTTP read remains the authorization and data-delivery boundary. */
 export class ResourceObserver {
   private readonly entries = new Map<string, Entry>();
+  private readonly invalidationListeners = new Set<
+    (path: string, source?: InvalidationSource) => void
+  >();
   private readonly timer: ReturnType<typeof setInterval>;
   private closed = false;
   private sweeping = false;
@@ -50,8 +54,21 @@ export class ResourceObserver {
     };
   }
 
-  invalidate(path: string): void {
-    const parts = path.split('?')[0]!.split('/');
+  onInvalidate(listener: (path: string, source?: InvalidationSource) => void): () => void {
+    this.invalidationListeners.add(listener);
+    return () => {
+      this.invalidationListeners.delete(listener);
+    };
+  }
+
+  invalidate(path: string, source?: InvalidationSource): void {
+    const resourcePath = path.split('?')[0]!;
+    for (const listener of this.invalidationListeners) listener(resourcePath, source);
+    this.refresh(resourcePath);
+  }
+
+  refresh(path: string): void {
+    const parts = path.split('/');
     for (const entry of this.entries.values()) {
       const watched = entry.resource.path.split('?')[0]!.split('/');
       let affected = false;

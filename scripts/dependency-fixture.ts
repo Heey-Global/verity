@@ -42,6 +42,14 @@ export function fixture() {
   mkdirSync(join(root, 'node_modules'), { recursive: true });
   const bin = join(root, 'bin');
   mkdirSync(bin);
+  cpSync(
+    resolve('agent-seed/bin/verity-dependency-storage.mjs'),
+    join(bin, 'verity-dependency-storage.mjs'),
+  );
+  cpSync(
+    resolve('agent-seed/bin/verity-dependency-storage-preload.mjs'),
+    join(bin, 'verity-dependency-storage-preload.mjs'),
+  );
   const called = join(bin, 'called');
   writeFileSync(
     join(bin, 'npm'),

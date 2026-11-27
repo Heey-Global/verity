@@ -15,6 +15,9 @@ import { dirname as dirname2, join as join2 } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { TextDecoder } from "node:util";
 
+// packages/secret-contracts/src/brokered-secret-reference.ts
+var BROKERED_SECRET_REFERENCE = /^(?:([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/)?([A-Z][A-Z0-9_]*)$/;
+
 // features/verity-sandbox-toolkit/src/runner-supervisor/turn-state.mjs
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -907,7 +910,7 @@ function redactTrustedCliText(bytes, secrets) {
   return text;
 }
 function isValidTrustedCliSecret(secret) {
-  return isObject(secret) && typeof secret.secretAlias === "string" && /^[A-Z][A-Z0-9_]*$/u.test(secret.secretAlias) && typeof secret.env === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(secret.env) && typeof secret.secret === "string" && secret.secret.length > 0 && !secret.secret.includes("\0") && Buffer.byteLength(secret.secret) <= 1024 * 1024 && (secret.injection === void 0 || secret.injection === "env" || secret.injection === "file") && (secret.encoding === void 0 || secret.injection === "file" && secret.encoding === "base64");
+  return isObject(secret) && typeof secret.secretAlias === "string" && BROKERED_SECRET_REFERENCE.test(secret.secretAlias) && typeof secret.env === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(secret.env) && typeof secret.secret === "string" && secret.secret.length > 0 && !secret.secret.includes("\0") && Buffer.byteLength(secret.secret) <= 1024 * 1024 && (secret.injection === void 0 || secret.injection === "env" || secret.injection === "file") && (secret.encoding === void 0 || secret.injection === "file" && secret.encoding === "base64");
 }
 function normalizeTrustedCliRequest(request) {
   if (!isObject(request) || Array.isArray(request.secrets) || typeof request.secret !== "string") {
@@ -1307,6 +1310,13 @@ import { createConnection as createConnection3 } from "node:net";
 import { lstat as lstat3, mkdir as mkdir2, readdir } from "node:fs/promises";
 import { join as join4 } from "node:path";
 
+// features/verity-sandbox-toolkit/src/spawn-broker/capacity-leases.mjs
+var UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+function validateCapacityLeaseRequest(request) {
+  if (request?.protocolVersion !== 1 || request.kind !== "capacity-lease" || !["create", "status", "retire"].includes(request.action) || typeof request.operationId !== "string" || !UUID.test(request.operationId) || typeof request.generation !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(request.generation))
+    throw new Error("invalid capacity lease request");
+}
+
 // features/verity-sandbox-toolkit/src/runner-supervisor/requests.mjs
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { createConnection as createConnection2, createServer } from "node:net";
@@ -1437,6 +1447,15 @@ async function handleSupervisorRequest(runtimeDir, runnerInstanceId, request, tu
   }
   const skillsManifestHash = request.kind === "status" ? await installedSkillsManifestHash() : void 0;
   switch (request.kind) {
+    case "capacity-lease":
+      validateCapacityLeaseRequest(request);
+      return await brokerStorageRequest({
+        protocolVersion: 1,
+        kind: "capacity-lease",
+        action: request.action,
+        operationId: request.operationId,
+        generation: request.generation
+      });
     case "stack-health":
       return await brokerStorageRequest({ protocolVersion: 1, kind: "stack-health" });
     case "egress-readiness":
@@ -1453,6 +1472,7 @@ async function handleSupervisorRequest(runtimeDir, runnerInstanceId, request, tu
         ...skillsManifestHash ? { builtInSkillsManifestHash: skillsManifestHash } : {},
         persistentSessionHomes: true,
         cacheMaintenanceVersion: 2,
+        capacityLeaseVersion: 1,
         turnOwnershipVersion: 1,
         planningIsolation: capabilities.scriptIsolation,
         knowledgeIsolation: capabilities.scriptIsolation,

@@ -237,6 +237,29 @@ describe('repository supervision discovery', () => {
   );
 });
 
+it('uses the project write token for merges and the read token for status', async () => {
+  const fetch = vi.fn<HttpFetch>(async (_url, init) => {
+    if (init?.method === 'PUT') {
+      expect(init.headers?.Authorization).toBe('Bearer writer');
+      return json({ merged: true });
+    }
+    expect(init?.headers?.Authorization).toBe('Bearer reader');
+    return json([]);
+  });
+  const forge = createGitHubForgeProvider({
+    projectTokenMint: async () => 'writer',
+    repositoryStatusTokenMint: async () => 'reader',
+    discoveryTokenMint: async () => undefined,
+    issuesTokenMint: async () => undefined,
+    installationToken: async () => undefined,
+    fetch,
+  });
+  const service = forge.repositoryPrService!(project);
+  expect(await service.prStatusForBranch('feature')).toBeNull();
+  expect(await service.mergePr(7, 'a'.repeat(40))).toBe(true);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
 it('refetches repository status after the shared cache is invalidated', async () => {
   const fetch = vi.fn<HttpFetch>(async () => json([]));
   const forge = provider(fetch);

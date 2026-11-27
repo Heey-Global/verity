@@ -48,6 +48,17 @@ describe('mockupRoundView', () => {
   ])('recognizes %s', (name) => {
     expect(mockupRoundView({ ...tool, name }, undefined)?.screens).toHaveLength(2);
   });
+  it('reads an HTML attachment and defaults older entries to the image format', () => {
+    const result = {
+      ...presented,
+      screens: [{ ...presented.screens[0], mediaType: 'text/html' }, presented.screens[1]],
+    };
+    expect(mockupRoundView({ ...tool, result }, undefined)?.screens).toMatchObject([
+      { name: 'Spec', mediaType: 'text/html' },
+      { name: 'Home', mediaType: 'image/png' },
+    ]);
+  });
+
   it('shows the live verdicts on the round under review', () => {
     const view = mockupRoundView(
       tool,

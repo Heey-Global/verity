@@ -1,4 +1,5 @@
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
+import type { DependencyCapacity } from './dependency-capacity.js';
 import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { SessionStorage } from './session-storage.js';
 import type { Backend, Conductor, EventBus } from '@verity/session';
@@ -14,6 +15,7 @@ import type { FastifyBaseLogger, FastifyRequest } from 'fastify';
 import type { ServerOptions as HttpsServerOptions } from 'node:https';
 import type { AgentLoginService } from './agent-login.js';
 import type { AuditLog } from './audit-log.js';
+import type { ServerMonitor } from './metrics/server-monitor.js';
 import type { AuditRecorder } from './audit-recorder.js';
 import type { AuthTokenRegistry } from './auth.js';
 import type { BackupRuntime } from './backup/runtime.js';
@@ -66,8 +68,10 @@ import type { SshKeygenSpawner } from './signing-key.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import type { TeamAvailability } from './uplink-feature-state.js';
 import type { WorktreeProvisioner } from './worktree.js';
+import type { InspectionTrust } from './sandbox-updates.js';
 
 export interface ServerDeps {
+  dependencyCapacity?: DependencyCapacity | undefined;
   /** Internal service; public operations remain gated on complete recovery acceptance. */
   backup?: BackupRuntime | undefined;
   webAppDir?: string | undefined;
@@ -80,6 +84,10 @@ export interface ServerDeps {
   unlockClientIdentity?: ((request: FastifyRequest) => string | undefined) | undefined;
   browserRequestOrigin?: ((request: FastifyRequest) => string | undefined) | undefined;
   eventStore: EventStore;
+  /** In-memory request and traffic counters with their stored settings (ADR
+   *  0032). Absent — tests — the server measures with the defaults and keeps
+   *  setting changes in memory. */
+  serverMonitor?: ServerMonitor | undefined;
   /**
    * Verity's data root. The knowledge folders live under `<dataRoot>/knowledge`
    * (ADR 0022 D1) and the session explorer browses them from there. Absent —
@@ -115,6 +123,10 @@ export interface ServerDeps {
   serverUpdateResolver?: ReleaseChannelResolver | undefined;
   /** Privileged Updater control channel. Absent leaves the update action unavailable. */
   serverUpdateController?: ServerUpdateController | undefined;
+  /** Free and total bytes of the disk holding the Server's data, for the
+   *  low-disk warning. Defaults to measuring `dataRoot`; with neither, the
+   *  warning stays off. */
+  diskSpace?: (() => Promise<{ freeBytes: number; totalBytes: number }>) | undefined;
   /**
    * Where the release notifier remembers the version it last announced. Absent
    * disables the notification entirely — deliberately, because without somewhere
@@ -319,9 +331,12 @@ export interface ServerDeps {
    * the client, independent of this.
    */
   branchPr?: (branch: string, worktree: string) => Promise<number | null>;
-  /** Live compact PR status for the current branch: title, URL, check counts and
-   * whether the Merge button should be enabled. Absent → older token-less behavior. */
-  invalidateProjectPrStatus?: (projectId: string) => void;
+  /** Forget observed PR status; `branches` limits it to those branches. */
+  invalidateProjectPrStatus?: (projectId: string, branches?: readonly string[]) => void;
+  /** True while background PR polling of a project should yield GitHub API quota. */
+  deferBackgroundForgeReads?: (projectId: string) => Promise<boolean>;
+  /** Bounded GitHub API usage and rate-limit evidence for Control diagnostics. */
+  githubDiagnostics?: () => unknown;
   repairPullRequest?: (
     project: ProjectRecord,
     number: number,
@@ -426,6 +441,12 @@ export interface ServerDeps {
    */
   reconcileProjectState?: (project: ProjectRecord) => Promise<ProjectRecord>;
   /**
+   * Keeps project states in step with their sandbox containers from Docker's
+   * event stream, so reads need not inspect them. Started with the server and
+   * stopped when it closes. Absent → reads compare as before.
+   */
+  containerLiveness?: ({ start(): () => Promise<void> } & Partial<InspectionTrust>) | undefined;
+  /**
    * Lists all GitHub-App installation repositories that can become Verity projects.
    * Unlike `listProjects`, this includes rows that are still `state='absent'`
    * so onboarding/new-project pickers can offer every installed repository without
@@ -509,8 +530,15 @@ export interface ServerDeps {
    * throw on failure. Absent → `{ ok: false, error: 'not configured' }`.
    */
   dopplerListConfigs?: (token: string, project: string) => Promise<DopplerConfigSummary[]>;
-  /** Central broker-owned Doppler identity reader shared with native secret tools. */
-  dopplerCredentialReader?: (() => Promise<Uint8Array | undefined>) | undefined;
+  /** The Doppler connection Secret Jobs resolve through (ADR 0031). */
+  secretJobDopplerConnectionId?: string;
+  /** A Doppler connection's instance token (ADR 0031); without an id, the first
+   *  connection holding one. */
+  dopplerCredentialReader?:
+    ((connectionId?: string) => Promise<Uint8Array | undefined>) | undefined;
+  /** The Doppler workplace a token belongs to, best-effort, for labelling connections. */
+  dopplerWorkplace?:
+    ((token: string) => Promise<{ slug: string | null; name: string | null }>) | undefined;
   /**
    * Exchanges a GitHub App manifest `code` for the created App (id + slug + PEM)
    * for the manifest one-click onboarding routes (#320, `/github/app/manifest/*`).

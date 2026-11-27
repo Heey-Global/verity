@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.325}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.331}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.107.0}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.110.1}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -48,11 +48,11 @@ GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=github-releases depName=google/osv-scanner
 OSV_SCANNER_VERSION="${OSVSCANNERVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.169.0}"
+CODEX_VERSION="${CODEXVERSION:-0.172.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-CODEX_ACP_VERSION="${CODEXACPVERSION:-2.6.0}"
+CODEX_ACP_VERSION="${CODEXACPVERSION:-2.10.0}"
 # renovate: datasource=npm depName=@opencode/cli
-OPENCODE_VERSION="${OPENCODEVERSION:-2.3.0}"
+OPENCODE_VERSION="${OPENCODEVERSION:-2.4.1}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -183,13 +183,17 @@ esac
 # See the env and securityOpt comments in packages/server/src/provisioner.ts.
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  APT_PACKAGES=(python3 tmux git curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
+  APT_PACKAGES=(python3 tmux git findutils coreutils curl ca-certificates less ripgrep gnupg wget jq openssh-client openssl util-linux)
   apt-get update
+  # Ubuntu 26.04 keeps GNU implementations under gnu-prefixed names.
+  if apt-cache show gnu-coreutils >/dev/null 2>&1; then
+    APT_PACKAGES+=(gnu-coreutils)
+  fi
   apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
   rm -rf /var/lib/apt/lists/*
 else
   echo "!! verity-sandbox-toolkit: apt-get not found — skipping OS package install." >&2
-  echo "!!                 Ensure tmux/git/curl/jq/openssh-client/openssl exist on this base." >&2
+  echo "!!                 Ensure GNU find at /usr/bin/find, GNU timeout at /usr/bin/gnutimeout or /usr/bin/timeout and tmux/git/curl/jq/openssh-client/openssl exist on this base." >&2
 fi
 
 # Extracted release tarballs carry the ownership their publisher's CI recorded
@@ -541,6 +545,7 @@ install -d /opt/verity/package-managers /usr/local/lib/verity
 install -m 0644 "$FEATURE_DIR/bin/verity-package-artifacts.mjs" /usr/local/lib/verity/verity-package-artifacts.mjs
 install -m 0644 "$FEATURE_DIR/bin/verity-package-policy.mjs" /usr/local/lib/verity/verity-package-policy.mjs
 install -m 0644 "$FEATURE_DIR/bin/verity-npm-preflight.mjs" /usr/local/lib/verity/verity-npm-preflight.mjs
+install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-dependency-storage-preload.mjs" /usr/local/lib/verity/verity-dependency-storage-preload.mjs
 install -m 0755 "$FEATURE_DIR/bin/verity-package-install.mjs" /usr/local/lib/verity/verity-package-install.mjs
 for PACKAGE_MANAGER in npm pnpm yarn bun pip uv; do
   printf '#!/bin/sh\nexec node /usr/local/lib/verity/verity-package-install.mjs %s "$@"\n' "$PACKAGE_MANAGER" > "/opt/verity/package-managers/$PACKAGE_MANAGER"
@@ -694,6 +699,8 @@ install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-code-review" /opt/agent-seed
 # lets the agent run the command the hook prints.
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-local-checks" /opt/agent-seed/bin/verity-local-checks
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-dependencies" /opt/agent-seed/bin/verity-dependencies
+install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-dependency-storage.mjs" /opt/agent-seed/bin/verity-dependency-storage.mjs
+install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-dependency-storage-preload.mjs" /opt/agent-seed/bin/verity-dependency-storage-preload.mjs
 install -m 0644 "$FEATURE_DIR/agent-seed/bin/verity-review-base.sh" /opt/agent-seed/bin/verity-review-base.sh
 install -m 0755 "$FEATURE_DIR/agent-seed/bin/verity-secret-scan" /opt/agent-seed/bin/verity-secret-scan
 # Commit-signing broker wrapper (audit H1). git is pointed at it via GIT_CONFIG_*

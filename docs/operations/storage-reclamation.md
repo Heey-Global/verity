@@ -84,24 +84,50 @@ every file is byte-identical to it. Links in the copy count as matching wherever
 the central installation has a link, because activation rewrites workspace
 links and a removed link deletes nothing it points to. Copies without a
 receipt, with any differing file, or whose central installation is gone are
-reported as blockers and kept for three days after collection first sees them,
-recorded in `verity-dependencies-preserved.observed.json` beside them. After
-that they are removed even while the session is still in use: the central store
-keeps only a few identities, so such a copy can never be compared again, and a
-session that is never idle for three days would otherwise keep every copy it
-ever made. Recover a local package edit from a copy within that window. A
-corrupt, symlinked or future-dated record restarts the window; it never
-shortens it. Dry runs neither remove copies nor write the record, so they
-never report a copy as expired.
+reported as recovery holds and retained until verification becomes possible or
+you explicitly choose how to recover or discard their contents. Age, a missing
+receipt or a retired central inventory never proves that package edits can be
+regenerated. The observation journal is diagnostic information only; corrupt,
+symlinked or future-dated records never authorize deletion.
 
-A session without a turn for three days gives up its private top-level
-`node_modules` and every preserved copy, whatever their contents: both are
-regenerated from the session's own lockfile with `verity-dependencies install`,
-and edits made directly inside them are not kept. Tracked files under
-`node_modules` still keep it. Workspace links are restored afterwards, so
+After three days without a turn, a session's private top-level `node_modules`
+becomes eligible for comparison against the exact central installation named by
+its receipt. A legacy installation without a receipt can qualify by matching the
+base checkout's installation byte for byte. Lockfile-declared workspace links
+may point to their own checkout's canonical declared workspace directory when
+the local and reference lockfiles agree, all three root manifests (session,
+reference and base checkout) declare that direct `packages/` or `apps/` workspace,
+and its canonical package manifest name matches the link's package slot in all
+three checkouts. Custom target redirects, aliases and internal `file:` links
+outside these declarations remain held.
+Workspace command links added only in the session's `.bin` directory also remain
+held when absent from the reference: restoring workspace package links alone
+does not restore those command links.
+Missing reference installations,
+local edits, unknown files, invalid receipts, tracked files and symlinked roots
+keep it in place. Workspace links are restored only after verified removal, so
 workspace imports keep resolving to the session's sources until it installs
 again. Source files stay; retiring a whole worktree still needs a week of
 idleness and a closed or merged pull request.
+
+A held dependency graph also protects its worktree from retirement, including
+preserved workspace links. `verity-dependencies-recovery.json` in the worktree's
+Git directory records the hold durably with the first observation, a bounded
+sample of paths and reasons, total hold count, sampled allocated bytes and an
+explicit completeness flag. The marker is at most 128 KiB and contains at most
+100 entries; truncated entries and incomplete filesystem observations are labeled.
+Runtime diagnostics also expose at most 20 validated `dependencyCopies` activation
+snapshots. Each includes the observation time, whether sharing was enabled, actual
+copied file and byte counts, and the free-space/inode admission inputs and reserve.
+These historical snapshots explain full-copy fallback; they are not current free
+space or deletion authority. Receipts larger than 128 KiB, symlinked receipts and
+invalid numeric or timestamp values are omitted.
+
+Runtime diagnostics expose `recoveryHolds` with the count, sampled bytes, oldest
+observation and completeness. Sampled bytes are a lower bound when incomplete,
+and deduplicate hard-linked files within each session measurement; they are not
+an estimate of reclaimable disk space. Observation never follows symlinks and
+stops with the pass budget. Dry runs neither remove copies nor write markers.
 
 Each session pass logs `session storage pass complete` with its duration,
 whether it reached every project, what it removed, its most frequent blocker
@@ -114,7 +140,18 @@ later, until one pass reaches every project; it no longer waits for the next
 daily or low-disk maintenance pass. A failure on one preserved copy no longer
 keeps the other copies or an idle session's private installation in place. A dev
 server or preview holds back only its own session's pass; a project-level
-public share and the orphan pass still hold the project.
+public share and the orphan pass still hold the project. In a running project a
+session is collected under its own hold only: turns in other sessions of the
+project do not defer it. Sleeping projects and the orphan pass still use the
+project-wide mutation, since only they need a maintenance sandbox for Git.
+
+## Low-disk warning
+
+When less than 30 GiB are free on the disk holding the Server's data, the
+session list carries the server-level notice `storage_low` ("Disk almost full —
+N GB free of M GB …"), which the app shows above the list. It follows a sealed
+secret store and precedes Updater notices, since a full disk stops the database
+and every session with it. The Server measures the disk at most once a minute.
 
 ## Data volume breakdown
 
@@ -126,7 +163,9 @@ breakdown is published only when a whole round has finished; until then the
 previous one stays in place with its own timestamp, and an unfinished round is
 never reported as zero. Runs are sequential and stop at shutdown.
 
-Entries are grouped by their path on the volume:
+Entries are grouped by their path on the volume. These categories describe
+locations, not deletion eligibility: dependency paths can contain unique edits
+and remain protected by recovery holds until verified.
 
 - **Regenerable:** `node_modules` in project and session checkouts (including
   nested ones), preserved dependency copies, the central dependency store,
@@ -417,7 +456,12 @@ reports a blocker; collection never clears another operation's lock.
 A session with a closed or merged PR may have its whole worktree retired after
 seven idle days only when its current commit is reachable from a freshly fetched
 remote branch, the worktree has no changes, stashes or index flags that hide changes, and no unknown untracked
-or ignored files remain. A closed PR alone does not prove work has been saved.
+or ignored files remain. Ignored build and install output (`node_modules`,
+`dist`, `build`, `coverage`, `.turbo`, `.next`, `.nuxt`, `.vite`, `.cache`,
+`.expo` directories and `*.tsbuildinfo` files) is regenerable and does not keep a
+worktree; any other ignored file, such as an `.env`, does. A worktree without a
+private installation is retirement-checked even when its dependency manifests
+differ from the base checkout's. A closed PR alone does not prove work has been saved.
 The base checkout, document workspaces and Knowledge are never retirement targets.
 Git errors and uncertain ownership retain the worktree and appear as blockers.
 

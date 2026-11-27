@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import { attachmentUploadSchema, type AgentEvent, type TasksRequest } from '@verity/events';
 import {
+  MOCKUP_HTML_ATTACHMENT,
   OPEN_TASK_STATUSES,
   TASK_ATTACHMENTS_MAX,
   TASK_DETAIL_MAX,
@@ -18,6 +19,8 @@ import {
   type EventStore,
   type TaskRecord,
 } from '@verity/store';
+
+import { attachmentDownloadHeaders } from './attachment-route.js';
 
 /** Mirrors the legacy-administrator fallback the HTTP MCP connection routes use:
  *  deployments without the auth gate have one implicit user. */
@@ -39,6 +42,7 @@ const sessionIdSchema = z.string().trim().min(1).max(128);
 
 const listQuery = z
   .object({
+    view: z.literal('revisions').optional(),
     /** `general` selects the bucket without a project. */
     projectId: z.string().trim().min(1).max(128).optional(),
     sessionId: sessionIdSchema.optional(),
@@ -47,8 +51,33 @@ const listQuery = z
       .transform((value) => value.split(','))
       .pipe(z.array(taskStatus).min(1))
       .optional(),
+    /** The operator's own tasks, or the steps agents recorded while working. */
+    origin: z.enum(['user', 'agent']).optional(),
+    /** Leave out done tasks completed before this instant; other statuses are unaffected. */
+    doneSince: z
+      .string()
+      .datetime({ offset: true })
+      .transform((value) => new Date(value))
+      .optional(),
   })
   .strict();
+
+/** How far back the default `GET /tasks` list reaches for done tasks. */
+export const DONE_TASK_LIST_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Without a `status` filter the list is what clients show: no dropped tasks, and done ones
+ * only from the recent window. Every client re-reads the whole list on each task change and
+ * the live observer re-reads it every 15 seconds, so returning all history made each refresh
+ * pay for every task ever closed. An explicit `status` returns full history unless the caller
+ * also passes `doneSince`.
+ */
+function defaultTaskListWindow(now: number) {
+  return {
+    statuses: TASK_STATUSES.filter((status) => status !== 'dropped'),
+    doneSince: new Date(now - DONE_TASK_LIST_WINDOW_MS),
+  };
+}
 
 const taskParams = z.object({ id: z.string().regex(/^[0-9a-f-]{36}$/i, 'invalid task id') });
 
@@ -254,16 +283,14 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
     )
       return reply.code(404).send({ error: 'attachment not found' });
     const blob = await deps.eventStore.getAttachment(hash);
-    if (blob === undefined) return reply.code(404).send({ error: 'attachment not found' });
-    return reply
-      .header('Content-Type', blob.mediaType)
-      .header('Cache-Control', 'private, max-age=31536000, immutable')
-      .send(blob.bytes);
+    if (blob === undefined || blob.mediaType === MOCKUP_HTML_ATTACHMENT)
+      return reply.code(404).send({ error: 'attachment not found' });
+    return attachmentDownloadHeaders(reply, blob.mediaType).send(blob.bytes);
   });
 
   app.get('/tasks', async (request) => {
     const query = listQuery.parse(request.query);
-    const list = await tasks.list({
+    const filter = {
       ownerUserId: ownerId(request),
       projectId:
         query.projectId === undefined
@@ -272,13 +299,36 @@ export function registerTasksRoutes(app: FastifyInstance, deps: TasksRouteDeps):
             ? null
             : query.projectId,
       sessionId: query.sessionId,
-      statuses: query.status as TaskRecord['status'][] | undefined,
-    });
-    const readable = new Set<string | null>();
-    for (const projectId of new Set(list.map((task) => task.projectId))) {
-      if (await canUseProject(request.localUserId, projectId, 'read')) readable.add(projectId);
+      ...(query.status === undefined
+        ? defaultTaskListWindow(Date.now())
+        : { statuses: query.status as TaskRecord['status'][] }),
+      ...(query.doneSince === undefined ? {} : { doneSince: query.doneSince }),
+      origin: query.origin,
+    };
+    const visible = async <T extends { projectId: string | null }>(list: T[]): Promise<T[]> => {
+      const readable = new Set<string | null>();
+      for (const projectId of new Set(list.map((task) => task.projectId))) {
+        if (await canUseProject(request.localUserId, projectId, 'read')) readable.add(projectId);
+      }
+      return list.filter((task) => readable.has(task.projectId));
+    };
+    if (query.view === 'revisions') {
+      const revisions = await visible(await tasks.listRevisions(filter));
+      return {
+        tasks: revisions.map(
+          ({ id, revision, createdAt, projectId, sessionId, sourceSessionId }) => ({
+            id,
+            revision,
+            createdAt: createdAt.toISOString(),
+            // Foreign-key cleanup can change these fields without editing the task.
+            projectId,
+            sessionId,
+            sourceSessionId,
+          }),
+        ),
+      };
     }
-    return { tasks: list.filter((task) => readable.has(task.projectId)).map(taskResponse) };
+    return { tasks: (await visible(await tasks.list(filter))).map(taskResponse) };
   });
 
   app.put('/tasks/:id', { bodyLimit: 48 * 1024 * 1024 }, async (request, reply) => {

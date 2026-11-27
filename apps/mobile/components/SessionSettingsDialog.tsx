@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   Keyboard,
   Platform,
   TextInput,
@@ -28,7 +27,6 @@ const optionHeight = 48;
 
 type MoveResult = Awaited<ReturnType<VerityClient['moveSession']>>;
 export function SessionSettingsDialog({
-  initialSection,
   sessionId,
   sessionName,
   displayName,
@@ -37,13 +35,11 @@ export function SessionSettingsDialog({
   canMove,
   moveDisabledReason,
   projects,
-  linkableSessions = [],
   client,
   onClose,
   onChanged,
   onDelete,
 }: {
-  initialSection?: 'links';
   sessionId: string;
   sessionName: string | null;
   displayName: string;
@@ -52,13 +48,6 @@ export function SessionSettingsDialog({
   canMove: boolean;
   moveDisabledReason?: string;
   projects: readonly { id: string; name: string }[];
-  linkableSessions?: readonly {
-    id: string;
-    name: string;
-    projectId: string;
-    projectName: string;
-    detail?: string;
-  }[];
   client: VerityClient;
   onClose: () => void;
   onChanged: (moved: boolean) => void;
@@ -79,15 +68,6 @@ export function SessionSettingsDialog({
     h: number;
     cardHeight: number;
   }>();
-  const settingsScrollRef = useRef<ScrollView>(null);
-  const linksOffset = useRef(0);
-  const openedLinks = useRef(false);
-  const scrollToLinks = () => {
-    if (initialSection === 'links' && !openedLinks.current && linksOffset.current > 0) {
-      settingsScrollRef.current?.scrollTo({ y: linksOffset.current, animated: false });
-      openedLinks.current = true;
-    }
-  };
   const cardRef = useRef<View>(null);
   const selectRef = useRef<View>(null);
   // A pending wait for the keyboard to hide; dropped whenever the list closes so
@@ -155,120 +135,23 @@ export function SessionSettingsDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [result, setResult] = useState<MoveResult>();
-  const [links, setLinks] = useState<Awaited<ReturnType<VerityClient['listSessionLinks']>>>([]);
-  const [savedLinks, setSavedLinks] = useState<typeof links>([]);
-  const [linksLoaded, setLinksLoaded] = useState(false);
-  const [linkLoadAttempt, setLinkLoadAttempt] = useState(0);
-  const linksDirty =
-    links.some((link) => !savedLinks.some((saved) => saved.sessionId === link.sessionId)) ||
-    savedLinks.some((saved) => !links.some((link) => link.sessionId === saved.sessionId));
-  const [view, setView] = useState<'settings' | 'link'>('settings');
-  const [linkQuery, setLinkQuery] = useState('');
-  const [linkFilter, setLinkFilter] = useState<string | null>(null);
-  const [linkInfoOpen, setLinkInfoOpen] = useState(false);
   const [nameFocused, setNameFocused] = useState(false);
-  // The link view borrows the settings view's height so the card does not jump
-  // when the two swap, however long the list of candidate sessions is.
-  const [settingsHeight, setSettingsHeight] = useState<number>();
-  const slide = useRef(new Animated.Value(0)).current;
-  const showView = (next: 'settings' | 'link') => {
-    Keyboard.dismiss();
-    closePicker();
-    setLinkError(undefined);
-    if (next === 'link') {
-      setLinkQuery('');
-      setLinkFilter(null);
-    }
-    setView(next);
-    slide.setValue(next === 'link' ? 1 : -1);
-    Animated.timing(slide, { toValue: 0, duration: 180, useNativeDriver: true }).start();
-  };
-  const [linkError, setLinkError] = useState<string>();
-  const isLinked = (id: string) => links.some((link) => link.sessionId === id);
-  const linkProjects = [
-    ...new Map(linkableSessions.map((item) => [item.projectId, item.projectName])).entries(),
-  ];
-  const query = linkQuery.trim().toLowerCase();
-  const linkCandidates = linkableSessions.filter(
-    (item) =>
-      (linkFilter === null || item.projectId === linkFilter) &&
-      (!query ||
-        item.name.toLowerCase().includes(query) ||
-        item.projectName.toLowerCase().includes(query)),
-  );
-  const linkGroups = linkProjects
-    .map(([id, name]) => ({
-      id,
-      name,
-      items: linkCandidates.filter((item) => item.projectId === id),
-    }))
-    .filter((group) => group.items.length > 0);
-  useEffect(() => {
-    let active = true;
-    void client
-      .listSessionLinks(sessionId)
-      .then((items) => {
-        if (active) {
-          setLinks(items);
-          setSavedLinks(items);
-          setLinksLoaded(true);
-        }
-      })
-      .catch(() => {
-        if (active) setLinkError('Linked sessions could not be loaded.');
-      });
-    return () => {
-      active = false;
-    };
-  }, [client, sessionId, linkLoadAttempt]);
-  const addLink = (targetId: string) => {
-    const candidate = linkableSessions.find((item) => item.id === targetId);
-    if (!candidate || !linksLoaded || isLinked(targetId)) return;
-    setLinks((current) => [
-      ...current,
-      {
-        sessionId: candidate.id,
-        name: candidate.name,
-        projectId: candidate.projectId,
-        projectName: candidate.projectName,
-      },
-    ]);
-  };
-  const removeLink = (targetId: string) => {
-    setLinks((current) => current.filter((link) => link.sessionId !== targetId));
-  };
   const willMove = unresolved || (target !== null && target !== projectId);
   const canSave =
     !busy &&
-    (draftName.trim() !== (savedName ?? '') || willMove || linksDirty) &&
+    (draftName.trim() !== (savedName ?? '') || willMove) &&
     (!willMove || (canMove && !!target && (!commitConfirmation || leaveCommits)));
   const save = async () => {
     if (!canSave) return;
     Keyboard.dismiss();
     setBusy(true);
     setError(undefined);
-    let step: 'rename' | 'move' | 'links' = 'rename';
+    let step: 'rename' | 'move' = 'rename';
     try {
       const name = draftName.trim() || null;
       if (name !== savedName) {
         await client.renameSession(sessionId, name);
         setSavedName(name);
-        onChanged(false);
-      }
-      step = 'links';
-      // Record each successful write so retrying a partial save does not repeat it.
-      for (const link of savedLinks.filter(
-        (saved) => !links.some((draft) => draft.sessionId === saved.sessionId),
-      )) {
-        await client.unlinkSessions(sessionId, link.sessionId);
-        setSavedLinks((current) => current.filter((saved) => saved.sessionId !== link.sessionId));
-        onChanged(false);
-      }
-      for (const link of links.filter(
-        (draft) => !savedLinks.some((saved) => saved.sessionId === draft.sessionId),
-      )) {
-        await client.linkSessions(sessionId, link.sessionId);
-        setSavedLinks((current) => [...current, link]);
         onChanged(false);
       }
       if (!willMove || !target) {
@@ -300,13 +183,9 @@ export function SessionSettingsDialog({
         setUnresolved(false);
       }
       setError(
-        step === 'links'
-          ? cause instanceof VerityApiError && cause.status < 500
-            ? `Could not save session links: ${cause.message}.`
-            : 'Session links could not be saved. Please try again.'
-          : step === 'move'
-            ? moveErrorMessage(cause)
-            : 'The session name could not be saved. Please try again.',
+        step === 'move'
+          ? moveErrorMessage(cause)
+          : 'The session name could not be saved. Please try again.',
       );
       setCommitConfirmation(cause instanceof VerityApiError && cause.code === 'source_commits');
     } finally {
@@ -373,28 +252,12 @@ export function SessionSettingsDialog({
     </Pressable>
   );
 
-  const header = (title: string, subtitle: string | undefined, back?: () => void) => (
-    <View style={styles.header}>
-      {back ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Back to session settings"
-          disabled={busy}
-          onPress={back}
-          style={styles.iconButton}
-        >
-          <Icon name="chevron-left" size={20} color={theme.colors.text} />
-        </Pressable>
-      ) : null}
-      <View style={styles.heading}>
-        <Text style={styles.title}>{title}</Text>
-        {subtitle ? (
-          <Text style={styles.subtitle} numberOfLines={2}>
-            {subtitle}
-          </Text>
-        ) : null}
-      </View>
-      {back ? null : (
+  const settingsView = (
+    <>
+      <View style={styles.header}>
+        <View style={styles.heading}>
+          <Text style={styles.title}>{result ? 'Session moved' : 'Session settings'}</Text>
+        </View>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Close session settings"
@@ -404,15 +267,8 @@ export function SessionSettingsDialog({
         >
           <Icon name="x" size={18} color={theme.colors.textMuted} />
         </Pressable>
-      )}
-    </View>
-  );
-  const settingsView = (
-    <>
-      {header(result ? 'Session moved' : 'Session settings', undefined)}
+      </View>
       <ScrollView
-        ref={settingsScrollRef}
-        onContentSizeChange={scrollToLinks}
         style={styles.body}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
@@ -460,15 +316,12 @@ export function SessionSettingsDialog({
                 accessibilityValue={{ text: targetName ?? 'Choose a project' }}
                 accessibilityState={{
                   expanded: pickerOpen,
-                  disabled: busy || unresolved || linksDirty || !canMove || projects.length === 0,
+                  disabled: busy || unresolved || !canMove || projects.length === 0,
                 }}
-                disabled={busy || unresolved || linksDirty || !canMove || projects.length === 0}
+                disabled={busy || unresolved || !canMove || projects.length === 0}
                 onPress={togglePicker}
                 ref={selectRef}
-                style={[
-                  styles.select,
-                  (busy || unresolved || linksDirty || !canMove) && styles.disabled,
-                ]}
+                style={[styles.select, (busy || unresolved || !canMove) && styles.disabled]}
               >
                 <Icon name="folder" size={16} color={theme.colors.textMuted} />
                 <Text style={[styles.selectText, !target && styles.placeholder]} numberOfLines={1}>
@@ -481,11 +334,6 @@ export function SessionSettingsDialog({
                 />
               </Pressable>
             </View>
-            {linksDirty && (
-              <Text style={styles.hint}>
-                Save or discard link changes before moving the session.
-              </Text>
-            )}
             {!canMove && (
               <Text style={styles.hint}>
                 {moveDisabledReason ?? 'Moving is available for idle sessions in local projects.'}
@@ -530,115 +378,6 @@ export function SessionSettingsDialog({
                 original project.
               </Text>
             )}
-            <View
-              style={styles.sectionHeaderRow}
-              onLayout={(event) => {
-                linksOffset.current = event.nativeEvent.layout.y;
-                scrollToLinks();
-              }}
-            >
-              <Text style={styles.label} accessibilityRole="header">
-                Linked sessions
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="About linked sessions"
-                accessibilityState={{ expanded: linkInfoOpen }}
-                onPress={() => setLinkInfoOpen((open) => !open)}
-                hitSlop={12}
-              >
-                <Icon
-                  name="info"
-                  size={16}
-                  color={linkInfoOpen ? theme.colors.signature : theme.colors.textFaint}
-                />
-              </Pressable>
-            </View>
-            <Text style={styles.description}>
-              Share messages with agents in this or other projects.
-            </Text>
-            {linkInfoOpen ? (
-              <Text style={styles.hint}>
-                Linked agents can share messages within and across projects, including information
-                they can access there. Disconnecting stops future messages; it cannot remove
-                messages already delivered.
-              </Text>
-            ) : null}
-            <View style={styles.group}>
-              {links.map((link) => {
-                const detail = linkableSessions.find((item) => item.id === link.sessionId)?.detail;
-                return (
-                  <View key={link.sessionId} style={styles.groupRow}>
-                    <View style={[styles.rowIcon, styles.rowIconLinked]}>
-                      <Icon name="link" size={15} color={theme.colors.action} />
-                    </View>
-                    <View style={styles.linkLabel}>
-                      <Text style={styles.rowTitle} numberOfLines={1}>
-                        {link.name ?? link.sessionId}
-                      </Text>
-                      <Text style={styles.rowDetail} numberOfLines={1}>
-                        {detail ? `${link.projectName} · ${detail}` : link.projectName}
-                      </Text>
-                    </View>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Disconnect ${link.name ?? link.sessionId}`}
-                      disabled={!linksLoaded || busy || unresolved || willMove}
-                      onPress={() => void removeLink(link.sessionId)}
-                      style={styles.linkRemove}
-                    >
-                      <Icon name="x" size={18} color={theme.colors.textFaint} />
-                    </Pressable>
-                  </View>
-                );
-              })}
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={links.length === 0 ? 'Link a session' : 'Link another session'}
-                accessibilityState={{ disabled: !linksLoaded || busy || unresolved || willMove }}
-                disabled={!linksLoaded || busy || unresolved || willMove}
-                onPress={() => showView('link')}
-                style={[
-                  styles.groupRow,
-                  links.length > 0 && styles.groupRowDivided,
-                  (!linksLoaded || busy || unresolved || willMove) && styles.disabled,
-                ]}
-              >
-                <View style={[styles.rowIcon, styles.rowIconAction]}>
-                  <Icon name="plus" size={16} color={theme.colors.signature} />
-                </View>
-                <View style={styles.linkLabel}>
-                  <Text style={styles.linkActionText}>
-                    {links.length === 0 ? 'Link a session' : 'Link another session'}
-                  </Text>
-                  {links.length === 0 ? (
-                    <Text style={styles.rowDetail}>No sessions linked yet</Text>
-                  ) : null}
-                </View>
-                <Icon name="chevron-right" size={18} color={theme.colors.textFaint} />
-              </Pressable>
-            </View>
-            {view === 'settings' && linkError ? (
-              <Text accessibilityRole="alert" style={styles.error}>
-                {linkError}
-              </Text>
-            ) : null}
-            {!linksLoaded && linkError && (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Retry loading linked sessions"
-                disabled={busy}
-                onPress={() => {
-                  setLinkError(undefined);
-                  setLinkLoadAttempt((attempt) => attempt + 1);
-                }}
-              >
-                <Text style={styles.linkActionText}>Retry loading linked sessions</Text>
-              </Pressable>
-            )}
-            {willMove ? (
-              <Text style={styles.hint}>Save the project change before linking sessions.</Text>
-            ) : null}
           </>
         )}
       </ScrollView>
@@ -665,142 +404,6 @@ export function SessionSettingsDialog({
       </View>
     </>
   );
-  const linkView = (
-    <>
-      {header(
-        'Link a session',
-        'Choose sessions, then save your changes in session settings.',
-        () => showView('settings'),
-      )}
-      <View style={styles.linkTools}>
-        <View style={styles.search}>
-          <Icon name="search" size={16} color={theme.colors.textMuted} />
-          <TextInput
-            accessibilityLabel="Search sessions"
-            value={linkQuery}
-            onChangeText={setLinkQuery}
-            placeholder="Search sessions or projects"
-            placeholderTextColor={theme.colors.textFaint}
-            autoFocus={Platform.OS !== 'android'}
-            autoCorrect={false}
-            autoCapitalize="none"
-            returnKeyType="search"
-            style={styles.searchInput}
-          />
-          {linkQuery ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Clear search"
-              onPress={() => setLinkQuery('')}
-              hitSlop={10}
-            >
-              <Icon name="x-circle" size={16} color={theme.colors.textFaint} />
-            </Pressable>
-          ) : null}
-        </View>
-        {linkProjects.length > 1 ? (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={styles.chips}
-          >
-            {[[null, 'All'] as const, ...linkProjects].map(([id, name]) => (
-              <Pressable
-                key={id ?? 'all'}
-                accessibilityRole="button"
-                accessibilityLabel={id === null ? 'All projects' : `Only ${name}`}
-                accessibilityState={{ selected: linkFilter === id }}
-                onPress={() => setLinkFilter(id)}
-                style={[styles.chip, linkFilter === id && styles.chipActive]}
-              >
-                <Text style={[styles.chipText, linkFilter === id && styles.chipTextActive]}>
-                  {name}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-        ) : null}
-      </View>
-      <ScrollView
-        style={styles.linkList}
-        contentContainerStyle={styles.linkListContent}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-      >
-        {linkError ? (
-          <Text accessibilityRole="alert" style={styles.error}>
-            {linkError}
-          </Text>
-        ) : null}
-        {linkGroups.map((group) => (
-          <View key={group.id} style={styles.linkGroup}>
-            <Text style={styles.overline} accessibilityRole="header">
-              {group.name}
-            </Text>
-            {group.items.map((item) => {
-              const linked = isLinked(item.id);
-              return (
-                <Pressable
-                  key={item.id}
-                  accessibilityRole="button"
-                  accessibilityLabel={linked ? `${item.name}, linked` : `Link ${item.name}`}
-                  accessibilityState={{ disabled: linked || busy, selected: linked }}
-                  disabled={linked || busy}
-                  onPress={() => void addLink(item.id)}
-                  style={({ pressed }) => [styles.candidate, pressed && styles.candidatePressed]}
-                >
-                  <View style={styles.linkLabel}>
-                    <Text
-                      style={[styles.rowTitle, linked && styles.rowTitleMuted]}
-                      numberOfLines={1}
-                    >
-                      {item.name}
-                    </Text>
-                    {item.detail ? (
-                      <Text style={styles.rowDetail} numberOfLines={1}>
-                        {item.detail}
-                      </Text>
-                    ) : null}
-                  </View>
-                  {linked ? (
-                    <View style={styles.linkedBadge}>
-                      <Icon name="check" size={14} color={theme.colors.success} />
-                      <Text style={styles.linkedText}>Linked</Text>
-                    </View>
-                  ) : (
-                    <View style={styles.addButton}>
-                      <Icon name="plus" size={16} color={theme.colors.action} />
-                    </View>
-                  )}
-                </Pressable>
-              );
-            })}
-          </View>
-        ))}
-        {linkGroups.length === 0 ? (
-          <Text style={styles.emptyText}>
-            {linkableSessions.length === 0
-              ? 'No other sessions available to link.'
-              : 'No sessions match your search.'}
-          </Text>
-        ) : null}
-      </ScrollView>
-      <View style={[styles.footer, styles.footerEnd]}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Done linking"
-          disabled={busy}
-          onPress={() => showView('settings')}
-          style={[styles.button, styles.secondary]}
-        >
-          {busy ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : null}
-          <Text style={styles.secondaryText}>Done</Text>
-        </Pressable>
-      </View>
-    </>
-  );
-  const linking = view === 'link' && !result;
   const projectOptions = [
     { id: projectId, name: projectName },
     ...projects.filter((project) => project.id !== projectId),
@@ -820,12 +423,7 @@ export function SessionSettingsDialog({
   })();
 
   return (
-    <Modal
-      transparent
-      animationType="fade"
-      // Android back leaves the link view first, like its on-screen back button.
-      onRequestClose={linking ? () => !busy && showView('settings') : close}
-    >
+    <Modal transparent animationType="fade" onRequestClose={close}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -840,40 +438,15 @@ export function SessionSettingsDialog({
           />
           <View
             ref={cardRef}
-            style={[styles.card, linking && settingsHeight ? { height: settingsHeight } : null]}
+            style={styles.card}
             testID="session-settings-card"
-            onLayout={
-              linking
-                ? undefined
-                : (event) => {
-                    setSettingsHeight(event.nativeEvent.layout.height);
-                    // A hint, an error or rotation moves the select under an open list.
-                    if (pickerOpen) measurePicker();
-                  }
-            }
+            onLayout={() => {
+              // A hint, an error or rotation moves the select under an open list.
+              if (pickerOpen) measurePicker();
+            }}
           >
-            <Animated.View
-              style={[
-                linking ? styles.paneFill : styles.pane,
-                {
-                  opacity: slide.interpolate({
-                    inputRange: [-1, 0, 1],
-                    outputRange: [0, 1, 0],
-                  }),
-                  transform: [
-                    {
-                      translateX: slide.interpolate({
-                        inputRange: [-1, 0, 1],
-                        outputRange: [-24, 0, 24],
-                      }),
-                    },
-                  ],
-                },
-              ]}
-            >
-              {linking ? linkView : settingsView}
-            </Animated.View>
-            {pickerOpen && !linking && !result ? (
+            <View style={styles.pane}>{settingsView}</View>
+            {pickerOpen && !result ? (
               <>
                 <Pressable
                   style={StyleSheet.absoluteFill}
@@ -894,9 +467,9 @@ export function SessionSettingsDialog({
                         accessibilityLabel={project.name}
                         accessibilityState={{
                           selected: target === project.id,
-                          disabled: busy || unresolved || linksDirty || !canMove,
+                          disabled: busy || unresolved || !canMove,
                         }}
-                        disabled={busy || unresolved || linksDirty || !canMove}
+                        disabled={busy || unresolved || !canMove}
                         style={[styles.option, target === project.id && styles.selected]}
                         onPress={() => {
                           setTarget(project.id);
@@ -973,18 +546,12 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       shadowOffset: { width: 0, height: 8 },
     },
     pane: { flexShrink: 1 },
-    paneFill: { flex: 1 },
     header: { flexDirection: 'row', alignItems: 'center', padding: 20, paddingBottom: 16, gap: 12 },
     heading: { flex: 1, gap: 3 },
     title: {
       color: theme.colors.text,
       fontSize: theme.typography.title.fontSize,
       fontFamily: theme.fonts.bold,
-    },
-    subtitle: {
-      color: theme.colors.textMuted,
-      fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.bodySmall.fontSize,
     },
     iconButton: {
       width: 36,
@@ -1009,136 +576,6 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       lineHeight: 18 * theme.fontScale,
     },
     field: { gap: 8 },
-    overline: {
-      color: theme.colors.textFaint,
-      fontSize: theme.typography.footnote.fontSize,
-      fontFamily: theme.fonts.bold,
-      letterSpacing: 1,
-      textTransform: 'uppercase',
-    },
-    sectionHeaderRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      marginTop: 10,
-    },
-    group: { borderRadius: 14, backgroundColor: theme.colors.surfaceAlt, overflow: 'hidden' },
-    groupRow: {
-      minHeight: 56,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 12,
-      paddingLeft: 12,
-      paddingRight: 8,
-      paddingVertical: 8,
-    },
-    groupRowDivided: {
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: theme.colors.border,
-    },
-    rowIcon: {
-      width: 30,
-      height: 30,
-      borderRadius: 15,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    rowIconLinked: { backgroundColor: tint(theme.colors.action, 'fill') },
-    rowIconAction: { backgroundColor: tint(theme.colors.signature, 'fill') },
-    rowTitle: {
-      color: theme.colors.text,
-      fontSize: theme.typography.bodySmall.fontSize,
-      fontFamily: theme.fonts.semibold,
-    },
-    rowTitleMuted: { color: theme.colors.textMuted },
-    rowDetail: {
-      color: theme.colors.textMuted,
-      fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.footnote.fontSize,
-    },
-    linkLabel: { flex: 1, gap: 2 },
-    linkRemove: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-    linkActionText: {
-      color: theme.colors.signature,
-      fontSize: theme.typography.bodySmall.fontSize,
-      fontFamily: theme.fonts.semibold,
-    },
-    linkTools: { paddingHorizontal: 20, paddingBottom: 12, gap: 12 },
-    search: {
-      minHeight: 44,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      paddingHorizontal: 12,
-      borderRadius: 12,
-      backgroundColor: theme.colors.surfaceAlt,
-    },
-    searchInput: {
-      flex: 1,
-      paddingVertical: 10,
-      color: theme.colors.text,
-      fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.row.fontSize,
-    },
-    chips: { gap: 8 },
-    chip: {
-      minHeight: 32,
-      justifyContent: 'center',
-      paddingHorizontal: 14,
-      borderRadius: theme.radius.pill,
-      borderWidth: 1,
-      borderColor: 'transparent',
-      backgroundColor: theme.colors.surfaceAlt,
-    },
-    chipActive: {
-      backgroundColor: tint(theme.colors.signature, 'fill'),
-      borderColor: tint(theme.colors.signature, 'border'),
-    },
-    chipText: {
-      color: theme.colors.textMuted,
-      fontSize: theme.typography.bodySmall.fontSize,
-      fontFamily: theme.fonts.semibold,
-    },
-    chipTextActive: { color: theme.colors.signature },
-    linkList: {
-      flex: 1,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: theme.colors.border,
-    },
-    linkListContent: { paddingHorizontal: 12, paddingVertical: 12, gap: 16 },
-    linkGroup: { gap: 2 },
-    candidate: {
-      minHeight: 56,
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 12,
-      paddingHorizontal: 8,
-      paddingVertical: 8,
-      borderRadius: 12,
-    },
-    candidatePressed: { backgroundColor: theme.colors.surfaceAlt },
-    addButton: {
-      width: 32,
-      height: 32,
-      borderRadius: 16,
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderWidth: 1.5,
-      borderColor: theme.colors.action,
-    },
-    linkedBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingRight: 4 },
-    linkedText: {
-      color: theme.colors.success,
-      fontSize: theme.typography.footnote.fontSize,
-      fontFamily: theme.fonts.semibold,
-    },
-    emptyText: {
-      color: theme.colors.textFaint,
-      fontFamily: theme.fonts.regular,
-      fontSize: theme.typography.bodySmall.fontSize,
-      textAlign: 'center',
-      paddingVertical: 24,
-    },
     nameInput: {
       minHeight: 48,
       borderWidth: 1,
@@ -1162,7 +599,6 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       gap: 4,
       flex: 1,
     },
-    footerEnd: { justifyContent: 'flex-end' },
     deleteButton: { paddingHorizontal: 6, gap: 6 },
     deleteText: {
       color: theme.colors.attention,
@@ -1258,12 +694,6 @@ const createStyles = (theme: ReturnType<typeof useUnistyles>['theme']) =>
       color: theme.colors.onAction,
       fontSize: theme.typography.row.fontSize,
       fontFamily: theme.fonts.bold,
-    },
-    secondary: { minWidth: 96, backgroundColor: theme.colors.surfaceAlt },
-    secondaryText: {
-      color: theme.colors.text,
-      fontSize: theme.typography.row.fontSize,
-      fontFamily: theme.fonts.semibold,
     },
     cancelText: {
       color: theme.colors.textMuted,

@@ -29,7 +29,8 @@ beforeEach(async () => {
       model: 'claude',
     });
   await ctx.store.repairs.configureQA(true, 'user');
-  await ctx.store.repairs.qaSession('qa');
+  await ctx.store.repairs.projectQA.ensureRole('p');
+  await ctx.store.repairs.projectQA.attachSession('p', 'qa');
   await ctx.store.repairs.configure('p', 'user', 'monitor');
 });
 const caller = { sessionId: 'qa', userId: 'user' };
@@ -115,7 +116,8 @@ it('fences competing assignments, background repairs and reused consent', async 
   );
   const incident = await ctx.store.repairs.observe('p', 'pr:1', 'sha', '{}');
   await ctx.store.repairs.configure('p', 'user', 'automatic');
-  expect(await ctx.store.repairs.claim(incident.id, 'other', 2)).toBeUndefined();
+  // A running assignment takes one of the project's three repair places, not all of them.
+  expect(await ctx.store.repairs.claim(incident.id, 'other', 2)).toBeDefined();
   await ctx.store.repairs.registerSessionOrigin('p', 'pr:1', 'target');
   expect(
     await ctx.store.repairs.claimSessionRepair(incident.id, 'target', 'ci:sha'),

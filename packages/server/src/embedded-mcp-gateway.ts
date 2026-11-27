@@ -1,3 +1,5 @@
+import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
+import { brokeredSecretReferences, referencedSnapshot } from './brokered-http-tool.js';
 import { join } from 'node:path';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import type { createEmbeddedBrokeredHttp } from './embedded-brokered-http.js';
@@ -8,11 +10,14 @@ import { gatewayRequestMac, type createGatewayRequestMacKeyring } from './gatewa
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
+import { createBrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '@verity/store';
 import { CONTROL_PLANE_RUNNER_PROJECT_ID } from './embedded-support.js';
 
 type EmbeddedMcpGatewayContext = Pick<
   ReturnType<typeof createEmbeddedBrokeredHttp>,
-  'getBrokeredProjectBinding' | 'brokeredHttpTool'
+  'getBrokeredProjectBindings' | 'brokeredHttpTool'
 > &
   ReturnType<typeof createEmbeddedTrustedCli> &
   Pick<
@@ -32,10 +37,11 @@ type EmbeddedMcpGatewayContext = Pick<
 
 export function createEmbeddedMcpGateway(
   config: Pick<EmbeddedServerConfig, 'runnerSupervisor' | 'dataVolumeRoot'>,
+  db: Kysely<Database>,
   {
     secretAuditLog,
     gatewayRequestMacKeys,
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
     brokeredHttpTool,
     trustedCliTool,
     trustedCliOutput,
@@ -58,6 +64,8 @@ export function createEmbeddedMcpGateway(
   });
   const mcpProxyTokens = createMcpGatewayTokens();
   const mcpGateway: Omit<McpGatewayDeps, 'requestApproval'> = {
+    detachedApprovals: createBrokeredToolApprovalStore(db),
+    hasSecretExecutionClaim: createBrokeredHttpConsumptionStore(db).has,
     // Trusted CLI needs the project supervisor: it is the authority that proves this bearer
     // still names a live turn whose start request enabled execution. Deployments without the
     // supervisor omit the tool completely rather than advertising a permanently failing call.
@@ -70,6 +78,7 @@ export function createEmbeddedMcpGateway(
             'verity_publish_session_progress',
             'verity_send_session_message',
             'verity_project_inquiry',
+            'verity_session_coordinate',
             'verity_list_linked_sessions',
             'verity_start_planning',
             'verity_present_plan',
@@ -98,6 +107,7 @@ export function createEmbeddedMcpGateway(
             'verity_publish_session_progress',
             'verity_send_session_message',
             'verity_project_inquiry',
+            'verity_session_coordinate',
             'verity_list_linked_sessions',
             'verity_start_planning',
             'verity_present_plan',
@@ -135,11 +145,15 @@ export function createEmbeddedMcpGateway(
             'verity_assistant',
           ]
         : [],
-    authorizationSnapshot: async ({ projectId, toolName }) => {
+    // An approval is bound to the Doppler bindings the call reads from (ADR 0031).
+    authorizationSnapshot: async ({ projectId, toolName, request }) => {
       if (toolName !== 'verity_http_request' && toolName !== 'verity_secret_run') return undefined;
-      const binding = await getBrokeredProjectBinding(projectId);
-      if (binding === undefined) throw new Error('project Doppler binding is unavailable');
-      return JSON.stringify(binding);
+      return JSON.stringify(
+        referencedSnapshot(
+          await getBrokeredProjectBindings(projectId),
+          brokeredSecretReferences(toolName, request),
+        ),
+      );
     },
     resolveCaller: (input) => Promise.resolve(mcpGatewayTokens.resolve(input)),
     ...(config.runnerSupervisor === true && config.dataVolumeRoot !== undefined
@@ -151,7 +165,7 @@ export function createEmbeddedMcpGateway(
       : {}),
     // Both tools reuse the brokered execution implementations, including their at-most-once
     // approval fence. The gateway bearer supplies the project/session/turn identity; its
-    // fresh call id makes consumption exact for this approved invocation.
+    // stable invocation ID prevents transport retries from consuming approval twice.
     invokeTool: createMcpGatewayToolExecutor({
       brokeredHttpTool: brokeredHttpTool,
       trustedCliTool,

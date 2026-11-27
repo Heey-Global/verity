@@ -1,4 +1,22 @@
-export type BranchReadStage = 'metadata' | 'pr' | 'identity' | 'localChanges';
+export type BranchReadStage = 'metadata' | 'pr' | 'repair' | 'identity' | 'localChanges';
+
+/** Let optional work finish for later reads without holding the current response. */
+export async function withinBranchReadBudget<T>(
+  read: Promise<T>,
+  budgetMs: number,
+): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), budgetMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Observe latency without retaining repository names, user input or command output. */
 export async function measureBranchReadStage<T>(

@@ -6,6 +6,8 @@ jest.mock('../../hooks/useAttachmentImageSource', () => ({
   useAttachmentImageSource: () => mockSource,
 }));
 
+jest.mock('./HtmlMockupPreview', () => ({ HtmlMockupPreview: () => null }));
+
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { ScrollView, View } from 'react-native';
 import type { MockupReviewScreen } from '@verity/mobile';
@@ -20,6 +22,7 @@ const home: MockupReviewScreen = {
   verdict: 'open',
 };
 const props = {
+  sessionId: 'session',
   visible: true,
   screens: [home],
   title: 'Review flow',

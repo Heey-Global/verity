@@ -1,6 +1,7 @@
 import { generateKeyPairSync, verify } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
+import { satisfies } from 'semver';
 
 const require = createRequire(import.meta.url);
 let xcodeManifest: string | undefined;
@@ -11,6 +12,20 @@ try {
 }
 
 describe.skipIf(!xcodeManifest)('mobile dependency security compatibility', () => {
+  it('resolves the patched legacy parser selected for the Xcode plist consumer', () => {
+    const xcodeRequire = createRequire(xcodeManifest!);
+    const plistRequire = createRequire(xcodeRequire.resolve('@expo/plist'));
+    const parser = plistRequire('@xmldom/xmldom/package.json') as { version: string };
+    const manifest = require('../package.json') as {
+      overrides: Record<string, Record<string, Record<string, string>>>;
+    };
+    // Removing the override can silently restore the plist consumer's vulnerable 0.7 range.
+    expect(parser.version).toBe(
+      manifest.overrides['@bacons/xcode']['@expo/plist']['@xmldom/xmldom'],
+    );
+    expect(satisfies(parser.version, '>=0.8.15 <0.9.0')).toBe(true);
+  });
+
   it('round-trips escaped plist values through the overridden XML parser', () => {
     const xcodeRequire = createRequire(xcodeManifest!);
     const { default: plist } = xcodeRequire('@expo/plist') as {

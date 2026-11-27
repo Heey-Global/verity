@@ -1,3 +1,4 @@
+import { conditionalJsonRoute } from './conditional-json.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { viewerId } from './view-state-routes.js';
@@ -6,6 +7,7 @@ import {
   PROJECT_AGENTS,
   PROJECT_MEMORY_MAX_CHARS,
   PROJECT_NAME_MAX_CHARS,
+  AmbiguousDopplerConnectionError,
   SealedError,
   type ProjectRecord,
   type ProjectSettingsPatch,
@@ -75,8 +77,13 @@ const settingsBody = z
 const defaultModelBody = z.object({ model: z.string().trim().min(1).max(200).nullable() }).strict();
 
 export interface ProjectDetailRouteDeps {
-  /** The project with its sessions as `viewer` sees them (read marks, dismissals). */
-  getDetail: (projectId: string, viewer: string) => Promise<unknown>;
+  /** The project with its sessions as `viewer` sees them (read marks, dismissals);
+   *  `localUserId` is the signed-in account, absent for the single operator. */
+  getDetail: (
+    projectId: string,
+    viewer: string,
+    localUserId: string | null | undefined,
+  ) => Promise<unknown>;
   projectExists: (projectId: string) => Promise<boolean>;
   listGrants?: ((projectId: string) => Promise<BrokeredGrantRecord[]>) | undefined;
   revokeGrant?: ((projectId: string, grantId: string) => Promise<boolean>) | undefined;
@@ -107,9 +114,9 @@ export function registerProjectDetailRoutes(
   app: FastifyInstance,
   deps: ProjectDetailRouteDeps,
 ): void {
-  app.get('/projects/:id', async (request, reply): Promise<unknown> => {
+  app.get('/projects/:id', conditionalJsonRoute, async (request, reply): Promise<unknown> => {
     const { id } = projectParams.parse(request.params);
-    const detail = await deps.getDetail(id, viewerId(request));
+    const detail = await deps.getDetail(id, viewerId(request), request.localUserId);
     if (detail === undefined) {
       reply.code(404);
       return { error: `project ${id} not found` };
@@ -238,6 +245,8 @@ export function registerProjectDetailRoutes(
     try {
       settings = await deps.updateSettings(id, patch, viewerId(request));
     } catch (error) {
+      if (error instanceof AmbiguousDopplerConnectionError)
+        return reply.code(409).send({ error: error.message });
       if (!(error instanceof ProjectAgentNotAllowedError)) throw error;
       reply.code(400);
       return { error: error.message };

@@ -1,21 +1,30 @@
+import type { ServerDeps } from './server-deps.js';
+import { defaultManifestConvert } from './github-manifest.js';
 import { createHash } from 'node:crypto';
 import type { EventStore } from '@verity/store';
 import { SealedError } from '@verity/store';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import { resolveInstallationListToken } from './embedded-support.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
+import { reconcileGitHubRepository } from './github-repository-rename.js';
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
+import { createGitHubRateBudget, trackGitHubFetch } from './github-rate-budget.js';
 import {
   createGitHubAppInstallationTokenMint,
   createGitHubAppProjectTokenMint,
   createCachedProjectTokenMint,
   PROJECT_GITHUB_TOKEN_PERMISSIONS,
   type GitHubAppCreds,
+  type GitHubAppIdentityResult,
+  type GitHubRepositoryIdentity,
+  validateGitHubAppCreds,
+  resolveGitHubAppIdentity,
 } from './github-app-token.js';
 
 export function createEmbeddedGitHub(
   config: Pick<EmbeddedServerConfig, 'githubProjectTokenMint'>,
   eventStore: EventStore,
+  provisioner?: () => { syncProjectCheckout(projectId: string): Promise<void> } | undefined,
 ) {
   // GitHub App creds resolve from Verity settings only. The App private key lives
   // encrypted in the DB/secret store; deployment env must not pre-configure or
@@ -31,7 +40,29 @@ export function createEmbeddedGitHub(
     }
     return undefined;
   };
-  const baseMintOpts = { resolveCreds: resolveGithubAppCreds };
+  // Tokens name repositories by GitHub's rename-stable ID once it is known, and a
+  // project follows its repository to a new name without moving its clone.
+  const repositoryIdentity: GitHubRepositoryIdentity = {
+    lookup: (owner, repo) => eventStore.githubRepositories.lookup(owner, repo),
+    reconcile: async (observation) => {
+      await reconcileGitHubRepository(eventStore, provisioner, observation);
+    },
+  };
+  const baseMintOpts = {
+    resolveCreds: resolveGithubAppCreds,
+    repositoryIdentity,
+    onIdentityError: (error: unknown) =>
+      console.warn(
+        'verity: could not record GitHub repository identity: ' +
+          (error instanceof Error ? error.message : String(error)),
+      ),
+  };
+  // Every server-side reader spends the same App-installation quota; one budget
+  // sees all of them, locks them together and keeps credential-free evidence.
+  const rateBudget = createGitHubRateBudget({
+    onLimit: (event) =>
+      console.warn(`verity: GitHub ${event.kind} rate limit reached ${JSON.stringify(event)}`),
+  });
   const githubAppAuthorityKey = async (): Promise<string | undefined> => {
     const credentials = await resolveGithubAppCreds();
     if (credentials === undefined) return undefined;
@@ -47,7 +78,7 @@ export function createEmbeddedGitHub(
   // instead of inheriting the full installation grant. The subset lives in
   // PROJECT_GITHUB_TOKEN_PERMISSIONS (push branches incl. `.github/workflows/*`,
   // open PRs, manage issues, and inspect/administer Actions runs).
-  // Repo scope is still `[project.repo]`.
+  // Repo scope is the project's repository, by ID once known (else by name).
   // Minting fails closed until the installation has approved this complete set;
   // silently dropping a denied permission would give the sandbox a misleading token.
   const projectTokenMint =
@@ -118,24 +149,27 @@ export function createEmbeddedGitHub(
     }),
     { authorityKey: githubAppAuthorityKey },
   );
-  const githubQAAnalysis = createGitHubQAAnalysis((ref, action) => {
-    const mint =
-      config.githubProjectTokenMint ??
-      (action === 'checks'
-        ? analysisChecksMint
-        : action === 'statuses'
-          ? analysisStatusesMint
-          : action === 'pulls' || action === 'pull_status'
-            ? discoveryPrTokenMint
-            : action === 'releases'
-              ? analysisReleaseMint
-              : action === 'deployments' || action === 'deployment_statuses'
-                ? analysisDeploymentMint
-                : action === 'workflow'
-                  ? analysisContentsMint
-                  : discoveryTokenMint);
-    return mint(ref);
-  });
+  const githubQAAnalysis = createGitHubQAAnalysis(
+    (ref, action) => {
+      const mint =
+        config.githubProjectTokenMint ??
+        (action === 'checks'
+          ? analysisChecksMint
+          : action === 'statuses'
+            ? analysisStatusesMint
+            : action === 'pulls' || action === 'pull_status'
+              ? discoveryPrTokenMint
+              : action === 'releases'
+                ? analysisReleaseMint
+                : action === 'deployments' || action === 'deployment_statuses'
+                  ? analysisDeploymentMint
+                  : action === 'workflow'
+                    ? analysisContentsMint
+                    : discoveryTokenMint);
+      return mint(ref);
+    },
+    trackGitHubFetch(rateBudget, 'qa-analysis', fetch),
+  );
   const issuesTokenMint = createGitHubAppProjectTokenMint({
     ...baseMintOpts,
     permissions: { metadata: 'read', issues: 'read' },
@@ -178,6 +212,7 @@ export function createEmbeddedGitHub(
       }
     },
     prStatusTtlMs: 2_000,
+    rateBudget,
   });
   return {
     resolveGithubAppCreds,
@@ -187,5 +222,27 @@ export function createEmbeddedGitHub(
     cachedProjectTokenMint,
     githubQAAnalysis,
     githubForge,
+  };
+}
+
+export function createEmbeddedGitHubOnboardingBindings(
+  resolveGithubAppCreds: ReturnType<typeof createEmbeddedGitHub>['resolveGithubAppCreds'],
+): Pick<ServerDeps, 'githubAppValidate' | 'resolveGitHubAppIdentity' | 'manifestConvert'> {
+  return {
+    // Live GitHub-App credential validation for the onboarding wizard (#320). The
+    // route reads + decrypts the stored creds itself (unsealed-only) and hands them
+    // here; this just performs the redaction-safe test-mint against GitHub.
+    githubAppValidate: (creds: GitHubAppCreds) => validateGitHubAppCreds(creds),
+    // Derive the git committer identity from the App installation for the
+    // signing-key onboarding step. Resolves the (decrypted) creds from settings;
+    // undefined when no App is configured yet (nothing to derive).
+    resolveGitHubAppIdentity: async (): Promise<GitHubAppIdentityResult | undefined> => {
+      const creds = await resolveGithubAppCreds();
+      return creds === undefined ? undefined : resolveGitHubAppIdentity(creds);
+    },
+    // Real code→App conversion for the manifest one-click onboarding routes
+    // (#320). Redaction-safe by contract: never logs the PEM / GitHub body. The
+    // callback route persists the returned app id + PEM via the sealed store.
+    manifestConvert: defaultManifestConvert(),
   };
 }

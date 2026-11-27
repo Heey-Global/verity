@@ -102,7 +102,7 @@ export function createProtectedDevcontainerBuilder(options: {
         const failure = new Error(
           'Protected devcontainer build failed; retry after checking its build diagnostics' +
             (outcome.failure
-              ? ` (${outcome.failure.reason}; reference ${outcome.failure.correlationId ?? 'unavailable'})`
+              ? ` (${outcome.failure.reason}${outcome.failure.detail ? `: ${outcome.failure.detail}` : ''}; reference ${outcome.failure.correlationId ?? 'unavailable'})`
               : ''),
         );
         let fd: number | undefined;

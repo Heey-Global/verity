@@ -314,6 +314,24 @@ describe('Row', () => {
     expect(glyphs('chevron-right')).toHaveLength(0);
   });
 
+  // Several rights can hold at once: announced as radios, a screen reader would
+  // promise that checking one clears the others.
+  it('announces an option of a multiple-choice list as a checkbox', () => {
+    render(
+      <>
+        <Row title="Can edit" selected multiple onPress={jest.fn()} />
+        <Row title="Can manage" selected={false} multiple onPress={jest.fn()} />
+      </>,
+    );
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(
+      screen.getByRole('checkbox', { name: 'Can edit' }).props.accessibilityState,
+    ).toMatchObject({ checked: true });
+    expect(
+      screen.getByRole('checkbox', { name: 'Can manage' }).props.accessibilityState,
+    ).toMatchObject({ checked: false });
+  });
+
   // Cyan marks what can be tapped (docs/design-system.md § 2): a row icon in
   // the action color on a row that does nothing would promise an action.
   it('colors the icon of a tappable row and leaves an inert row grey', () => {
@@ -762,6 +780,14 @@ describe('toneColor', () => {
 });
 
 describe('CardHead', () => {
+  it('shows an approval subject in full when requested', () => {
+    const title = `Send to session ${'destination'.repeat(8)}?`;
+    const view = render(<CardHead title={title} wrapTitle />);
+    expect(screen.getByText(title).props.numberOfLines).toBeUndefined();
+    view.rerender(<CardHead title={title} />);
+    expect(screen.getByText(title).props.numberOfLines).toBe(2);
+  });
+
   it('draws a leading mark in the same tile a row uses', () => {
     render(<CardHead title="acme/api" leading={{ element: <View testID="host-mark" /> }} />);
     let tile = screen.getByTestId('host-mark').parent;

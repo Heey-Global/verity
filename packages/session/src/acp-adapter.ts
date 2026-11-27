@@ -293,6 +293,9 @@ export class AcpEventAdapter {
       case 'prompt_suggestions_update':
         // Suggested future prompts are not messages in the session history.
         return lifecycle;
+      case 'cursor_update':
+        // Timeline cursors are navigation state, not transcript content.
+        return lifecycle;
       case 'notice':
         // ACP notices are live advisories, not session history. The session
         // adapter must not persist them as transcript content.

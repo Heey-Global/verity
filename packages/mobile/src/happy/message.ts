@@ -168,6 +168,7 @@ export interface PendingPermission {
    * them on `acp`. Server-derived; absent on prompts from a server that predates it.
    */
   grantChannel?: BrokeredGrantChannel;
+  secretSource?: { project: string; config: string } | undefined;
 }
 
 export type Message =

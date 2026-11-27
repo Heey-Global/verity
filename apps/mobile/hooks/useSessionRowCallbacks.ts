@@ -4,7 +4,6 @@ import { moveProjectIdToIndex } from '../lib/projectReorder';
 
 type RowCallbacks = {
   onRename: () => void;
-  onOpenLinks: () => void;
   onToggleFavorite: () => void;
   onDelete: () => void;
   onSelect: (() => void) | undefined;
@@ -27,7 +26,7 @@ export function useSessionRowCallbacks({
   sessions: readonly SessionSummary[];
   scope: string;
   reordering: boolean;
-  onRename: (session: SessionSummary & { openLinks?: boolean }) => void;
+  onRename: (session: SessionSummary) => void;
   onFavorite: (session: SessionSummary) => void;
   onDelete: (session: SessionSummary) => void;
   onSelect?: ((id: string) => void) | undefined;
@@ -70,7 +69,6 @@ export function useSessionRowCallbacks({
             ? previousRecord.callbacks
             : {
                 onRename: () => onRename(session),
-                onOpenLinks: () => onRename({ ...session, openLinks: true }),
                 onToggleFavorite: () => onFavorite(session),
                 onDelete: () => onDelete(session),
                 onSelect: onSelect ? () => onSelect(session.sessionId) : undefined,

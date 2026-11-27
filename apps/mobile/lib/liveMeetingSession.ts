@@ -548,7 +548,7 @@ export function clearSpeakerNameSuggestion(
 }
 
 function publish() {
-  for (const listener of listeners) listener(active);
+  for (const listener of listeners) listener(currentMeeting());
 }
 
 function enqueueWrite(write: () => Promise<void>): Promise<void> {
@@ -842,7 +842,7 @@ function onEvent(event: STTEvent) {
 }
 
 export function currentMeeting(): MeetingRecord | null {
-  return active;
+  return startInFlightSignal?.aborted && active?.state === 'active' ? null : active;
 }
 
 /**
@@ -890,16 +890,22 @@ export async function updateSpeakerEdits(
 
 export function subscribeMeeting(listener: Listener): () => void {
   listeners.add(listener);
-  listener(active);
+  listener(currentMeeting());
   return () => listeners.delete(listener);
 }
+
+let startInFlightSignal: AbortSignal | undefined;
 
 export function startMeeting(
   sessionId: string,
   engine: STTEngineId = 'fluid-nemotron',
   expectedParticipants: number | null = null,
   title?: string,
-  options: { audioSafetyBuffer?: boolean } = {},
+  options: {
+    audioSafetyBuffer?: boolean;
+    assertAccess?: () => void;
+    startSignal?: AbortSignal;
+  } = {},
 ): Promise<MeetingRecord> {
   if (isDemoMode() || isEnteringDemoMode()) {
     return Promise.reject(
@@ -909,6 +915,11 @@ export function startMeeting(
     );
   }
   if (startInFlight) {
+    if (startInFlightSignal?.aborted) {
+      return startInFlight
+        .catch(() => undefined)
+        .then(() => startMeeting(sessionId, engine, expectedParticipants, title, options));
+    }
     return startInFlight.then((meeting) => {
       if (meeting.sessionId !== sessionId)
         throw new Error('A meeting is already active in another session.');
@@ -917,8 +928,11 @@ export function startMeeting(
   }
   const started = startMeetingUnlocked(sessionId, engine, expectedParticipants, title, options);
   startInFlight = started;
+  startInFlightSignal = options.startSignal;
   const clear = () => {
-    if (startInFlight === started) startInFlight = null;
+    if (startInFlight !== started) return;
+    startInFlight = null;
+    startInFlightSignal = undefined;
   };
   void started.then(clear, clear);
   return started;
@@ -929,7 +943,11 @@ async function startMeetingUnlocked(
   engine: STTEngineId,
   expectedParticipants: number | null,
   title?: string,
-  options: { audioSafetyBuffer?: boolean } = {},
+  options: {
+    audioSafetyBuffer?: boolean;
+    assertAccess?: () => void;
+    startSignal?: AbortSignal;
+  } = {},
 ): Promise<MeetingRecord> {
   await Promise.all([...pendingSaveSettlements]);
   if (shutdownInFlight) await shutdownInFlight;
@@ -947,9 +965,16 @@ async function startMeetingUnlocked(
   if (!engines.some((candidate) => candidate.id === engine && candidate.available)) {
     throw new Error('The selected transcription engine is unavailable on this device.');
   }
+  options.assertAccess?.();
   const meeting = await (title
     ? createMeeting(sessionId, engine, expectedParticipants, title)
     : createMeeting(sessionId, engine, expectedParticipants));
+  try {
+    options.assertAccess?.();
+  } catch (error) {
+    await enqueueWrite(() => setMeetingState(meeting.id, 'interrupted', String(error)));
+    throw error;
+  }
   active = meeting;
   resetSpeakerNameChecks();
   transcript = emptySTTTranscript;
@@ -959,6 +984,23 @@ async function startMeetingUnlocked(
   subscription?.remove();
   subscription = liveMeetingSTT.addListener('onSTTEvent', onEvent);
   publish();
+  let canceled = false;
+  let stopping: Promise<void> | undefined;
+  const cancelStartup = () => {
+    canceled = true;
+    stopping ??= liveMeetingSTT?.stop().catch(() => {
+      shutdownFailed = true;
+    });
+  };
+  const assertStartup = () => {
+    try {
+      options.assertAccess?.();
+    } catch (error) {
+      cancelStartup();
+      throw error;
+    }
+  };
+  options.startSignal?.addEventListener('abort', cancelStartup);
   try {
     if (options.audioSafetyBuffer && !liveMeetingSTT.configureMeeting)
       throw new Error('The audio safety buffer requires an updated iOS build.');
@@ -968,7 +1010,9 @@ async function startMeetingUnlocked(
       meeting.startedAt,
       options.audioSafetyBuffer ?? false,
     );
+    assertStartup();
     await liveMeetingSTT.start(engine, 'de-DE', ['Verity'], expectedParticipants ?? 4);
+    assertStartup();
     heartbeat = setInterval(() => {
       if (active?.id !== meeting.id || active.state !== 'active') return;
       void enqueueWrite(() => touchMeeting(meeting.id)).catch((error) =>
@@ -977,14 +1021,22 @@ async function startMeetingUnlocked(
     }, 5000);
   } catch (error) {
     stopVoiceDetector();
-    active = { ...meeting, state: 'interrupted', endedAt: Date.now(), error: String(error) };
     subscription?.remove();
     subscription = null;
+    if (canceled) {
+      await stopping;
+      if (!shutdownFailed)
+        await liveMeetingSTT.discardMeetingData?.(meeting.id).catch(() => undefined);
+    }
+    // Sync may already know about the provisional row; send a terminal update.
+    active = { ...meeting, state: 'interrupted', endedAt: Date.now(), error: String(error) };
     publish();
     await enqueueWrite(() => setMeetingState(meeting.id, 'interrupted', String(error))).catch(
       () => undefined,
     );
     throw error;
+  } finally {
+    options.startSignal?.removeEventListener('abort', cancelStartup);
   }
   return active;
 }

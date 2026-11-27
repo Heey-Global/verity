@@ -30,28 +30,35 @@ describe('repair ownership', () => {
     await ctx.store.repairs.resolve(first.id, 'wrong-sha');
     expect((await ctx.store.repairs.incidents('a'))[0]?.state).toBe('open');
   });
-  it('requires an automatic current mandate and enforces one owner per project', async () => {
-    const one = await ctx.store.repairs.observe('a', 'pr:1', 'sha', '{}');
-    const two = await ctx.store.repairs.observe('a', 'pr:2', 'sha', '{}');
+  it('requires an automatic current mandate and runs at most three repairs per project', async () => {
+    const incidents = [];
+    for (const n of [1, 2, 3, 4])
+      incidents.push(await ctx.store.repairs.observe('a', `pr:${n}`, 'sha', '{}'));
     await ctx.store.repairs.configure('a', 'user', 'monitor');
-    expect(await ctx.store.repairs.claim(one.id, 's1', 1)).toBeUndefined();
+    expect(await ctx.store.repairs.claim(incidents[0]!.id, 's1', 1)).toBeUndefined();
+    await ctx.store.repairs.configure('a', 'user', 'paused');
+    expect(await ctx.store.repairs.claim(incidents[0]!.id, 's1', 2)).toBeUndefined();
     await ctx.store.repairs.configure('a', 'user', 'automatic');
-    expect(await ctx.store.repairs.claim(one.id, 's1', 1)).toBeUndefined();
-    const results = await Promise.all([
-      ctx.store.repairs.claim(one.id, 's1', 2),
-      ctx.store.repairs.claim(two.id, 's2', 2),
-    ]);
-    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await ctx.store.repairs.claim(incidents[0]!.id, 's1', 2)).toBeUndefined();
+    const results = await Promise.all(
+      incidents.map((incident, i) => ctx.store.repairs.claim(incident.id, `s${i}`, 3)),
+    );
+    // The fourth waits in line instead of failing for good.
+    expect(results.filter(Boolean)).toHaveLength(3);
+    const waiting = incidents[results.findIndex((r) => !r)]!;
+    const running = results.find(Boolean)!;
+    await ctx.store.repairs.finishAttempt(running.id, running.dispatch_id!, 'verifying', '{}');
+    expect(await ctx.store.repairs.claim(waiting.id, 's9', 3)).toBeDefined();
   });
-  it('caps concurrent projects and never steals an owner on a retry', async () => {
+  it('limits projects independently and never steals an owner on a retry', async () => {
     for (const project of ['a', 'b', 'c']) {
       await ctx.store.repairs.configure(project, 'user', 'automatic');
       const incident = await ctx.store.repairs.observe(project, 'pr:1', 'sha', '{}');
       const claim = await ctx.store.repairs.claim(incident.id, `s-${project}`, 1);
-      expect(Boolean(claim)).toBe(project !== 'c');
+      expect(claim).toBeDefined();
       await ctx.store.repairs.retry(incident.id);
       expect((await ctx.store.repairs.incidents(project))[0]?.owner_session_id).toBe(
-        project === 'c' ? null : `s-${project}`,
+        `s-${project}`,
       );
     }
   });
@@ -71,7 +78,7 @@ describe('repair ownership', () => {
 });
 
 describe('QA consent', () => {
-  it('enrolls only coding projects in monitor and preserves explicit choices', async () => {
+  it('enrolls only coding projects in repair mode and preserves explicit choices', async () => {
     await ctx.store.upsertProject({
       id: 'local',
       kind: 'local',
@@ -93,7 +100,7 @@ describe('QA consent', () => {
     await ctx.store.repairs.seedQAMonitoring('admin');
     expect((await ctx.store.repairs.mandate('a'))?.mode).toBe('off');
     expect((await ctx.store.repairs.mandate('b'))?.mode).toBe('automatic');
-    expect((await ctx.store.repairs.mandate('c'))?.mode).toBe('monitor');
+    expect((await ctx.store.repairs.mandate('c'))?.mode).toBe('automatic');
     expect(await ctx.store.repairs.mandate('local')).toBeUndefined();
     expect(await ctx.store.repairs.mandate('control')).toBeUndefined();
   });
@@ -120,16 +127,22 @@ describe('QA consent', () => {
     expect(await ctx.store.repairs.qaApprove(proposal!.id, 'a', 'approver', true)).toBe(false);
     expect((await ctx.store.repairs.mandate('a'))?.mode).toBe('monitor');
   });
-  it('bounds wakes and consumes each decision atomically', async () => {
+  it('reviews without a daily cap and consumes each decision atomically', async () => {
     await ctx.store.repairs.configureQA(true, 'admin');
-    await ctx.store.repairs.qaSession('qa');
-    for (let i = 0; i < 24; i++) {
-      const id = await ctx.store.repairs.qaClaim(1, '[]', 0);
+    await ctx.store.createSession({
+      sessionId: 'qa',
+      projectId: 'a',
+      worktree: '/wt/qa',
+      model: 'm',
+    });
+    await ctx.store.repairs.projectQA.ensureRole('a');
+    await ctx.store.repairs.projectQA.attachSession('a', 'qa');
+    for (let i = 0; i < 30; i++) {
+      const id = await ctx.store.repairs.projectQA.claimReview('a', 1, '[]', 0);
       expect(id).toBeDefined();
-      expect(await ctx.store.repairs.qaFinish(id!, 'done')).toBe(true);
-      expect(await ctx.store.repairs.qaFinish(id!, 'again')).toBe(false);
+      expect(await ctx.store.repairs.projectQA.finishReview('a', id!, 'done')).toBe(true);
+      expect(await ctx.store.repairs.projectQA.finishReview('a', id!, 'again')).toBe(false);
     }
-    expect(await ctx.store.repairs.qaClaim(1, '[]', 0)).toBeUndefined();
   });
 });
 
@@ -396,8 +409,9 @@ it('upgrades pre-receipt ownership conservatively and round-trips the recovery m
   const incident = await ctx.store.repairs.observe('a', 'pr:1', 'sha', '{}');
   const claim = (await ctx.store.repairs.claim(incident.id, 'worker', 1))!;
   await ctx.store.repairs.configureQA(true, 'admin');
-  await ctx.store.repairs.qaSession('qa');
-  const qa = (await ctx.store.repairs.qaClaim(1, '[]', 0))!;
+  // A review of the retired installation-wide QA that was still running.
+  const qa = 'legacy-review';
+  await sql`update qa_coordinator set session_id = 'qa', active_dispatch = ${qa}`.execute(ctx.db);
   const migrator = new Migrator({ db: ctx.db, provider: migrationProvider });
   expect((await migrator.migrateTo('0173_qa_coordinator')).error).toBeUndefined();
   expect((await migrator.migrateToLatest()).error).toBeUndefined();

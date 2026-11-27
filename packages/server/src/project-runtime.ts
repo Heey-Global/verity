@@ -1,3 +1,9 @@
+import {
+  requestProjectCapacityLease,
+  type CapacityLeaseInput,
+  type CapacityLeaseReply,
+} from './project-runtime-capacity.js';
+export type { CapacityLeaseInput, CapacityLeaseReply } from './project-runtime-capacity.js';
 import { WebListenerClassifier, WEB_LISTENER_PROBE_SCRIPT } from './web-listener-probe.js';
 import { measureDockerExec } from './docker-exec-diagnostics.js';
 import { execFile } from 'node:child_process';
@@ -75,6 +81,7 @@ export interface ProjectRuntimeHealth {
 }
 
 export interface ProjectRuntime {
+  capacityLease?(project: ProjectRecord, input: CapacityLeaseInput): Promise<CapacityLeaseReply>;
   runAutomationScript?(
     project: ProjectRecord,
     settings: ProjectEnvironmentSettings,
@@ -218,6 +225,17 @@ export class DockerProjectRuntime implements ProjectRuntime {
   constructor(private readonly opts: DockerProjectRuntimeOptions = {}) {
     this.runner = opts.runner ?? defaultRunner;
     this.healthFetch = opts.healthFetch ?? fetch;
+  }
+
+  async capacityLease(
+    project: ProjectRecord,
+    input: CapacityLeaseInput,
+  ): Promise<CapacityLeaseReply> {
+    return requestProjectCapacityLease(project, input, {
+      runner: this.runner,
+      dockerCommand: this.opts.dockerCommand ?? 'docker',
+      env: this.dockerEnv(),
+    });
   }
 
   async runAutomationScript(

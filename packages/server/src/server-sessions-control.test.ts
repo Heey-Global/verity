@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { legacyAdministratorId } from './view-state-routes.js';
 import {
   app,
   cancelTurn,
@@ -146,10 +147,12 @@ describe('POST /sessions/:id/permissions/:toolUseId (#27)', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ sessionId: 's1', toolUseId: 'toolu_a', decided: true });
-    expect(decidePermission).toHaveBeenCalledWith('s1', 'toolu_a', {
-      behavior: 'allow',
-      updatedInput: { command: 'ls -la' },
-    });
+    expect(decidePermission).toHaveBeenCalledWith(
+      's1',
+      'toolu_a',
+      { behavior: 'allow', updatedInput: { command: 'ls -la' } },
+      { decidedByUser: legacyAdministratorId },
+    );
   });
 
   it('denies a tool, defaulting the message when none is given', async () => {
@@ -161,10 +164,12 @@ describe('POST /sessions/:id/permissions/:toolUseId (#27)', () => {
       payload: { behavior: 'deny' },
     });
     expect(res.statusCode).toBe(200);
-    expect(decidePermission).toHaveBeenCalledWith('s1', 'toolu_b', {
-      behavior: 'deny',
-      message: 'Denied by the operator.',
-    });
+    expect(decidePermission).toHaveBeenCalledWith(
+      's1',
+      'toolu_b',
+      { behavior: 'deny', message: 'Denied by the operator.' },
+      { decidedByUser: legacyAdministratorId },
+    );
   });
 
   it('404s when no prompt is pending under that id (already answered / turn ended)', async () => {

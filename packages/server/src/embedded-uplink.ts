@@ -1,7 +1,19 @@
+import type { FastifyInstance } from 'fastify';
+import { SealedError } from '@verity/store';
+import { installTeamOutbox } from './team-outbox-worker.js';
+import type { EventStore, VeritySettingsRecord } from '@verity/store';
+import type { ServerDeps } from './server-deps.js';
+import { previewSharingCapability } from './preview-capability.js';
+import { teamSharingStatus } from './uplink-feature-state.js';
+import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
 import type { DockerClient } from './docker.js';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import type { PreviewShareManager } from './preview-share-manager.js';
-import { UplinkControlClient, type UplinkControlClientOptions } from './uplink-control-client.js';
+import {
+  UplinkControlClient,
+  premiumFeatureSwitches,
+  type UplinkControlClientOptions,
+} from './uplink-control-client.js';
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
 import { returnPathSelection } from './remote-return-path-diagnostics.js';
@@ -109,4 +121,111 @@ export function createEmbeddedUplink({
     });
   }
   return { uplinkLog, returnPath, coordinatedRecording, remoteConnector, uplinkControl };
+}
+
+type EmbeddedUplink = ReturnType<typeof createEmbeddedUplink>;
+
+export function createEmbeddedUplinkBindings(ctx: {
+  eventStore: Pick<EventStore, 'getVeritySettings'>;
+  uplinkControl: EmbeddedUplink['uplinkControl'];
+  remoteConnector: EmbeddedUplink['remoteConnector'];
+  returnPath: EmbeddedUplink['returnPath'];
+  coordinatedRecording: EmbeddedUplink['coordinatedRecording'];
+  previewShareManager: PreviewShareManager | undefined;
+}): Pick<
+  ServerDeps,
+  | 'previewSharingCapability'
+  | 'previewShareManager'
+  | 'returnPathActivation'
+  | 'coordinatedRecording'
+  | 'returnPathConnectorCount'
+  | 'remoteControlDescriptor'
+  | 'uplinkDiagnostics'
+  | 'onUplinkCredentialsChanged'
+  | 'recheckUplink'
+  | 'onPremiumFeatureSwitchesChanged'
+  | 'attendeeEdge'
+> {
+  const {
+    eventStore,
+    uplinkControl,
+    remoteConnector,
+    returnPath,
+    coordinatedRecording,
+    previewShareManager,
+  } = ctx;
+  return {
+    previewSharingCapability: async () => {
+      const settings = await eventStore.getVeritySettings();
+      return previewSharingCapability(
+        uplinkControl?.canStartSharing() === true,
+        Boolean(settings?.uplinkSubscriptionKey?.trim()),
+        uplinkControl?.diagnostics(),
+        settings === undefined || premiumFeatureSwitches(settings).sharing,
+      );
+    },
+    ...(previewShareManager !== undefined ? { previewShareManager } : {}),
+    returnPathActivation: returnPath,
+    ...(coordinatedRecording ? { coordinatedRecording } : {}),
+    returnPathConnectorCount: () => remoteConnector?.diagnosticConnectorCount() ?? 0,
+    ...(uplinkControl !== undefined
+      ? { remoteControlDescriptor: () => uplinkControl.remoteControlDescriptor() }
+      : {}),
+    ...(uplinkControl !== undefined
+      ? {
+          uplinkDiagnostics: () => ({
+            ...uplinkControl.diagnostics(),
+            ...(remoteConnector === undefined
+              ? {}
+              : { remoteStreams: remoteConnector.recentStreams() }),
+          }),
+        }
+      : {}),
+    ...(uplinkControl !== undefined
+      ? {
+          onUplinkCredentialsChanged: () => uplinkControl.refreshCredentials(),
+          recheckUplink: () => uplinkControl.checkEntitlements(),
+        }
+      : {}),
+    ...(uplinkControl !== undefined
+      ? {
+          onPremiumFeatureSwitchesChanged: (settings: VeritySettingsRecord) =>
+            applyPremiumFeatureSwitches(settings, uplinkControl, previewShareManager),
+        }
+      : {}),
+    ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
+  };
+}
+
+export function createEmbeddedTeamSharingBindings(ctx: {
+  config: Pick<EmbeddedServerConfig, 'devicePairing'>;
+  uplinkControl: EmbeddedUplink['uplinkControl'];
+}): Pick<ServerDeps, 'teamLinkIdentity' | 'teamSharing'> {
+  const { config, uplinkControl } = ctx;
+  return {
+    teamLinkIdentity: () => {
+      const identity = config.devicePairing?.identity();
+      const installation = uplinkControl?.teamInstallation();
+      return identity && installation && { ...identity, ...installation };
+    },
+    teamSharing: teamSharingStatus(uplinkControl),
+  };
+}
+
+export function installEmbeddedTeamOutbox(
+  app: FastifyInstance,
+  team: Parameters<typeof installTeamOutbox>[1]['team'],
+  uplinkControl: ReturnType<typeof createEmbeddedUplink>['uplinkControl'],
+  devicePairing: EmbeddedServerConfig['devicePairing'],
+): void {
+  if (uplinkControl !== undefined) {
+    // Deliver queued team changes to Uplink once it negotiated team v1.
+    installTeamOutbox(app, {
+      team,
+      uplink: uplinkControl,
+      identityKey: () => devicePairing?.identity().identityKey,
+      log: app.log,
+      isSealed: (error) => error instanceof SealedError,
+    });
+  }
 }

@@ -57,6 +57,8 @@ export function resolveDockerGid(
 ): string | undefined;
 
 export interface AgentSpawnBrokerOptions {
+  /** Trusted test seam; never accepted from a protocol frame. */
+  capacityLeaseRoot?: string;
   runtimeDir?: string;
   /** Internal inherited fence for an offline owner-operation child. */
   runtimeAdmissionLockFd?: number;
@@ -323,3 +325,31 @@ export function restrictedOpenCodePolicies(): {
   resource: string;
   effect: string;
 }[];
+
+export interface CapacityLeaseRequest {
+  protocolVersion: 1;
+  kind: 'capacity-lease';
+  action: 'create' | 'status' | 'retire';
+  operationId: string;
+  generation: string;
+}
+/** Create the broker-owned lease directory so agent confinement can expose it. */
+export function ensureCapacityLeaseRoot(options?: {
+  capacityLeaseRoot?: string;
+  enforceRoot?: boolean;
+}): Promise<string>;
+export function capacityLeaseRequest(
+  request: CapacityLeaseRequest,
+  options?: {
+    capacityLeaseRoot?: string;
+    enforceRoot?: boolean;
+  },
+): Promise<{
+  ok: true;
+  capacityLeaseVersion: 1;
+  operationId: string;
+  generation: string;
+  state: 'held' | 'idle' | 'retired' | 'unknown';
+  path: string;
+  identity?: { device: string; inode: string };
+}>;

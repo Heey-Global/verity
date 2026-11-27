@@ -12,6 +12,8 @@ import { router } from 'expo-router';
 import { Platform, Pressable, Text, View } from 'react-native';
 
 import { AgentLoginPanel } from '../../components/AgentLoginPanel';
+import { DopplerConnections } from '../doppler/DopplerConnections';
+import { Button, HintBox } from '../ui';
 import { SecretStoreSection } from '../../components/settings/SecretStoreSection';
 import { ProviderUsagePanel } from '../../components/settings/ProviderUsagePanel';
 import {
@@ -42,7 +44,7 @@ import { useSettingsFields } from '../../lib/useSettingsFields';
 // Module-level: these arrays' identity drives the field hooks, and they are the
 // complete list of keys a save from this screen may contain.
 const TEXT_FIELDS = ['transcribeBaseUrl', 'transcribeModel'] as const;
-const SECRET_FIELDS = ['transcribeApiKey', 'dopplerServiceToken'] as const;
+const SECRET_FIELDS = ['transcribeApiKey'] as const;
 
 /**
  * Which login the `?agentLogin=` deep link should open on arrival, if any.
@@ -107,7 +109,19 @@ export function ConnectionSettingsDetail({
       }}
     >
       {section === 'secret' ? <SecretStoreSection client={client} /> : null}
-      {managed && !writable && section !== 'secret' ? (
+      {managed && !writable && section === 'doppler' ? (
+        <HintBox
+          title="Secret store is locked"
+          message="Unlock the secret store to add a connection or change a token."
+        >
+          <Button
+            label="Unlock secret store"
+            variant="secondary"
+            onPress={() => router.push('/settings/secret-store')}
+          />
+        </HintBox>
+      ) : null}
+      {managed && !writable && section !== 'secret' && section !== 'doppler' ? (
         <SettingsListPanel>
           <SettingsNavRow
             icon="key"
@@ -305,36 +319,7 @@ export function ConnectionSettingsDetail({
       ) : null}
 
       {managed && section === 'doppler' ? (
-        <SettingsGroup title="Connection">
-          {section === 'doppler' ? (
-            <SettingsDisclosure
-              onCollapse={() => {
-                text.commit();
-                secrets.commit();
-              }}
-              title="Doppler"
-              icon="cloud"
-              summary={settings?.dopplerServiceTokenConfigured ? 'Configured' : 'Optional'}
-            >
-              <Text style={styles.reproSubtitle}>
-                Account token used by project-level Doppler bindings. Stored encrypted and never
-                shown again.
-              </Text>
-              <SecretPasteField
-                label="Service Account token (dp.sa.…)"
-                placeholder="Paste the Doppler token…"
-                value={secrets.values.dopplerServiceToken}
-                onChangeText={(value) => secrets.set('dopplerServiceToken', value)}
-                configured={settings?.dopplerServiceTokenConfigured ?? false}
-                editable={writable}
-                onBlur={secrets.commit}
-              />
-              {!writable ? (
-                <Text style={styles.reproHint}>Unlock the secret store to change this.</Text>
-              ) : null}
-            </SettingsDisclosure>
-          ) : null}
-        </SettingsGroup>
+        <DopplerConnections client={client} writable={writable} />
       ) : null}
 
       {section === 'transcription' ? (

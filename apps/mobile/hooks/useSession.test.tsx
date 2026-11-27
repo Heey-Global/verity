@@ -1,4 +1,4 @@
-import { beginSessionSwitch } from '@verity/mobile';
+import { beginSessionSwitch, subscribeSettledPermissions } from '@verity/mobile';
 import type { SessionModelState, VerityClient } from '@verity/mobile';
 import { act, renderHook } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
@@ -15,26 +15,35 @@ interface MockModel {
   refreshActivity: jest.Mock;
   refreshMetadata: jest.Mock;
   retryHistory: jest.Mock;
+  onPermissionSettled?: (toolUseId: string, accepted: boolean) => void;
 }
 const mockModels: MockModel[] = [];
 jest.mock('@verity/mobile', () => ({
   ...jest.requireActual<typeof import('@verity/mobile')>('@verity/mobile'),
-  SessionModel: jest.fn().mockImplementation((options: { onChange: MockModel['onChange'] }) => {
-    const model: MockModel = {
-      state: { loaded: false, name: 'initial' } as SessionModelState,
-      onChange: options.onChange,
-      start: jest.fn(),
-      stop: jest.fn(),
-      pause: jest.fn(),
-      resume: jest.fn(),
-      setView: jest.fn(),
-      refreshActivity: jest.fn(),
-      refreshMetadata: jest.fn(),
-      retryHistory: jest.fn(),
-    };
-    mockModels.push(model);
-    return model;
-  }),
+  SessionModel: jest
+    .fn()
+    .mockImplementation(
+      (options: {
+        onChange: MockModel['onChange'];
+        onPermissionSettled?: MockModel['onPermissionSettled'];
+      }) => {
+        const model: MockModel = {
+          state: { loaded: false, name: 'initial' } as SessionModelState,
+          onChange: options.onChange,
+          onPermissionSettled: options.onPermissionSettled,
+          start: jest.fn(),
+          stop: jest.fn(),
+          pause: jest.fn(),
+          resume: jest.fn(),
+          setView: jest.fn(),
+          refreshActivity: jest.fn(),
+          refreshMetadata: jest.fn(),
+          retryHistory: jest.fn(),
+        };
+        mockModels.push(model);
+        return model;
+      },
+    ),
 }));
 const mockRefreshSubscriptions: { refresh: () => unknown; filter: (path: string) => boolean }[] =
   [];
@@ -73,6 +82,18 @@ describe('useSession frame publication', () => {
     const { result } = renderHook(() => useSession(client, 's1', 'http://host'));
     act(() => result.current.retryHistory());
     expect(mockModels[0]?.retryHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides a permission elsewhere only after the server accepted the decision', () => {
+    // A refused decision (404) can leave the request pending on the server;
+    // announcing it as settled would drop a Home card the server still shows.
+    const settled: string[] = [];
+    const detach = subscribeSettledPermissions((_sessionId, toolUseId) => settled.push(toolUseId));
+    renderHook(() => useSession(client, 's1', 'http://host'));
+    act(() => mockModels[0]?.onPermissionSettled?.('refused', false));
+    act(() => mockModels[0]?.onPermissionSettled?.('accepted', true));
+    detach();
+    expect(settled).toEqual(['accepted']);
   });
 
   it('refreshes metadata after session settings change', () => {

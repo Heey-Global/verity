@@ -1,0 +1,287 @@
+import { appendExternalPromptData, type AgentEvent } from '@verity/events';
+import type { PermissionDecision, PermissionRequest } from '@verity/adapter-claude';
+
+export interface DetachedPermission extends PermissionRequest {
+  brokeredGrantBindingId?: string;
+  createdAt?: number;
+  secretSource?: { project: string; config: string };
+}
+
+type DecisionNotice = Extract<AgentEvent, { t: 'notice' }>;
+type ApprovalOutcome = NonNullable<DecisionNotice['secretApproval']>['decision'];
+
+export interface DetachedPermissionProvider {
+  listUnrecordedDecisions?(sessionId: string): Promise<DecisionNotice[]>;
+  list(sessionId: string): Promise<DetachedPermission[]>;
+  failScoped?(sessionId: string, id: string): Promise<void>;
+  markScopedSaved?(sessionId: string, id: string): Promise<void>;
+  completeScoped?(sessionId: string, id: string): Promise<void>;
+  resumeApproved?(sessionId: string): Promise<void>;
+  decide(
+    sessionId: string,
+    id: string,
+    decision: PermissionDecision,
+    actorId: string,
+    scope: 'once' | 'session' | 'project',
+  ): Promise<boolean>;
+}
+
+/** Cards outlive the caller. Only an exact later tool invocation can redeem approval. */
+export class DetachedPermissions {
+  private provider?: DetachedPermissionProvider;
+  private readonly requests = new Map<string, Map<string, DetachedPermission>>();
+  private readonly surfaced = new Set<string>();
+
+  private readonly operations = new Map<string, Promise<unknown>>();
+
+  private async serialize<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.operations.get(sessionId) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(operation);
+    this.operations.set(sessionId, next);
+    try {
+      return await next;
+    } finally {
+      if (this.operations.get(sessionId) === next) this.operations.delete(sessionId);
+    }
+  }
+
+  configure(provider: DetachedPermissionProvider): void {
+    this.provider = provider;
+  }
+
+  ids(sessionId: string): string[] {
+    return [...(this.requests.get(sessionId)?.keys() ?? [])];
+  }
+
+  descriptors(sessionId: string) {
+    return [...(this.requests.get(sessionId)?.values() ?? [])].map((request) => ({
+      toolUseId: request.toolUseId,
+      tool: request.toolName,
+      riskClass: 'ask' as const,
+      grantChannel: 'acp' as const,
+      detached: true as const,
+      ...(request.createdAt === undefined ? {} : { createdAt: request.createdAt }),
+      input: request.input,
+      ...(request.secretSource && { secretSource: request.secretSource }),
+    }));
+  }
+
+  async refresh(
+    sessionId: string,
+    publish: (request: DetachedPermission) => Promise<void>,
+  ): Promise<void> {
+    return this.serialize(sessionId, async () => {
+      if (!this.provider) return;
+      const pending = await this.provider.list(sessionId);
+      const liveIds = new Set(pending.map((request) => request.toolUseId));
+      for (const oldId of this.ids(sessionId)) if (!liveIds.has(oldId)) this.surfaced.delete(oldId);
+      this.requests.set(sessionId, new Map(pending.map((request) => [request.toolUseId, request])));
+      for (const request of pending) {
+        if (this.surfaced.has(request.toolUseId)) continue;
+        await publish(request);
+        this.surfaced.add(request.toolUseId);
+      }
+    });
+  }
+
+  async failScoped(sessionId: string, id: string): Promise<void> {
+    await this.provider?.failScoped?.(sessionId, id);
+  }
+
+  async completeScoped(sessionId: string, id: string): Promise<void> {
+    await this.provider?.completeScoped?.(sessionId, id);
+  }
+
+  async markScopedSaved(sessionId: string, id: string): Promise<void> {
+    await this.provider?.markScopedSaved?.(sessionId, id);
+  }
+
+  async unrecordedDecisions(sessionId: string): Promise<DecisionNotice[]> {
+    return (await this.provider?.listUnrecordedDecisions?.(sessionId)) ?? [];
+  }
+
+  async resumeApproved(sessionId: string): Promise<void> {
+    await this.provider?.resumeApproved?.(sessionId);
+  }
+
+  async decide(
+    sessionId: string,
+    id: string,
+    decision: PermissionDecision,
+    actorId: string,
+    scope: 'once' | 'session' | 'project',
+  ): Promise<DetachedPermission | undefined> {
+    return this.serialize(sessionId, async () => {
+      const request = this.requests.get(sessionId)?.get(id);
+      if (!request || !this.provider) return undefined;
+      if (!(await this.provider.decide(sessionId, id, decision, actorId, scope))) return undefined;
+      this.requests.get(sessionId)?.delete(id);
+      this.surfaced.delete(id);
+      return request;
+    });
+  }
+}
+
+export function detachedPermissionEvent(request: DetachedPermission): AgentEvent {
+  return {
+    t: 'permission',
+    id: request.toolUseId,
+    tool: request.toolName,
+    input: request.input,
+    riskClass: 'ask',
+    grantChannel: 'acp',
+    ...(request.secretSource && { secretSource: request.secretSource }),
+  };
+}
+
+export function detachedContinuation(request: PermissionRequest, actorId?: string) {
+  return {
+    prompt: appendExternalPromptData(
+      `Verity approval ${request.toolUseId} was granted for the exact ${request.toolName} request below. Continue the original authorized task if still relevant. Retry that exact tool request once to redeem the approval; do not execute it by another route or repeat an operation whose execution is uncertain. The approved receipt is valid for five minutes. No other action or broader access was approved.`,
+      'Approved secret tool request',
+      { tool: request.toolName, input: request.input },
+    ),
+    dispatch: {
+      origin: 'secret-approval' as const,
+      durableDispatchId: `secret-approval:${request.toolUseId}`,
+      displayPrompt: `Continue after approval of ${request.toolName} (${request.toolUseId}).`,
+      ...(actorId === undefined ? {} : { initiatedBy: { userId: actorId } }),
+    },
+  };
+}
+
+const scopedApprovalFailureReasons = new Map([
+  ['Doppler access changed before saving approval', 'Doppler binding changed or is unavailable'],
+  ['invalid brokered secret grant target', 'invalid grant target'],
+  ['invalid versioned trusted CLI grant target', 'invalid CLI grant target'],
+  ['brokered secret grant persistence is unavailable', 'grant persistence unavailable'],
+  ['brokered secret session has no project', 'session has no project'],
+  ['a standing grant needs the person granting it', 'approver identity unavailable'],
+  ['The approved request no longer exists.', 'approval receipt missing'],
+  ['the grant was revoked while it was being approved', 'grant revoked concurrently'],
+  ['23503', 'database foreign key violation'],
+  ['23505', 'database uniqueness violation'],
+  ['23514', 'database check constraint violation'],
+  ['40001', 'database serialization failure'],
+  ['40P01', 'database deadlock'],
+  ['42P01', 'database table missing'],
+  ['42703', 'database column missing'],
+]);
+
+function scopedApprovalFailure(step: string, error: unknown): Error {
+  const code = error instanceof Error && 'code' in error ? error.code : undefined;
+  const reason =
+    (typeof code === 'string' ? scopedApprovalFailureReasons.get(code) : undefined) ??
+    (error instanceof Error ? scopedApprovalFailureReasons.get(error.message) : undefined) ??
+    'unclassified error';
+  // The original message, stack and cause may contain SQL values or tool input.
+  return new Error(`Reusable secret approval failed while ${step} (${reason})`);
+}
+
+export async function decideDetachedPermission(input: {
+  permissions: DetachedPermissions;
+  sessionId: string;
+  toolUseId: string;
+  decision: PermissionDecision;
+  options?:
+    | {
+        scope?: 'once' | 'session' | 'project' | 'forever';
+        actorId?: string;
+        /** Whether the reusable scope was saved, and whether the allowed action
+         *  goes on: an unsaved scope or unrecorded continuation stops it here. */
+        onScopeSaved?: (saved: boolean, actionContinued: boolean) => void;
+      }
+    | undefined;
+  persistScoped: (request: DetachedPermission, scope: 'session' | 'project') => Promise<void>;
+  reportError?: (error: Error) => void;
+  recordDecision?: (event: Extract<AgentEvent, { t: 'notice' }>) => Promise<void>;
+  notice: (text: string) => Promise<void>;
+  resume: (request: DetachedPermission, actorId?: string) => Promise<void>;
+}): Promise<boolean | undefined> {
+  const { permissions, sessionId, toolUseId, decision, options } = input;
+  if (!permissions.ids(sessionId).includes(toolUseId)) return undefined;
+  if (
+    (decision.behavior === 'allow' && decision.updatedInput !== undefined) ||
+    options?.scope === 'forever'
+  )
+    return false;
+  const request = await permissions.decide(
+    sessionId,
+    toolUseId,
+    decision,
+    options?.actorId ?? '__local__',
+    options?.scope ?? 'once',
+  );
+  if (!request) return false;
+  let continuationAllowed = true;
+  let reusableScopeSaved = false;
+  if (decision.behavior === 'allow' && options?.scope && options.scope !== 'once') {
+    let step = 'retiring the approval receipt';
+    try {
+      // Retire exact once consent before saving reusable scope, so later grant
+      // revocation cannot uncover a latent receipt for the same operation.
+      await permissions.completeScoped(sessionId, toolUseId);
+      step = 'saving the grant';
+      await input.persistScoped(request, options.scope);
+      reusableScopeSaved = true;
+    } catch (error) {
+      input.reportError?.(scopedApprovalFailure(step, error));
+      await permissions.failScoped(sessionId, toolUseId);
+      continuationAllowed = false;
+      options.onScopeSaved?.(false, false);
+    }
+  }
+  if (reusableScopeSaved) {
+    try {
+      await permissions.markScopedSaved(sessionId, toolUseId);
+    } catch (error) {
+      input.reportError?.(scopedApprovalFailure('recording continuation', error));
+      continuationAllowed = false;
+    }
+    options?.onScopeSaved?.(true, continuationAllowed);
+  }
+  const outcome =
+    decision.behavior === 'deny'
+      ? 'denied'
+      : !continuationAllowed && !reusableScopeSaved
+        ? 'save_failed'
+        : options?.scope === 'session' || options?.scope === 'project'
+          ? options.scope
+          : 'once';
+  await input.recordDecision?.(secretApprovalNotice(request, outcome));
+  if (!continuationAllowed) {
+    await input.notice(
+      reusableScopeSaved
+        ? 'The reusable secret approval was saved and remains active, but automatic continuation could not be recorded. Answering the card did not execute the action. If still needed, retry only the exact original authorized request once.'
+        : 'The requested reusable secret approval could not be saved. Nothing ran and this approval will not resume the action. If the operation is still needed, choose Review again on the original approval card. If that option is unavailable, ask the agent to submit a new request for review.',
+    );
+  }
+  if (decision.behavior === 'allow' && continuationAllowed)
+    await input.resume(request, options?.actorId === '__local__' ? undefined : options?.actorId);
+  return true;
+}
+
+export function secretApprovalNotice(
+  request: DetachedPermission,
+  decision: ApprovalOutcome,
+): DecisionNotice {
+  const text = {
+    once: 'Secret request allowed once.',
+    session: 'Secret request allowed for this session.',
+    project: 'Secret request allowed in this project for 30 days.',
+    denied: 'Secret request denied.',
+    save_failed: 'Secret approval could not be saved.',
+  }[decision];
+  return {
+    t: 'notice',
+    role: 'agent',
+    text,
+    secretApproval: {
+      id: request.toolUseId,
+      tool: request.toolName,
+      input: request.input,
+      ...(request.secretSource && { secretSource: request.secretSource }),
+      decision,
+    },
+  };
+}

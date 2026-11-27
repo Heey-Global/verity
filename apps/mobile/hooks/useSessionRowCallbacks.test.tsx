@@ -35,12 +35,11 @@ it('uses updated session snapshots and handlers for every action', () => {
   hook.rerender(next);
   const actions = hook.result.current.get('a')!;
   actions.onRename();
-  actions.onOpenLinks();
   actions.onToggleFavorite();
   actions.onDelete();
   actions.onOpen();
   actions.onSelect?.();
-  expect(props.onRename.mock.calls).toEqual([[session], [{ ...session, openLinks: true }]]);
+  expect(props.onRename.mock.calls).toEqual([[session]]);
   for (const handler of [props.onFavorite, props.onDelete, props.onOpen]) {
     expect(handler).toHaveBeenCalledWith(session);
   }

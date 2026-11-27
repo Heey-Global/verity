@@ -30,11 +30,25 @@ through the normal managed sandbox update flow before using cross-host modules.
 No worktree data needs migration. Additive database migrations preserve existing
 project repositories as the default and leave legacy worktrees in place.
 
-Authorize inquiry targets under project Agents settings. The authorization is
-revocable and requires project execution rights at delivery. Each source session
-reuses one target session per target project. Questions run read-only; changes wait
-for a human decision in the target session. Home and project/session views show the
-same durable approval. Peer messages do not grant execution authority.
+A session can ask another project a question or request a change there. Every
+request waits for a person's decision on an approval card, shown in the asking
+session, on Home and on the target project's page. Nothing reaches the target
+project before the request is allowed; its target session is created only then,
+so a rejected request leaves nothing behind. The card offers:
+
+- **Allow once** delivers this request.
+- **Always allow** delivers this question and lets later questions from the same
+  source project to the same target project run without a card. It is offered for
+  questions only and needs execution rights on both projects.
+- **Reject** closes the request.
+
+Changes always need their own approval. Project settings > Agents > Allowed project
+inquiries lists the targets a project has always allowed; revoking one puts its
+questions back behind a card and stops questions it admitted that have not been
+delivered yet. Deciding requires execution rights on the target project, and
+delivery checks the requesting user's execution rights on both projects again.
+Each source session reuses one target session per target project. Questions run
+read-only. Peer messages do not grant execution authority.
 
 Requests and answers survive restarts. Recovery processes at most 100 requests and
 100 answers per pass, advancing through the queue even when earlier deliveries
@@ -57,3 +71,17 @@ A repository without an `AGENTS.md` is omitted. A repository whose code host
 cannot be reached is named as not loaded, so a missing file and an unanswered
 request are never shown the same way. Reading the list requires read access to
 the project; editing project Instructions requires manage access.
+
+## Doppler bindings
+
+Like repositories, a project can read secrets from several Doppler projects and
+configs. Administrators add Doppler connections, one token per workplace, under
+Settings, Connectors, Doppler, and bind any project and config of them in the
+project's Doppler settings. One binding is the default: agents address its
+secrets as `NAME` and every other binding's as `project/config/NAME`. The same
+project and config can be bound only once per project. Members connect their own
+token for each connection the project uses; the administrator's turns fall back
+to the connection's instance token. Deleting a connection in use warns with the
+affected projects and then removes its bindings, personal tokens and grants
+everywhere. A connection pinned to the Secret Job catalog stays in its current
+workplace until the catalog is reconfigured. See [ADR 0031](adr/0031-multiple-doppler-connections.md).

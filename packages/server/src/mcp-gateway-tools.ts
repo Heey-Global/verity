@@ -1,3 +1,4 @@
+import { brokeredExecutionClaimId } from './brokered-http-consumption.js';
 import { parseBrokeredDopplerBinding } from './brokered-doppler-binding.js';
 import { requestRunnerSupervisor, runSupervisorTrustedCli } from '@verity/session';
 import { join } from 'node:path';
@@ -104,6 +105,7 @@ export function createMcpGatewayToolExecutor(options: {
     toolName,
     request,
     approvedByCard,
+    executionClaimId,
     authorizationSnapshot,
   }) => {
     if (toolName === 'verity_secret_output') {
@@ -128,6 +130,7 @@ export function createMcpGatewayToolExecutor(options: {
         turnId,
         {
           id: callId,
+          consumptionId: executionClaimId ?? brokeredExecutionClaimId(invocationId),
           name: 'verity_secret_run',
           input: request,
           ...(authorizationSnapshot === undefined
@@ -140,6 +143,7 @@ export function createMcpGatewayToolExecutor(options: {
     if (toolName === 'verity_http_request') {
       return await options.brokeredHttpTool(projectId, sessionId, turnId, {
         id: callId,
+        consumptionId: executionClaimId ?? brokeredExecutionClaimId(invocationId),
         name: 'verity_http_request',
         input: request,
         ...(authorizationSnapshot === undefined
@@ -205,6 +209,7 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_recent_session_messages' ||
       toolName === 'verity_publish_session_progress' ||
       toolName === 'verity_project_inquiry' ||
+      toolName === 'verity_session_coordinate' ||
       toolName === 'verity_send_session_message' ||
       toolName === 'verity_list_linked_sessions' ||
       toolName === 'verity_start_planning' ||

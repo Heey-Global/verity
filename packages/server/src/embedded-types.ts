@@ -147,7 +147,10 @@ export interface EmbeddedServerConfig {
         /** Transitional/test resolver seam. Production should configure `doppler` instead. */
         resolveSecrets?: SecretResolver;
         /** Real provider resolver. Production defaults to the durable server-owned catalog. */
-        doppler?: Omit<DopplerSecretResolverOptions, 'catalog' | 'readCredential'>;
+        doppler?: Omit<DopplerSecretResolverOptions, 'catalog' | 'readCredential'> & {
+          /** Explicit instance connection for this catalog. Defaults to the migrated legacy ID. */
+          connectionId?: string;
+        };
         authorizeWorkload: WorkloadAuthorizer;
         authorizeCurrentClaims: (claims: RunGrantClaims) => Promise<boolean>;
         /** Project-scoped administration boundary for provider credentials and catalog records. */

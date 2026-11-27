@@ -2,7 +2,6 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 import { VerityApiError, type VerityClient } from '@verity/mobile';
 import { Modal, ScrollView, View } from 'react-native';
 import { SessionSettingsDialog } from './SessionSettingsDialog';
-import { isLinkableSession } from '../lib/sessionLinks';
 
 jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => `operation-${Math.random()}`) }));
 jest.mock('./Icon', () => ({ Icon: () => null }));
@@ -34,12 +33,7 @@ const result = {
   retainedWorktree: '/a/old',
   retainedBranch: 'old',
 };
-function setup(
-  moveSession: jest.Mock,
-  sessionId = 's',
-  initialLinks?: Awaited<ReturnType<VerityClient['listSessionLinks']>>,
-  loadLinks?: jest.Mock,
-) {
+function setup(moveSession: jest.Mock, sessionId = 's') {
   const props = {
     sessionId,
     sessionName: 'Product images',
@@ -54,13 +48,6 @@ function setup(
     client: {
       moveSession,
       renameSession: jest.fn().mockResolvedValue({}),
-      listSessionLinks:
-        loadLinks ??
-        jest.fn(() =>
-          initialLinks ? Promise.resolve(initialLinks) : new Promise(() => undefined),
-        ),
-      linkSessions: jest.fn().mockResolvedValue(undefined),
-      unlinkSessions: jest.fn().mockResolvedValue(undefined),
     } as unknown as VerityClient,
     onClose: jest.fn(),
     onChanged: jest.fn(),
@@ -77,121 +64,13 @@ function move() {
   fireEvent.press(screen.getByRole('button', { name: /Save and move|Retry move/ }));
 }
 
-it('links a chosen session without changing the name or project', async () => {
-  const view = setup(jest.fn(), 's', []);
-  await act(async () => undefined);
-  const client = view.props.client as jest.Mocked<VerityClient>;
-  view.rerender(
-    <SessionSettingsDialog
-      {...view.props}
-      linkableSessions={[
-        { id: 'peer', name: 'Backend work', projectId: 'b', projectName: 'Target project' },
-      ]}
-    />,
-  );
-  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
-  expect(client.linkSessions).not.toHaveBeenCalled();
-  fireEvent.press(screen.getByRole('button', { name: 'Done linking' }));
-  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
-  fireEvent.press(screen.getByRole('button', { name: 'Save' }));
-  await waitFor(() => expect(client.linkSessions).toHaveBeenCalledWith('s', 'peer'));
-  expect(client.renameSession).not.toHaveBeenCalled();
-  expect(client.moveSession).not.toHaveBeenCalled();
-});
-
-it.each(['local', 'control_plane'] as const)(
-  'finds and links another session in the current %s project while excluding itself',
-  async (kind) => {
-    const view = setup(jest.fn(), 's', []);
-    const client = view.props.client as jest.Mocked<VerityClient>;
-    const candidates = [
-      { sessionId: 's', name: 'Product images', projectId: 'a', projectName: 'Source project' },
-      { sessionId: 'peer', name: 'Backend work', projectId: 'a', projectName: 'Source project' },
-      { sessionId: 'docs', name: 'Docs refresh', projectId: 'b', projectName: 'Target project' },
-    ];
-    const linkableSessions = candidates
-      .filter((candidate) =>
-        isLinkableSession(candidate, 's', [
-          { id: 'a', state: 'active', kind },
-          { id: 'b', state: 'active', kind: 'local' },
-        ]),
-      )
-      .map((candidate) => ({ ...candidate, id: candidate.sessionId }));
-    view.rerender(<SessionSettingsDialog {...view.props} linkableSessions={linkableSessions} />);
-    await act(async () => undefined);
-    fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
-    expect(screen.queryByRole('button', { name: 'Link Product images' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Link Docs refresh' })).toBeTruthy();
-    fireEvent.changeText(screen.getByLabelText('Search sessions'), 'Source project');
-    expect(screen.queryByRole('button', { name: 'Link Docs refresh' })).toBeNull();
-    fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
-    expect(client.linkSessions).not.toHaveBeenCalled();
-    fireEvent.press(screen.getByRole('button', { name: 'Done linking' }));
-    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
-    fireEvent.press(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(client.linkSessions).toHaveBeenCalledWith('s', 'peer'));
-  },
-);
-
-it('finds a session by search and keeps the link view open to link more', async () => {
-  const view = setup(jest.fn(), 's', []);
-  const client = view.props.client as jest.Mocked<VerityClient>;
-  view.rerender(
-    <SessionSettingsDialog
-      {...view.props}
-      linkableSessions={[
-        { id: 'peer', name: 'Backend work', projectId: 'b', projectName: 'Target project' },
-        { id: 'docs', name: 'Docs refresh', projectId: 'c', projectName: 'Other project' },
-      ]}
-    />,
-  );
-  await act(async () => undefined);
-  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
-  // Every candidate is one tap away: no project step to open before a session shows.
-  expect(screen.getByRole('button', { name: 'Link Docs refresh' })).toBeTruthy();
-  fireEvent.changeText(screen.getByLabelText('Search sessions'), 'backend');
-  expect(screen.queryByRole('button', { name: 'Link Docs refresh' })).toBeNull();
-  fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
-  expect(client.linkSessions).not.toHaveBeenCalled();
-  // Linking must not bounce the operator back to settings, or linking a second
-  // session means finding the entry point again.
-  expect(await screen.findByRole('button', { name: 'Backend work, linked' })).toBeDisabled();
-  fireEvent.press(screen.getByRole('button', { name: 'Done linking' }));
-  expect(screen.getByRole('button', { name: 'Disconnect Backend work' })).toBeTruthy();
-});
-
-it('returns from the link view on Android back instead of closing the dialog', async () => {
-  const { props } = setup(jest.fn(), 's', []);
-  await act(async () => undefined);
-  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
+it('closes on Android back and offers no manual session linking', () => {
+  const { props } = setup(jest.fn());
+  // Links arise from coordination only; a leftover section would invite edits the server refuses.
+  expect(screen.queryByText('Linked sessions')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Link a session' })).toBeNull();
   act(() => screen.UNSAFE_getByType(Modal).props.onRequestClose());
-  expect(props.onClose).not.toHaveBeenCalled();
-  expect(screen.getByLabelText('Session name')).toBeTruthy();
-});
-
-it('reports why the server refused a link where it can be seen', async () => {
-  const view = setup(jest.fn(), 's', []);
-  await act(async () => undefined);
-  const client = view.props.client as jest.Mocked<VerityClient>;
-  client.linkSessions.mockRejectedValue(
-    new VerityApiError(400, 'both sessions must belong to active projects'),
-  );
-  view.rerender(
-    <SessionSettingsDialog
-      {...view.props}
-      linkableSessions={[
-        { id: 'peer', name: 'Backend work', projectId: 'b', projectName: 'Target project' },
-      ]}
-    />,
-  );
-  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Done linking' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Save' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent(
-    'Could not save session links: both sessions must belong to active projects.',
-  );
+  expect(props.onClose).toHaveBeenCalled();
 });
 
 it('leaves touches on the body to its scroll view', () => {
@@ -415,87 +294,4 @@ it('enables Save only while the trimmed name or project has changed', () => {
   expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   selectTarget();
   expect(screen.getByRole('button', { name: 'Save and move' })).toBeEnabled();
-});
-
-it('discards added links on Cancel and clears dirty state when an addition is removed', async () => {
-  const view = setup(jest.fn(), 's', []);
-  await act(async () => undefined);
-  const client = view.props.client as jest.Mocked<VerityClient>;
-  view.rerender(
-    <SessionSettingsDialog
-      {...view.props}
-      linkableSessions={[
-        { id: 'peer', name: 'Backend work', projectId: 'a', projectName: 'Source project' },
-      ]}
-    />,
-  );
-  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Done linking' }));
-  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
-  expect(screen.getByRole('button', { name: 'Project' })).toBeDisabled();
-  fireEvent.press(screen.getByRole('button', { name: 'Disconnect Backend work' }));
-  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
-  fireEvent.press(screen.getByRole('button', { name: 'Link a session' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Link Backend work' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Done linking' }));
-  fireEvent.press(screen.getByText('Cancel'));
-  expect(view.props.onClose).toHaveBeenCalled();
-  expect(client.linkSessions).not.toHaveBeenCalled();
-  expect(client.unlinkSessions).not.toHaveBeenCalled();
-});
-
-it('stages removals and retries only the remaining writes after a partial save', async () => {
-  const view = setup(jest.fn(), 's', [
-    { sessionId: 'peer', name: 'Backend work', projectId: 'a', projectName: 'Source project' },
-    { sessionId: 'docs', name: 'Docs refresh', projectId: 'a', projectName: 'Source project' },
-  ]);
-  await act(async () => undefined);
-  const client = view.props.client as jest.Mocked<VerityClient>;
-  client.unlinkSessions
-    .mockResolvedValueOnce(undefined)
-    .mockRejectedValueOnce(new Error('offline'))
-    .mockResolvedValue(undefined);
-  fireEvent.press(screen.getByRole('button', { name: 'Disconnect Backend work' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Disconnect Docs refresh' }));
-  expect(client.unlinkSessions).not.toHaveBeenCalled();
-  fireEvent.press(screen.getByRole('button', { name: 'Save' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent(
-    'Session links could not be saved. Please try again.',
-  );
-  expect(view.props.onClose).not.toHaveBeenCalled();
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
-  fireEvent.press(screen.getByRole('button', { name: 'Save' }));
-  await waitFor(() => expect(view.props.onClose).toHaveBeenCalled());
-  expect(client.unlinkSessions.mock.calls).toEqual([
-    ['s', 'peer'],
-    ['s', 'docs'],
-    ['s', 'docs'],
-  ]);
-});
-
-it('discards a pending removal on Cancel', async () => {
-  const view = setup(jest.fn(), 's', [
-    { sessionId: 'peer', name: 'Backend work', projectId: 'a', projectName: 'Source project' },
-  ]);
-  await act(async () => undefined);
-  fireEvent.press(screen.getByRole('button', { name: 'Disconnect Backend work' }));
-  expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
-  fireEvent.press(screen.getByText('Cancel'));
-  expect(view.props.client.unlinkSessions).not.toHaveBeenCalled();
-  expect(view.props.onClose).toHaveBeenCalled();
-});
-
-it('retries a failed initial link load without losing name edits', async () => {
-  const load = jest.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([]);
-  setup(jest.fn(), 's', [], load);
-  fireEvent.changeText(screen.getByLabelText('Session name'), 'Updated name');
-  expect(await screen.findByRole('alert')).toHaveTextContent(
-    'Linked sessions could not be loaded.',
-  );
-  expect(screen.getByRole('button', { name: 'Link a session' })).toBeDisabled();
-  fireEvent.press(screen.getByRole('button', { name: 'Retry loading linked sessions' }));
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Link a session' })).toBeEnabled());
-  expect(screen.getByLabelText('Session name')).toHaveDisplayValue('Updated name');
-  expect(load).toHaveBeenCalledTimes(2);
 });

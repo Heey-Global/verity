@@ -1,13 +1,16 @@
 import {
+  ASSISTANT_APPROVAL_INPUT_MAX_BYTES,
+  ASSISTANT_HANDOFF_DECLINED,
   ASSISTANT_TOOL,
   assistantMessageText,
   parseChoicesBlock,
   type AgentEvent,
+  type AssistantApproval,
   type AssistantConversation,
   type AssistantConversationItem,
   type AssistantQuestion,
 } from '@verity/events';
-import type { SequencedEvent } from '@verity/store';
+import type { AssistantHandoffResult, SequencedEvent } from '@verity/store';
 
 import type { SessionStatus } from './status.js';
 
@@ -45,6 +48,10 @@ export function projectAssistantConversation(
   const tools = new Map<string, number>();
   let reply: { id: string; at: number; text: string } | undefined;
   let choices: { seq: number; event: Extract<AgentEvent, { t: 'choices' }> } | undefined;
+  /** Each approval's request, from its `permission` event, by approval id. */
+  const requested = new Map<string, { input: unknown; seq: number }>();
+  /** Where each handoff card's tool call sits in the log. */
+  const cardSeq = new Map<AssistantConversationItem, number>();
   let failed = false;
   /** The user's latest message, timed until the turn it started ends. */
   let timed: Extract<AssistantConversationItem, { kind: 'message' }> | undefined;
@@ -88,6 +95,7 @@ export function projectAssistantConversation(
         if (item === undefined) break;
         closeReply();
         tools.set(event.id, items.length);
+        if (item.kind === 'assignment') cardSeq.set(item, seq);
         items.push(item);
         break;
       }
@@ -95,10 +103,18 @@ export function projectAssistantConversation(
         const index = tools.get(event.id);
         const item = index === undefined ? undefined : items[index];
         if (item?.kind === 'task') item.state = event.isError ? 'failed' : 'saved';
-        if (item?.kind === 'assignment') item.state = event.isError ? 'failed' : 'sent';
+        if (item?.kind === 'assignment') {
+          item.state = event.isError ? 'failed' : 'sent';
+          const target = event.isError ? undefined : handoffTarget(event.output);
+          if (target !== undefined) item.sessionId = target;
+          if (event.isError && declinedOnCard(event.output)) item.declined = true;
+        }
         if (item?.kind === 'meeting') item.state = event.isError ? 'failed' : 'ready';
         break;
       }
+      case 'permission':
+        requested.set(event.id, { input: event.input, seq });
+        break;
       case 'choices':
         choices = { seq, event };
         break;
@@ -131,10 +147,29 @@ export function projectAssistantConversation(
           multiSelect: choices.event.multiSelect === true,
         }
       : null;
-  const approvals = facts.approvals.map((approval) => ({
+  // One budget for all of them: the conversation is read on every change, and several
+  // waiting approvals must not multiply it. Handoffs are served first, since their briefing
+  // is what the budget is sized for; one that no longer fits goes without its input, and
+  // the device sends the user to the session for it.
+  let budget = ASSISTANT_APPROVAL_INPUT_MAX_BYTES;
+  const carried = new Set<string>();
+  const byPriority = [...facts.approvals].sort(
+    (a, b) =>
+      Number(!isTool(a.tool, 'verity_session_handoff')) -
+      Number(!isTool(b.tool, 'verity_session_handoff')),
+  );
+  for (const approval of byPriority) {
+    const size = inputBytes(requested.get(approval.toolUseId)?.input);
+    if (size === undefined || size > budget) continue;
+    budget -= size;
+    carried.add(approval.toolUseId);
+  }
+  const approvals = facts.approvals.map((approval): AssistantApproval => ({
     id: approval.toolUseId,
     tool: approval.tool,
+    ...(carried.has(approval.toolUseId) ? { input: requested.get(approval.toolUseId)?.input } : {}),
   }));
+  linkHandoffApprovals(items, approvals, requested, cardSeq);
   const working = facts.busy || facts.status === 'running';
   return {
     revision: events.at(-1)?.seq ?? 0,
@@ -150,6 +185,130 @@ export function projectAssistantConversation(
     question,
     approvals,
   };
+}
+
+/** The sessions the conversation's handoff cards went to. */
+export function handoffTargets(items: readonly AssistantConversationItem[]): string[] {
+  return items.flatMap((item) =>
+    item.kind === 'assignment' && item.sessionId !== undefined ? [item.sessionId] : [],
+  );
+}
+
+/** Puts each recorded result on its handoff card. A repeated handoff to one session answers
+ *  only its newest card, since the record holds the result of the newest briefing. */
+export function attachHandoffResults(
+  items: AssistantConversationItem[],
+  recorded: readonly AssistantHandoffResult[],
+): void {
+  const results = new Map(recorded.map((result) => [result.target_session_id, result]));
+  for (const item of [...items].reverse()) {
+    if (item.kind !== 'assignment' || item.sessionId === undefined) continue;
+    const result = results.get(item.sessionId);
+    if (result === undefined) continue;
+    results.delete(item.sessionId);
+    item.result = {
+      delivered: result.delivered,
+      summary: result.summary,
+      ...(result.blocker === null ? {} : { blocker: result.blocker }),
+      at: result.at.getTime(),
+    };
+  }
+}
+
+/**
+ * Hands each waiting handoff approval to its card, so the card is decided in place.
+ *
+ * The gateway mints its own approval id, so the tool call's id cannot name it. The
+ * card is the newest unlinked still-pending handoff with the approval's title whose
+ * call came before the approval: a handoff waits on its approval before it can answer,
+ * and taking the approvals newest first keeps two with one title on their own cards,
+ * and a card a crashed turn left pending only claims an approval no newer card matches. The title
+ * comes from the full request, so an approval too large to carry still finds its card.
+ * Without a match the approval stays a card of its own rather than land on the wrong one.
+ */
+function linkHandoffApprovals(
+  items: AssistantConversationItem[],
+  approvals: readonly AssistantApproval[],
+  requested: ReadonlyMap<string, { input: unknown; seq: number }>,
+  cardSeq: ReadonlyMap<AssistantConversationItem, number>,
+): void {
+  const waiting = approvals
+    .filter((approval) => isTool(approval.tool, 'verity_session_handoff'))
+    .flatMap((approval) => {
+      const request = requested.get(approval.id);
+      return request === undefined ? [] : [{ approval, ...request }];
+    })
+    .sort((a, b) => b.seq - a.seq);
+  for (const { approval, input, seq } of waiting) {
+    const title =
+      typeof input === 'object' && input !== null
+        ? (input as { title?: unknown }).title
+        : undefined;
+    if (typeof title !== 'string') continue;
+    for (let i = items.length - 1; i >= 0; i -= 1) {
+      const item = items[i];
+      if (
+        item?.kind !== 'assignment' ||
+        item.state !== 'pending' ||
+        item.approvalId !== undefined ||
+        (cardSeq.get(item) ?? Infinity) > seq ||
+        item.title.trim() !== title.trim()
+      )
+        continue;
+      item.approvalId = approval.id;
+      break;
+    }
+  }
+}
+
+/** The serialized size of an approval's input, or undefined when there is none to carry. */
+function inputBytes(input: unknown): number | undefined {
+  if (input === undefined) return undefined;
+  try {
+    const serialized = JSON.stringify(input);
+    return serialized === undefined ? undefined : Buffer.byteLength(serialized, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a handoff's error result is the denial a device sends from the card. */
+function declinedOnCard(output: unknown): boolean {
+  try {
+    return ((typeof output === 'string' ? output : JSON.stringify(output)) ?? '').includes(
+      ASSISTANT_HANDOFF_DECLINED,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The target session a handoff's result names. The output is the tool's JSON answer,
+ *  possibly wrapped as MCP text content, so the id is read from its serialized form. */
+function handoffTarget(output: unknown): string | undefined {
+  const text =
+    typeof output === 'string'
+      ? output
+      : Array.isArray(output)
+        ? output
+            .map((part: unknown) =>
+              typeof part === 'object' && part !== null && 'text' in part ? String(part.text) : '',
+            )
+            .join('')
+        : undefined;
+  let parsed: unknown = output;
+  if (text !== undefined) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
+  const sessionId =
+    typeof parsed === 'object' && parsed !== null
+      ? (parsed as { sessionId?: unknown }).sessionId
+      : undefined;
+  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined;
 }
 
 function toolItem(

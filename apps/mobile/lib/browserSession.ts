@@ -1,3 +1,4 @@
+import { clearConditionalReads } from '@verity/mobile';
 import { parsePairingUri } from './pairing';
 
 export interface BrowserSession {
@@ -23,6 +24,9 @@ export function subscribeBrowserSession(listener: () => void): () => void {
 export function clearBrowserSession(): void {
   const authenticated = session !== null;
   session = null;
+  // The browser authenticates by cookie, so no bearer change announces a
+  // sign-out; drop the overview bodies remembered for revalidation here.
+  if (authenticated) clearConditionalReads();
   if (authenticated) for (const listener of listeners) listener();
 }
 export const browserFetch: typeof fetch = async (input, init) => {

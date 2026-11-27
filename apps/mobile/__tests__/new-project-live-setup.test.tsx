@@ -49,6 +49,7 @@ function client(overrides: Partial<VerityClient> = {}): VerityClient {
     createProject: jest.fn().mockResolvedValue(project),
     setProjectSetupStatus: jest.fn().mockResolvedValue({ ...project, setupStatus: 'complete' }),
     repairProject: jest.fn().mockResolvedValue({ ...project, state: 'container_starting' }),
+    doppler: { listConnections: jest.fn().mockResolvedValue([]) },
     ...overrides,
   } as unknown as VerityClient;
 }
@@ -103,7 +104,6 @@ describe('new project', () => {
       getProjectGoogleConnection: jest.fn().mockResolvedValue({ connected: false }),
       listIntegrations: jest.fn().mockResolvedValue({ accounts: [], sources: [] }),
       listHttpMcpConnections: jest.fn().mockResolvedValue([]),
-      getVeritySettings: jest.fn().mockResolvedValue(null),
     });
     mockCreateClient.mockReturnValue(fake);
     await createFromRepository();
@@ -113,6 +113,29 @@ describe('new project', () => {
       params: { id: 'project-1', section: 'drive' },
     });
     expect(screen.queryByText('Matrix rooms')).toBeNull();
+    expect(screen.queryByText('Doppler secrets')).toBeNull();
+  });
+
+  it('opens the Doppler binding settings when multiple connections are available', async () => {
+    const fake = client();
+    jest.mocked(fake.doppler.listConnections).mockResolvedValue(
+      ['billing', 'platform'].map((id) => ({
+        id,
+        label: id,
+        hasToken: true,
+        workplaceSlug: id,
+        workplaceName: id,
+        createdAt: '2026-01-01T00:00:00Z',
+        projectCount: 0,
+      })),
+    );
+    mockCreateClient.mockReturnValue(fake);
+    await createFromRepository();
+    fireEvent.press(await screen.findByText('Doppler secrets'));
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/project/[id]/settings/services',
+      params: { id: 'project-1', section: 'doppler' },
+    });
   });
 
   it('asks for a name when GitHub is unavailable', async () => {

@@ -4,12 +4,32 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { SecretCipher } from './crypto.js';
+import type { ProjectChangeFeed } from './project-changes.js';
 import type { Database } from './schema.js';
 
 /** An invitation is valid for 7 days by default and at most (Uplink team contract). */
 export const INVITATION_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** A team operation is retried for 7 days before it is given up. */
 const TEAM_OUTBOX_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** What a project member may do. Reading comes with membership; "Code" needs "Edit"
+ *  (`execute`), and managing a project includes every other right. */
+export type ProjectPermission = 'read' | 'execute' | 'code' | 'manage';
+
+/** The rights a member can be given. Valid only when each right's prerequisites hold. */
+export interface MemberRights {
+  canExecute: boolean;
+  canCode: boolean;
+  canManage: boolean;
+}
+
+/** Code needs Edit; managing includes Edit and Code (a manager could grant both anyway). */
+export function rightsAreConsistent(rights: MemberRights): boolean {
+  return (
+    (!rights.canCode || rights.canExecute) &&
+    (!rights.canManage || (rights.canExecute && rights.canCode))
+  );
+}
 
 export type InvitationState = 'creating' | 'open' | 'redeemed' | 'revoked' | 'expired' | 'failed';
 
@@ -23,6 +43,8 @@ export interface ProjectInvitation {
   inviteeName: string;
   /** "Can edit": read and send messages. Without it the person can read. */
   canExecute: boolean;
+  /** "Can work with code"; only together with `canExecute`. */
+  canCode: boolean;
   /** Uplink's invitation id, once Uplink created the invitation. */
   invitationId: string | null;
   state: InvitationState;
@@ -36,6 +58,7 @@ export interface ProjectMember {
   displayName: string | null;
   canRead: boolean;
   canExecute: boolean;
+  canCode: boolean;
   canManage: boolean;
   /** The project's creator, whose membership nobody can change or remove. */
   creator: boolean;
@@ -56,7 +79,8 @@ export class ProjectTeamError extends Error {
       | 'project_not_shareable'
       | 'invitation_unavailable'
       | 'member_not_found'
-      | 'creator_unchangeable',
+      | 'creator_unchangeable'
+      | 'invalid_rights',
     message: string,
   ) {
     super(message);
@@ -72,6 +96,7 @@ type Row = {
   inviter_user_id: string;
   invitee_name: string;
   can_execute: boolean;
+  can_code: boolean;
   invitation_id: string | null;
   state: 'creating' | 'open' | 'redeemed' | 'revoked' | 'failed';
   expires_at: Date;
@@ -88,6 +113,7 @@ function invitation(row: Row, now: Date): ProjectInvitation {
     inviterUserId: row.inviter_user_id,
     inviteeName: row.invitee_name,
     canExecute: row.can_execute,
+    canCode: row.can_code,
     invitationId: row.invitation_id,
     state: lapsed ? 'expired' : row.state,
     expiresAt: row.expires_at,
@@ -103,24 +129,44 @@ function invitation(row: Row, now: Date): ProjectInvitation {
  * the team outbox, so it is delivered even after a restart.
  */
 export class ProjectTeamStore {
+  /** Each collaborator is read when used, so the store follows the facade's
+   * current database and cipher. */
   constructor(
-    private readonly db: Kysely<Database>,
-    private readonly cipher: SecretCipher,
+    private readonly dbOf: () => Kysely<Database>,
+    private readonly cipherOf: () => SecretCipher,
+    private readonly changesOf: () => ProjectChangeFeed | undefined = () => undefined,
   ) {}
+
+  private get db(): Kysely<Database> {
+    return this.dbOf();
+  }
+
+  private get cipher(): SecretCipher {
+    return this.cipherOf();
+  }
+
+  private get changes(): ProjectChangeFeed | undefined {
+    return this.changesOf();
+  }
 
   /**
    * Create an invitation and return it with its link secret, which is never
    * stored and cannot be read again. An invitation grants reading, or reading
-   * and sending messages; never management.
+   * and sending messages, optionally with Code; never management. Uplink learns
+   * only read and execute: Code stays on this server and is applied on joining.
    */
   async createInvitation(input: {
     projectId: string;
     inviterUserId: string;
     inviteeName: string;
     canExecute: boolean;
+    canCode?: boolean;
     ttlMs?: number;
     now?: Date;
   }): Promise<{ invitation: ProjectInvitation; secret: string }> {
+    const canCode = input.canCode ?? false;
+    if (canCode && !input.canExecute)
+      throw new ProjectTeamError('invalid_rights', 'Working with code needs the right to edit.');
     const now = input.now ?? new Date();
     const ttl = Math.min(input.ttlMs ?? INVITATION_MAX_TTL_MS, INVITATION_MAX_TTL_MS);
     const expiresAt = new Date(now.getTime() + ttl);
@@ -136,6 +182,7 @@ export class ProjectTeamStore {
           inviter_user_id: input.inviterUserId,
           invitee_name: input.inviteeName.trim(),
           can_execute: input.canExecute,
+          can_code: canCode,
           secret_hash: sha256(secret),
           secret_encrypted: this.cipher.encrypt(secret),
           state: 'creating',
@@ -557,6 +604,7 @@ export class ProjectTeamStore {
           user_id: userId,
           can_read: true,
           can_execute: row.can_execute,
+          can_code: row.can_code,
           can_manage: false,
         })
         .execute();
@@ -710,7 +758,8 @@ export class ProjectTeamStore {
   async confirmJoin(redemptionId: string): Promise<boolean> {
     // Under the invitation's row lock, like failJoin: a confirmation racing a
     // fence must never activate the fenced person.
-    return this.db.transaction().execute(async (tx) => {
+    let joined: string | undefined;
+    const confirmed = await this.db.transaction().execute(async (tx) => {
       const row = await tx
         .selectFrom('project_invitations')
         .select(['redeemed_by_user_id', 'state'])
@@ -746,8 +795,12 @@ export class ProjectTeamStore {
         .set({ status: 'active' })
         .where('id', '=', row.redeemed_by_user_id)
         .execute();
+      joined = row.redeemed_by_user_id;
       return true;
     });
+    // After commit: the person now reads the projects they joined.
+    if (joined !== undefined) this.changes?.announceAccess(joined);
+    return confirmed;
   }
 
   async listMembers(projectId: string, db: Kysely<Database> = this.db): Promise<ProjectMember[]> {
@@ -760,6 +813,7 @@ export class ProjectTeamStore {
         'u.display_name',
         'm.can_read',
         'm.can_execute',
+        'm.can_code',
         'm.can_manage',
         'm.created_at',
         'p.created_by_user_id',
@@ -773,23 +827,43 @@ export class ProjectTeamStore {
       displayName: row.display_name,
       canRead: row.can_read,
       canExecute: row.can_execute,
+      canCode: row.can_code,
       canManage: row.can_manage,
       creator: row.user_id === row.created_by_user_id,
       joinedAt: row.created_at,
     }));
   }
 
-  /** Change a member's rights; reading always stays. The creator's never change. */
+  /**
+   * Change a member's rights; reading always stays. The creator's never change.
+   * Without `canCode` (an app that predates it) the member keeps their Code where
+   * the other rights still allow it, and managing brings it along.
+   */
   async setMemberRights(
     projectId: string,
     userId: string,
-    rights: { canExecute: boolean; canManage: boolean },
+    rights: { canExecute: boolean; canCode?: boolean | undefined; canManage: boolean },
   ): Promise<ProjectMember> {
-    return this.db.transaction().execute(async (tx) => {
-      await this.requireChangeable(tx, projectId, userId);
+    const member = await this.db.transaction().execute(async (tx) => {
+      const current = await this.requireChangeable(tx, projectId, userId);
+      const next: MemberRights = {
+        canExecute: rights.canExecute,
+        canCode: rights.canCode ?? (rights.canManage || (rights.canExecute && current.can_code)),
+        canManage: rights.canManage,
+      };
+      if (!rightsAreConsistent(next))
+        throw new ProjectTeamError(
+          'invalid_rights',
+          'Working with code needs the right to edit, and managing needs both.',
+        );
       await tx
         .updateTable('project_memberships')
-        .set({ can_read: true, can_execute: rights.canExecute, can_manage: rights.canManage })
+        .set({
+          can_read: true,
+          can_execute: next.canExecute,
+          can_code: next.canCode,
+          can_manage: next.canManage,
+        })
         .where('project_id', '=', projectId)
         .where('user_id', '=', userId)
         .execute();
@@ -800,6 +874,8 @@ export class ProjectTeamStore {
         throw new ProjectTeamError('member_not_found', 'This person is not on the project.');
       return member;
     });
+    this.changes?.announceAccess(userId, projectId);
+    return member;
   }
 
   /**
@@ -811,7 +887,7 @@ export class ProjectTeamStore {
     userId: string,
     now = new Date(),
   ): Promise<{ lastProject: boolean }> {
-    return this.db.transaction().execute(async (tx) => {
+    const removed = await this.db.transaction().execute(async (tx) => {
       await this.requireChangeable(tx, projectId, userId);
       await tx
         .deleteFrom('project_memberships')
@@ -839,6 +915,9 @@ export class ProjectTeamStore {
         );
       return { lastProject };
     });
+    // After commit: the project leaves the person's overview.
+    this.changes?.announceAccess(userId, projectId);
+    return removed;
   }
 
   /** Retire expired replay secrets and fence joins that never authorized completion. */
@@ -1018,17 +1097,20 @@ export class ProjectTeamStore {
     tx: Transaction<Database>,
     projectId: string,
     userId: string,
-  ): Promise<void> {
+  ): Promise<{ can_code: boolean }> {
     const row = await tx
       .selectFrom('project_memberships as m')
       .innerJoin('projects as p', 'p.id', 'm.project_id')
-      .select(['p.created_by_user_id'])
+      .select(['p.created_by_user_id', 'm.can_code'])
       .where('m.project_id', '=', projectId)
       .where('m.user_id', '=', userId)
+      // A concurrent change must not leave this one deriving Code from a stale value.
+      .forUpdate('m')
       .executeTakeFirst();
     if (row === undefined)
       throw new ProjectTeamError('member_not_found', 'This person is not on the project.');
     if (row.created_by_user_id === userId)
       throw new ProjectTeamError('creator_unchangeable', "The project's creator stays on it.");
+    return row;
   }
 }

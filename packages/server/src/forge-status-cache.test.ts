@@ -172,3 +172,62 @@ it('clears actionable fields on explicitly failed provider observations', async 
   await cache.read(id, 'x', load);
   expect(load).toHaveBeenCalledTimes(1);
 });
+
+describe('branch-scoped invalidation', () => {
+  it('re-reads only the invalidated branch and keeps the rest of the repository cached', async () => {
+    const cache = createForgeStatusCache();
+    const load = vi.fn(async () => status);
+    const other = vi.fn(async () => ({ ...status, number: 2 }));
+    await cache.read(id, 'active', load);
+    await cache.read(id, 'idle', other);
+    cache.invalidateBranches(id, ['active']);
+    await cache.read(id, 'active', load);
+    await cache.read(id, 'idle', other);
+    // Project-wide invalidation on every agent tool call re-read every other PR.
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(other).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a read that started before the invalidation become the cached answer', async () => {
+    const cache = createForgeStatusCache();
+    let finish!: (value: PullRequestStatus) => void;
+    const old = cache.read(
+      id,
+      'active',
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    cache.invalidateBranches(id, ['active']);
+    finish(status);
+    await old;
+    const fresh = vi.fn(async () => ({ ...status, pipeline: 'success' as const }));
+    expect(await cache.read(id, 'active', fresh)).toMatchObject({ pipeline: 'success' });
+    expect(fresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps coalescing onto the replacement read when the superseded one settles', async () => {
+    const cache = createForgeStatusCache();
+    const finishers: ((value: PullRequestStatus) => void)[] = [];
+    const load = vi.fn(
+      () =>
+        new Promise<PullRequestStatus>((resolve) => {
+          finishers.push(resolve);
+        }),
+    );
+    const old = cache.read(id, 'active', load);
+    await vi.waitFor(() => expect(finishers).toHaveLength(1));
+    cache.invalidateBranches(id, ['active']);
+    const replacement = cache.read(id, 'active', load);
+    await vi.waitFor(() => expect(finishers).toHaveLength(2));
+    finishers[0]!(status);
+    await old;
+    // The superseded read must not clear the replacement's pending entry.
+    const joined = cache.read(id, 'active', load);
+    finishers[1]!(status);
+    await Promise.all([replacement, joined]);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+});

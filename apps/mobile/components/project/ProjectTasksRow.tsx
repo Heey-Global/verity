@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 
 import { Row } from '../ui';
 import { useTaskPreferences } from '../../lib/taskPreferences';
-import { useTasks } from '../../lib/tasksStore';
+import { useTaskView, useTasks } from '../../lib/tasksStore';
 
 /** Open issues across the repositories that answered, named by their code host
  *  when they share one; null while none has answered. */
@@ -47,6 +47,7 @@ export function ProjectTasksRow({
   const { tasks } = useTasks();
   // Tasks switched off in Settings: no row leading to a list nobody keeps.
   const enabled = useTaskPreferences().enabled;
+  useTaskView(null, enabled);
   const [issues, setIssues] = useState<ReturnType<typeof issueSummary>>(null);
   useEffect(() => {
     let active = true;

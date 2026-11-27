@@ -53,15 +53,15 @@ separately by `TRADEMARKS.md`.
 | Apache-2.0 | 61 |
 | Apache-2.0 AND LGPL-3.0-or-later | 3 |
 | Apache-2.0 AND LGPL-3.0-or-later AND MIT | 1 |
-| BlueOak-1.0.0 | 8 |
+| BlueOak-1.0.0 | 9 |
 | BSD-2-Clause | 23 |
 | BSD-3-Clause | 27 |
 | CC-BY-3.0 | 1 |
 | CC-BY-4.0 | 1 |
 | CC0-1.0 | 2 |
-| ISC | 66 |
+| ISC | 65 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1052 |
+| MIT | 1054 |
 | MIT AND Apache-2.0 | 1 |
 | MIT AND OFL-1.1 | 1 |
 | MPL-2.0 | 12 |
@@ -464,6 +464,7 @@ separately by `TRADEMARKS.md`.
 | @rolldown/binding-linux-x64-gnu | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fbinding-linux-x64-gnu) |
 | @rolldown/binding-linux-x64-musl | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fbinding-linux-x64-musl) |
 | @rolldown/binding-openharmony-arm64 | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fbinding-openharmony-arm64) |
+| @rolldown/binding-wasm32-wasi | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fbinding-wasm32-wasi) |
 | @rolldown/binding-win32-arm64-msvc | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fbinding-win32-arm64-msvc) |
 | @rolldown/binding-win32-x64-msvc | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fbinding-win32-x64-msvc) |
 | @rolldown/pluginutils | MIT | [source](https://www.npmjs.com/package/%40rolldown%2Fpluginutils) |
@@ -829,7 +830,7 @@ separately by `TRADEMARKS.md`.
 | glob | BlueOak-1.0.0 | [source](https://www.npmjs.com/package/glob) |
 | glob | ISC | [source](https://www.npmjs.com/package/glob) |
 | gopd | MIT | [source](https://www.npmjs.com/package/gopd) |
-| graceful-fs | ISC | [source](https://www.npmjs.com/package/graceful-fs) |
+| graceful-fs | BlueOak-1.0.0 | [source](https://www.npmjs.com/package/graceful-fs) |
 | graphql | MIT | [source](https://www.npmjs.com/package/graphql) |
 | handlebars | MIT | [source](https://www.npmjs.com/package/handlebars) |
 | hard-rejection | MIT | [source](https://www.npmjs.com/package/hard-rejection) |
@@ -1027,6 +1028,7 @@ separately by `TRADEMARKS.md`.
 | natural-compare | MIT | [source](https://www.npmjs.com/package/natural-compare) |
 | negotiator | MIT | [source](https://www.npmjs.com/package/negotiator) |
 | neo-async | MIT | [source](https://www.npmjs.com/package/neo-async) |
+| nitro-core | MIT | [source](https://www.npmjs.com/package/nitro-core) |
 | node-fetch | MIT | [source](https://www.npmjs.com/package/node-fetch) |
 | node-forge | (BSD-3-Clause OR GPL-2.0) | [source](https://www.npmjs.com/package/node-forge) |
 | node-html-parser | MIT | [source](https://www.npmjs.com/package/node-html-parser) |

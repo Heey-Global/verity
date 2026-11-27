@@ -35,7 +35,11 @@ individual projects.
   in a chat leave the project default and other sessions unchanged.
 - **Matrix:** select invited rooms in project settings. The global account screen
   gives an overview; existing room assignments survive the navigation change.
-- **Doppler:** choose a project and configuration.
+- **Doppler:** bind one or more Doppler projects and configs, each through one of
+  the Doppler connections in Settings, Connectors, Doppler. One binding is the
+  default. Agents write `NAME` for the default and `project/config/NAME` for any
+  other binding. Each member connects their own token per connection in the
+  project's Doppler settings; a missing one is shown there.
 - **MCP:** enable the configured servers needed by the project.
 
 The new-project flow offers an optional connection setup stage after creating the

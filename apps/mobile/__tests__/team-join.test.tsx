@@ -80,6 +80,12 @@ it('waits for safe completion before offering the personal-account setup', async
   expect(props.onJoined).not.toHaveBeenCalled();
   await act(async () => finish({ projectId: 'p1' }));
   expect(screen.getByText('Membership confirmed')).toBeOnTheScreen();
+  // The AI account is the next step, not a fault: it explains why and that an
+  // existing subscription works, without the red needs-setup notice.
+  expect(screen.getByText('Use the subscription you already have')).toBeOnTheScreen();
+  // OpenCode is the one provider that does take an API key.
+  expect(screen.getByText(/OpenCode uses your own provider and API key/)).toBeOnTheScreen();
+  expect(screen.queryByText('Connect your own AI account')).toBeNull();
   expect(props.onJoined).not.toHaveBeenCalled();
   fireEvent.press(screen.getByLabelText('Set up my AI account'));
   expect(props.onJoined).toHaveBeenCalledTimes(1);

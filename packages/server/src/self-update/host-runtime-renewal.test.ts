@@ -406,6 +406,90 @@ describe('project egress helper failure diagnostics', () => {
     });
   });
 
+  const staging = {
+    ...diagnostic,
+    phase: 'staging',
+    code: 'command_failed',
+    step: 'assessment_authorization',
+    hostUnchanged: true,
+  };
+
+  it('treats a staging failure before host submission as unchanged and names its step', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify(staging));
+    await expect(h.runJob()).rejects.toMatchObject({
+      name: 'ProjectEgressProvisioningError',
+      recovery: 'unchanged',
+      hostWork: 'none',
+      message: expect.stringMatching(
+        /phase staging, code command_failed, step assessment_authorization\). The helper failed before submitting host provisioning; no host network protection changes were made\. Retry the update\.$/u,
+      ),
+    });
+  });
+
+  // The helper adds these reasons for Updaters that predate step names. A reason
+  // only extends the message; recovery must still follow the staging step.
+  it.each([
+    ['assessment_authorization', 'assessment_authorization_invalid', 'unchanged'],
+    ['config', 'provisioning_failed', 'recovery-required'],
+  ] as const)('classifies step %s with reason %s by its step', async (step, reason, recovery) => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify({ ...staging, step, reason }));
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery,
+      message: expect.stringContaining(`code command_failed, reason ${reason}, step ${step})`),
+    });
+  });
+
+  it('preserves a verified staging failure when Docker cannot remove the helper', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify(staging));
+    h.docker.removeContainer.mockRejectedValueOnce(new Error('cleanup disconnected'));
+    await expect(h.runJob()).rejects.toMatchObject({ recovery: 'unchanged', hostWork: 'none' });
+  });
+
+  // Each field is what proves submission never happened; without any one of
+  // them (an older helper, an earlier attempt's unit, a non-staging code) the
+  // host may carry partial work and must stay recovery-required.
+  it.each([
+    { hostUnchanged: undefined },
+    { hostUnchanged: 'true' },
+    { step: undefined },
+    { step: 'activation' },
+    { step: 'config' },
+    { step: 'launcher' },
+    { step: 'preflight' },
+    { step: 'unknown_step' },
+    { code: 'host_failed' },
+    { code: 'attempt_invalid' },
+    { phase: 'submit', code: 'start_unverified' },
+    { phase: 'observe' },
+  ])('keeps recovery required unless staging proves no submission: %j', async (fields) => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify({ ...staging, ...fields }));
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery: 'recovery-required',
+      hostWork: 'possible',
+      message: expect.stringContaining('Host changes may require recovery'),
+    });
+  });
+
+  it.each([
+    'stage_prepare',
+    'release_copy',
+    'scripts',
+    'config',
+    'assessment_authorization',
+    'launcher',
+    'preflight',
+  ])('reports the fixed staging step %s', async (step) => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify({ ...staging, step }));
+    await expect(h.runJob()).rejects.toMatchObject({
+      message: expect.stringContaining(`code command_failed, step ${step})`),
+    });
+  });
+
   it.each([
     { reason: 'postgres://secret@private', step: 'postgres://secret@private' },
     { reason: 'unknown_failure', step: 'unknown_step' },

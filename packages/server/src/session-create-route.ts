@@ -88,6 +88,7 @@ interface SpawnReply {
 export type SpawnSession = (
   body: SpawnBody,
   log: SpawnRequest['log'],
+  userId?: string,
 ) => Promise<{ statusCode: number; result: SpawnResult }>;
 
 export function registerSessionCreateRoute(
@@ -453,6 +454,7 @@ export function registerSessionCreateRoute(
         model: effectiveModel ?? deps.defaultModel,
         ...(displayName ? { name: displayName } : {}),
         ...(projectId !== undefined ? { projectId } : {}),
+        ...(request.localUserId ? { createdByUserId: request.localUserId } : {}),
       });
       if (projectId !== undefined)
         await deps.eventStore.userProviderConnections
@@ -537,10 +539,10 @@ export function registerSessionCreateRoute(
   });
 
   return {
-    spawn: async (body, log) => {
+    spawn: async (body, log, userId) => {
       let statusCode = 200;
       const result = await spawnSession(
-        { log },
+        { log, ...(userId ? { localUserId: userId } : {}) },
         {
           code: (code) => {
             statusCode = code;

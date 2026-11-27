@@ -10,6 +10,7 @@ import { CPUProfiling } from '../../components/settings/CPUProfiling';
 import { MatrixImportErrors } from '../../components/settings/MatrixImportErrors';
 import { PublicPreviewDiagnostics } from '../../components/settings/PublicPreviewDiagnostics';
 import { ReturnPathDiagnostics } from '../../components/settings/ReturnPathDiagnostics';
+import { ServerMonitoring } from '../../components/settings/ServerMonitoring';
 import { SettingsGroup, SettingsScaffold } from '../../components/settings/SettingsChrome';
 import { runningReleaseVersion } from '../../lib/buildInfo';
 import { createVerityClient } from '../../lib/client';
@@ -100,6 +101,7 @@ export function DiagnosticsSettings({ client }: { client: VerityClient }) {
   const errorCount = sources?.reduce((total, source) => total + source.importDiagnostics.length, 0);
   return (
     <SettingsScaffold title="Diagnostics" detail>
+      <ServerMonitoring client={client} />
       <StorageReclamation client={client} />
       <PublicPreviewDiagnostics
         client={client}

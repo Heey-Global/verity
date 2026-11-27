@@ -1,8 +1,11 @@
 import type { MockupReviewScreen, ProjectRecord, SessionSummary, UpcomingMeeting } from '../api.js';
+import { projectNoun } from '../changeSubmissions.js';
 import { sessionAttention } from './attention.js';
 import { mockupProgress } from './mockups.js';
 import { projectNeedsRepair } from './projectBadge.js';
 import { projectDisplayName } from './projectName.js';
+import { qaIssueLabel, qaStopReason } from './qaRole.js';
+import type { QAIssueDecision } from '../project-qa-api.js';
 import { pullRequestMergeButton } from './pullRequest.js';
 import {
   isSecuritySandboxUpdate,
@@ -10,10 +13,10 @@ import {
   sandboxUpdateNeedsAttention,
   sandboxUpdateSummary,
 } from './sandboxUpdate.js';
+import { sessionAgentWorking } from './sessionWork.js';
 import { sessionLabel } from './sessionLabel.js';
-import { permissionInputText } from './permissionInput.js';
-import { permissionSummary, type PermissionLine } from './permissionSummary.js';
-import { toolCallPrimaryField, toolCallView } from './toolCall.js';
+import { permissionOverview } from './permissionOverview.js';
+import type { PermissionLine } from './permissionSummary.js';
 
 /**
  * Home's inbox: everything across all projects that needs the operator, each with
@@ -41,7 +44,9 @@ export type InboxItemKind =
   | 'mockup_review'
   | 'crashed'
   | 'merge_ready'
-  | 'project_health';
+  | 'code_review'
+  | 'project_health'
+  | 'qa_stop';
 
 /** What a tap on an item's answer does. The app maps each to an existing route. */
 export type InboxAction =
@@ -53,6 +58,13 @@ export type InboxAction =
   | { kind: 'join_meeting'; label: string; eventKey: string }
   | { kind: 'skip_meeting'; label: string; eventKey: string }
   | { kind: 'repair_project'; label: string; projectId: string }
+  | {
+      kind: 'qa_decision';
+      label: string;
+      projectId: string;
+      issueId: string;
+      decision: QAIssueDecision;
+    }
   | { kind: 'open_session'; label: string; sessionId: string }
   | { kind: 'review_mockups'; label: string; sessionId: string }
   | { kind: 'open_project'; label: string; projectId: string };
@@ -69,17 +81,9 @@ export interface InboxItem {
   /** Where it comes from: project, session, time. */
   context: string;
   message?: string;
-  /** A permission in words: the command, address or message it concerns. When
-   *  present, {@link request} is the full input behind it rather than the thing
-   *  to read first. */
+  /** Complete, short permission details, displayed without clipping next to Allow.
+   *  Longer or incomplete requests use a preview in message and open the session. */
   lines?: PermissionLine[];
-  /** A permission's complete input, formatted. Allow is only offered together
-   *  with it, so the operator can always see what the tool will receive rather
-   *  than only a summary of it. */
-  request?: string;
-  /** The lines leave part of {@link request} unsaid, so it is shown open
-   *  rather than folded behind them. */
-  requestOpen?: boolean;
   sessionId?: string;
   projectId?: string;
   /** The screens of a mockup review, shown as thumbnails on the item. */
@@ -118,15 +122,14 @@ const RANK: Record<InboxItemKind, number> = {
   meeting: 8,
   permission: 7,
   question: 6,
+  qa_stop: 6,
   plan_review: 5,
   mockup_review: 4,
   crashed: 3,
+  code_review: 2,
   merge_ready: 2,
   project_health: 1,
 };
-
-/** Tools whose card carries a decision the generic Allow would lose. */
-const OPEN_TO_DECIDE: ReadonlySet<string> = new Set(['verity_package_install']);
 
 export function inboxItems(input: InboxInput): InboxItem[] {
   const projects = new Map(input.projects.map((project) => [project.id, project]));
@@ -143,6 +146,7 @@ export function inboxItems(input: InboxInput): InboxItem[] {
     const item = projectHealthItem(project);
     const dismiss = project.inboxDismissed !== undefined ? ('project' as const) : undefined;
     if (item) items.push(withDismiss(item, dismiss));
+    for (const stop of qaStopItems(project)) items.push(stop);
   }
   return items.sort((a, b) => {
     const rank = RANK[b.kind] - RANK[a.kind];
@@ -191,9 +195,11 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   add('meeting', 'meeting soon', 'meetings soon');
   add('permission', 'permission', 'permissions');
   add('question', 'question', 'questions');
+  add('qa_stop', 'QA decision', 'QA decisions');
   add('plan_review', 'plan to review', 'plans to review');
   add('mockup_review', 'mockup review', 'mockup reviews');
   add('crashed', 'crashed session', 'crashed sessions');
+  add('code_review', 'code review', 'code reviews');
   add('merge_ready', 'pull request ready', 'pull requests ready');
   add('project_health', 'project needs care', 'projects need care');
   return parts.join(' · ');
@@ -227,45 +233,23 @@ function sessionItems(
   const items: InboxItem[] = [];
 
   // Permissions: one item per parked prompt the server could describe.
+  // Requests belong to the person who asked (ADR 0023). The session still shows
+  // and answers every one of them; Home lists only the requester's own.
+  const mine = session.addressedToViewer !== false;
   const requests = session.pendingPermissionRequests ?? [];
   for (const request of requests) {
-    const view = toolCallView({
-      name: request.tool,
-      input: request.input,
-      state: 'running',
-      createdAt: 0,
-      startedAt: null,
-      completedAt: null,
-      description: null,
-    });
-    const summary = permissionSummary(request.tool, request.input);
-    // Commands belong in the session review, not in the scan-friendly overview.
-    const reviewCommand =
-      request.tool === 'verity_secret_run' ||
-      toolCallPrimaryField(request.tool, request.input)?.field === 'command';
-    const decidable =
-      !reviewCommand && request.input !== undefined && !OPEN_TO_DECIDE.has(request.tool);
+    if (request.addressedToViewer === false) continue;
+    const { title, lines, message, decidable } = permissionOverview(request.tool, request.input);
     items.push({
       ...base,
       key: `permission:${session.sessionId}:${request.toolUseId}`,
       kind: 'permission',
       tag: 'Permission',
       tone: 'attention',
-      title: summary.title,
+      title,
       context: where,
-      ...(reviewCommand
-        ? {}
-        : summary.lines.length > 0
-          ? { lines: summary.lines }
-          : view.subtitle
-            ? { message: view.subtitle }
-            : {}),
-      ...(decidable && !(request.tool === 'verity_list_sessions' && summary.covered)
-        ? {
-            request: permissionInputText(request.input),
-            ...(summary.covered ? {} : { requestOpen: true }),
-          }
-        : {}),
+      ...(lines === undefined ? {} : { lines }),
+      ...(message === undefined ? {} : { message }),
       actions: decidable
         ? [
             {
@@ -289,6 +273,7 @@ function sessionItems(
   // A prompt the server could not describe (older server, linked-session approval)
   // still needs the operator; send them to the card instead of hiding it.
   const described = new Set(requests.map((request) => request.toolUseId));
+  // Unaddressed: the server cannot tell what it asks, so nor whom it is for.
   if (
     session.permissionAwaitingInput === true &&
     (session.pendingPermissions ?? []).some((id) => !described.has(id))
@@ -312,7 +297,7 @@ function sessionItems(
   }).map((flag) => flag.kind);
 
   // Question: the turn's choices, or an awaiting session asking in prose.
-  const choices = session.openChoices;
+  const choices = mine ? session.openChoices : undefined;
   if (choices !== undefined) {
     items.push({
       ...base,
@@ -340,7 +325,7 @@ function sessionItems(
               open('Own answer'),
             ],
     });
-  } else if (flags.includes('question') && session.permissionAwaitingInput !== true) {
+  } else if (mine && flags.includes('question') && session.permissionAwaitingInput !== true) {
     items.push({
       ...base,
       key: `question:${session.sessionId}`,
@@ -357,6 +342,7 @@ function sessionItems(
   // the session, where the plan can be read in full. The key follows the
   // revision, so a revised plan comes back after a dismissal.
   if (
+    mine &&
     session.planning === 'active' &&
     session.planningPresented === true &&
     session.status !== 'running'
@@ -375,9 +361,14 @@ function sessionItems(
   }
 
   // Mockups: open until the user tells the agent in the chat to build; marks alone
-  // never end the review.
+  // never end the review. While the agent works, the overview shows its activity.
   const review = session.mockupReview;
-  if (review?.state === 'pending' && review.screens.length > 0) {
+  if (
+    mine &&
+    !sessionAgentWorking(session) &&
+    review?.state === 'pending' &&
+    review.screens.length > 0
+  ) {
     const undecided = review.screens.some((screen) => screen.verdict === 'open');
     items.push({
       ...base,
@@ -415,6 +406,32 @@ function sessionItems(
         session.resumable === false
           ? [open()]
           : [{ kind: 'resume', label: 'Resume', sessionId: session.sessionId }, open()],
+    });
+  }
+
+  // Submitted changes wait on everyone with Code until one of them writes in the
+  // session; the server then addresses them to that person alone (ADR 0023).
+  const submission = session.changeSubmission;
+  // Once a pull request is open, its own item takes over from the review.
+  if (
+    submission?.addressedToViewer === true &&
+    (submission.status === 'waiting' || submission.status === 'checking')
+  ) {
+    const who = submission.submittedBy.name ?? 'A member';
+    items.push({
+      ...base,
+      // Each submission asks anew: a dismissed one returns when changes are resubmitted.
+      key: `code_review:${session.sessionId}:${String(submission.submittedAt)}`,
+      kind: 'code_review',
+      tag: 'Code review',
+      tone: 'action',
+      title: `${who} submitted changes`,
+      context: where,
+      message:
+        submission.checker === undefined
+          ? `Check them and add them to ${projectNoun()}.`
+          : `You are checking them.`,
+      actions: [open('Review')],
     });
   }
 
@@ -539,6 +556,43 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
     };
   }
   return undefined;
+}
+
+/**
+ * Where a project's QA stopped and waits for the user, one item per issue,
+ * answered in place. Never dismissable: QA stays stopped until someone decides.
+ */
+function qaStopItems(project: ProjectRecord): InboxItem[] {
+  const qa = project.qaSummary;
+  if (project.archived === true || !qa || qa.mode === 'off' || qa.mode === 'paused') return [];
+  const name = projectDisplayName(project);
+  return qa.stopped.map((issue) => {
+    const answer = (label: string, decision: QAIssueDecision): InboxAction => ({
+      kind: 'qa_decision',
+      label,
+      projectId: project.id,
+      issueId: issue.id,
+      decision,
+    });
+    return {
+      key: `qa:${project.id}:${issue.id}:${issue.updatedAt}`,
+      kind: 'qa_stop' as const,
+      tag: 'Needs you',
+      tone: 'attention' as const,
+      title: `Repair stopped: ${qaIssueLabel(issue.key)}`,
+      context: `QA · ${name}`,
+      message: issue.detail
+        ? `${qaStopReason(issue.reason)} ${issue.detail}`
+        : qaStopReason(issue.reason),
+      projectId: project.id,
+      actions: [
+        answer('Another round', 'another_round'),
+        answer('Take over', 'take_over'),
+        answer('Defer', 'defer'),
+      ],
+      at: Date.parse(issue.updatedAt) || 0,
+    };
+  });
 }
 
 function clockTime(epochMs: number): string {

@@ -9,19 +9,19 @@ export function createEmbeddedTrustedCli(
   db: Kysely<Database>,
   secretCipher: SecretCipher,
   {
-    getBrokeredProjectBinding,
+    getBrokeredProjectBindings,
     resolveBrokerDopplerSecret,
     brokeredHttpConsumptions,
   }: Pick<
     ReturnType<typeof createEmbeddedBrokeredHttp>,
-    'getBrokeredProjectBinding' | 'resolveBrokerDopplerSecret' | 'brokeredHttpConsumptions'
+    'getBrokeredProjectBindings' | 'resolveBrokerDopplerSecret' | 'brokeredHttpConsumptions'
   >,
 ) {
   const trustedCliOutput = createTrustedCliOutputStore(db, secretCipher);
   const trustedCliTool = createTrustedCliTool({
     requireApprovalBinding: true,
     outputStore: trustedCliOutput,
-    getProjectBinding: getBrokeredProjectBinding,
+    getProjectBindings: getBrokeredProjectBindings,
     resolveSecret: resolveBrokerDopplerSecret,
     consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
   });

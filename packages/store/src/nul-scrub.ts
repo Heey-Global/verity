@@ -26,10 +26,6 @@
  *  as its JSON escape so the payload stays ASCII. */
 const NUL_MARKER = '\\ufffd';
 
-/** Runs of backslashes followed by `u0000`. The run's length decides whether
- *  this is an escape at all — see {@link scrubNulEscapes}. */
-const NUL_ESCAPE_RUN = /(\\+)u0000/g;
-
 /**
  * Replace every U+0000 in a JSON-serialized `payload` with {@link NUL_MARKER},
  * returning valid JSON (and the input unchanged when it holds no NUL).
@@ -43,7 +39,21 @@ const NUL_ESCAPE_RUN = /(\\+)u0000/g;
  * literal text and the `u0000` after them is ordinary content to be preserved.
  */
 export function scrubNulEscapes(payload: string): string {
-  return payload.replace(NUL_ESCAPE_RUN, (match, backslashes: string) =>
-    backslashes.length % 2 === 1 ? `${backslashes.slice(0, -1)}${NUL_MARKER}` : match,
-  );
+  const nulEscape = '\\u0000';
+  const chunks: string[] = [];
+  let copiedThrough = 0;
+  for (
+    let escape = payload.indexOf(nulEscape);
+    escape !== -1;
+    escape = payload.indexOf(nulEscape, escape + nulEscape.length)
+  ) {
+    let runStart = escape;
+    while (runStart > 0 && payload[runStart - 1] === '\\') runStart--;
+    if ((escape - runStart) % 2 === 1) continue;
+    chunks.push(payload.slice(copiedThrough, escape), NUL_MARKER);
+    copiedThrough = escape + nulEscape.length;
+  }
+  if (chunks.length === 0) return payload;
+  chunks.push(payload.slice(copiedThrough));
+  return chunks.join('');
 }

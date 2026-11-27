@@ -54,6 +54,18 @@ describe('user display names', () => {
     await expect(profiles.read('missing')).resolves.toBeUndefined();
   });
 
+  it('returns trimmed names and omits unnamed users in the EventStore lookup', async () => {
+    await ctx.db
+      .updateTable('users')
+      .set({ display_name: '  Lena  ' })
+      .where('id', '=', 'member')
+      .execute();
+    await expect(
+      ctx.store.userDisplayNames(['member', 'member', 'admin', 'missing']),
+    ).resolves.toEqual(new Map([['member', 'Lena']]));
+    await expect(ctx.store.userDisplayNames([])).resolves.toEqual(new Map());
+  });
+
   // The column check is the last line of defence for writers that bypass the store.
   it('rejects a blank name in the database itself', async () => {
     await expect(

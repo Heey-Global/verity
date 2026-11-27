@@ -5,7 +5,11 @@ import {
   LIVE_PROTOCOL_VERSION,
   SESSION_PROJECTION_EVENT_TYPES,
   decodeLiveClientFrame,
+  parseDomainTopic,
+  PROJECTS_COLLECTION_TOPIC,
   type AgentEvent,
+  type DomainEvent,
+  type DomainTopic,
   type LiveAlert,
   type LiveEndedReason,
   type LiveHint,
@@ -14,6 +18,8 @@ import {
   type LiveServerFrame,
 } from '@verity/events';
 import type { SequencedEvent } from '@verity/store';
+import type { DomainEventBus } from './domain-events.js';
+import { TopicSubscriptions } from './topic-subscriptions.js';
 
 /** Session changes that no event records (a turn starting or stopping, an
  * automatic name), from the conductor to the live hub. The two are built in
@@ -99,6 +105,11 @@ export interface LiveHubDeps {
     changed: () => void,
   ) => (() => void) | undefined;
   now?: () => number;
+  /** Observes each frame written to a socket, for outbound traffic accounting. */
+  onFrameSent?: (kind: LiveServerFrame['k'], bytes: number) => void;
+  /** Domain-event topics (protocol 2, ADR 0033); absent, `ready` does not
+   * offer them and topic frames are refused. */
+  domainEvents?: DomainEventBus | undefined;
 }
 
 const WS_OPEN = 1;
@@ -114,6 +125,14 @@ const SCOPE_TTL_MS = 5_000;
 const MAX_LIVE_BACKLOG = 2_000;
 
 const PROJECTION_TYPES: ReadonlySet<string> = new Set(SESSION_PROJECTION_EVENT_TYPES);
+
+/** A change {@link LiveHub.notify} hints to the overview. */
+export interface LiveHubChange {
+  sessionId: string;
+  projectId?: string | null | undefined;
+  topics: readonly LiveHintTopic[];
+  deleted?: boolean | undefined;
+}
 
 /** The overview topics an event touches. Every event counts toward a session's
  * unread count, so each one at least hints `events`. */
@@ -135,10 +154,14 @@ interface SessionSubscription {
 }
 
 class LiveConnection {
+  /** This connection began its user's stay: none of their devices was
+   * connected before it. */
+  beganStay = false;
   foreground = false;
   overview = false;
   readonly subscriptions = new Map<string, SessionSubscription>();
   private readonly resources = new Map<string, () => void>();
+  private readonly topics: TopicSubscriptions | undefined;
   private lastPongAt: number;
   private readonly timers: ReturnType<typeof setInterval>[] = [];
   private closed = false;
@@ -149,6 +172,81 @@ class LiveConnection {
     readonly identity: LiveIdentity,
   ) {
     this.lastPongAt = hub.now();
+    const bus = hub.deps.domainEvents;
+    this.topics =
+      bus === undefined
+        ? undefined
+        : new TopicSubscriptions({
+            bus,
+            canRead: (topic) => this.canReadTopic(topic),
+            filter: (record) => this.mayReceive(record),
+            // A new stay knows nothing of who held what before it: replayed,
+            // a project that left meanwhile would be withheld from its holder.
+            replayable: (topic) => topic !== PROJECTS_COLLECTION_TOPIC || !this.beganStay,
+            send: (frame) => this.send(frame),
+            overBudget: () => this.socket.bufferedAmount > hub.maxBufferedBytes,
+            logger: hub.deps.logger,
+          });
+  }
+
+  /** The policy of the HTTP read that serves the topic's state. */
+  private async canReadTopic(topic: DomainTopic): Promise<boolean> {
+    const parsed = parseDomainTopic(topic);
+    if (parsed === undefined) return false;
+    const { userId } = this.identity;
+    const { access, store } = this.hub.deps;
+    switch (parsed.kind) {
+      case 'user':
+        // Without the auth gate there is one operator and no identity to scope by.
+        return userId === undefined || parsed.id === userId;
+      case 'project':
+        return scopeAllows(await access.overviewScope(userId), parsed.id);
+      case 'session': {
+        const session = await store.getSession(parsed.id);
+        return session !== undefined && (await access.canReadSession(userId, session));
+      }
+      case 'collection':
+        // Anyone who may read the overview; each record is filtered below.
+        // The scope read now is the one a later `unlisted` asks who held the
+        // project: a deleted project takes its memberships along.
+        if (parsed.id !== 'projects') return false;
+        await this.hub.overviewScope(userId);
+        return true;
+    }
+  }
+
+  /**
+   * Whether this connection receives a record. A project topic was authorized
+   * as a whole; the project collection carries every project, and each
+   * subscriber receives only those its overview would list. A project leaving
+   * the overview reaches those who held it, by the scope last read for them:
+   * its readers may already have lost the right to read it.
+   */
+  private mayReceive(record: {
+    topic: DomainTopic;
+    cursor: number;
+    event: DomainEvent;
+  }): boolean | Promise<boolean> {
+    if (record.topic !== PROJECTS_COLLECTION_TOPIC) return true;
+    const { event } = record;
+    if (event.t !== 'project.listed' && event.t !== 'project.unlisted') return false;
+    const { userId } = this.identity;
+    // A change of one person's access: the server decided it for them, and
+    // nobody else hears of it.
+    if (event.userId !== undefined) return event.userId === userId;
+    if (event.t === 'project.unlisted') {
+      // Only to those who held the project: its readers may already have lost
+      // the right to read it (a deleted project takes its memberships along),
+      // and anyone else would learn that it existed.
+      if (this.hub.everHeld(userId, event.projectId)) return true;
+      return this.hub.overviewScope(userId).then((scope) => scopeAllows(scope, event.projectId));
+    }
+    return (async () => {
+      if (scopeAllows(await this.hub.overviewScope(userId), event.projectId)) return true;
+      // The cached scope may predate the project: a creator's other devices
+      // must still learn about the project they just made.
+      return scopeAllows(await this.hub.overviewScope(userId, record.cursor), event.projectId);
+    })();
   }
 
   get userKey(): string {
@@ -189,12 +287,17 @@ class LiveConnection {
       v: LIVE_PROTOCOL_VERSION,
       maxSessions: LIVE_MAX_SESSION_SUBSCRIPTIONS,
       ...(this.hub.deps.watchResource ? { resources: true } : {}),
+      ...(this.hub.deps.domainEvents
+        ? { topics: true, topicEpoch: this.hub.deps.domainEvents.epoch }
+        : {}),
     });
   }
 
   send(frame: LiveServerFrame): boolean {
     if (this.closed || this.socket.readyState !== WS_OPEN) return false;
-    this.socket.send(JSON.stringify(frame));
+    const data = JSON.stringify(frame);
+    this.socket.send(data);
+    this.hub.deps.onFrameSent?.(frame.k, Buffer.byteLength(data));
     return true;
   }
 
@@ -211,6 +314,7 @@ class LiveConnection {
     this.subscriptions.clear();
     for (const detach of this.resources.values()) detach();
     this.resources.clear();
+    this.topics?.dispose();
     this.hub.detach(this);
   }
 
@@ -242,6 +346,13 @@ class LiveConnection {
         this.resources.delete(key);
         return;
       }
+      case 'topics.sub':
+        if (this.topics === undefined) this.send({ k: 'error', message: 'topics unavailable' });
+        else await this.topics.subscribe(frame.topics);
+        return;
+      case 'topics.unsub':
+        this.topics?.unsubscribe(frame.topics);
+        return;
       case 'ping':
         this.lastPongAt = this.hub.now();
         this.send({ k: 'pong', n: frame.n });
@@ -426,6 +537,9 @@ class LiveConnection {
       }
       this.hub.deps.logger?.warn({ err: error }, 'verity: live access recheck failed');
     }
+    // After the session streams, and whatever happened to them: topics decide
+    // (and fail closed) on their own.
+    if (!this.closed) await this.topics?.recheck();
   }
 }
 
@@ -454,7 +568,24 @@ export class LiveHub {
     { topics: Set<LiveHintTopic>; deleted: boolean }
   >();
   private hintTimer: ReturnType<typeof setTimeout> | undefined;
-  private readonly scopes = new Map<string, { scope: LiveOverviewScope; at: number }>();
+  /** `since`: the bus position when the read began; it shows every record up
+   * to there. */
+  private readonly scopes = new Map<
+    string,
+    { scope: LiveOverviewScope; at: number; since: number }
+  >();
+  /** Every project a user's scope reads held while they had a connection
+   * open, by user. */
+  private readonly held = new Map<string, Set<string>>();
+  /** Open connections, and departures, by user. */
+  private readonly userConnections = new Map<string, number>();
+  /** The stay of each connected user: a number never handed out twice. */
+  private readonly userStays = new Map<string, number>();
+  private stays = 0;
+  private readonly scopeReads = new Map<
+    string,
+    { since: number; promise: Promise<LiveOverviewScope> }
+  >();
   private readonly unsubscribeAll: () => void;
 
   constructor(readonly deps: LiveHubDeps) {
@@ -473,11 +604,34 @@ export class LiveHub {
   attach(socket: LiveSocket, identity: LiveIdentity): void {
     const connection = new LiveConnection(this, socket, identity);
     this.connections.add(connection);
+    const key = connection.userKey;
+    this.userConnections.set(key, (this.userConnections.get(key) ?? 0) + 1);
+    if (!this.userStays.has(key)) {
+      this.userStays.set(key, ++this.stays);
+      connection.beganStay = true;
+    }
     connection.start();
   }
 
   detach(connection: LiveConnection): void {
-    this.connections.delete(connection);
+    // Once per connection: a socket that closes after its device was revoked
+    // must not count the user's other devices as gone.
+    if (!this.connections.delete(connection)) return;
+    // Who held what matters only to a user's open connections; subscribing
+    // again reads the scope anew.
+    const key = connection.userKey;
+    const left = (this.userConnections.get(key) ?? 1) - 1;
+    if (left > 0) {
+      this.userConnections.set(key, left);
+      return;
+    }
+    this.userConnections.delete(key);
+    this.held.delete(key);
+    this.scopes.delete(key);
+    this.scopeReads.delete(key);
+    // A read begun before the user left belongs to that stay, even if it
+    // answers once they are back with a new one.
+    this.userStays.delete(key);
   }
 
   /** A device was revoked, logged out or expired: its sockets stop now. */
@@ -509,12 +663,25 @@ export class LiveHub {
     await Promise.all([...this.connections].map((connection) => connection.recheck({ sessionId })));
   }
 
-  notify(change: {
-    sessionId: string;
-    projectId?: string | null | undefined;
-    topics: readonly LiveHintTopic[];
-    deleted?: boolean | undefined;
-  }): void {
+  private readonly notifyListeners = new Set<(change: LiveHubChange) => void>();
+
+  /** Every change hinted to the overview, as {@link notify} receives it. */
+  onNotify(listener: (change: LiveHubChange) => void): () => void {
+    this.notifyListeners.add(listener);
+    return () => {
+      this.notifyListeners.delete(listener);
+    };
+  }
+
+  notify(change: LiveHubChange): void {
+    // An observer's failure must not keep the hint from any viewer.
+    for (const listener of this.notifyListeners) {
+      try {
+        listener(change);
+      } catch {
+        // The observer reports its own failures.
+      }
+    }
     if (change.projectId !== undefined)
       this.projectOfSession.set(change.sessionId, change.projectId);
     const pending = this.pendingHints.get(change.sessionId) ?? {
@@ -559,7 +726,7 @@ export class LiveHub {
     }
     for (const connection of [...this.connections]) {
       if (!connection.overview) continue;
-      const scope = await this.scopeFor(connection.identity.userId).catch(() => undefined);
+      const scope = await this.overviewScope(connection.identity.userId).catch(() => undefined);
       if (scope === undefined) continue;
       const visible = hints
         .filter(({ projectId }) => scopeAllows(scope, projectId))
@@ -568,13 +735,76 @@ export class LiveHub {
     }
   }
 
-  private async scopeFor(userId: string | undefined): Promise<LiveOverviewScope> {
+  /**
+   * The projects a user's overview may list, cached briefly. `freshAfter`, a
+   * bus position, asks for a read that began once the record at it was
+   * published: the cache, or a read begun earlier, may predate it.
+   */
+  async overviewScope(userId: string | undefined, freshAfter?: number): Promise<LiveOverviewScope> {
     const key = userId ?? '';
     const cached = this.scopes.get(key);
-    if (cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) return cached.scope;
-    const scope = await this.deps.access.overviewScope(userId);
-    this.scopes.set(key, { scope, at: this.now() });
-    return scope;
+    if (freshAfter === undefined && cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) {
+      return cached.scope;
+    }
+    // Read after the record was published: it already shows what it brought.
+    if (freshAfter !== undefined && cached !== undefined && cached.since >= freshAfter) {
+      return cached.scope;
+    }
+    // One read per user at a time: an event reaches all of a user's devices
+    // at once, and each would otherwise read the same scope again.
+    const reading = this.scopeReads.get(key);
+    if (reading !== undefined && (freshAfter === undefined || reading.since >= freshAfter)) {
+      return reading.promise;
+    }
+    const at = this.now();
+    const stay = this.userStays.get(key);
+    const entry = {
+      since: this.deps.domainEvents?.head ?? 0,
+      promise: Promise.resolve(undefined as unknown as LiveOverviewScope),
+    };
+    entry.promise = this.deps.access
+      .overviewScope(userId)
+      .then((scope) => {
+        // A read that answers after the user left, or that began before they
+        // left and came back, must not bring back what their leaving forgot:
+        // neither the scope nor who held what. Only such a read fills the
+        // cache, so a cache hit has been recorded already.
+        if (stay === undefined || this.userStays.get(key) !== stay) return scope;
+        // A read that began earlier and answered later must not replace one
+        // that began after it.
+        const cachedNow = this.scopes.get(key);
+        if (cachedNow === undefined || cachedNow.at <= at) {
+          this.scopes.set(key, { scope, at, since: entry.since });
+        }
+        this.recordHeld(key, scope);
+        return scope;
+      })
+      .finally(() => {
+        if (this.scopeReads.get(key) === entry) this.scopeReads.delete(key);
+      });
+    this.scopeReads.set(key, entry);
+    return entry.promise;
+  }
+
+  /** Note the projects a scope read for a connected user holds. */
+  private recordHeld(key: string, scope: LiveOverviewScope): void {
+    if (scope.all || !this.isConnected(key)) return;
+    const held = this.held.get(key) ?? new Set<string>();
+    for (const projectId of scope.projectIds) held.add(projectId);
+    this.held.set(key, held);
+  }
+
+  private isConnected(key: string): boolean {
+    return (this.userConnections.get(key) ?? 0) > 0;
+  }
+
+  /** Whether any scope read for a user held the project: who held a project
+   * that has since left their reach. A later read only adds to this, so how
+   * reads interleave with a deletion does not decide who hears of it. */
+  everHeld(userId: string | undefined, projectId: string): boolean {
+    const key = userId ?? '';
+    if (this.scopes.get(key)?.scope.all === true) return true;
+    return this.held.get(key)?.has(projectId) === true;
   }
 
   /** A session moved to another project: forget the cached owner. */

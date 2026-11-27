@@ -9,14 +9,13 @@ import {
 } from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, ScrollView, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Alert, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { MockupThumbs } from '../session/MockupReview';
 import { AnswerButtons, AnswerSheet, answerId } from '../project/AnswerSheet';
-import { Button, Card, CardHead, StatusTag, Text, TileMark } from '../ui';
-import { Disclosure } from '../ui/Disclosure';
+import { Button, Card, CardHead, CardInset, StatusTag, Text, TileMark, type Leading } from '../ui';
 
 /**
  * The inbox mechanics shared by every work list (Home, a project's page, a
@@ -27,10 +26,8 @@ import { Disclosure } from '../ui/Disclosure';
 
 /** What Resume sends: a crashed session continues by taking a new turn. */
 export const RESUME_PROMPT = 'Continue where you stopped.';
-/** Lines a permission's summary takes in a work list when the full input sits under it. */
+/** Lines a non-decidable preview takes in a work list. */
 export const INBOX_LINE_CLAMP = 3;
-/** Height of the viewport that holds a request read in full next to Allow. */
-export const INBOX_REQUEST_MAX_HEIGHT = 180;
 
 const TAG_INTENT = {
   attention: 'needsSetup',
@@ -175,6 +172,25 @@ export function useInboxFeed({
         return;
       }
       if (action.kind === 'repair_project') return onRepairProject(action.projectId);
+      // QA stopped and asked: the answer goes to the project's QA, not to a session.
+      if (action.kind === 'qa_decision') {
+        if (running.current.has(item.key)) return;
+        running.current.add(item.key);
+        setPending((current) => new Map(current).set(item.key, answerId(action)));
+        try {
+          await client.projectQA.decide(action.projectId, action.issueId, action.decision);
+          setSettled((current) => new Set(current).add(item.key));
+          onSaved?.(item);
+        } catch (caught) {
+          Alert.alert(
+            'Not sent',
+            caught instanceof Error ? caught.message : 'Try again in a moment.',
+          );
+        } finally {
+          release(item.key);
+        }
+        return;
+      }
       const reply = replyFor(action);
       if (reply === null) return;
       if (running.current.has(item.key)) return;
@@ -197,7 +213,7 @@ export function useInboxFeed({
         release(item.key);
       }
     },
-    [onOpenSession, onOpenProject, onRepairProject, onSaved, perform, release],
+    [client, onOpenSession, onOpenProject, onRepairProject, onSaved, perform, release],
   );
   const dismiss = useCallback(
     (item: InboxItem) => {
@@ -265,16 +281,20 @@ export function FeedCard({
   selected,
   unread,
   also,
+  leading,
 }: {
   feed: InboxFeed;
   item: InboxItem;
   selected: boolean;
   unread?: boolean | undefined;
   also?: readonly InboxItem[] | undefined;
+  /** The tile its list's rows lead with, so the card lines up with them. */
+  leading?: Leading | undefined;
 }) {
   return (
     <InboxCard
       item={item}
+      leading={leading}
       unread={unread}
       also={also}
       selected={selected}
@@ -306,9 +326,12 @@ export function InboxCard({
   unread = false,
   also,
   grouped = false,
+  leading,
 }: {
   item: InboxItem;
   selected: boolean;
+  /** The row tile the card leads with; its content is indented to the title. */
+  leading?: Leading | undefined;
   /** An entry of a `Group` rather than a card of its own (see `Card`). */
   grouped?: boolean;
   /** The session has messages the operator has not read; marked in the head. */
@@ -338,6 +361,11 @@ export function InboxCard({
         <CardHead
           title={item.title}
           subtitle={item.context}
+          leading={leading}
+          actionable={!restoring}
+          wrapTitle={
+            item.kind === 'permission' && item.actions.some((action) => action.kind === 'allow')
+          }
           trailing={
             <View style={styles.headTrailing}>
               {unread ? (
@@ -350,90 +378,65 @@ export function InboxCard({
           }
           onDismiss={restoring || disabled ? undefined : onDismiss}
         />
-        {item.message ? (
-          <Text variant="bodySmall" tone="muted" numberOfLines={3}>
-            {item.message}
-          </Text>
-        ) : null}
-        {item.mockups !== undefined && item.mockups.length > 0 ? (
-          <MockupThumbs
-            screens={item.mockups}
-            onOpen={() => {
-              const review = item.actions.find((action) => action.kind === 'review_mockups');
-              if (review) onAction(review);
-            }}
-          />
-        ) : null}
-        {item.lines?.map((line, index) => (
-          <Text
-            key={index}
-            variant={line.kind === 'code' ? 'code' : 'bodySmall'}
-            tone={line.kind === 'code' ? undefined : 'muted'}
-            // A work list is scanned, so an agent's long message must not stretch
-            // its card. Clamped only where the complete input is drawn below it:
-            // without a request, these lines are all there is to read.
-            numberOfLines={item.request === undefined ? undefined : INBOX_LINE_CLAMP}
-            selectable
-            testID={`inbox-line-${line.kind}`}
-          >
-            {line.text}
-          </Text>
-        ))}
-        {item.request === undefined ? null : item.requestOpen === true ? (
-          // The words leave part of the input unsaid (a file's content, a field no
-          // summary knows), so it is the thing to read and is shown whole; Allow
-          // must never stand next to text the operator cannot read in full. Whole,
-          // but in a bounded viewport: scrolled, not clipped, and the card stays short.
-          <ScrollView
-            style={styles.request}
-            nestedScrollEnabled
-            testID="inbox-request-viewport"
-            accessibilityLabel="Full request"
-          >
-            <Text variant="code" testID="inbox-request" selectable>
-              {item.request}
+        <InsetUnder leading={leading}>
+          {item.message ? (
+            <Text variant="bodySmall" tone="muted" numberOfLines={INBOX_LINE_CLAMP}>
+              {item.message}
             </Text>
-          </ScrollView>
-        ) : (
-          // Read in words first; the complete input stays one tap away, never
-          // clipped, so Allow is never decided from a summary that could not be
-          // checked against it.
-          <Disclosure title="Full request">
-            <Text variant="code" testID="inbox-request" selectable>
-              {item.request}
-            </Text>
-          </Disclosure>
-        )}
-        {also !== undefined && also.length > 0 ? (
-          <Text variant="caption" tone="muted" testID="inbox-also">
-            {alsoWaiting(also)}
-          </Text>
-        ) : null}
-        <View style={styles.actions}>
-          {restoring ? (
-            <Button label="Restore" size="compact" variant="secondary" onPress={onRestore} />
           ) : null}
-          {restoring ? null : (
-            <AnswerButtons
-              answers={answers}
-              pending={pending}
-              disabled={disabled}
-              onAnswer={onAction}
-              onMore={() => setAnswering(true)}
+          {item.mockups !== undefined && item.mockups.length > 0 ? (
+            <MockupThumbs
+              screens={item.mockups}
+              onOpen={() => {
+                const review = item.actions.find((action) => action.kind === 'review_mockups');
+                if (review) onAction(review);
+              }}
             />
-          )}
-          {(restoring ? [] : otherActions).map((action, index) => (
-            <Button
-              key={`${String(index)}:${action.kind}:${action.label}`}
-              label={action.label}
-              size={item.kind === 'permission' ? 'compact' : 'small'}
-              variant={item.kind === 'permission' && index === 0 ? 'primary' : 'secondary'}
-              loading={pending === answerId(action)}
-              disabled={disabled}
-              onPress={() => onAction(action)}
-            />
+          ) : null}
+          {item.lines?.map((line, index) => (
+            <Text
+              key={index}
+              variant={line.kind === 'code' ? 'code' : 'bodySmall'}
+              tone={line.kind === 'code' ? undefined : 'muted'}
+              // Only complete short requests reach this surface. Never clip the
+              // information on which an inline approval depends.
+              selectable
+              testID={`inbox-line-${line.kind}`}
+            >
+              {line.text}
+            </Text>
           ))}
-        </View>
+          {also !== undefined && also.length > 0 ? (
+            <Text variant="caption" tone="muted" testID="inbox-also">
+              {alsoWaiting(also)}
+            </Text>
+          ) : null}
+          <View style={styles.actions}>
+            {restoring ? (
+              <Button label="Restore" size="compact" variant="secondary" onPress={onRestore} />
+            ) : null}
+            {restoring ? null : (
+              <AnswerButtons
+                answers={answers}
+                pending={pending}
+                disabled={disabled}
+                onAnswer={onAction}
+                onMore={() => setAnswering(true)}
+              />
+            )}
+            {(restoring ? [] : otherActions).map((action, index) => (
+              <Button
+                key={`${String(index)}:${action.kind}:${action.label}`}
+                label={action.label}
+                size={item.kind === 'permission' ? 'compact' : 'small'}
+                variant={item.kind === 'permission' && index === 0 ? 'primary' : 'secondary'}
+                loading={pending === answerId(action)}
+                disabled={disabled}
+                onPress={() => onAction(action)}
+              />
+            ))}
+          </View>
+        </InsetUnder>
       </Card>
       <AnswerSheet
         item={answering && !restoring && !disabled ? item : null}
@@ -454,6 +457,11 @@ export function InboxCard({
       />
     </View>
   );
+}
+
+/** Indents a card's content to its head's title when the head leads with a tile. */
+function InsetUnder({ leading, children }: { leading: Leading | undefined; children: ReactNode }) {
+  return leading === undefined ? <>{children}</> : <CardInset>{children}</CardInset>;
 }
 
 /** The network reply an answer becomes; navigation actions have none. */
@@ -494,5 +502,4 @@ const styles = StyleSheet.create((theme) => ({
   hiddenToggle: { alignItems: 'center', marginTop: theme.spacing.sm },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   headTrailing: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  request: { maxHeight: INBOX_REQUEST_MAX_HEIGHT, flexGrow: 0 },
 }));

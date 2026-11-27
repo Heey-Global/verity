@@ -15,8 +15,26 @@ const protectedBuildReason = z.enum([
   'unknown_attempt',
   'address_pool_exhausted',
 ]);
+/** Fixed host step that refused packet authority for a new build attempt. Only
+ * this class name crosses to the Server and UI; the message stays in the host
+ * journal under the correlation id. */
+const protectedBuildAuthorityStep = z.enum([
+  // Root-owned inspection record for the anchor namespace could not be written.
+  'inspection_record',
+  // Docker or the bridge device no longer matches the anchor that was created.
+  'attachment',
+  // The nft build table could not be installed.
+  'fence_rules',
+  // The root deadline helper could not attach its packet guard.
+  'packet_guard',
+  // The root deadline helper refused to revoke the guard.
+  'packet_revoke',
+]);
+export type ProtectedBuildAuthorityStep = z.infer<typeof protectedBuildAuthorityStep>;
 export const protectedBuildDiagnostic = z.object({
   reason: protectedBuildReason,
+  // A class this release does not know must not discard the reason and reference.
+  detail: protectedBuildAuthorityStep.optional().catch(undefined),
   correlationId: z.uuid().optional(),
 });
 export type ProtectedBuildDiagnostic = z.infer<typeof protectedBuildDiagnostic>;
@@ -25,15 +43,59 @@ export type ProtectedBuildDiagnostic = z.infer<typeof protectedBuildDiagnostic>;
 export class ProtectedBuildFailure extends Error {
   constructor(
     readonly reason: ProtectedBuildDiagnostic['reason'],
-    options?: ErrorOptions & { correlationId?: string | undefined },
+    options?: ErrorOptions & {
+      correlationId?: string | undefined;
+      detail?: ProtectedBuildAuthorityStep | undefined;
+    },
   ) {
     super(
-      `Protected builder refused the operation (${reason}${options?.correlationId ? `; reference ${options.correlationId}` : ''})`,
+      `Protected builder refused the operation (${reason}${options?.detail ? `: ${options.detail}` : ''}${options?.correlationId ? `; reference ${options.correlationId}` : ''})`,
       options,
     );
     this.correlationId = options?.correlationId;
+    this.detail = options?.detail;
   }
   readonly correlationId: string | undefined;
+  readonly detail: ProtectedBuildAuthorityStep | undefined;
+}
+
+/** Names the packet-authority step that failed; see protectedBuildAuthorityStep. */
+export class ProtectedBuildAuthorityError extends Error {
+  constructor(
+    readonly step: ProtectedBuildAuthorityStep,
+    options: ErrorOptions,
+  ) {
+    super(`Protected build authority ${step} failed`, options);
+    this.name = 'ProtectedBuildAuthorityError';
+  }
+}
+/** Run one authority step, classifying its failure unless an inner step already did. */
+export async function protectedBuildAuthorityStepRun<T>(
+  step: ProtectedBuildAuthorityStep,
+  work: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await work();
+  } catch (cause) {
+    if (cause instanceof ProtectedBuildAuthorityError) throw cause;
+    throw new ProtectedBuildAuthorityError(step, { cause });
+  }
+}
+/** First classified authority step in a cause chain, including aggregated causes. */
+export function protectedBuildAuthorityFailureStep(
+  error: unknown,
+): ProtectedBuildAuthorityStep | undefined {
+  const queue: unknown[] = [error];
+  const seen = new Set<unknown>();
+  while (queue.length && seen.size < 32) {
+    const current = queue.shift();
+    if (!(current instanceof Error) || seen.has(current)) continue;
+    seen.add(current);
+    if (current instanceof ProtectedBuildAuthorityError) return current.step;
+    if (current instanceof AggregateError) queue.push(...(current.errors as unknown[]));
+    queue.push(current.cause);
+  }
+  return undefined;
 }
 export function protectedBuildFailure(error: unknown): ProtectedBuildDiagnostic {
   if (error instanceof ProtectedBuildFailure) {

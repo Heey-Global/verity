@@ -313,7 +313,7 @@ export async function truncateAll(db: Kysely<Database>): Promise<void> {
   // One transaction: a failed seed restore must not leave the worker's database
   // without the administrator every later file's projects and tokens reference.
   await db.transaction().execute(async (trx) => {
-    await sql`truncate table scheduling_holds, scheduling_requests, team_outbox, team_join_admissions, assistant_requests, assistant_settings, assistant_project_grants, qa_dispatches, qa_decisions, qa_inbox, qa_coordinator, backup_policy, backup_revocation_outbox, backup_git_repositories, backup_unassigned_git_repositories, forge_connections, google_accounts, matrix_outbound, attendee_state, tasks, integration_events, integration_sources, integration_accounts, matrix_connector_config, knowledge_access_events, knowledge_document_revisions, knowledge_documents, knowledge_folders, control_plane_generation, starter_project, uplink_pending_share_removals, transcript_lines, events, queued_turns, running_turns, runner_frames, session_pending_note, session_automation_marker, session_moves, session_deletions, sessions, attachments, secret_audit_events, audit_mac_keys, audit_events, audit_streams, trusted_cli_outputs, secret_job_frames, secret_jobs, secret_revocations, secret_approvals, secret_run_grants, session_automations, public_preview_pin_locks, public_preview_shares, local_preview_shares, google_slide_image_cleanup, recent_google_slide_decks, dev_server_detection_state, dev_servers, claude_egress_client_certs, claude_egress_ca, project_settings, verity_settings, secret_key_meta, push_receipts, device_push_tokens, auth_tokens, http_mcp_connections, session_backend_state, project_identity_claims, projects, project_memberships, users restart identity cascade`.execute(
+    await sql`truncate table server_monitoring_settings, dependency_capacity_leases, scheduling_holds, scheduling_requests, team_outbox, team_join_admissions, assistant_requests, assistant_settings, assistant_project_grants, qa_dispatches, qa_decisions, qa_inbox, qa_coordinator, backup_policy, backup_revocation_outbox, backup_git_repositories, backup_unassigned_git_repositories, forge_connections, doppler_connections, google_accounts, matrix_outbound, attendee_state, tasks, integration_events, integration_sources, integration_accounts, matrix_connector_config, knowledge_access_events, knowledge_document_revisions, knowledge_documents, knowledge_folders, control_plane_generation, starter_project, uplink_pending_share_removals, transcript_lines, events, queued_turns, running_turns, runner_frames, session_pending_note, session_automation_marker, session_moves, session_deletions, sessions, attachments, secret_audit_events, audit_mac_keys, audit_events, audit_streams, trusted_cli_outputs, secret_job_frames, secret_jobs, secret_revocations, secret_approvals, secret_run_grants, session_automations, public_preview_pin_locks, public_preview_shares, local_preview_shares, google_slide_image_cleanup, recent_google_slide_decks, dev_server_detection_state, dev_servers, claude_egress_client_certs, claude_egress_ca, project_settings, verity_settings, secret_key_meta, push_receipts, device_push_tokens, auth_tokens, http_mcp_connections, session_backend_state, project_identity_claims, projects, project_memberships, users restart identity cascade`.execute(
       trx,
     );
     await sql`insert into backup_policy(id, journal_enabled) values (1, false)`.execute(trx);
@@ -325,4 +325,36 @@ export async function truncateAll(db: Kysely<Database>): Promise<void> {
     await sql`insert into users (id, role, status)
     values ('00000000-0000-4000-8000-000000000001', 'administrator', 'active')`.execute(trx);
   });
+}
+
+/** Makes an existing session the QA role of `projectId` (created when missing). */
+export async function assignProjectQA(
+  store: EventStore,
+  projectId: string,
+  sessionId: string,
+): Promise<void> {
+  if (!(await store.getProject(projectId)))
+    await store.upsertProject({
+      id: projectId,
+      owner: 'team',
+      repo: projectId,
+      containerName: projectId,
+      state: 'active',
+    });
+  await store.repairs.projectQA.ensureRole(projectId);
+  await store.repairs.projectQA.attachSession(projectId, sessionId);
+}
+
+/** {@link assignProjectQA}, then reserves one review, switching QA on if it is off. */
+export async function reserveProjectQAReview(
+  store: EventStore,
+  sessionId: string,
+  projectId = 'qa-project',
+): Promise<string> {
+  if (!(await store.repairs.qa()).enabled) await store.repairs.configureQA(true, 'admin');
+  await assignProjectQA(store, projectId, sessionId);
+  const revision = (await store.repairs.qa()).revision;
+  const id = await store.repairs.projectQA.claimReview(projectId, revision, '[]', 0);
+  if (!id) throw new Error('No QA review could be reserved');
+  return id;
 }

@@ -2,7 +2,7 @@ import { DockerError } from './docker.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import { ProtectedBuildHost } from './project-egress-build.js';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, chmod, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { request } from 'node:http';
@@ -409,6 +409,76 @@ it('revalidates restored roles before serving and stops incompatible containers'
   await expect(host.execute(start)).rejects.toThrow();
 });
 
+// A container or network removed while the controller was down made every later
+// controller start fail on its binding, including the one an update activated.
+describe('revalidation of removed bindings', () => {
+  const relay = 'c'.repeat(64);
+  const restored = (): ProjectEgressHostState => ({
+    version: 1,
+    records: [{ binding, retired: false, containers: { sandbox: id, relay } }],
+  });
+  async function revalidating(
+    absent: (kind: 'container' | 'network', object: string) => Promise<boolean>,
+    failing: (container: string) => boolean,
+  ) {
+    const f = fixture(restored());
+    const objectAbsent = vi.fn(absent);
+    const host = new ProjectEgressHost(restored(), { ...f.deps, objectAbsent });
+    await host.restore();
+    // The shared fixture types its mocks without parameters; the host passes (binding, id).
+    f.deps.inspectContainer.mockImplementation(async (...args: unknown[]) => {
+      if (failing(String(args[1]))) throw new Error('Host Docker object not found (HTTP 404)');
+    });
+    return { ...f, host, objectAbsent };
+  }
+  it.each([
+    {
+      removed: 'relay container',
+      absent: async (kind: string, object: string) => kind === 'container' && object === relay,
+      failing: (container: string) => container === relay,
+      stopped: [id],
+    },
+    {
+      // The surviving sandbox's check is the one that fails first.
+      removed: 'network',
+      absent: async (kind: string) => kind === 'network',
+      failing: (container: string) => container === id,
+      stopped: [id, relay],
+    },
+  ])('retires a binding whose $removed Docker reports as removed', async (c) => {
+    const f = await revalidating(c.absent, c.failing);
+    await f.host.revalidate();
+    expect(f.saved().records[0]).toMatchObject({ retired: true, cleanupContainers: true });
+    expect(f.deps.stopContainer.mock.calls.map((call: unknown[]) => call[0])).toEqual(c.stopped);
+    await expect(f.host.execute(start)).rejects.toThrow('Retired generation');
+    await f.host.execute({
+      operation: 'register',
+      binding: {
+        ...binding,
+        generation: 'gen2',
+        networkId: 'd'.repeat(64),
+        networkName: 'project-a-gen2',
+        bridge: 'vep0123456789ac',
+      },
+    });
+  });
+  it.each([
+    { unconfirmed: 'nothing is absent', absent: async () => false },
+    {
+      unconfirmed: 'the check fails',
+      absent: async () => {
+        throw new Error('Host Docker inspection refused (HTTP 403)');
+      },
+    },
+  ])('keeps failing closed when $unconfirmed', async ({ absent }) => {
+    const f = await revalidating(absent, (container) => container === relay);
+    await expect(f.host.revalidate()).rejects.toThrow('containment attempted');
+    expect(f.saved().records[0]!.retired).toBe(false);
+    expect(f.deps.stopContainer).toHaveBeenCalledWith(relay);
+    await expect(f.host.execute(start)).rejects.toThrow();
+  });
+});
+
 const transport = {
   sandbox: { address: '172.20.0.2', mac: '02:42:ac:14:00:02', device: 'vethsandbox', index: 10 },
   relay: { address: '172.20.0.3', mac: '02:42:ac:14:00:03', device: 'vethrelay', index: 11 },
@@ -625,6 +695,48 @@ it('answers names read-only from enforcement, never for unknown or retired gener
   await host.execute({ operation: 'retire', projectId: binding.projectId, generation: 'gen1' });
   expect(await ask('downloads.example.com')).toEqual({ state: 'unresolved', generation: 'gen1' });
   expect(enforcement.requestDirect).toHaveBeenCalledTimes(1);
+});
+
+it('waits for destination request recording before returning an unresolved DNS answer', async () => {
+  let finishRecording!: () => void;
+  const recording = new Promise<void>((resolve) => {
+    finishRecording = resolve;
+  });
+  const { deps } = fixture();
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    {
+      ...deps,
+      bootId: '00000000-0000-4000-8000-000000000000',
+      enforcement: {
+        directAuthority: () => true,
+        invalidate: vi.fn(),
+        connect: vi.fn(),
+        deny: vi.fn(async () => undefined),
+        refresh: vi.fn(async () => undefined),
+        revoke: vi.fn(async () => undefined),
+        admitted: () => undefined,
+        requestDirect: () => recording,
+      },
+    },
+  );
+  await host.execute({ operation: 'register', binding });
+  let replied = false;
+  const answer = host
+    .execute({
+      operation: 'resolve-direct',
+      projectId: binding.projectId,
+      generation: binding.generation,
+      name: 'other.example.com',
+    })
+    .then((result) => {
+      replied = true;
+      return result;
+    });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(replied).toBe(false);
+  finishRecording();
+  expect(await answer).toEqual({ state: 'unresolved', generation: binding.generation });
 });
 
 it('does not advertise health when read-only host compatibility checks fail', async () => {
@@ -1141,6 +1253,71 @@ it('carries a correlated startup refusal through host control and confirms relea
       },
     });
     expect(remove).toHaveBeenCalledExactlyOnceWith(buildRequest);
+    expect(warn).toHaveBeenCalledWith('verity: protected build operation refused', {
+      operation: 'begin',
+      ...result.failure,
+    });
+    expect(JSON.stringify(result) + JSON.stringify(warn.mock.calls)).not.toMatch(
+      /SECRET|\/private/u,
+    );
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it('carries the refused authority step, but not its message, to the build client', async () => {
+  const { createProtectedBuildClient } = await import('./project-egress-build-client.js');
+  const { superviseProtectedBuild } = await import('./project-egress-build-worker.js');
+  const { ProtectedBuildFailure } = await import('./project-egress-build-error.js');
+  const { host } = fixture();
+  const root = await directory();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const buildRequest = {
+    projectId: 'project-a',
+    attemptId: '11111111-1111-4111-8111-111111111111',
+    snapshot: 'attempt-a/verity-build-a',
+    image: `verity-devc-repo:${'a'.repeat(12)}`,
+    noCache: false,
+  };
+  try {
+    const builds = new ProtectedBuildHost(
+      {
+        ready: async () => true,
+        prepare: async () => {
+          throw new ProtectedBuildFailure('authority_prepare_failed', {
+            cause: new Error('SECRET /private/path'),
+            detail: 'packet_revoke',
+          });
+        },
+        renew: async () => {},
+        start: async () => {},
+        status: async () => 'failed',
+        deny: async () => {},
+        stop: async () => {},
+        ended: async () => true,
+        remove: async () => {},
+      },
+      async () => {},
+    );
+    servers.push(
+      await listenProjectEgressHost({
+        directory: root,
+        token: 'a'.repeat(64),
+        controller: host,
+        builds,
+      }),
+    );
+    const client = createProtectedBuildClient({
+      socketPath: join(root, 'control.sock'),
+      token: () => 'a'.repeat(64),
+    });
+    const result = await superviseProtectedBuild(buildRequest, client);
+    expect(result.failure).toMatchObject({
+      reason: 'authority_prepare_failed',
+      detail: 'packet_revoke',
+      correlationId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+    });
+    // The journal line carries the same class under the same reference.
     expect(warn).toHaveBeenCalledWith('verity: protected build operation refused', {
       operation: 'begin',
       ...result.failure,

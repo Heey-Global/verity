@@ -34,6 +34,8 @@ export function createQARepairTool(deps: QARepairDeps) {
   const active = new Set<string>();
   async function authorize(caller: Caller, projectId: string) {
     const qa = await store.qa();
+    // A project's QA hands off repairs only in its own project.
+    const role = await store.projectQA.roleForSession(caller.sessionId);
     const mandate = await store.mandate(projectId);
     const project = await deps.store.getProject(projectId);
     const source = await deps.store.getSession(caller.sessionId);
@@ -41,7 +43,7 @@ export function createQARepairTool(deps: QARepairDeps) {
       !source ||
       source.planning === 'active' ||
       !qa.enabled ||
-      qa.session_id !== caller.sessionId ||
+      role?.project_id !== projectId ||
       !mandate ||
       mandate.mode === 'off' ||
       !project ||

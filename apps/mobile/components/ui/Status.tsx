@@ -17,6 +17,7 @@ export function StatusTag({
   intent,
   label,
   muted = false,
+  tag = false,
 }: {
   intent: StatusIntent;
   label: string;
@@ -25,15 +26,21 @@ export function StatusTag({
    * for a row whose icon and subtitle already carry the color.
    */
   muted?: boolean;
+  /**
+   * Keeps `transient` a tag, its spinner inside, where it sits in a column of
+   * other tags; elsewhere `transient` is a plain word with a spinner.
+   */
+  tag?: boolean;
 }) {
   const { theme } = useUnistyles();
-  if (intent === 'transient') return <StatusText intent="transient" label={label} />;
+  if (intent === 'transient' && !tag) return <StatusText intent="transient" label={label} />;
   const tone: StatusIntent | 'neutral' = muted ? 'neutral' : intent;
   return (
     <View
       style={[
         styles.tag,
         styles.shrink,
+        intent === 'transient' && styles.tagRow,
         tone === 'action'
           ? styles.tagAction
           : tone === 'ready'
@@ -45,6 +52,9 @@ export function StatusTag({
       accessible
       accessibilityLabel={`${label}, ${describe(intent)}`}
     >
+      {intent === 'transient' ? (
+        <ActivityIndicator size="small" color={theme.colors.textMuted} style={styles.tagSpinner} />
+      ) : null}
       <Text
         numberOfLines={1}
         style={[
@@ -202,6 +212,9 @@ const styles = StyleSheet.create((theme) => ({
   tagReady: { backgroundColor: tint(theme.colors.success, 'fill') },
   tagAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
   tagLabel: { ...theme.typography.label },
+  tagRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
+  // The spinner's own box is taller than the label; scale it into the tag's line.
+  tagSpinner: { transform: [{ scale: 0.7 }], marginVertical: -theme.spacing.xs },
   pill: {
     flexDirection: 'row',
     alignItems: 'center',

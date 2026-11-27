@@ -3,7 +3,7 @@ import { VerityClient } from './api.js';
 import { projectInquirySchema, projectRepositorySchema } from './projectCollaboration.js';
 
 describe('project collaboration API', () => {
-  it('addresses the exact target session and request when approving a change', async () => {
+  it('addresses the target project and request when deciding', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new VerityClient({
       baseUrl: 'http://host',
@@ -15,11 +15,12 @@ describe('project collaboration API', () => {
         return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
       },
     });
-    await client.decideProjectInquiry('target/session', 'request/id', 'approve');
+    // A pending request has no target session yet, so the project is the address.
+    await client.decideProjectInquiry('target/project', 'request/id', 'approve_always');
     expect(calls[0]?.url).toBe(
-      'http://host/sessions/target%2Fsession/project-inquiries/request%2Fid/decision',
+      'http://host/projects/target%2Fproject/project-inquiries/request%2Fid/decision',
     );
-    expect(calls[0]?.init?.body).toBe(JSON.stringify({ decision: 'approve' }));
+    expect(calls[0]?.init?.body).toBe(JSON.stringify({ decision: 'approve_always' }));
     expect(calls[0]?.init?.method).toBe('POST');
   });
 

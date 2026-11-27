@@ -51,6 +51,42 @@ describe('repair mandate routes', () => {
       await app.close();
     }
   });
+  it('needs the Code permission, not only execute, to approve or retry a repair', async () => {
+    const granted = new Set(['read', 'execute']);
+    const app = Fastify();
+    app.addHook('preHandler', async (request) => {
+      request.localUserId = 'editor';
+    });
+    vi.spyOn(ctx.store, 'isActiveAdministrator').mockResolvedValue(false);
+    vi.spyOn(ctx.store, 'hasProjectPermission').mockImplementation(async (_user, _project, p) =>
+      granted.has(p),
+    );
+    registerRepairRoutes(app, ctx.store);
+    const attempt = async () => [
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/projects/a/repairs/approval',
+          payload: { proposalId: 'missing', allow: true },
+        })
+      ).statusCode,
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/projects/a/repairs/retry',
+          payload: { incidentId: 'missing' },
+        })
+      ).statusCode,
+    ];
+    try {
+      expect(await attempt()).toEqual([403, 403]);
+      // With Code the request passes the permission check and meets the missing records.
+      granted.add('code');
+      expect(await attempt()).toEqual([409, 409]);
+    } finally {
+      await app.close();
+    }
+  });
   it('binds consent to the authenticated user and rejects an active-owner retry', async () => {
     await ctx.store.repairs.configureQA(true, 'admin');
     const app = Fastify();
@@ -109,8 +145,22 @@ it('requires administrator consent for the global switch and disables before can
     admin.mockResolvedValue(true);
     expect((await app.inject({ method: 'GET', url: '/settings/qa' })).json().enabled).toBe(false);
     await app.inject({ method: 'PUT', url: '/settings/qa', payload: { enabled: true } });
-    await ctx.store.repairs.qaSession('qa');
-    await ctx.store.repairs.qaClaim((await ctx.store.repairs.qa()).revision, '[]', 0);
+    // Switching QA off stops every project's running review.
+    await ctx.store.repairs.configure('a', 'admin', 'automatic');
+    await ctx.store.createSession({
+      sessionId: 'qa',
+      projectId: 'a',
+      worktree: '/tmp/qa',
+      model: 'm',
+    });
+    await ctx.store.repairs.projectQA.ensureRole('a');
+    await ctx.store.repairs.projectQA.attachSession('a', 'qa');
+    await ctx.store.repairs.projectQA.claimReview(
+      'a',
+      (await ctx.store.repairs.qa()).revision,
+      '{}',
+      0,
+    );
     await app.inject({ method: 'PUT', url: '/settings/qa', payload: { enabled: false } });
     expect(cancel).toHaveBeenCalledWith('qa');
     expect((await ctx.store.repairs.qa()).sponsor).toBe('admin');

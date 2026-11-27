@@ -2,6 +2,8 @@ import { CompiledQuery } from 'kysely';
 import { performance } from 'node:perf_hooks';
 import { createRequestLatencyTrace, withRequestLatencyTrace } from './request-latency.js';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // createPostgresDb is the production (real-Postgres) path — the store's own tests
@@ -94,6 +96,7 @@ vi.mock('pg', () => ({ default: { Pool: FakePool, Client: FakeClient } }));
 
 const {
   createPostgresDb,
+  POOL_ACQUIRE_TIMEOUT_MS,
   holdPostgresControlPlaneLock,
   isPostgresConnectionClassError,
   PostgresAdvisoryLockHeldError,
@@ -129,7 +132,18 @@ describe('createPostgresDb', () => {
     expect(pools).toHaveLength(1);
     expect(pools[0]!.config).toEqual({
       connectionString: 'postgresql://user@localhost:5432/verity',
+      connectionTimeoutMillis: POOL_ACQUIRE_TIMEOUT_MS,
     });
+    await db.destroy();
+  });
+
+  it('bounds how long a query waits for a pooled connection', async () => {
+    // pg-pool queues checkouts without any limit when the option is 0 or absent. A
+    // saturated pool then leaves every later request waiting silently, with no error.
+    const db = createPostgresDb('postgresql://localhost/x');
+    const { connectionTimeoutMillis } = pools[0]!.config as { connectionTimeoutMillis?: number };
+    expect(connectionTimeoutMillis).toBeGreaterThan(0);
+    expect(connectionTimeoutMillis).toBeLessThanOrEqual(60_000);
     await db.destroy();
   });
 
@@ -697,5 +711,17 @@ describe('isPostgresConnectionClassError', () => {
     ['a non-object', 'ECONNREFUSED'],
   ])('does not excuse %s', (_label, error) => {
     expect(isPostgresConnectionClassError(error)).toBe(false);
+  });
+
+  // A queued checkout that outlived `POOL_ACQUIRE_TIMEOUT_MS` means this Server's pool is
+  // saturated, not that the database went away. Read as an outage, one burst of contention
+  // would put callers into the wait-for-the-database paths instead of failing one request.
+  it('does not excuse a checkout that timed out in a saturated pool', () => {
+    // pg-pool is pg's dependency, not ours: resolve it the way pg does.
+    const fromPg = createRequire(createRequire(import.meta.url).resolve('pg'));
+    const poolSource = readFileSync(fromPg.resolve('pg-pool'), 'utf8');
+    const message = /new Error\('(timeout exceeded[^']*)'\)/.exec(poolSource)?.[1];
+    expect(message).toBeDefined();
+    expect(isPostgresConnectionClassError(new Error(message))).toBe(false);
   });
 });

@@ -1,13 +1,49 @@
+import { managedServerProviderSnapshotSchema } from '@verity/events';
+import {
+  branchListSchema,
+  pullRequestSchema,
+  sessionPrSchema,
+  type BranchList,
+} from './branch-api.js';
+export {
+  branchListSchema,
+  type BranchList,
+  type SessionPr,
+  type SessionPullRequestStatus,
+} from './branch-api.js';
+import { addressedToViewerSchema, openChoicesSchema } from './sessionRequests.js';
+import { changeSubmissionsClient, sessionChangeSubmissionSchema } from './changeSubmissions.js';
+import { mcpAppsClient } from './mcp-apps-client.js';
+import { attachmentsClient } from './attachments-client.js';
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
   agentLoginResponseSchema,
   peopleClient,
+  projectViewerSchema,
   type AgentLogin,
   type AgentLoginProvider,
 } from './people-api.js';
+import { projectQAClient, projectQASummarySchema } from './project-qa-api.js';
+import {
+  dopplerClient,
+  dopplerConfigsResultSchema,
+  dopplerProjectsResultSchema,
+  dopplerValidateSchema,
+  type DopplerConfigsResult,
+  type DopplerProjectsResult,
+  type DopplerValidateResult,
+} from './doppler-api.js';
+export * from './doppler-api.js';
+import { secretStatusSchema, type SecretStatus } from './secret-status.js';
+import { hostResourcesClient } from './host-resources-api.js';
 export * from './people-api.js';
+export * from './project-qa-api.js';
 export * from './session-workspace-api.js';
 import { sessionWorkspaceClient } from './session-workspace-api.js';
+export * from './knowledge-files-api.js';
+import { knowledgeFilesClient, projectGoogleDriveFilesClient } from './knowledge-files-api.js';
+import { uploadBodyWithMimeType } from './upload-body.js';
+import { withConditionalReads } from './conditionalReads.js';
 export * from './backup-api.js';
 import {
   backupProbeJobSchema,
@@ -19,10 +55,22 @@ import {
 } from './backup-api.js';
 import {
   projectRepositorySchema,
+  projectInquiryGrantSchema,
   projectInquirySchema,
+  type InquiryDecision,
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
 import { repositoryPullRequestsSchema } from './projectPullRequests.js';
+import {
+  schedulingRequestsSchema,
+  schedulingRequestViewSchema,
+  type SchedulingRequestView,
+} from './scheduling-api.js';
+export type { SchedulingRequestView } from './scheduling-api.js';
+import { createSecretApprovalsClient, pendingPermissionRequestSchema } from './secretApprovals.js';
+import { createSessionCollaborationClient } from './sessionCollaboration.js';
+import { serverMonitoringClient } from './server-monitoring-api.js';
+export type { PendingPermissionRequest } from './secretApprovals.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -78,8 +126,6 @@ import {
   type WikiProposal,
   type WikiProposalDecision,
   type WikiProposalSummary,
-} from '@verity/events';
-import {
   recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
   selectedEvidenceExportSchema,
@@ -109,23 +155,20 @@ import {
   usageSchema,
 } from '@verity/events';
 import { z } from 'zod';
-
 /** Local transport scheduling metadata; fetch implementations may ignore it. */
 export type TransportLane = 'interactive' | 'background';
 export interface TransportRequestInit extends RequestInit {
   transportLane?: TransportLane;
 }
-
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
-  // A held conversation read must not occupy one of the few background slots.
+  // Conversation, model picking and the project page must not queue behind slow reads.
   return pathname === '/assistant/conversation' ||
-    /^\/(?:sessions|projects)$/u.test(pathname) ||
+    /^\/(?:sessions|projects(?:\/[^/]+)?|models)$/u.test(pathname) ||
     /^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/u.test(pathname)
     ? 'interactive'
     : 'background';
 }
-
 const projectGitHubIssuesSchema = z.object({
   connected: z.boolean(),
   viewerLogin: z.string().nullable(),
@@ -175,60 +218,6 @@ export type { Attachment, AttachmentUpload } from '@verity/events';
 export const sessionStatusSchema = z.union([agentStatusSchema, z.literal('idle')]);
 export type SessionStatus = z.infer<typeof sessionStatusSchema>;
 
-/** Compact PR status for a session's CURRENT branch, carried on the session list so
- * the overview can show merge-ready / merge-blocked / CI-failed markers without a
- * per-session branch fetch. A projection of the richer `pullRequest` in
- * {@link branchListSchema}. */
-/** GitHub's `mergeable_state`, when the server queried it. Unknown/absent values fall
- * back to `undefined` rather than failing the parse, so a state GitHub adds later (or
- * an older server that omits the field) degrades to "no conflict signal". */
-const mergeStateSchema = z
-  .enum(['clean', 'dirty', 'blocked', 'behind', 'unstable', 'draft', 'unknown'])
-  .optional()
-  .catch(undefined);
-
-const pullRequestSchema = z
-  .object({
-    number: z.number().int().positive(),
-    title: z.string(),
-    url: z.string(),
-    phase: z.enum(['open', 'merged', 'closed']),
-    updatedAt: z.string().optional(),
-    headSha: z.string().optional(),
-    pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
-    checks: z.object({
-      completed: z.number().int().nonnegative(),
-      total: z.number().int().nonnegative(),
-      successful: z.number().int().nonnegative(),
-      failed: z.number().int().nonnegative(),
-      pending: z.number().int().nonnegative(),
-    }),
-    // Tri-state; see sessionPrSchema.mergeable. null = unknown, not "blocked".
-    viewerCanMerge: z.boolean().optional(),
-    mergeable: z.boolean().nullable().catch(null),
-    // See sessionPrSchema.mergeState — `'dirty'` drives the conflict UI.
-    mergeState: mergeStateSchema,
-    // The PR's base branch, so the conflict line can name it ("conflicts with main").
-    baseRef: z.string().min(1).optional(),
-  })
-  .nullable();
-
-const sessionPrSchema = z.object({
-  phase: z.enum(['open', 'merged', 'closed']),
-  pipeline: z.enum(['pending', 'running', 'success', 'failure', 'unknown']),
-  // Tri-state: true = mergeable, false = blocked/conflict, null = unknown (checks
-  // not green yet, or GitHub still computing mergeability just after a push).
-  // `.catch(null)` keeps an older server's bare boolean parseable during rollout.
-  viewerCanMerge: z.boolean().optional(),
-  mergeable: z.boolean().nullable().catch(null),
-  // GitHub's `mergeable_state`. `'dirty'` = the branch CONFLICTS with its base, which
-  // also means GitHub started no `pull_request` checks — the one state that must read
-  // as blocked even though `pipeline` is `unknown`. ABSENT = older server, or the
-  // server didn't query mergeability for this PR.
-  mergeState: mergeStateSchema,
-});
-export type SessionPr = z.infer<typeof sessionPrSchema>;
-
 const usageTotalsSchema = usageSchema.extend({ turns: z.number().int().nonnegative() });
 
 const rateLimitStateSchema = z.object({
@@ -266,29 +255,6 @@ export const attentionSignalSchema = z.object({
   action: z.string().min(1).optional().catch(undefined),
 });
 export type AttentionSignal = z.infer<typeof attentionSignalSchema>;
-
-/**
- * The current turn's unanswered `verity:choices` block, as the session list
- * carries it. Options keep the agent's labels verbatim: a label is what is sent
- * as the answer. A block that no longer parses (a newer server, a malformed
- * option) reads as "no open question" rather than failing the whole list.
- */
-const openChoicesSchema = z.object({
-  question: z.string().optional(),
-  options: z
-    .array(z.object({ label: z.string().min(1), recommended: z.boolean().optional() }))
-    .min(1),
-  multiSelect: z.boolean().optional(),
-});
-
-/** One parked permission prompt with what it asks. `input` is absent when the
- * server judged it too large to carry; the app then opens the session instead. */
-const pendingPermissionRequestSchema = z.object({
-  toolUseId: z.string().min(1),
-  tool: z.string().min(1),
-  riskClass: z.string().min(1),
-  input: z.unknown().optional(),
-});
 
 /** A mockup review: the screens the agent presented, each marked approved,
  * discarded or still open. An older server's `comment` reads as discarded, as the
@@ -391,6 +357,8 @@ export const sessionSummarySchema = z
     /** Epoch ms of the newest event, for ordering Home's items. Absent on older
      * servers and null for an empty log; both sort as oldest. */
     lastActivityAt: z.number().nullable().optional().catch(undefined),
+    /** Latest user or agent message; absent on older servers. */
+    lastMessageAt: z.number().nullable().optional().catch(undefined),
     /** Version associated with this count; forward it unchanged when marking seen. */
     eventCountVersion: z.string().optional(),
     agentTextCounterVersion: z.literal('agent-text-v2').optional(),
@@ -403,6 +371,9 @@ export const sessionSummarySchema = z
     /** Keys of this session's Home items the requesting person dismissed, synced
      * across their devices. ABSENT = older server that cannot dismiss. */
     inboxDismissed: z.array(z.string()).optional(),
+    /** Whether its questions, plans and mockups are the requester's to answer. */
+    addressedToViewer: addressedToViewerSchema,
+    changeSubmission: sessionChangeSubmissionSchema,
     /** Conditions about THIS session, e.g. a sandbox that lost its connection to
      * the server (`sandbox_disconnected`). Absent from a healthy session and from
      * any older server, both of which read as "nothing to report". */
@@ -412,6 +383,9 @@ export const sessionSummarySchema = z
     sortOrder: z.number().int().nonnegative().nullable().optional(),
     /** The session's recurring automation, if it has one. */
     automation: z.object({ status: z.enum(['enabled', 'paused']) }).optional(),
+    /** The revision of the last `session.summary` this row reflects; only a
+     * newer one changes it. Absent on older servers and before any. */
+    summaryRev: z.number().int().nonnegative().optional(),
   })
   .overwrite((session) => ({
     ...session,
@@ -541,6 +515,8 @@ export const sessionActivitySchema = z.object({
    * for compatibility with older servers. The durable `permission` event carries
    * the card contents; this list is the polling/reconnect re-arm signal. */
   pendingPermissions: z.array(z.string().min(1)).optional(),
+  /** Full pending cards also restore detached approvals after a turn or server restart. */
+  pendingPermissionRequests: z.array(pendingPermissionRequestSchema).optional().catch(undefined),
   /** Whether a model switch is outstanding. Two shapes share this bit: on an older
    * server it meant "accepted, applies at the current turn's settle boundary"; on a
    * current one it means "the handover is running RIGHT NOW" — the switch interrupts
@@ -678,6 +654,7 @@ export const projectRecordSchema = z.object({
   // no releases / the lookup hasn't resolved yet, and `optional` tolerates a
   // producer that predates these fields. Today only `latestReleaseTag` is
   // rendered; the rest are carried for a follow-up detail view / link-out.
+  qaSummary: projectQASummarySchema.optional(),
   vulnerabilitySummary: z
     .object({
       maintenance: z.number().optional(),
@@ -942,12 +919,6 @@ const sessionDevServerSchema = z.object({
   managedInstanceId: z.string().optional(),
 });
 export type SessionDevServer = z.infer<typeof sessionDevServerSchema>;
-
-const managedServerProviderSnapshotSchema = z.object({
-  provider: z.literal('doppler'),
-  project: z.string().min(1),
-  config: z.string().min(1),
-});
 const managedDevServerSchema = z.object({
   providerSnapshot: managedServerProviderSnapshotSchema.nullable().optional(),
   secretBindings: z.array(z.object({ secretAlias: z.string(), env: z.string() })).default([]),
@@ -1428,11 +1399,6 @@ export type VeritySettingsPatch = {
  *  = no password set yet (first-run onboarding); `sealed` = set but locked
  *  (needs /secret/unlock after a restart); `unlocked` = key loaded; `unmanaged`
  *  = the deployment does not manage a cipher. */
-export const secretStatusSchema = z.object({
-  status: z.enum(['unlocked', 'sealed', 'uninitialized', 'unmanaged']),
-});
-export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
-
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
  *  dev/PR/local builds). `version` is OPTIONAL for back-compat: an older server
@@ -1724,57 +1690,6 @@ export type GithubManifestPreparation = z.infer<typeof manifestPrepareSchema>;
 
 const manifestCompleteSchema = z.object({ installUrl: z.string().url() });
 
-/** Result of `POST /doppler/validate` (#320, onboarding — OPTIONAL step): a live
- *  check that the stored Doppler Service Account token actually lists projects.
- *  `ok` confirms the token works. `projectCount` is a SAFE confirmation integer on
- *  success; `error` is a redacted failure message (`'locked'` when the store is
- *  sealed, `'not configured'` when the token is missing). The server NEVER returns
- *  the token here. */
-export const dopplerValidateSchema = z.object({
-  ok: z.boolean(),
-  projectCount: z.number().optional(),
-  error: z.string().optional(),
-});
-export type DopplerValidateResult = z.infer<typeof dopplerValidateSchema>;
-
-/** A single Doppler project in the binding picker (#320, `GET /doppler/projects`).
- *  `slug` is the stable identifier the mapping PATCH uses as `dopplerProject`; `name`
- *  is the display label. NON-secret. */
-export const dopplerProjectSummarySchema = z.object({
-  slug: z.string(),
-  name: z.string(),
-});
-export type DopplerProjectSummary = z.infer<typeof dopplerProjectSummarySchema>;
-
-/** A single Doppler config in the binding picker (#320, `GET /doppler/configs`).
- *  `name` is what the mapping PATCH uses as `dopplerConfig`; `environment` / `root`
- *  let the UI group root vs branch configs (deferred). NON-secret. */
-export const dopplerConfigSummarySchema = z.object({
-  name: z.string(),
-  environment: z.string().optional(),
-  root: z.boolean().optional(),
-});
-export type DopplerConfigSummary = z.infer<typeof dopplerConfigSummarySchema>;
-
-/** Result of `GET /doppler/projects` (#320, binding picker): the account's Doppler
- *  projects from the TRUSTED account token (server-side; NOT repo content), or a
- *  redacted `{ error }` envelope. `error: 'locked'` = the store is sealed;
- *  `'not configured'` = no account token. The token is NEVER on the wire. */
-export const dopplerProjectsResultSchema = z.union([
-  z.object({ projects: z.array(dopplerProjectSummarySchema) }),
-  z.object({ error: z.string() }),
-]);
-export type DopplerProjectsResult = z.infer<typeof dopplerProjectsResultSchema>;
-
-/** Result of `GET /doppler/configs?project=<project>` (#320, binding picker): the
- *  project's configs from the TRUSTED account token, or a redacted `{ error }`
- *  envelope (`'locked'` / `'not configured'` / `'project is required'`). */
-export const dopplerConfigsResultSchema = z.union([
-  z.object({ configs: z.array(dopplerConfigSummarySchema) }),
-  z.object({ error: z.string() }),
-]);
-export type DopplerConfigsResult = z.infer<typeof dopplerConfigsResultSchema>;
-
 /** Result of `POST /settings/signing-key/generate` (#320, onboarding): the server
  *  generated an ed25519 signing keypair, stored the PRIVATE key encrypted, and
  *  returns ONLY the public material. `publicKey` is the OpenSSH pubkey line the
@@ -1803,9 +1718,8 @@ export const projectDetailSchema = z.object({
   project: projectRecordSchema,
   settings: projectSettingsSchema.nullable(),
   sessions: z.array(sessionSummarySchema),
-  // What the requesting person may change. Absent from older servers, which
-  // left every change to administrators and refused the rest.
-  viewer: z.object({ canManage: z.boolean() }).optional(),
+  // What the requesting person may do; absent from older servers (see the schema).
+  viewer: projectViewerSchema.optional(),
 });
 export type ProjectDetail = z.infer<typeof projectDetailSchema>;
 
@@ -1991,69 +1905,11 @@ const permissionDecidedSchema = z.object({
   sessionId: z.string().min(1),
   toolUseId: z.string().min(1),
   decided: z.literal(true),
-  /** Present for scoped allows. False means the request was allowed but the
-   * reusable grant could not be saved, so the request must not be retried. */
+  /** Scoped allows: whether the reusable grant was saved and the action went on. */
   scopeSaved: z.boolean().optional(),
+  actionContinued: z.boolean().optional(),
 });
 export type PermissionDecided = z.infer<typeof permissionDecidedSchema>;
-
-/** Response of `GET /sessions/:id/branches`: the worktree's current branch, the
- * local branches it can switch to (#91), and the pushed `origin/*` branches it can
- * PREVIEW live (#122 — incl. ones a sibling worktree is developing). `previewable`
- * is OPTIONAL on the wire so an app newer than the server still parses (absent →
- * no preview rows). */
-const branchCodeHostSchema = z.object({
-  provider: z.literal('forgejo'),
-  baseUrl: z.string().min(1),
-});
-
-/** A code host this client does not know: since an absent `codeHost` means
- *  GitHub, keeping its owner/repo would link the chips to an unrelated GitHub
- *  repository. Dropping all three leaves them unlinked and the list parseable. */
-function withKnownCodeHost(raw: unknown): unknown {
-  if (typeof raw !== 'object' || raw === null || !('codeHost' in raw)) return raw;
-  const { codeHost, owner, repo, ...rest } = raw as Record<string, unknown>;
-  if (codeHost === undefined || branchCodeHostSchema.safeParse(codeHost).success) return raw;
-  void owner;
-  void repo;
-  return rest;
-}
-
-export const branchListSchema = z.preprocess(
-  withKnownCodeHost,
-  z.object({
-    current: z.string(),
-    switchable: z.array(z.string()),
-    previewable: z.array(z.string()).optional(),
-    // True when the session record/history still exists but its workspace was
-    // intentionally cleaned up after merge/archive. Branch controls should go inert
-    // without surfacing a transport error.
-    workspaceMissing: z.boolean().optional(),
-    // The open PR number for the CURRENT branch, looked up from GitHub (#125). `null`
-    // = looked up, no open PR; ABSENT = the server is older OR GitHub isn't configured
-    // (no token/remote) — both render as "no PR chip", independent of the issue chip.
-    currentPr: z.number().int().positive().nullable().optional(),
-    pullRequest: pullRequestSchema.optional(),
-    // The project repo's GitHub `owner`/`repo` (#161), from the server's `origin`-remote
-    // parse — lets the header build tappable Issue/PR chip URLs. Both OPTIONAL: ABSENT =
-    // older server OR no GitHub remote, in which case the chips stay non-tappable rather
-    // than linking to a broken URL. They travel together (the server sets both or
-    // neither), but each is independently optional for forward/back-compat.
-    owner: z.string().min(1).optional(),
-    repo: z.string().min(1).optional(),
-    // The web host for those chips when it is not GitHub (a Forgejo project).
-    // ABSENT = GitHub, or a server predating Forgejo. See `withKnownCodeHost` for a
-    // host this client does not know.
-    codeHost: branchCodeHostSchema.optional(),
-    // Present ONLY for a project without a GitHub repository, where there is no pull
-    // request to merge: `base` names the branch this session's work can be merged into
-    // locally. ABSENT = merging goes through the PR strip (or the server is older).
-    localMerge: z
-      .object({ base: z.string().min(1), hasChanges: z.boolean().optional() })
-      .optional(),
-  }),
-);
-export type BranchList = z.infer<typeof branchListSchema>;
 
 const pullRequestMergedSchema = z.object({ merged: z.literal(true) });
 export type PullRequestMerged = z.infer<typeof pullRequestMergedSchema>;
@@ -2401,31 +2257,6 @@ export interface VerityClientOptions {
   connection?: ConnectionReporter;
 }
 
-function uploadBodyWithMimeType(data: Blob): Blob {
-  if (data.type === 'application/octet-stream') return data;
-
-  // expo/fetch copies the body Blob's `type` into its native Content-Type
-  // header, overriding the one the caller set. Two ways that breaks an upload:
-  // expo-file-system's File reports `null` when iOS cannot infer a MIME type,
-  // and the native bridge accepts strings only, so the request fails before it
-  // is sent; and when iOS *does* infer one, the picked file's own type (a PDF's
-  // `application/pdf`, say) replaces the `application/octet-stream` the upload
-  // routes are declared with. Always report the binary type both upload
-  // endpoints expect — they stream raw bytes and take the real media type from
-  // the file name or an explicit header. Preserve the native file object and
-  // all of its file-backed methods; native methods are bound to the original
-  // host object because Expo host objects can reject a Proxy as their receiver.
-  return new Proxy(data, {
-    get(target, property) {
-      if (property === 'type') return 'application/octet-stream';
-      const value: unknown = Reflect.get(target, property, target);
-      if (typeof value !== 'function') return value;
-      const boundValue: unknown = value.bind(target);
-      return boundValue;
-    },
-  });
-}
-
 /** Response of `POST /secret/init` and `POST /secret/unlock`. `token` +
  *  `tokenId` are present when the server's auth gate is active (a per-device
  *  bearer token to store); absent on an unmanaged/gate-off deployment. */
@@ -2724,34 +2555,27 @@ export type LiveMeetingNote = z.infer<typeof liveMeetingNoteSchema>;
 export type LiveMeetingCommand = z.infer<typeof liveMeetingCommandSchema>;
 export type LiveMeetingInsight = z.infer<typeof liveMeetingInsightSchema>;
 
-const schedulingRequestViewSchema = z.object({
-  id: z.string(),
-  sessionId: z.string(),
-  /** The project the request was prepared in; older servers omit it. */
-  projectId: z.string().nullable().optional(),
-  state: z.enum(['draft', 'provisioning', 'open', 'booked', 'expired', 'revoked', 'failed']),
-  title: z.string(),
-  durationMinutes: z.number(),
-  addGoogleMeet: z.boolean(),
-  timeZone: z.string(),
-  guest: z.object({ email: z.string(), name: z.string().nullable() }),
-  colleagues: z.array(z.object({ email: z.string(), name: z.string().optional() })),
-  closesAt: z.string(),
-  windows: z.array(z.object({ start: z.string(), end: z.string(), state: z.string() })),
-  emailSentAt: z.string().nullable(),
-  booked: z.object({ start: z.string(), end: z.string() }).nullable(),
-  failure: z.string().nullable(),
-  pendingCleanups: z.number(),
-  link: z.string().nullable(),
-  createdAt: z.string(),
-});
-const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestViewSchema) });
-/** A scheduling request as the app shows it: its state, windows and the guest's link. */
-export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
-
 export class VerityClient {
+  readonly secretApprovals: ReturnType<typeof createSecretApprovalsClient>;
+  readonly sessionCollaboration = createSessionCollaborationClient((path, init) =>
+    this.request(path, init),
+  );
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
+  readonly projectQA = projectQAClient((path, init) => this.request(path, init));
+  readonly doppler = dopplerClient((path, init) => this.request(path, init));
+  readonly getHostResources = hostResourcesClient((path, init) => this.request(path, init));
+  readonly monitoring = serverMonitoringClient((path, init) => this.request(path, init));
+  readonly listDopplerConnections = this.doppler.listConnections;
+  readonly getDopplerConnectionUsage = this.doppler.connectionUsage;
+  readonly addDopplerConnection = this.doppler.addConnection;
+  readonly removeDopplerConnection = this.doppler.removeConnection;
+  readonly listProjectDopplerBindings = this.doppler.listBindings;
+  readonly addProjectDopplerBinding = this.doppler.addBinding;
+  readonly setDefaultProjectDopplerBinding = this.doppler.setDefaultBinding;
+  readonly removeProjectDopplerBinding = this.doppler.removeBinding;
+  readonly changeSubmissions = changeSubmissionsClient((path, init) => this.request(path, init));
+  readonly saveSessionToProject = this.changeSubmissions.saveToProject;
   readonly getProjectTeam = this.people.getProjectTeam;
   readonly createProjectInvitation = this.people.createProjectInvitation;
   readonly getProjectInvitation = this.people.getProjectInvitation;
@@ -2769,27 +2593,32 @@ export class VerityClient {
   private readonly workspaces = sessionWorkspaceClient((path, init) => this.request(path, init));
   readonly moveSession = this.workspaces.moveSession;
   readonly restoreSessionCodeWorkspace = this.workspaces.restoreSessionCodeWorkspace;
+  private readonly knowledgeFiles = knowledgeFilesClient(
+    (path, init) => this.request(path, init),
+    (path, init) => this.request(path, init, this.uploadFetchImpl),
+  );
+  readonly deleteKnowledgeFile = this.knowledgeFiles.deleteKnowledgeFile;
+  readonly renameKnowledgeFile = this.knowledgeFiles.renameKnowledgeFile;
+  readonly moveKnowledgeFile = this.knowledgeFiles.moveKnowledgeFile;
+  readonly uploadKnowledgeFile = this.knowledgeFiles.uploadKnowledgeFile;
+  readonly createKnowledgeFileFolder = this.knowledgeFiles.createKnowledgeFileFolder;
+  readonly listKnowledgeBacklinks = this.knowledgeFiles.listKnowledgeBacklinks;
+  readonly createSessionFolder = this.knowledgeFiles.createSessionFolder;
+  private readonly driveFiles = projectGoogleDriveFilesClient(
+    (path, init) => this.request(path, init),
+    driveFileSchema,
+  );
+  readonly createProjectGoogleDriveFolder = this.driveFiles.createProjectGoogleDriveFolder;
+  readonly updateProjectGoogleDriveFile = this.driveFiles.updateProjectGoogleDriveFile;
 
-  async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
-    const response = await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,
-      { method: 'GET', ...(signal ? { signal } : {}) },
-    );
-    return z.object({ document: z.string() }).parse(await response.json()).document;
-  }
+  private readonly mcpApps = mcpAppsClient(this.request.bind(this), () => this.baseUrl);
+  readonly getMcpAppDocument = this.mcpApps.getMcpAppDocument;
+  readonly createMcpAppDocumentUrl = this.mcpApps.createMcpAppDocumentUrl;
+  readonly callMcpAppTool = this.mcpApps.callMcpAppTool;
 
-  async callMcpAppTool(
-    sessionId: string,
-    appId: string,
-    call: { name: string; arguments?: Record<string, unknown> },
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
-    const response = await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}/call`,
-      { method: 'POST', body: JSON.stringify(call), ...(signal ? { signal } : {}) },
-    );
-    return z.record(z.string(), z.unknown()).parse(await response.json());
-  }
+  private readonly attachments = attachmentsClient(this.request.bind(this));
+  readonly getMockupPreviewDocument = this.attachments.getMockupPreviewDocument;
+  readonly readTaskAttachment = this.attachments.readTaskAttachment;
 
   async getAttendeeSettings(): Promise<{ configured: boolean }> {
     return z
@@ -3250,11 +3079,15 @@ export class VerityClient {
     this.baseUrl = opts.baseUrl.replace(/\/$/, '');
     this.localPreviewBaseUrl =
       opts.localPreviewBaseUrl === undefined ? this.baseUrl : opts.localPreviewBaseUrl;
-    this.fetchImpl = opts.fetch ?? fetch;
+    this.fetchImpl = withConditionalReads(opts.fetch ?? fetch);
     this.uploadFetchImpl = opts.uploadFetch ?? this.fetchImpl;
     this.recordingFetchImpl = opts.recordingFetch ?? this.fetchImpl;
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
+    this.secretApprovals = createSecretApprovalsClient(
+      (path, init) => this.request(path, init),
+      () => this.getToken() || undefined,
+    );
     this.onUnauthorized = opts.onUnauthorized;
     this.connection = opts.connection;
   }
@@ -3590,25 +3423,15 @@ export class VerityClient {
     const res = await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
       method: 'GET',
     });
-    return z
-      .object({
-        grants: z.array(
-          z.object({
-            sourceProjectId: z.string(),
-            targetProjectId: z.string(),
-            enabled: z.boolean(),
-            createdAt: z.string(),
-          }),
-        ),
-      })
-      .parse(await res.json()).grants;
+    return z.object({ grants: z.array(projectInquiryGrantSchema) }).parse(await res.json()).grants;
   }
 
-  async setInquiryGrant(projectId: string, targetProjectId: string, enabled: boolean) {
+  /** Grants come only from "Always allow" on a request's card; this withdraws one. */
+  async revokeInquiryGrant(projectId: string, targetProjectId: string) {
     await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ targetProjectId, enabled }),
+      body: JSON.stringify({ targetProjectId, enabled: false }),
     });
   }
 
@@ -3621,9 +3444,9 @@ export class VerityClient {
     return z.object({ inquiries: z.array(projectInquirySchema) }).parse(await res.json()).inquiries;
   }
 
-  async decideProjectInquiry(sessionId: string, inquiryId: string, decision: 'approve' | 'reject') {
+  async decideProjectInquiry(projectId: string, inquiryId: string, decision: InquiryDecision) {
     await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/project-inquiries/${encodeURIComponent(inquiryId)}/decision`,
+      `/projects/${encodeURIComponent(projectId)}/project-inquiries/${encodeURIComponent(inquiryId)}/decision`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -3690,21 +3513,6 @@ export class VerityClient {
         ),
       })
       .parse(await res.json()).approvals;
-  }
-
-  async linkSessions(id: string, targetSessionId: string): Promise<void> {
-    await this.request(`/sessions/${encodeURIComponent(id)}/links`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ targetSessionId }),
-    });
-  }
-
-  async unlinkSessions(id: string, targetSessionId: string): Promise<void> {
-    await this.request(
-      `/sessions/${encodeURIComponent(id)}/links/${encodeURIComponent(targetSessionId)}`,
-      { method: 'DELETE' },
-    );
   }
 
   /**
@@ -5026,34 +4834,26 @@ export class VerityClient {
     await this.request('/settings/github/disconnect', { method: 'POST' });
   }
 
-  /** First-run (#320, OPTIONAL): live-validate the stored Doppler Service Account
-   *  token by listing the account's projects server-side. Requires the secret
-   *  store unlocked (the token must decrypt). Never carries the token —
-   *  `{ ok, projectCount?, error? }` only. `error: 'locked'` = store sealed;
-   *  `'not configured'` = token missing. */
+  /** Validate the stored Doppler token server-side and return its project count or an error. */
   async validateDoppler(): Promise<DopplerValidateResult> {
     const res = await this.request('/doppler/validate', { method: 'POST' });
     return dopplerValidateSchema.parse(await res.json());
   }
 
-  /** Binding picker (#320): list the account's Doppler projects, server-side, from
-   *  the TRUSTED account token (NOT repo content). Requires the secret store
-   *  unlocked (the account token must decrypt). Returns `{ projects }` on success
-   *  or `{ error }` (`'locked'` = sealed; `'not configured'` = no account token).
-   *  The token is NEVER returned. */
-  async listDopplerProjects(): Promise<DopplerProjectsResult> {
-    const res = await this.request('/doppler/projects', { method: 'GET' });
+  /** List projects using the selected Doppler connection's server-side token. */
+  async listDopplerProjects(connectionId?: string): Promise<DopplerProjectsResult> {
+    const query = connectionId ? `?connectionId=${encodeURIComponent(connectionId)}` : '';
+    const res = await this.request(`/doppler/projects${query}`, { method: 'GET' });
     return dopplerProjectsResultSchema.parse(await res.json());
   }
 
-  /** Binding picker (#320): list a Doppler project's configs, server-side, from the
-   *  TRUSTED account token. `project` is the slug from {@link listDopplerProjects}.
-   *  Returns `{ configs }` or `{ error }` (`'locked'` / `'not configured'` /
-   *  `'project is required'`). The token is NEVER returned. */
-  async listDopplerConfigs(project: string): Promise<DopplerConfigsResult> {
-    const res = await this.request(`/doppler/configs?project=${encodeURIComponent(project)}`, {
-      method: 'GET',
-    });
+  /** List configs for a project slug returned by {@link listDopplerProjects}. */
+  async listDopplerConfigs(project: string, connectionId?: string): Promise<DopplerConfigsResult> {
+    const via = connectionId ? `&connectionId=${encodeURIComponent(connectionId)}` : '';
+    const res = await this.request(
+      `/doppler/configs?project=${encodeURIComponent(project)}${via}`,
+      { method: 'GET' },
+    );
     return dopplerConfigsResultSchema.parse(await res.json());
   }
 
@@ -6420,11 +6220,9 @@ export class VerityClient {
   }
 
   /** The current + switchable branches of a session's worktree (#91). */
-  async getBranches(id: string, signal?: AbortSignal): Promise<BranchList> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/branches`, {
-      method: 'GET',
-      ...(signal ? { signal } : {}),
-    });
+  async getBranches(id: string, signal?: AbortSignal, fresh = false): Promise<BranchList> {
+    const path = `/sessions/${encodeURIComponent(id)}/branches${fresh ? '?fresh=1' : ''}`;
+    const res = await this.request(path, { method: 'GET', ...(signal ? { signal } : {}) });
     return branchListSchema.parse(await res.json());
   }
 
@@ -6559,7 +6357,7 @@ export class VerityClient {
     projectId: string,
     path: string,
     content: string,
-    expectedVersion: string,
+    expectedVersion: string | null,
   ): Promise<SessionFileContent> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/knowledge/files/content`,
@@ -6613,7 +6411,7 @@ export class VerityClient {
   async writeSharedKnowledgeFile(
     path: string,
     content: string,
-    expectedVersion: string,
+    expectedVersion: string | null,
   ): Promise<SessionFileContent> {
     const res = await this.request('/knowledge/shared/files/content', {
       method: 'PUT',
@@ -6754,9 +6552,9 @@ export class VerityClient {
   async moveSessionFile(
     id: string,
     body: {
-      root: Exclude<SessionFileRoot, 'worktree'>;
+      root: SessionFileRoot;
       path: string;
-      toRoot: Exclude<SessionFileRoot, 'worktree'>;
+      toRoot: SessionFileRoot;
       toPath?: string;
       toFileName?: string;
     },
@@ -6806,13 +6604,12 @@ export class VerityClient {
     id: string,
     number: number,
     expectedHeadSha?: string,
+    repositoryId?: string,
   ): Promise<PullRequestMerged> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/pull-request/merge`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(
-        expectedHeadSha === undefined ? { number } : { number, expectedHeadSha },
-      ),
+      body: JSON.stringify({ number, expectedHeadSha, repositoryId }),
     });
     return pullRequestMergedSchema.parse(await res.json());
   }
@@ -6826,14 +6623,6 @@ export class VerityClient {
       method: 'POST',
     });
     return localMergedSchema.parse(await res.json());
-  }
-
-  /** Ask the session agent to commit its work, then add it to the local project. */
-  async saveSessionToProject(id: string): Promise<{ accepted: true }> {
-    const res = await this.request(`/sessions/${encodeURIComponent(id)}/save-to-project`, {
-      method: 'POST',
-    });
-    return z.object({ accepted: z.literal(true) }).parse(await res.json());
   }
 
   /** Answer a live mid-turn permission prompt (#149): allow (optionally with edited
@@ -6868,8 +6657,8 @@ export class VerityClient {
     return result;
   }
 
-  async listTasks(): Promise<Task[]> {
-    const res = await this.request('/tasks', { method: 'GET' });
+  async listTasks(query = ''): Promise<Task[]> {
+    const res = await this.request(`/tasks${query}`, { method: 'GET' });
     return z.object({ tasks: z.array(taskSchema) }).parse(await res.json()).tasks;
   }
 
@@ -6893,14 +6682,6 @@ export class VerityClient {
 
   async deleteTask(id: string): Promise<void> {
     await this.request(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  }
-
-  async readTaskAttachment(id: string, hash: string): Promise<ArrayBuffer> {
-    const res = await this.request(
-      `/tasks/${encodeURIComponent(id)}/attachments/${encodeURIComponent(hash)}`,
-      { method: 'GET' },
-    );
-    return res.arrayBuffer();
   }
 
   async qaApprovals(sessionId: string) {
@@ -6961,61 +6742,6 @@ export class VerityClient {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ proposalId, allow }),
     });
-  }
-  async qaSettings(enabled?: boolean) {
-    const res = await this.request(
-      '/settings/qa',
-      enabled === undefined
-        ? { method: 'GET' }
-        : {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ enabled }),
-          },
-    );
-    return z
-      .object({ enabled: z.boolean(), health: z.string(), session_id: z.string().nullable() })
-      .parse(await res.json());
-  }
-
-  async projectRepairs(id: string, mode?: 'off' | 'monitor' | 'automatic') {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(id)}/repairs`,
-      mode
-        ? {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ mode }),
-          }
-        : { method: 'GET' },
-    );
-    return z
-      .object({
-        qaEnabled: z.boolean().optional(),
-        mandate: z
-          .object({
-            mode: z.enum(['off', 'monitor', 'automatic']),
-            health: z.string(),
-            checked_at: z.string().nullable(),
-          })
-          .nullable(),
-        incidents: z
-          .array(
-            z.object({
-              id: z.string(),
-              resource: z.string(),
-              revision: z.string(),
-              state: z.string(),
-              originating_session_id: z.string().nullable().optional(),
-              owner_session_id: z.string().nullable(),
-              last_session_id: z.string().nullable(),
-              attempts: z.number(),
-              evidence: z.string(),
-            }),
-          )
-          .optional(),
-      })
-      .parse(await res.json());
   }
   /** The Verity assistant: one Verity Control session plus per-project grants. */
   async assistantSettings(enabled?: boolean) {
@@ -7196,9 +6922,8 @@ export class VerityClient {
   ): Promise<Response> {
     if ((init.method ?? 'GET') === 'GET')
       init = { ...init, transportLane: readTransportLane(path) };
-    // Attach the per-device bearer token (audit C1) when we have one. Callers
-    // pass plain-object headers, so a record spread is safe; an explicit
-    // Authorization in `init` (none today) would win by being spread last.
+    // Attach the per-device bearer token (audit C1) when we have one. Callers pass plain-object
+    // headers, so a record spread is safe; an explicit Authorization in `init` wins (spread last).
     if (this.appVariant !== undefined)
       init = {
         ...init,

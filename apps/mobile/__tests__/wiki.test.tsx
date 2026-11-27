@@ -627,3 +627,21 @@ describe('proposed Wiki changes', () => {
     expect(screen.getByText('New 5')).toBeTruthy();
   });
 });
+
+it('renames a topic page from its file name, not its title', async () => {
+  // Rename starts from what is typed over: a title there would save the page
+  // without its .md, and it would fall out of the Wiki.
+  const { AccessibilityInfo } = jest.requireActual<typeof import('react-native')>('react-native');
+  const reader = jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(true);
+  client();
+  render(<KnowledgeScreen scope={PROJECT} folder={topicFolder('Product concept')} />);
+  try {
+    fireEvent.press(await screen.findByLabelText('Actions for Assistant and roles'));
+    // A topic view lists no files to select among.
+    expect(screen.queryByRole('menuitem', { name: 'Select' })).toBeNull();
+    fireEvent.press(screen.getByRole('menuitem', { name: 'Rename…' }));
+    expect(screen.getByLabelText('File name').props.value).toBe('roles.md');
+  } finally {
+    reader.mockRestore();
+  }
+});

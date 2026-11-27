@@ -17,7 +17,9 @@ interface Entry {
 export function createForgeStatusCache(now: () => number = Date.now) {
   const entries = new Map<string, Entry>();
   const pending = new Map<string, Promise<PullRequestStatus | null>>();
-  const aliases = new Map<string, string>();
+  // Branch-scoped invalidations advance an epoch so a read already in flight when
+  // its branch was invalidated cannot store its (possibly pre-activity) result.
+  const branchEpochs = new Map<string, number>();
   interface ObservationScope {
     generation: object;
     valid: boolean;
@@ -33,7 +35,6 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       scopes.delete(key);
       const prefix = `${key}:`;
       for (const entry of entries.keys()) if (entry.startsWith(prefix)) entries.delete(entry);
-      for (const alias of aliases.keys()) if (alias.startsWith(prefix)) aliases.delete(alias);
       if (scopes.size <= 4096) break;
     }
   };
@@ -67,6 +68,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       id: ForgeStatusIdentity,
       branch: string,
       load: (observationScope: object) => Promise<PullRequestStatus | null>,
+      reportUnavailable = false,
     ): Promise<PullRequestStatus | null> {
       const scopeKey = scope(id);
       let observation = scopes.get(scopeKey);
@@ -76,11 +78,19 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       }
       const generation = observation;
       const branchKey = `${scope(id)}:branch:${branch}`;
-      const key = aliases.get(branchKey) ?? branchKey;
+      const key = reportUnavailable ? `${branchKey}\0report-unavailable` : branchKey;
+      const headKey = branchKey.split('\0')[0]!;
+      const epoch = branchEpochs.get(headKey) ?? 0;
       const running = pending.get(key);
       if (running) return running;
       const previous = entries.get(key);
-      if (previous && now() < previous.nextReadAt) return structuredClone(previous.value);
+      const check = (value: PullRequestStatus | null, failures: number) => {
+        if (reportUnavailable && value === null && failures > 0)
+          throw new Error('Forge pull request status unavailable');
+        return value;
+      };
+      if (previous && now() < previous.nextReadAt)
+        return structuredClone(check(previous.value, previous.failures));
       generation.readers++;
       pruneScopes();
       const read = (async () => {
@@ -116,16 +126,11 @@ export function createForgeStatusCache(now: () => number = Date.now) {
                 : 30_000;
         const entry = { value, failures, checkedAt: now(), nextReadAt: now() + ttl };
         if (!generation.valid) return unknown(value);
+        if ((branchEpochs.get(headKey) ?? 0) !== epoch) return value;
         entries.set(key, entry);
-        if (value) {
-          const prKey = `${scope(id)}:pr:${value.number}`;
-          aliases.set(branchKey, prKey);
-          entries.set(prKey, entry);
-        }
         // Bound retained data even when projects or branches disappear.
         while (entries.size > 4096) entries.delete(entries.keys().next().value!);
-        while (aliases.size > 4096) aliases.delete(aliases.keys().next().value!);
-        return value;
+        return check(value, failures);
       })();
       pending.set(key, read);
       try {
@@ -144,7 +149,30 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       const prefix = `${scopeKey}:`;
       for (const key of pending.keys()) if (key.startsWith(prefix)) pending.delete(key);
       for (const key of entries.keys()) if (key.startsWith(prefix)) entries.delete(key);
-      for (const key of aliases.keys()) if (key.startsWith(prefix)) aliases.delete(key);
+    },
+    /**
+     * Forget only the given branches of one repository. Activity in one session
+     * must not discard every other branch's observation in the same project: that
+     * turned each agent tool call into a full re-read of the whole repository.
+     */
+    invalidateBranches(id: ForgeStatusIdentity, branches: readonly string[]): void {
+      const scopeKey = scope(id);
+      for (const branch of branches) {
+        const branchKey = `${scopeKey}:branch:${branch}`;
+        const numbered = new Set(
+          [...pending.keys(), ...entries.keys()].filter((key) => key.startsWith(`${branchKey}\0`)),
+        );
+        const keys = [branchKey, ...numbered];
+        const nextEpoch = (branchEpochs.get(branchKey) ?? 0) + 1;
+        // Re-insert so the bound below evicts the least recently invalidated branch.
+        branchEpochs.delete(branchKey);
+        branchEpochs.set(branchKey, nextEpoch);
+        for (const key of keys) {
+          pending.delete(key);
+          entries.delete(key);
+        }
+      }
+      while (branchEpochs.size > 4096) branchEpochs.delete(branchEpochs.keys().next().value!);
     },
   };
 }

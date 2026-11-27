@@ -48,6 +48,42 @@ describe('repository binding selection', () => {
       ),
     ).toMatchObject({ owner: 'other-org', repo: 'api', projectId: 'p', containerGeneration: 'g' });
   });
+  it('carries the assigned repository’s GitHub ID so its token is scoped by ID', async () => {
+    // A name another repository may hold by now must not decide the token's scope.
+    const base = store();
+    const repositories = await base.listProjectRepositories('p');
+    const bound = {
+      ...base,
+      listProjectRepositories: vi.fn(async () =>
+        repositories.map((repository) => ({
+          ...repository,
+          githubRepositoryId: repository.id === 'extra' ? '4242' : null,
+        })),
+      ),
+    } as unknown as EventStore;
+    expect(
+      await resolveForgeRepositoryBinding(
+        bound,
+        binding,
+        'github.com',
+        '/other-org/api.git/info/refs',
+      ),
+    ).toMatchObject({ owner: 'other-org', repo: 'api', githubRepositoryId: '4242' });
+    expect(
+      await resolveForgeRepositoryBinding(
+        bound,
+        binding,
+        'api.github.com',
+        '/repos/app/main/pulls',
+      ),
+    ).toMatchObject({ owner: 'app', repo: 'main', githubRepositoryId: null });
+    expect(
+      await resolveForgeRepositoryBinding(bound, binding, 'api.github.com', '/graphql'),
+    ).toEqual([
+      expect.objectContaining({ repo: 'main', githubRepositoryId: null }),
+      expect.objectContaining({ repo: 'api', githubRepositoryId: '4242' }),
+    ]);
+  });
   it('refuses unassigned, removed and lookalike remotes', async () => {
     expect(
       await resolveForgeRepositoryBinding(

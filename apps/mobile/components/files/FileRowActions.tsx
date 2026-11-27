@@ -20,6 +20,7 @@ export function FileRowActions({
   onMove,
   onRename,
   moveLabel = 'Move',
+  menuLabel = 'Actions',
   disabled = false,
   deleteLabel = 'Delete',
 }: {
@@ -30,6 +31,8 @@ export function FileRowActions({
   onMove?: (() => void) | undefined;
   onRename?: (() => void) | undefined;
   moveLabel?: string;
+  /** The swipe lane that opens `onMenu`; the explorer calls it "More". */
+  menuLabel?: string;
   disabled?: boolean;
   deleteLabel?: string;
 }) {
@@ -139,7 +142,7 @@ export function FileRowActions({
             <SwipeActionLane
               actions={[
                 ...(onMove ? [lane('move', moveLabel, 'folder', 'action', move)] : []),
-                ...(onMenu ? [lane('menu', 'Actions', 'more-horizontal', 'action', openMenu)] : []),
+                ...(onMenu ? [lane('menu', menuLabel, 'more-horizontal', 'action', openMenu)] : []),
                 ...(onRename ? [lane('rename', 'Rename', 'edit-2', 'action', rename)] : []),
                 ...(onDelete
                   ? [lane('delete', deleteLabel, 'trash-2', 'destructive', remove)]

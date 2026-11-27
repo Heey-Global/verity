@@ -178,8 +178,8 @@ it('gives each daemon and CNI child the system networking utility search path', 
       `
 import ast, pathlib
 source=ast.parse(pathlib.Path(${JSON.stringify(helper)}).read_text())
-run=next(node for node in source.body if isinstance(node,ast.FunctionDef) and node.name=='run')
-value=next(node.value for node in run.body if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id=='env' for target in node.targets))
+run=next(node for node in source.body if isinstance(node,ast.FunctionDef) and node.name=='run_attempt')
+value=next(node.value for node in ast.walk(run) if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id=='env' for target in node.targets))
 env=eval(compile(ast.Expression(value),'<helper-env>','eval'),{'TOOLS':pathlib.Path('/fixed/toolchain'),'directory':pathlib.Path('/fixed/attempt'),'config_dir':pathlib.Path('/fixed/config')})
 assert {'/usr/sbin','/sbin'}.issubset(set(env['PATH'].split(':')))
 for node in ast.walk(run):
@@ -209,4 +209,11 @@ it('keeps every native Unix socket pathname within the Linux address limit', () 
   const dnsName = /const path = join\(folder\(request\), '([^']+)'\)/u.exec(host)![1]!;
   expect(source).toContain("start_dns(directory / '" + dnsName + "')");
   expect(Buffer.byteLength(directory + '/' + dnsName)).toBeLessThanOrEqual(107);
+});
+
+it('handles private resolver targets and preserves early setup failures without host mutations', () => {
+  execFileSync('python3', ['scripts/probes/project-egress/test_protected_build_resolver.py'], {
+    stdio: 'pipe',
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+  });
 });

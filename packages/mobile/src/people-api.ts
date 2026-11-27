@@ -21,12 +21,23 @@ export const agentLoginSchema = z.object({
 export type AgentLogin = z.infer<typeof agentLoginSchema>;
 export const agentLoginResponseSchema = z.object({ login: agentLoginSchema });
 
+/** What the requesting person may do in a project (ADR 0023 §1). The whole
+ *  object is absent from servers that left every change to administrators;
+ *  `canExecute` and `canCode` from servers that predate the Code permission. */
+export const projectViewerSchema = z.object({
+  canExecute: z.boolean().optional(),
+  canCode: z.boolean().optional(),
+  canManage: z.boolean(),
+});
+
 /** A project's team (ADR 0023 §1): members and open invitations. */
 const projectMemberSchema = z.object({
   userId: z.string(),
   displayName: z.string().nullable(),
   canRead: z.boolean(),
   canExecute: z.boolean(),
+  /** "Can work with code". Absent from servers that predate it. */
+  canCode: z.boolean().optional(),
   canManage: z.boolean(),
   creator: z.boolean(),
   joinedAt: z.string(),
@@ -36,6 +47,7 @@ const projectInvitationSchema = z.object({
   id: z.string(),
   inviteeName: z.string(),
   canExecute: z.boolean(),
+  canCode: z.boolean().optional(),
   /** `failed`: the join or the invitation did not go through; invite again. */
   state: z.enum(['creating', 'open', 'redeemed', 'revoked', 'expired', 'failed']),
   expiresAt: z.string(),
@@ -137,10 +149,11 @@ export function peopleClient(request: Request) {
       return projectTeamSchema.parse(await res.json());
     },
 
-    /** Invite a person to read, or to read and send messages ("Can edit"). */
+    /** Invite a person to read, or to read and send messages ("Can edit"),
+     *  optionally working with code. */
     createProjectInvitation: async (
       projectId: string,
-      input: { inviteeName: string; canExecute: boolean; inviterName?: string },
+      input: { inviteeName: string; canExecute: boolean; canCode?: boolean; inviterName?: string },
     ): Promise<InvitationResponse> => {
       const res = await request(`/projects/${encodeURIComponent(projectId)}/invitations`, {
         method: 'POST',
@@ -171,7 +184,7 @@ export function peopleClient(request: Request) {
     setProjectMemberRights: async (
       projectId: string,
       userId: string,
-      rights: { canExecute: boolean; canManage: boolean },
+      rights: { canExecute: boolean; canCode?: boolean; canManage: boolean },
     ): Promise<ProjectMember> => {
       const res = await request(
         `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,

@@ -19,6 +19,12 @@ describe('transport admission metadata', () => {
     ['activity', (client: VerityClient) => client.getActivity('s/1'), 'interactive'],
     ['session list', (client: VerityClient) => client.listSessions(), 'interactive'],
     ['project list', (client: VerityClient) => client.listProjects(), 'interactive'],
+    ['project detail', (client: VerityClient) => client.getProject('p/1'), 'interactive'],
+    [
+      'project issues',
+      (client: VerityClient) => client.listProjectGitHubIssues('p/1'),
+      'background',
+    ],
     ['branches', (client: VerityClient) => client.getBranches('s/1'), 'background'],
     ['dev servers', (client: VerityClient) => client.listSessionDevServers('s/1'), 'background'],
     [
@@ -42,7 +48,8 @@ describe('transport admission metadata', () => {
       'background',
     ],
     ['files', (client: VerityClient) => client.listSessionFiles('s/1'), 'background'],
-    ['other reads', (client: VerityClient) => client.listModels(), 'background'],
+    ['model picker', (client: VerityClient) => client.listModels(), 'interactive'],
+    ['project model picker', (client: VerityClient) => client.listModels('p/1'), 'interactive'],
     ['mutation', (client: VerityClient) => client.createLiveTicket(), undefined],
   ] as const)('classifies %s at the fetch boundary', async (_name, invoke, expected) => {
     const { client, fetch, stopped } = capturedClient();
@@ -51,6 +58,7 @@ describe('transport admission metadata', () => {
   });
 
   it.each([
+    (client: VerityClient, signal: AbortSignal) => client.listModels('p/1', signal),
     (client: VerityClient, signal: AbortSignal) => client.getBranches('s', signal),
     (client: VerityClient, signal: AbortSignal) => client.listSessionDevServers('s', signal),
     (client: VerityClient, signal: AbortSignal) => client.listManagedDevServers('s', signal),

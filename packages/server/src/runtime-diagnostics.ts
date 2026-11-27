@@ -7,6 +7,7 @@ import { dirname } from 'node:path';
 import { availableParallelism, freemem, loadavg, totalmem } from 'node:os';
 import { getHeapStatistics } from 'node:v8';
 import { z } from 'zod';
+import type { DependencyCapacity } from './dependency-capacity.js';
 import { parseUnixBaseUrl } from './docker.js';
 
 const number = z.number().finite().nonnegative();
@@ -178,6 +179,32 @@ const storageReclamationSchema = z.object({
       comparedDependencyBytes: number,
       // Optional: passes from servers before shared dependency files omit it.
       sharedDependencyBytes: number.optional(),
+      dependencyCopies: z
+        .array(
+          z.object({
+            path: z.string().max(500),
+            availableBytes: number,
+            freeInodes: number,
+            reserveBytes: number,
+            reserveInodes: number,
+            requiredBytes: number,
+            requiredInodes: number,
+            copiedFiles: number,
+            copiedBytes: number,
+            sharingEnabled: z.boolean(),
+            observedAt: timestamp,
+          }),
+        )
+        .max(20)
+        .optional(),
+      recoveryHolds: z
+        .object({
+          count: number,
+          sampledBytes: number,
+          oldestObservedAt: number.nullable(),
+          complete: z.boolean(),
+        })
+        .optional(),
       worktreeSampledBytes: number.nullable(),
       dependencySampledBytes: number.nullable(),
       usageComplete: z.boolean(),
@@ -216,6 +243,31 @@ const storageReclamationSchema = z.object({
 });
 export type StorageReclamation = z.infer<typeof storageReclamationSchema>;
 export const runtimeDiagnosticSnapshotSchema = z.object({
+  dependencyCapacity: z
+    .object({
+      initialized: z.boolean(),
+      count: z.number().int().nonnegative(),
+      reservedBytes: z.number().int().nonnegative().optional(),
+      reservedInodes: z.number().int().nonnegative().optional(),
+      oldestAt: timestamp.optional(),
+      problem: z.string().max(200).optional(),
+      leases: z
+        .array(
+          z
+            .object({
+              id: z.uuid(),
+              kind: z.enum(['dependency-copy', 'dependency-prepare', 'dependency-private']),
+              state: z.enum(['reserved', 'started', 'uncertain', 'settled']),
+              bytes: z.number().int().nonnegative(),
+              inodes: z.number().int().nonnegative(),
+              createdAt: timestamp,
+            })
+            .strict(),
+        )
+        .max(20),
+    })
+    .strict()
+    .optional(),
   storageReclamation: storageReclamationSchema.optional(),
   builderAdmission: builderAdmissionSchema.optional(),
   /** The selected project's last failed devcontainer build, until one succeeds. */
@@ -598,6 +650,8 @@ export function createRuntimeDiagnostics(deps: {
   buildStorageReportPath?: string | undefined;
   /** Attempts still reserving build storage, as the Server's build storage tracks them. */
   buildStorageReservations?: (() => UnresolvedBuildAttempt[]) | undefined;
+  dependencyCapacity?:
+    (() => ReturnType<DependencyCapacity['diagnostics']> | undefined) | undefined;
   buildQueue?:
     | (() => {
         holder?: { label: string; projectId?: string; since: number };
@@ -1043,6 +1097,7 @@ export function createRuntimeDiagnostics(deps: {
     }
     const reservations = deps.buildStorageReservations?.();
     const queue = deps.buildQueue?.();
+    const dependencyCapacity = deps.dependencyCapacity?.();
     const buildFailure =
       request.projectId === undefined ? undefined : deps.projectBuildFailure?.(request.projectId);
     let storageReclamation: StorageReclamation | undefined;
@@ -1052,6 +1107,7 @@ export function createRuntimeDiagnostics(deps: {
       /* Missing evidence is not zero usage. */
     }
     return runtimeDiagnosticSnapshotSchema.parse({
+      ...(dependencyCapacity ? { dependencyCapacity } : {}),
       ...(storageReclamation ? { storageReclamation } : {}),
       ...(builderAdmission === undefined ? {} : { builderAdmission }),
       ...(buildFailure === undefined ? {} : { projectBuildFailure: buildFailure }),

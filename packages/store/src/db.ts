@@ -500,6 +500,13 @@ export async function holdPostgresControlPlaneLock(
 /** Internal marker: `proveGeneration` answered `false`. Never escapes this module. */
 class GenerationProofFailed extends Error {}
 
+/**
+ * How long a query may wait for a pooled connection, or for a new one to connect, before
+ * it fails. Without a bound a saturated pool queues every caller indefinitely: a request
+ * stuck behind hundreds of waiters then never answers and never logs an error.
+ */
+export const POOL_ACQUIRE_TIMEOUT_MS = 30_000;
+
 /** Open a Kysely instance backed by a real Postgres pool (production path). */
 export function createPostgresDb(
   connectionString: string,
@@ -507,6 +514,7 @@ export function createPostgresDb(
 ): Kysely<Database> {
   const pool = new pg.Pool({
     connectionString,
+    connectionTimeoutMillis: POOL_ACQUIRE_TIMEOUT_MS,
     ...(controlPlaneFence === undefined
       ? {}
       : {

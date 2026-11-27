@@ -34,7 +34,7 @@ function fixture(config: Context['config'] = {}) {
     allocateEventFile: vi.fn(),
     allocateControlSocket: vi.fn(),
     getLog,
-    brokeredGrantBindingId: vi.fn(async () => 'binding'),
+    brokeredGrantBindingIdFor: vi.fn(async () => 'binding'),
     brokeredHttpGrants: { check },
   } as unknown as Context;
   createEmbeddedRunnerConductorWiring(context);
@@ -80,19 +80,26 @@ describe('embedded Runner conductor binding', () => {
   });
 
   it('checks grants for the running prompt person and supplied channel', async () => {
-    const { wiring, store, check } = fixture();
+    const { wiring, store, check, context } = fixture();
     const approved = await wiring.autoApprovePermission!(
       'session',
       {
         requestId: 'request',
         toolUseId: 'tool',
         toolName: 'verity_http_request',
-        input: { secretAlias: 'ATTENDEE_API_KEY', url: 'https://example.com/api' },
+        input: {
+          secretAlias: 'ATTENDEE_API_KEY',
+          url: 'https://example.com/api',
+          auth: { header: 'authorization', scheme: 'Bearer' },
+        },
       },
       'acp',
     );
     expect(approved).toBe(true);
     expect(store.promptInitiatorAt).toHaveBeenCalledWith('session', 42);
+    // The binding comes from the reference the call reads, not the project's
+    // default: a grant for one binding must never answer for another (ADR 0031).
+    expect(context.brokeredGrantBindingIdFor).toHaveBeenCalledWith('project', ['ATTENDEE_API_KEY']);
     expect(check).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: 'project',
@@ -101,6 +108,41 @@ describe('embedded Runner conductor binding', () => {
         bindingId: 'binding',
         channel: 'acp',
       }),
+    );
+  });
+
+  it('checks a JWT grant against the bindings of the key and every referenced claim', async () => {
+    const { wiring, context, check } = fixture();
+    const allowed = await wiring.autoApprovePermission!(
+      'session',
+      {
+        requestId: 'request',
+        toolUseId: 'tool',
+        toolName: 'verity_http_request',
+        input: {
+          url: 'https://example.com/api',
+          secretAlias: 'KEY',
+          auth: {
+            kind: 'jwt',
+            algorithm: 'ES256',
+            issuer: { alias: 'billing/dev/ISSUER' },
+            keyId: { alias: 'billing/dev/KEY_ID' },
+            subject: { alias: 'SUBJECT' },
+            audience: 'example',
+          },
+        },
+      },
+      'acp',
+    );
+    expect(allowed).toBe(true);
+    expect(context.brokeredGrantBindingIdFor).toHaveBeenCalledWith('project', [
+      'KEY',
+      'billing/dev/KEY_ID',
+      'billing/dev/ISSUER',
+      'SUBJECT',
+    ]);
+    expect(check).toHaveBeenCalledWith(
+      expect.objectContaining({ bindingId: 'binding', secretAlias: 'KEY' }),
     );
   });
 
@@ -114,7 +156,11 @@ describe('embedded Runner conductor binding', () => {
           requestId: 'request',
           toolUseId: 'tool',
           toolName: 'verity_http_request',
-          input: { secretAlias: 'ATTENDEE_API_KEY', url: 'https://example.com/api' },
+          input: {
+            secretAlias: 'ATTENDEE_API_KEY',
+            url: 'https://example.com/api',
+            auth: { header: 'authorization', scheme: 'Bearer' },
+          },
         },
         'acp',
       ),

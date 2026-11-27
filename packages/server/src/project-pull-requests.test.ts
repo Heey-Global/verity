@@ -84,7 +84,10 @@ function setup(options: {
   links?: SessionPullRequestLink[];
   origins?: { resource: string; sessionId: string }[];
   startFix?: ProjectPullRequestRouteDeps['startFix'];
+  getProject?: EventStore['getProject'];
+  sessionLinks?: ProjectPullRequestRouteDeps['sessionLinks'];
   now?: () => number;
+  listTimeoutMs?: number;
 }) {
   const instance = Fastify();
   app = instance;
@@ -98,7 +101,7 @@ function setup(options: {
   };
   registerProjectPullRequestRoutes(instance, {
     store: {
-      getProject: vi.fn().mockResolvedValue(project),
+      getProject: options.getProject ?? vi.fn().mockResolvedValue(project),
       listProjectRepositories: vi.fn().mockResolvedValue(repositories),
       getProjectRepository: vi.fn((_: string, id: string) =>
         Promise.resolve(repositories.find((row) => row.id === id)),
@@ -106,9 +109,10 @@ function setup(options: {
       repairs: { sessionOrigins: vi.fn().mockResolvedValue(options.origins ?? []) },
     } as unknown as EventStore,
     backend,
-    sessionLinks: vi.fn().mockResolvedValue(options.links ?? []),
+    sessionLinks: options.sessionLinks ?? vi.fn().mockResolvedValue(options.links ?? []),
     ...(options.startFix ? { startFix: options.startFix } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.listTimeoutMs === undefined ? {} : { listTimeoutMs: options.listTimeoutMs }),
   });
   return { app: instance, backend };
 }
@@ -227,6 +231,148 @@ describe('GET /projects/:id/pull-requests', () => {
     await app.inject({ method: 'GET', url: '/projects/p/pull-requests' });
     expect(backend.list).toHaveBeenCalledTimes(3);
   });
+
+  it('shares a pending host read even after the refresh window has elapsed', async () => {
+    let clock = 0;
+    const listing = { webUrl: 'https://github.com/team/site', pulls: [] };
+    let releaseListing!: (value: typeof listing) => void;
+    const pending = new Promise<typeof listing>((resolve) => {
+      releaseListing = resolve;
+    });
+    let notifyStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    const list = vi
+      .fn()
+      .mockResolvedValue(listing)
+      .mockImplementationOnce(() => {
+        notifyStarted();
+        return pending;
+      });
+    const { app } = setup({ now: () => clock, backend: { list } });
+    let notifyRefresh!: () => void;
+    const refreshArrived = new Promise<void>((resolve) => {
+      notifyRefresh = resolve;
+    });
+    app.addHook('onRequest', async (request) => {
+      if (request.url.includes('refresh=1')) notifyRefresh();
+    });
+    const first = app
+      .inject({ method: 'GET', url: '/projects/p/pull-requests' })
+      .then((res) => res);
+    await started;
+    clock = 30_000;
+    const refresh = app
+      .inject({ method: 'GET', url: '/projects/p/pull-requests?refresh=1' })
+      .then((res) => res);
+    await refreshArrived;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseListing(listing);
+    const [initial, refreshed] = await Promise.all([first, refresh]);
+    expect(initial.statusCode).toBe(200);
+    expect(refreshed.body).toBe(initial.body);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    const afterSlowRead = await app.inject({ url: '/projects/p/pull-requests?refresh=1' });
+    expect(afterSlowRead.statusCode).toBe(200);
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows a new read after the shared computation rejects', async () => {
+    const sessionLinks = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue([]);
+    const { app, backend } = setup({ sessionLinks });
+    const url = '/projects/p/pull-requests?refresh=1';
+    expect((await app.inject({ url })).statusCode).toBe(500);
+    expect((await app.inject({ url })).statusCode).toBe(200);
+    expect(sessionLinks).toHaveBeenCalledTimes(2);
+    expect(backend.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares a stalled project lookup and can retry after the timeout', async () => {
+    const getProject = vi
+      .fn()
+      .mockReturnValueOnce(new Promise(() => undefined))
+      .mockResolvedValue(project);
+    const { app } = setup({ getProject, listTimeoutMs: 5 });
+    const url = '/projects/p/pull-requests';
+    const responses = await Promise.all([app.inject({ url }), app.inject({ url })]);
+    expect(responses.map((response) => response.statusCode)).toEqual([503, 503]);
+    expect(getProject).toHaveBeenCalledTimes(1);
+    expect((await app.inject({ url })).statusCode).toBe(200);
+    expect(getProject).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a project listing after a stalled session lookup', async () => {
+    let releaseLinks!: (links: []) => void;
+    const stalled = new Promise<[]>((resolve) => {
+      releaseLinks = resolve;
+    });
+    const sessionLinks = vi.fn().mockReturnValueOnce(stalled).mockResolvedValue([]);
+    const { app, backend } = setup({ sessionLinks, listTimeoutMs: 5 });
+    const url = '/projects/p/pull-requests?refresh=1';
+    expect((await app.inject({ url })).statusCode).toBe(503);
+    expect((await app.inject({ url })).statusCode).toBe(200);
+    expect(sessionLinks).toHaveBeenCalledTimes(2);
+    releaseLinks([]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(backend.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restart a host read that outlives the response timeout', async () => {
+    const listing = { webUrl: 'https://github.com/team/site', pulls: [] };
+    let releaseListing!: (value: typeof listing) => void;
+    const pending = new Promise<typeof listing>((resolve) => {
+      releaseListing = resolve;
+    });
+    let clock = 0;
+    const list = vi.fn().mockReturnValueOnce(pending).mockResolvedValue(listing);
+    const { app } = setup({ backend: { list }, now: () => clock, listTimeoutMs: 5 });
+    const url = '/projects/p/pull-requests?refresh=1';
+    try {
+      expect((await app.inject({ url })).json()).toMatchObject({
+        repositories: [{ status: 'unavailable' }],
+      });
+      clock = 30_000;
+      expect((await app.inject({ url })).json()).toMatchObject({
+        repositories: [{ status: 'unavailable' }],
+      });
+      expect(list).toHaveBeenCalledTimes(1);
+      releaseListing(listing);
+      await pending;
+      clock = 60_000;
+      expect((await app.inject({ url })).json()).toMatchObject({
+        repositories: [{ status: 'ok' }],
+      });
+      expect(list).toHaveBeenCalledTimes(1);
+      clock = 90_000;
+      expect((await app.inject({ url })).json()).toMatchObject({
+        repositories: [{ status: 'ok' }],
+      });
+      expect(list).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseListing(listing);
+    }
+  });
+});
+
+it('retries a host read after the stalled read has expired', async () => {
+  let clock = 0;
+  const list = vi
+    .fn()
+    .mockReturnValueOnce(new Promise(() => undefined))
+    .mockResolvedValue({ webUrl: 'https://github.com/team/site', pulls: [] });
+  const { app } = setup({ backend: { list }, now: () => clock, listTimeoutMs: 5 });
+  const url = '/projects/p/pull-requests?refresh=1';
+  expect((await app.inject({ url })).json()).toMatchObject({
+    repositories: [{ status: 'unavailable' }],
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 110));
+  clock = 30_000;
+  expect((await app.inject({ url })).json()).toMatchObject({
+    repositories: [{ status: 'ok' }],
+  });
+  expect(list).toHaveBeenCalledTimes(2);
 });
 
 describe('POST merge', () => {

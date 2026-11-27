@@ -186,6 +186,20 @@ describe('recentSessions', () => {
     expect(ids(recentSessions(list, new Set(['shown'])))).toEqual(['newest', 'middle', 'old']);
   });
 
+  it('ignores newer technical activity when message timestamps are available', () => {
+    const list = [
+      session('old-chat', { lastMessageAt: 1, lastActivityAt: 100 }),
+      session('new-chat', { lastMessageAt: 30, lastActivityAt: 30 }),
+      session('no-chat', { lastMessageAt: null, lastActivityAt: 200 }),
+      session('shown', { lastMessageAt: 300, lastActivityAt: 300 }),
+    ];
+    expect(ids(recentSessions(list, new Set(['shown'])))).toEqual([
+      'new-chat',
+      'old-chat',
+      'no-chat',
+    ]);
+  });
+
   it('sorts sessions without activity last, keeping their input order', () => {
     const list = [
       session('none-a', { lastActivityAt: null }),
@@ -197,7 +211,7 @@ describe('recentSessions', () => {
 
   it('keeps only the most recent ones up to the limit', () => {
     const list = Array.from({ length: RECENT_SESSION_LIMIT + 3 }, (_, index) =>
-      session(`s${String(index)}`, { lastActivityAt: index }),
+      session(`s${String(index)}`, { lastMessageAt: index, lastActivityAt: 100 - index }),
     );
     const recent = recentSessions(list, new Set());
     expect(recent).toHaveLength(RECENT_SESSION_LIMIT);

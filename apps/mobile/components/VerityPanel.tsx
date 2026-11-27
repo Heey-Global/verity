@@ -1,4 +1,8 @@
-import type { AssistantConversationItem, AssistantQuestion } from '@verity/mobile';
+import type {
+  AssistantApproval,
+  AssistantConversationItem,
+  AssistantQuestion,
+} from '@verity/mobile';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, View } from 'react-native';
@@ -29,6 +33,7 @@ import {
   StatusTag,
   Text,
 } from './ui';
+import { HandoffCard, VerityApprovalCard } from './verity/HandoffCard';
 import { VerityMark } from './VerityMark';
 
 /** How old a meeting still being readied may be to open by itself once it is ready. */
@@ -144,6 +149,20 @@ export function VerityPanel({
     onClose();
     router.push(meetingRoute(sessionId, item));
   };
+  const openSession = (id: string) => {
+    if (voice.state === 'recording') voice.toggle();
+    onClose();
+    router.push(`/session/${id}`);
+  };
+  // Without a session there is nowhere to review; the card then offers no way there.
+  const review = sessionId ? () => openSession(sessionId) : null;
+  // A handoff's approval is decided on its own card; the rest wait at the end.
+  const approvals = conversation?.approvals ?? [];
+  const onCards = new Set(
+    (conversation?.items ?? []).flatMap((item) =>
+      item.kind === 'assignment' && item.approvalId !== undefined ? [item.approvalId] : [],
+    ),
+  );
   // A meeting Verity readies while the panel is open is what the user just asked for:
   // its screen opens by itself. Meetings already settled when the panel opened do not.
   const seenMeetings = useRef<Set<string> | null>(null);
@@ -219,7 +238,13 @@ export function VerityPanel({
         {(conversation?.items ?? []).map((item, index, items) => (
           <View key={item.id} style={styles.body}>
             <DayHeading at={item.at} previous={items[index - 1]?.at} />
-            <ItemView item={item} onOpenMeeting={sessionId ? openMeeting : null} />
+            <ItemView
+              item={item}
+              approvals={approvals}
+              onOpenMeeting={sessionId ? openMeeting : null}
+              onOpenSession={openSession}
+              onReview={review}
+            />
           </View>
         ))}
         {verity.outbox.map((entry) => (
@@ -234,27 +259,11 @@ export function VerityPanel({
             )}
           />
         ) : null}
-        {conversation && conversation.approvals.length > 0 && sessionId ? (
-          <Card stacked>
-            <CardHead
-              title="Verity needs your approval"
-              subtitle={
-                conversation.approvals.length === 1
-                  ? 'One step waits for you, for example a mail to send.'
-                  : `${String(conversation.approvals.length)} steps wait for you.`
-              }
-              trailing={<StatusTag intent="action" label="Approval" />}
-            />
-            <Button
-              label="Review"
-              size="compact"
-              onPress={() => {
-                onClose();
-                router.push(`/session/${sessionId}`);
-              }}
-            />
-          </Card>
-        ) : null}
+        {approvals
+          .filter((approval) => !onCards.has(approval.id))
+          .map((approval) => (
+            <VerityApprovalCard key={approval.id} approval={approval} onReview={review} />
+          ))}
         {verity.notice ? (
           <Card>
             <Text variant="bodySmall">{verity.notice}</Text>
@@ -352,10 +361,16 @@ function OutgoingCard({ entry }: { entry: Outgoing }) {
 
 function ItemView({
   item,
+  approvals,
   onOpenMeeting,
+  onOpenSession,
+  onReview,
 }: {
   item: AssistantConversationItem;
+  approvals: readonly AssistantApproval[];
   onOpenMeeting: ((item: MeetingItem) => void) | null;
+  onOpenSession: (sessionId: string) => void;
+  onReview: (() => void) | null;
 }) {
   switch (item.kind) {
     case 'message':
@@ -405,24 +420,20 @@ function ItemView({
           />
         </Card>
       );
-    // A case Verity handed to a project; while it needs the user it is also on Home.
+    // A case Verity hands to a project: decided on this card while it waits for the user,
+    // then the same card follows the session to its result.
     case 'assignment':
       return (
-        <Card stacked>
-          <CardHead
-            title={item.title}
-            subtitle={item.state === 'failed' ? 'Not handed over' : (item.project ?? 'Project')}
-            trailing={
-              item.state === 'sent' ? (
-                <StatusTag intent="ready" label="Handed over" />
-              ) : item.state === 'failed' ? (
-                <StatusTag intent="needsSetup" label="Failed" />
-              ) : (
-                <StatusDot intent="transient" label="Handing over" />
-              )
-            }
-          />
-        </Card>
+        <HandoffCard
+          item={item}
+          approval={
+            item.approvalId === undefined
+              ? undefined
+              : approvals.find((approval) => approval.id === item.approvalId)
+          }
+          onOpenSession={onOpenSession}
+          onReview={onReview}
+        />
       );
     case 'meeting':
       return (

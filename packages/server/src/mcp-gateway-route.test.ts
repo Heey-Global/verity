@@ -3,7 +3,7 @@ import { secretAuditEventInputSchema } from '@verity/secret-contracts';
 import type { Backend, Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher } from '@verity/store';
-import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
+import { assignProjectQA, createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import { createHash } from 'node:crypto';
@@ -121,7 +121,7 @@ function build(
   const gateway: Omit<McpGatewayDeps, 'requestApproval'> = {
     authorizationSnapshot: async ({ toolName }) =>
       toolName === 'verity_http_request' || toolName === 'verity_secret_run'
-        ? JSON.stringify({ dopplerProject: 'test-project', dopplerConfig: 'test' })
+        ? '{"bindings":[{"bindingId":"b","connectionId":"c","dopplerProject":"test-project","dopplerConfig":"test"}]}'
         : undefined,
     ...(options.deferLinkedApproval === true ? { approvalTimeoutMs: 25 } : {}),
     servedTools:
@@ -196,9 +196,9 @@ function build(
         macKeyId: 'key-1',
       }),
   };
-  // Only `requestExternalPermission` is reachable from this route; the rest of the
-  // conductor surface is deliberately absent so a wiring slip shows up as a crash.
+  // Keep the conductor stub limited to the route's permission seams.
   const conductor = {
+    isCoveredByBrokeredGrant: async () => false,
     isPlanningTurn: () => options.planningTurn === true,
     requestExternalPermission: (input: {
       sessionId: string;
@@ -498,7 +498,6 @@ async function implementByChatInstruction(plan: string) {
   });
   return { harness, implemented };
 }
-
 it('implements a submitted plan on the user instruction without another approval', async () => {
   const { harness, implemented } = await implementByChatInstruction('1. Do it');
   expect(implemented?.isError, JSON.stringify(implemented)).toBeUndefined();
@@ -2095,18 +2094,16 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       containerName: 'verity-__local__--website',
       state: 'active',
     });
-    // New projects receive managed knowledge spaces and are intentionally excluded
-    // from cross-project tools. Keep this delivery-seam test on the legacy,
-    // knowledge-free shape; the information-flow tests cover the exclusion itself.
+    // Keep the legacy knowledge-free fixture; separate tests cover information-flow filtering.
     await ctx.db
       .deleteFrom('project_knowledge_spaces')
       .where('project_id', 'in', [VERITY_CONTROL_PROJECT_ID, 'website'])
       .execute();
     await harness.store.createSession({
       sessionId: 'sess-web',
+      name: 'Website API',
       projectId: 'website',
-      // A real path, so the summary reports the session as resumable — an unresumable target
-      // is refused, and would make this test pass for the wrong reason.
+      // A real worktree makes the target resumable.
       worktree: process.cwd(),
       model: 'claude-opus-5',
     });
@@ -2126,10 +2123,11 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         (JSON.parse(listed.body) as { result: { content: Array<{ text: string }> } }).result
           .content[0]!.text,
       ) as { sessions: Array<Record<string, unknown>> };
-      // The control session itself is never listed, and the listing carries no `name`.
+      // The control session stays hidden; the visible name reaches the approved listing.
       expect(entries.sessions).toEqual([
         {
           sessionId: 'sess-web',
+          name: 'Website API',
           projectId: 'website',
           project: '__local__/website',
           model: 'claude-opus-5',
@@ -2187,6 +2185,13 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         }),
       );
 
+      const handoffTarget = {
+        sessionId: 'sess-web',
+        sessionName: 'Website API',
+        sessionProject: '__local__/website',
+        sessionLastActivityAt:
+          (await harness.store.getSessionEventStats('sess-web'))?.lastActivityAt ?? null,
+      };
       const handed = await postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
         jsonrpc: '2.0',
         id: 7,
@@ -2194,7 +2199,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         params: {
           name: 'verity_session_handoff',
           arguments: {
-            target: { sessionId: 'sess-web' },
+            target: handoffTarget,
             title: 'Overlay for the new site',
             briefing: 'Digest sha256:abc, port 8080.',
           },
@@ -2206,8 +2211,8 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       expect(result.result.isError).toBeUndefined();
       expect(JSON.parse(result.result.content[0]!.text)).toEqual({
         sessionId: 'sess-web',
+        name: 'Website API',
         project: '__local__/website',
-        // Whatever the conductor reported, relayed rather than assumed.
         queued: true,
         briefingSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
       });
@@ -2226,12 +2231,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         dispatched.dispatchOpts.displayPrompt!.startsWith(SESSION_HANDOFF_TRANSCRIPT_LABEL),
       ).toBe(true);
 
-      // A handoff is not idempotent and this tool is served beside the gateway's executor
-      // rather than inside it, so the at-most-once fence is the conductor's `clientReplyId`
-      // memo (ADR 0008, exercised in conductor.test.ts). What has to hold HERE is that the
-      // key identifies the call: a retry of the same JSON-RPC call keys the same, and a
-      // second, deliberate handoff does not. The stub conductor does not memoize, which is
-      // why both dispatches are visible to be compared.
+      // The conductor owns deduplication; its key must distinguish retries from deliberate sends.
       const repost = (id: number, briefing = 'Digest sha256:abc, port 8080.') =>
         postTcp(port, '/internal/control-plane/mcp', `Bearer ${token}`, {
           jsonrpc: '2.0',
@@ -2240,7 +2240,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
           params: {
             name: 'verity_session_handoff',
             arguments: {
-              target: { sessionId: 'sess-web' },
+              target: handoffTarget,
               title: 'Overlay for the new site',
               briefing,
             },
@@ -2248,10 +2248,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
         });
       await repost(7);
       await repost(8);
-      // Same id as the retry, different briefing. This is the half the JSON-RPC id cannot
-      // carry: a client that reuses ids across a turn — or a caller that just sent the same
-      // number twice — must not have its second, genuinely different handoff swallowed as a
-      // duplicate of the first. The key varies because the request MAC is part of it.
+      // Reusing the JSON-RPC id with different text must not swallow the new briefing.
       await repost(8, 'Digest sha256:def, port 9090.');
       const keys = harness.dispatches.map((entry) => entry.dispatchOpts.clientReplyId);
       expect(keys[0]).toBe(keys[1]);
@@ -2787,7 +2784,7 @@ it('lets QA read authorized CI evidence through the gateway but refuses all othe
     model: 'claude-opus-5',
   });
   await h.store.repairs.configureQA(true, 'admin');
-  await h.store.repairs.qaSession('qa');
+  await assignProjectQA(h.store, 'p1', 'qa');
   await h.store.repairs.configure('p1', 'admin', 'monitor');
   await sql`insert into users (id, role, status) values ('qa-reader', 'member', 'active')`.execute(
     ctx.db,
@@ -2884,7 +2881,7 @@ it.each([false, true])(
       model: 'claude',
     });
     await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
-    await h.store.repairs.qaSession('qa');
+    await assignProjectQA(h.store, 'p1', 'qa');
     await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
     const id = crypto.randomUUID();
     await h.store.repairs.proposeManualRepair({
@@ -2970,7 +2967,7 @@ it('shows the stored general QA assignment on a one-time approval card', async (
     model: 'claude',
   });
   await h.store.repairs.configureQA(true, '00000000-0000-4000-8000-000000000001');
-  await h.store.repairs.qaSession('qa');
+  await assignProjectQA(h.store, 'p1', 'qa');
   await h.store.repairs.configure('p1', '00000000-0000-4000-8000-000000000001', 'monitor');
   const id = 'a'.repeat(64);
   await h.store.qaAssignments.propose({
@@ -3013,29 +3010,45 @@ it('shows the stored general QA assignment on a one-time approval card', async (
   });
 });
 
-it('keeps inquiry targets read-only even when a normal planning tool could mutate session state', async () => {
-  const harness = build({ planningTools: true, unlocked: true });
-  await harness.store.createProject({
-    id: 'p1',
-    kind: 'local',
-    owner: '__local__',
-    repo: 'alpha',
-    containerName: 'verity-alpha',
-    state: 'active',
-  });
-  for (const sessionId of ['source', 's1'])
-    await harness.store.createSession({
-      sessionId,
-      projectId: 'p1',
-      worktree: `/tmp/inquiry-${sessionId}`,
+async function buildInquiryTarget() {
+  const h = build({ planningTools: true, unlocked: true });
+  for (const id of ['p1', 'source']) {
+    await h.store.createProject({
+      id,
+      kind: 'local',
+      owner: '__local__',
+      repo: id,
+      containerName: id,
+      state: 'active',
+    });
+    await h.store.createSession({
+      sessionId: id === 'p1' ? 's1' : id,
+      projectId: id,
+      worktree: `/wt/${id}`,
       model: 'm',
     });
-  await harness.store.projectInquiries.bind('source', 'p1', 's1');
+  }
+  await h.store.projectInquiries.bind('source', 'p1', 's1');
+  return h;
+}
+it('keeps inquiry targets read-only even when a normal planning tool could mutate session state', async () => {
+  const harness = await buildInquiryTarget();
   await harness.store.startSessionPlanning('s1');
   const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
   await withListener(harness, async (socketPath) => {
     for (const [name, args] of [
       ['verity_tasks', { action: 'add', tasks: [{ title: 'Unauthorized change' }] }],
+      [
+        'verity_project_inquiry',
+        {
+          operation: 'request',
+          requestId: 'follow-up',
+          targetProjectId: 'source',
+          title: 'Question',
+          body: 'Inspect',
+          kind: 'question',
+        },
+      ],
       ['verity_end_planning', { action: 'discard' }],
     ] as const) {
       const response = await postUnix(socketPath, `Bearer ${token}`, {
@@ -3046,13 +3059,14 @@ it('keeps inquiry targets read-only even when a normal planning tool could mutat
       });
       const result = (JSON.parse(response.body) as { result: { isError?: boolean } }).result;
       expect(result.isError, response.body).toBe(true);
-      expect(response.body).toContain('target-side human approval');
+      expect(response.body).toContain(
+        name === 'verity_project_inquiry' ? 'originating session' : 'target-side human approval',
+      );
     }
   });
   expect((await harness.store.getSession('s1'))?.planning).toBe('active');
   expect(harness.approvals).toEqual([]);
 });
-
 it('lets an approved inquiry change start, present and discard its own plan', async () => {
   const harness = build({ planningTools: true, unlocked: true });
   await harness.store.createProject({
@@ -3093,6 +3107,7 @@ it('lets an approved inquiry change start, present and discard its own plan', as
     userId: null,
   });
   expect(await harness.store.projectInquiries.decide('change', 's1', true, null)).toBe(true);
+  await harness.store.projectInquiries.completeProvisioning('change');
   await harness.store.projectInquiries.activate('change');
   await harness.store.setSessionPlanning('s1', 'implemented');
   const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
@@ -3116,25 +3131,8 @@ it('lets an approved inquiry change start, present and discard its own plan', as
 });
 
 it('executes inquiry list and answer tools while a question target remains in planning', async () => {
-  const h = build({ planningTools: true, unlocked: true });
-  for (const id of ['p1', 'source']) {
-    await h.store.createProject({
-      id,
-      kind: 'local',
-      owner: '__local__',
-      repo: id,
-      containerName: id,
-      state: 'active',
-    });
-    await h.store.createSession({
-      sessionId: id === 'p1' ? 's1' : id,
-      projectId: id,
-      worktree: `/wt/${id}`,
-      model: 'm',
-    });
-  }
+  const h = await buildInquiryTarget();
   await h.store.projectInquiries.setGrant('source', 'p1', true);
-  await h.store.projectInquiries.bind('source', 'p1', 's1');
   await h.store.projectInquiries.create({
     id: 'question',
     sourceSessionId: 'source',

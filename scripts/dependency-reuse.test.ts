@@ -17,9 +17,32 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { env, fixture, helper } from './dependency-fixture.js';
+
+// Policy fixtures exercise managed verification independently of broker leases,
+// which have their own admission/descriptor integration suite.
+function policyHelperSource(trusted: string): string {
+  const storage = pathToFileURL(resolve('agent-seed/bin/verity-dependency-storage.mjs')).href;
+  writeFileSync(
+    join(trusted, 'policy-storage.mjs'),
+    `export * from ${JSON.stringify(storage)};
+import { beginCapacityLease as begin } from ${JSON.stringify(storage)};
+export const beginCapacityLease = (kind, growth) => begin(kind, growth, { environment: {} });
+`,
+  );
+  return readFileSync(helper, 'utf8')
+    .replace(
+      "const directory = '/usr/local/lib/verity';",
+      `const directory = ${JSON.stringify(trusted)};`,
+    )
+    .replace(
+      "from './verity-dependency-storage.mjs'",
+      `from ${JSON.stringify(pathToFileURL(join(trusted, 'policy-storage.mjs')).href)}`,
+    );
+}
 
 describe('shared dependency reuse', () => {
   it('reuses compatible ancestor dependencies without installing private copies', () => {
@@ -434,6 +457,11 @@ describe('shared dependency reuse', () => {
       expect(f.run('install').status).toBe(0);
       expect(existsSync(shadow)).toBe(false);
       expect(f.run('status').status).toBe(0);
+      // Resolve this fixture's prior shadow before testing an independent repair.
+      rmSync(join(f.root, '.git/worktrees/test/verity-dependencies-preserved'), {
+        recursive: true,
+        force: true,
+      });
     }
     const second = spawnSync(process.execPath, [helper, 'install'], {
       cwd: sibling,
@@ -475,6 +503,10 @@ describe('shared dependency reuse', () => {
     // Each identity change used to keep another full copy, and the copy could no
     // longer be compared once its central identity was retired.
     const f = fixture();
+    const install = () => {
+      const result = f.run('install');
+      expect(result.status, result.stderr).toBe(0);
+    };
     const preserved = join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-preserved');
     const copies = () => (existsSync(preserved) ? readdirSync(preserved) : []);
     const lock = (version: string) =>
@@ -487,7 +519,7 @@ describe('shared dependency reuse', () => {
       const result = f.run('install');
       expect(result.status, result.stderr).toBe(0);
       // A run that changes nothing must not count as a local edit.
-      if (version === '1.0.0') expect(f.run('install').status).toBe(0);
+      if (version === '1.0.0') install();
     }
     expect(copies()).toEqual([]);
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(3);
@@ -497,11 +529,13 @@ describe('shared dependency reuse', () => {
     chmodSync(manifest, 0o644);
     writeFileSync(manifest, original.replace('3.0.0', '3.0.9'));
     lock('4.0.0');
-    expect(f.run('install').status).toBe(0);
+    install();
     expect(copies()).toHaveLength(1);
     expect(
       readFileSync(join(preserved, copies()[0]!, 'private', 'package.json'), 'utf8'),
     ).toContain('3.0.9');
+    // Each case owns its fixture recovery; the capacity suite covers accumulation refusal.
+    rmSync(join(preserved, copies()[0]!), { recursive: true });
     writeFileSync(join(f.worktree, 'node_modules', 'private', 'patch.txt'), 'local edit');
     // A later status change of the record must not move its cutoff past the edit.
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
@@ -510,15 +544,16 @@ describe('shared dependency reuse', () => {
       0o600,
     );
     lock('4.1.0');
-    expect(f.run('install').status).toBe(0);
-    expect(copies()).toHaveLength(2);
+    install();
+    expect(copies()).toHaveLength(1);
+    rmSync(join(preserved, copies()[0]!), { recursive: true });
     // A tree that is not the recorded one is never claimed unmodified.
     rmSync(join(f.worktree, 'node_modules'), { recursive: true });
     mkdirSync(join(f.worktree, 'node_modules', 'private'), { recursive: true });
     writeFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), '{}');
     lock('5.0.0');
-    expect(f.run('install').status).toBe(0);
-    expect(copies()).toHaveLength(3);
+    install();
+    expect(copies()).toHaveLength(1);
   }, 120_000);
   it('preserves stale workspace dependency trees before activating hoisted packages', () => {
     const f = fixture();
@@ -1044,6 +1079,10 @@ describe('shared dependency reuse', () => {
     const f = fixture();
     const trusted = join(f.root, 'bin', 'trusted-policy');
     mkdirSync(trusted);
+    cpSync(
+      'agent-seed/bin/verity-dependency-storage-preload.mjs',
+      join(trusted, 'verity-dependency-storage-preload.mjs'),
+    );
     writeFileSync(
       join(trusted, 'verity-npm-preflight.mjs'),
       "export const npmStateDirectory = (root) => root + '/.cache';\n",
@@ -1056,13 +1095,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
 `,
     );
     const instrumented = join(f.root, 'bin', 'helper.mjs');
-    writeFileSync(
-      instrumented,
-      readFileSync(helper, 'utf8').replace(
-        "const directory = '/usr/local/lib/verity';",
-        `const directory = ${JSON.stringify(trusted)};`,
-      ),
-    );
+    writeFileSync(instrumented, policyHelperSource(trusted));
     writeFileSync(
       join(f.worktree, 'package-lock.json'),
       JSON.stringify({
@@ -1096,6 +1129,10 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     const trusted = join(f.root, 'bin', 'hook-policy');
     mkdirSync(trusted);
     cpSync(
+      'agent-seed/bin/verity-dependency-storage-preload.mjs',
+      join(trusted, 'verity-dependency-storage-preload.mjs'),
+    );
+    cpSync(
       'features/verity-sandbox-toolkit/bin/verity-npm-preflight.mjs',
       join(trusted, 'verity-npm-preflight.mjs'),
     );
@@ -1107,13 +1144,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
 `,
     );
     const instrumented = join(f.root, 'bin', 'hook-helper.mjs');
-    writeFileSync(
-      instrumented,
-      readFileSync(helper, 'utf8').replace(
-        "const directory = '/usr/local/lib/verity';",
-        `const directory = ${JSON.stringify(trusted)};`,
-      ),
-    );
+    writeFileSync(instrumented, policyHelperSource(trusted));
     writeFileSync(
       join(f.worktree, 'package-lock.json'),
       JSON.stringify({
@@ -1145,6 +1176,10 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
       const f = fixture();
       const trusted = join(f.root, 'bin', 'legacy-policy');
       mkdirSync(trusted);
+      cpSync(
+        'agent-seed/bin/verity-dependency-storage-preload.mjs',
+        join(trusted, 'verity-dependency-storage-preload.mjs'),
+      );
       writeFileSync(
         join(trusted, 'verity-npm-preflight.mjs'),
         variant === 'missing'
@@ -1153,13 +1188,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
       );
       writeFileSync(join(trusted, 'verity-package-install.mjs'), '// permits preparation');
       const instrumented = join(f.root, 'bin', 'legacy-helper.mjs');
-      writeFileSync(
-        instrumented,
-        readFileSync(helper, 'utf8').replace(
-          "const directory = '/usr/local/lib/verity';",
-          `const directory = ${JSON.stringify(trusted)};`,
-        ),
-      );
+      writeFileSync(instrumented, policyHelperSource(trusted));
       writeFileSync(
         join(f.worktree, 'package-lock.json'),
         JSON.stringify({
@@ -1185,6 +1214,10 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     const f = fixture();
     const trusted = join(f.root, 'bin', 'rejecting-policy');
     mkdirSync(trusted);
+    cpSync(
+      'agent-seed/bin/verity-dependency-storage-preload.mjs',
+      join(trusted, 'verity-dependency-storage-preload.mjs'),
+    );
     writeFileSync(
       join(trusted, 'verity-npm-preflight.mjs'),
       "export const npmStateDirectory = (root) => root + '/.cache';\n",
@@ -1194,13 +1227,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
       "if (process.env.TEST_POLICY_REJECT === '1') process.exit(47);\n",
     );
     const instrumented = join(f.root, 'bin', 'policy-helper.mjs');
-    writeFileSync(
-      instrumented,
-      readFileSync(helper, 'utf8').replace(
-        "const directory = '/usr/local/lib/verity';",
-        `const directory = ${JSON.stringify(trusted)};`,
-      ),
-    );
+    writeFileSync(instrumented, policyHelperSource(trusted));
     const result = spawnSync(process.execPath, [instrumented, 'install'], {
       cwd: f.worktree,
       env: {
@@ -1296,6 +1323,12 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     expect(existsSync(join(f.root, 'node_modules', 'private'))).toBe(false);
   });
   it('ships identical executable helpers in both seed trees', () => {
+    expect(readFileSync('agent-seed/bin/verity-dependency-storage.mjs', 'utf8')).toBe(
+      readFileSync(
+        'features/verity-sandbox-toolkit/agent-seed/bin/verity-dependency-storage.mjs',
+        'utf8',
+      ),
+    );
     expect(readFileSync(helper, 'utf8')).toBe(
       readFileSync('features/verity-sandbox-toolkit/agent-seed/bin/verity-dependencies', 'utf8'),
     );

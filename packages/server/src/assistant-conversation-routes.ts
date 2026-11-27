@@ -11,6 +11,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import {
+  attachHandoffResults,
+  handoffTargets,
   projectAssistantConversation,
   type AssistantSessionFacts,
 } from './assistant-conversation.js';
@@ -76,8 +78,19 @@ export function registerAssistantConversationRoutes(
     return { sessionId: settings.session_id };
   };
 
-  const conversation = async (sessionId: string) =>
-    projectAssistantConversation(await deps.recentEvents(sessionId), await deps.facts(sessionId));
+  /** The projection, with each handoff card carrying the result recorded for it. */
+  const conversation = async (sessionId: string) => {
+    const projected = projectAssistantConversation(
+      await deps.recentEvents(sessionId),
+      await deps.facts(sessionId),
+    );
+    const targets = handoffTargets(projected.items);
+    attachHandoffResults(
+      projected.items,
+      await store.assistant.recordedResults(sessionId, targets),
+    );
+    return projected;
+  };
 
   /** Refuses non-administrators and an assistant that cannot take a turn. */
   const gate = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -136,8 +149,14 @@ export function registerAssistantConversationRoutes(
     const changed = wait > 0 && query.after !== undefined ? watch(reply, found.sessionId) : null;
     try {
       let current = await conversation(found.sessionId);
-      if (changed !== null && current.revision === query.after && (await changed.next(wait)))
-        current = await conversation(found.sessionId);
+      let waitMs = 0;
+      if (changed !== null && current.revision === query.after) {
+        const waitingSince = performance.now();
+        const didChange = await changed.next(wait);
+        waitMs = performance.now() - waitingSince;
+        if (didChange) current = await conversation(found.sessionId);
+      }
+      reply.header('Server-Timing', `assistant-wait;dur=${waitMs.toFixed(2)}`);
       return {
         availability: 'ready',
         sessionId: found.sessionId,

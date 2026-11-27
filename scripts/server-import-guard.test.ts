@@ -70,6 +70,30 @@ describe('server composition-root imports', () => {
       `${prefix}domain.ts -> ${prefix}barrel.ts -> ${prefix}index.ts -> ${prefix}server.ts`,
     );
   });
+  it('rejects direct and indirect imports of the embedded composition root', () => {
+    expect(
+      fixture({
+        'embedded.ts': "import './app.js';",
+        'app.ts': "import './server.js';",
+        'direct.ts': "import './embedded.js';",
+        'indirect.ts': "import './index.js';",
+        'index.ts': "export * from './embedded.js';",
+      }),
+    ).toEqual([
+      `${prefix}direct.ts -> ${prefix}embedded.ts`,
+      `${prefix}direct.ts -> ${prefix}embedded.ts -> ${prefix}app.ts -> ${prefix}server.ts`,
+      `${prefix}indirect.ts -> ${prefix}index.ts -> ${prefix}embedded.ts`,
+      `${prefix}indirect.ts -> ${prefix}index.ts -> ${prefix}embedded.ts -> ${prefix}app.ts -> ${prefix}server.ts`,
+    ]);
+  });
+  it('rejects the inner application importing the outer embedded root', () => {
+    expect(
+      fixture({
+        'embedded.ts': "import './app.js';",
+        'app.ts': "import './embedded.js';",
+      }),
+    ).toEqual([`${prefix}app.ts -> ${prefix}embedded.ts`]);
+  });
   it('resolves tsconfig path aliases', () => {
     expect(
       fixture({ 'domain.ts': "import '#root';" }, { '#root': ['./src/server.ts'] }),

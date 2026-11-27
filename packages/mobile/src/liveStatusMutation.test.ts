@@ -1,36 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   publishDevServerStatusMutation,
-  publishProjectStatusMutation,
   publishSessionAutomationMutation,
   publishSessionStatusMutation,
   publishServerUpdateStatusMutation,
   subscribeDevServerStatusMutations,
-  subscribeProjectStatusMutations,
   subscribeSessionAutomationMutations,
   subscribeSessionStatusMutations,
   subscribeServerUpdateStatusMutations,
 } from './liveStatusMutation.js';
 
 describe('live status mutations', () => {
-  it('publishes project and server update states independently', () => {
-    const projectListener = vi.fn();
+  it('publishes server update states', () => {
     const updateListener = vi.fn();
-    const unsubscribeProject = subscribeProjectStatusMutations(projectListener);
     const unsubscribeUpdate = subscribeServerUpdateStatusMutations(updateListener);
-    const project = { id: 'p1', state: 'active' } as Parameters<
-      typeof publishProjectStatusMutation
-    >[0];
     const update = { state: 'current', operation: null } as Parameters<
       typeof publishServerUpdateStatusMutation
     >[0];
 
-    publishProjectStatusMutation(project);
     publishServerUpdateStatusMutation(update);
 
-    expect(projectListener).toHaveBeenCalledWith(project);
     expect(updateListener).toHaveBeenCalledWith(update);
-    unsubscribeProject();
     unsubscribeUpdate();
   });
 

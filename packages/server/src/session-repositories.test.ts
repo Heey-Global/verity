@@ -13,7 +13,12 @@ import {
   removeSessionRepositoryWorkspaces,
 } from './session-repositories.js';
 
-function harness(planning = false, forge = false, cloneRoot = '/clones') {
+function harness(
+  planning = false,
+  forge = false,
+  cloneRoot = '/clones',
+  workspaces: unknown[] = [],
+) {
   const project = {
     id: 'p',
     kind: 'github',
@@ -51,7 +56,7 @@ function harness(planning = false, forge = false, cloneRoot = '/clones') {
     getProjectRepository: vi.fn(async (_project: string, id: string) =>
       id === 'r' && !revoked ? repository : undefined,
     ),
-    listSessionRepositoryWorkspaces: vi.fn(async () => []),
+    listSessionRepositoryWorkspaces: vi.fn(async () => workspaces),
     upsertSessionRepositoryWorkspace: save,
   } as unknown as EventStore;
   return {
@@ -73,6 +78,24 @@ it('creates isolated module workspaces without resetting existing branch history
   );
   expect(h.git.mock.calls.some(([args]) => args.includes('-B'))).toBe(false);
   expect(h.save).toHaveBeenCalledTimes(1);
+});
+it('points a reopened module checkout at its repository’s current GitHub name', async () => {
+  const worktree = '/clones/project/.verity-repositories/s/slot';
+  const workspace = { sessionId: 's', repositoryId: 'r', projectId: 'p', worktree, branch: 'b' };
+  const h = harness(false, false, '/clones', [workspace]);
+  // The checkout predates a rename: `origin` still names the old repository path.
+  h.git.mockImplementation(async (args) =>
+    args.includes('get-url') ? 'https://github.com/other/api-old.git\n' : '',
+  );
+  await expect(h.service.open('s', 'r')).resolves.toEqual({ workspace });
+  expect(h.git.mock.calls.map(([args]) => args.join(' '))).toContain(
+    `-C ${worktree} remote set-url origin https://github.com/other/api.git`,
+  );
+  // A checkout that cannot be inspected still opens unchanged.
+  h.git.mockImplementation(async () => {
+    throw new Error('sandbox unavailable');
+  });
+  await expect(h.service.open('s', 'r')).resolves.toEqual({ workspace });
 });
 it('refuses unassigned repositories and read-only planning sessions before git runs', async () => {
   const h = harness();

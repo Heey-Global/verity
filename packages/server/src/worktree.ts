@@ -902,7 +902,7 @@ export function linkWorkspacePackages(repoDir: string, worktreePath: string): vo
  * accepts — an array or `{ packages: [...] }`, including brace expansion,
  * globstars and `!` exclusions.
  */
-function workspaceMatcher(repoDir: string): ((dir: string) => boolean) | undefined {
+export function workspaceMatcher(repoDir: string): ((dir: string) => boolean) | undefined {
   let patterns: unknown;
   try {
     const manifest: unknown = JSON.parse(readFileSync(join(repoDir, 'package.json'), 'utf8'));

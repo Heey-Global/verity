@@ -330,8 +330,8 @@ function ProjectConnections({ client, project }: { client: VerityClient; project
         Promise.resolve().then(() => client.getProjectGoogleConnection(project.id, 'contacts')),
         Promise.resolve().then(() => client.listIntegrations()),
         Promise.resolve().then(() => client.listHttpMcpConnections()),
-        Promise.resolve().then(() => client.getVeritySettings()),
-      ]).then(([drive, gmail, calendar, contacts, integrations, mcp, settings]) => {
+        Promise.resolve().then(() => client.doppler.listConnections()),
+      ]).then(([drive, gmail, calendar, contacts, integrations, mcp, doppler]) => {
         const choices: { label: string; section: string }[] = [];
         if (drive.status === 'fulfilled' && drive.value.connected)
           choices.push({ label: 'Google Drive folder', section: 'drive' });
@@ -348,8 +348,12 @@ function ProjectConnections({ client, project }: { client: VerityClient; project
           choices.push({ label: 'Matrix rooms', section: 'matrix' });
         if (mcp.status === 'fulfilled' && mcp.value.length > 0)
           choices.push({ label: 'MCP tools', section: 'mcp' });
-        if (settings.status === 'fulfilled' && settings.value?.dopplerServiceTokenConfigured)
-          choices.push({ label: 'Doppler environment', section: 'doppler' });
+        // Adding the binding picks the connection first when there are several.
+        if (
+          doppler.status === 'fulfilled' &&
+          doppler.value.some((connection) => connection.hasToken)
+        )
+          choices.push({ label: 'Doppler secrets', section: 'doppler' });
         if (active) setConnections(choices);
       });
       return () => {

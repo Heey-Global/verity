@@ -1,3 +1,10 @@
+import { installOverviewEvents } from './live/overview-events.js';
+import { installProjectEvents } from './live/project-events.js';
+import { createPrEvents } from './live/pr-events.js';
+import { installSummaryEvents } from './live/summary-events.js';
+import { DomainEventBus } from './live/domain-events.js';
+import { installAssistantHandoffNotices } from './assistant-handoff-notify.js';
+import { installChangeSubmissions } from './change-submissions.js';
 import {
   startServerMessageProjection,
   createServerConductor,
@@ -5,6 +12,7 @@ import {
   createServerWorktrees,
 } from './server-runtime.js';
 import { installInfrastructureRoutes } from './server-infrastructure-routes.js';
+import { createServerMonitor, installServerMonitoring } from './metrics/server-monitor.js';
 import {
   installControlSession,
   installSessionMetadata,
@@ -124,7 +132,10 @@ export {
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const liveTickets = createLiveTickets(deps);
   startServerMessageProjection(deps);
-  const { app, lifecycle, preAuthKeys } = createServerApp(deps);
+  const { app, lifecycle, preAuthKeys, trafficLedger } = createServerApp(deps);
+  const monitor =
+    deps.serverMonitor ?? createServerMonitor({ store: undefined, version: SERVER_VERSION });
+  installServerMonitoring(app, monitor);
   const conductor = createServerConductor(app, deps);
   const publishSessionEvent = createServerEventPublisher(deps);
   const sessionDesign = createServerSessionDesign(deps, {
@@ -146,20 +157,30 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   const { pushSender, describePushSession, describePushSessionById } = createServerPush(app, deps);
   const resources = createLiveResources(app, deps, lifecycle);
-  const liveHub = createServerLiveHub(app, deps, { resources, lifecycle });
+  const domainEvents = new DomainEventBus();
+  const liveHub = createServerLiveHub(app, deps, {
+    resources,
+    lifecycle,
+    trafficLedger,
+    domainEvents,
+  });
   const ctx: ServerContext = {
     app,
     deps,
     lifecycle,
     conductor,
     liveHub,
+    domainEvents,
     resources,
     pushSender,
+    monitor,
     projectsBeingDeleted,
     sessionsBeingReaped,
     deleteSession: createSessionDeletion({ app, deps }),
   };
   registerLiveSessionHints(app, ctx);
+  installOverviewEvents(app, ctx);
+  installProjectEvents(app, ctx);
   const { pushRouter, pushFirePoints, wikiMaintenanceSessions, unsubscribePushFirePoints } =
     createServerPushRuntime(app, ctx, { describePushSessionById });
   const { schedulingTool } = createServerScheduling(app, ctx, { pushRouter, pushFirePoints });
@@ -175,6 +196,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerServerShutdownDrain(ctx);
 
   const { canExecuteAs, runningTurnInitiator, assistantToolDeps } = createServerAuthority(ctx);
+  const stopHandoffNotices = installAssistantHandoffNotices({
+    eventStore: deps.eventStore,
+    bus: deps.bus,
+    pushRouter,
+    permitted: (...args) => assistantToolDeps.permitted(...args),
+    log: app.log,
+  });
+  lifecycle.onClose(() => {
+    stopHandoffNotices();
+  });
   const automations = createServerAutomations(app, ctx, { canExecuteAs, models: () => models });
 
   const {
@@ -241,6 +272,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     withPrVisibility,
     invalidatePrSummaryAction,
     invalidateBranchCache,
+    resolvePullRequests,
   } = createServerSessionOverview({
     conductor,
     deps,
@@ -253,12 +285,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     pushFirePoints,
     describePushSession,
     vulnerabilitySessions,
+    onPrStatus: createPrEvents(app, ctx),
   });
+  const { summaryRevision } = installSummaryEvents(app, ctx, summarizeSessions);
 
-  const { readSecretStatus } = installSessionList(app, ctx, {
+  const { readSecretStatus, listSessionsAs } = installSessionList(app, ctx, {
     codexUsage,
     wikiMaintenanceSessions,
-    sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions },
+    summaryRevision,
+    sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions, sessionPrCache },
   });
 
   installProviderUsage(app, ctx, { claudeUsage, codexUsage });
@@ -272,7 +307,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // Declared further down; read only when a request arrives.
     availableModels: () => availableModels(),
   });
-  installRepositoryTools(app, ctx);
+  installRepositoryTools(app, ctx, branchesForSession);
   installUserContext(app, ctx);
   installPeople(ctx, { agentLogin, persistPersonal, administratorAccounts });
   installProjectContext(app, ctx);
@@ -280,6 +315,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const decidePendingLinkedMessage = registerServerMcpRoutes({
     wikiProposals,
     inquiryTool: createServerInquiryTool(ctx, () => projectInquiries),
+    coordinationSpawn: () => sessionCreate.spawn,
     deps,
     app,
     conductor,
@@ -316,7 +352,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     presentProject,
     projectActivity,
     hasMeetingJob,
-    summarizeSessions,
+    listSessionsAs,
     projectsBeingDeleted,
     sessionsBeingReaped,
     projectDeletesInFlight,
@@ -423,6 +459,32 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     spawn: sessionCreate.spawn,
   });
   installVulnerabilityFix(app, ctx, { sessionCreate, sessionPrCache });
+  installChangeSubmissions(app, ctx, {
+    publish: publishSessionEvent,
+    // Uncommitted work is not in HEAD, so HEAD is not what was submitted.
+    revision: async (session) => {
+      const branches = await branchesForSession(session);
+      if (!branches || (await branches.isDirty(session.worktree))) return undefined;
+      return branches.headRevision?.(session.worktree);
+    },
+    pullRequest: async (session) => (await sessionPrCache.get(session)) ?? undefined,
+    freshPullRequest: async (session) => {
+      const status = await sessionPrStatus(session);
+      if (status?.observationFailed === true) throw new Error('pull request unavailable');
+      return status ?? undefined;
+    },
+    hasChanges: async (session) => {
+      const branches = await branchesForSession(session);
+      if (!branches || session.projectId === null) return undefined;
+      // A local project has no remote base to compare with; unknown offers submitting.
+      if ((await deps.eventStore.getProject(session.projectId))?.kind === 'local') return undefined;
+      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
+        session.projectId,
+      );
+      const base = `origin/${settings?.defaultBranch ?? 'main'}`;
+      return branches.hasProjectChanges(session.worktree, base);
+    },
+  });
   installMeetingIntake(app, ctx, { attendeeMeetings, spawn: sessionCreate.spawn });
 
   installRepairRoutes(app, ctx);
@@ -441,7 +503,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionPrStatus,
     branchesForSession,
     spawn: sessionCreate.spawn,
-    ensureVerityControlProject,
     repairTerminated,
     preparingRepairDispatches,
   });
@@ -467,6 +528,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       withPrVisibility,
       invalidatePrSummaryAction,
       invalidateBranchCache,
+      resolvePullRequests,
     },
     beginProjectSpawn,
     pushFirePoints,

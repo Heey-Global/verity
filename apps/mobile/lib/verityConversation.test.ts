@@ -1,8 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { VerityApiError } from '@verity/mobile';
+import { ASSISTANT_HANDOFF_DECLINED, VerityApiError } from '@verity/mobile';
 
 import {
   answerVerity,
+  decideVerityApproval,
   deliveryOutcome,
   discardOutgoing,
   flushVerity,
@@ -18,6 +19,7 @@ const mockClient = {
   sendAssistantMessage: jest.fn(),
   answerAssistantQuestion: jest.fn(),
   assistantConversation: jest.fn(),
+  decidePermission: jest.fn(),
 };
 let mockScope: string | null = 'account-a';
 jest.mock('./client', () => ({ createVerityClient: () => mockClient }));
@@ -236,4 +238,20 @@ it('starts over when another account signs in', async () => {
   mockClient.assistantConversation.mockResolvedValueOnce({ ...conversation, revision: 2 });
   await refreshVerity();
   expect(state().conversation?.revision).toBe(2);
+});
+
+// Declining a handoff with the generic denial would read back as "Failed": the card names
+// a decision the user made as an error, and Verity cannot tell the two apart either.
+it('declines a handoff with the message the conversation reads as not handed over', async () => {
+  mockClient.assistantConversation.mockResolvedValue(conversation);
+  await refreshVerity();
+  mockClient.decidePermission.mockResolvedValue({ decided: true });
+  await decideVerityApproval({ id: 'gw-1', tool: 'verity_session_handoff' }, false);
+  await decideVerityApproval({ id: 'gw-2', tool: 'verity_gmail' }, false);
+  await decideVerityApproval({ id: 'gw-3', tool: 'verity_session_handoff' }, true);
+  expect(mockClient.decidePermission.mock.calls).toEqual([
+    ['assistant', 'gw-1', { behavior: 'deny', message: ASSISTANT_HANDOFF_DECLINED }],
+    ['assistant', 'gw-2', { behavior: 'deny' }],
+    ['assistant', 'gw-3', { behavior: 'allow' }],
+  ]);
 });

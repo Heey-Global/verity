@@ -12,7 +12,6 @@ import {
 } from '../lib/sessionSwitchTiming';
 import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { projectTitle } from '@verity/mobile';
-import { isLinkableSession } from '../lib/sessionLinks';
 import { moveProjectIdToIndex } from '../lib/projectReorder';
 import { createProjectOrderSaver } from '../lib/projectOrderSaver';
 import { SessionDragSlot } from '../components/SessionDragSlot';
@@ -560,7 +559,7 @@ function SessionList({ client }: { client: VerityClient }) {
   // The session whose actions sheet is open (its long-press opened the modal), or
   // null when the modal is closed.
   const [moveGeneration, setMoveGeneration] = useState(0);
-  const [renaming, setRenaming] = useState<(SessionSummary & { openLinks?: boolean }) | null>(null);
+  const [renaming, setRenaming] = useState<SessionSummary | null>(null);
 
   // Drop a stale split-pane selection: if the chosen session disappears (deleted,
   // or it was never refreshed in), clear it so the right pane falls back to the
@@ -1151,7 +1150,6 @@ function SessionList({ client }: { client: VerityClient }) {
       {renaming && client && (
         <SessionSettingsDialog
           key={renaming.sessionId}
-          initialSection={renaming.openLinks ? 'links' : undefined}
           sessionId={renaming.sessionId}
           sessionName={renaming.name}
           displayName={sessionLabel(renaming)}
@@ -1175,17 +1173,6 @@ function SessionList({ client }: { client: VerityClient }) {
           projects={projects
             .filter((project) => project.kind === 'local')
             .map((project) => ({ id: project.id, name: projectTitle(project) }))}
-          linkableSessions={sessions
-            .filter((candidate) => isLinkableSession(candidate, renaming.sessionId, projects))
-            .map((candidate) => ({
-              id: candidate.sessionId,
-              name: sessionLabel(candidate),
-              projectId: candidate.projectId!,
-              projectName:
-                projectTitle(projects.find((project) => project.id === candidate.projectId)) ??
-                candidate.projectId!,
-              detail: modelDisplayName(candidate.model),
-            }))}
           onClose={() => setRenaming(null)}
           onDelete={onDeleteRenaming}
           onChanged={(moved) => {
@@ -1438,7 +1425,6 @@ const ProjectSessionEntry = memo(function ProjectSessionEntry({
   reorderable,
   interactionsLocked,
   onRename,
-  onOpenLinks,
   onToggleFavorite,
   onDelete,
   onSelect,
@@ -1475,7 +1461,6 @@ const ProjectSessionEntry = memo(function ProjectSessionEntry({
           reorderable={reorderable}
           interactionsLocked={interactionsLocked}
           onRename={onRename}
-          onOpenLinks={onOpenLinks}
           onToggleFavorite={onToggleFavorite}
           onDelete={onDelete}
           onSelect={onSelect}
@@ -1499,7 +1484,6 @@ const ProjectSessionEntry = memo(function ProjectSessionEntry({
       reorderable,
       interactionsLocked,
       onRename,
-      onOpenLinks,
       onToggleFavorite,
       onDelete,
       onSelect,
@@ -1572,7 +1556,7 @@ const ProjectGroup = memo(function ProjectGroup({
   reordering: boolean;
   sessionReordering: boolean;
   onReorderSession: (scope: string, order: readonly string[]) => void;
-  onRenameSession: (session: SessionSummary & { openLinks?: boolean }) => void;
+  onRenameSession: (session: SessionSummary) => void;
   onToggleFavoriteSession: (session: SessionSummary) => void;
   onDeleteSession: (session: SessionSummary) => void;
   onSelectSession?: (id: string) => void;
@@ -1990,7 +1974,6 @@ function isVerityControlPlaneProject(project: ProjectRecord): boolean {
 const SessionRow = memo(function SessionRow({
   session,
   onRename,
-  onOpenLinks,
   onToggleFavorite,
   onDelete,
   onSelect,
@@ -2013,7 +1996,6 @@ const SessionRow = memo(function SessionRow({
   onMoveDown,
 }: {
   session: SessionSummary;
-  onOpenLinks?: () => void;
   onRename: () => void;
   onToggleFavorite: () => void;
   onDelete: () => void;
@@ -2179,11 +2161,7 @@ const SessionRow = memo(function SessionRow({
         collapsable={false}
         style={{ alignSelf: 'stretch', justifyContent: 'center' }}
       >
-        <SessionMarkerColumn
-          markers={edgeMarkers}
-          previewUrl={previewUrl ?? null}
-          onOpenLinks={interactionsLocked ? undefined : onOpenLinks}
-        />
+        <SessionMarkerColumn markers={edgeMarkers} previewUrl={previewUrl ?? null} />
       </View>
     </View>
   );

@@ -11,7 +11,7 @@ export const projectEgressRequestSchema = z.object({
   revision: z.number().int().nonnegative(),
   requestedBy: z.array(z.string()),
   createdAt: z.number(),
-  expiresAt: z.number(),
+  expiresAt: z.number().nullable(),
   status: z.enum(['pending', 'allowed', 'denied']),
   decidedBy: z.string().optional(),
   decidedAt: z.number().optional(),

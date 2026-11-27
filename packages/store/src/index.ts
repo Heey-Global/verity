@@ -1,3 +1,15 @@
+export type { CapacityLeaseDatabase, CapacityLeasesTable } from './schema-capacity-leases.js';
+export {
+  CapacityLeaseStore,
+  CapacityLeaseBindingConflictError,
+  CapacityLeaseInputError,
+  CAPACITY_LEASE_INVENTORY_LIMIT,
+  type CapacityLease,
+  type CapacityLeaseInput,
+  type CapacityLeaseInventory,
+  type CapacityLeaseKind,
+  type CapacityLeaseState,
+} from './capacity-leases.js';
 export { SandboxUpdateStateStore, type SandboxUpdateState } from './sandbox-update-state.js';
 export {
   ProjectEgressStore,
@@ -78,14 +90,7 @@ export {
   type SessionEventStats,
   type SessionRecord,
   type SessionPlanning,
-  type SessionMockupState,
   type ProjectDesignLevel,
-  type SessionMockupReview,
-  type SessionMockups,
-  type MockupScreenRecord,
-  type MockupVerdict,
-  storedMockupScreens,
-  storedMockupState,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
@@ -131,7 +136,6 @@ export {
   type ProjectKind,
   LOCAL_PROJECT_OWNER,
   isLocalProject,
-  isSessionLinkProject,
   isInstallationPlaceholder,
   ProjectIdentityClaimConflict,
   type SessionAutomationRecord,
@@ -257,6 +261,9 @@ export type {
 export {
   AssistantStore,
   type AssistantGrant,
+  type AssistantHandoff,
+  type AssistantHandoffResult,
+  ASSISTANT_HANDOFF_SUMMARY_MAX,
   type AssistantMode,
   type AssistantRequest,
   type AssistantRequestClaim,
@@ -284,9 +291,22 @@ export {
   type ManualRepairProposal,
   type RepairIncident,
   type RepairMode,
+  type QAState,
 } from './repair-supervision.js';
 
 export { QAAssignmentStore, type QAAssignment, type QAAssignmentState } from './qa-assignments.js';
+export {
+  ProjectQAStore,
+  QA_EMERGENCY_BRAKE_STARTS,
+  QA_PARALLEL_REPAIRS,
+  QA_REPAIR_ROUNDS,
+  type ProjectQARole,
+  type ProjectQASummary,
+  type QAIssue,
+  type QAIssueDecision,
+  type QAIssueReason,
+  type QAIssueState,
+} from './project-qa.js';
 
 export {
   UserContextStore,
@@ -303,7 +323,36 @@ export {
   type UserProfile,
 } from './user-profile.js';
 export { UserGitIdentityStore, type UserGitIdentity } from './user-git-identity.js';
-export { UserDopplerConnectionStore } from './user-doppler-connection.js';
+export {
+  DopplerBindingsChangedError,
+  DopplerProjectAccessChangedError,
+  DopplerTokenRevalidationRequiredError,
+  type DopplerTokenBindingScope,
+  UserDopplerConnectionStore,
+} from './user-doppler-connection.js';
+export {
+  AmbiguousDopplerConnectionError,
+  DopplerConnectionStore,
+  DopplerConnectionTokenChangedError,
+  DopplerConnectionUsageChangedError,
+  lockDopplerTopology,
+  type DopplerConnectionRecord,
+  type DopplerConnectionUsage,
+  type DopplerWorkplace,
+} from './doppler-connections.js';
+export {
+  DopplerBindingDefaultChangedError,
+  DuplicateDopplerBindingError,
+  ProjectDopplerBindingStore,
+  UnknownDopplerConnectionError,
+  type ProjectDopplerBindingRecord,
+} from './project-doppler-bindings.js';
+export {
+  dopplerBindingGrantId,
+  legacyDopplerBindingGrantId,
+  type DopplerBindingIdentity,
+} from './doppler-binding-identity.js';
+export { LEGACY_DOPPLER_CONNECTION_ID } from './doppler-connections-migration.js';
 export {
   UserProviderConnectionStore,
   type ProviderConnectionKind,
@@ -361,12 +410,41 @@ export {
   type ProjectInquiry,
   type ProjectInquiryGrant,
 } from './project-inquiries.js';
+export type { SessionCoordinationEntry } from './session-coordination.js';
 export {
   INVITATION_MAX_TTL_MS,
   ProjectTeamError,
   ProjectTeamStore,
+  rightsAreConsistent,
   type InvitationState,
+  type MemberRights,
   type ProjectInvitation,
   type ProjectMember,
+  type ProjectPermission,
   type TeamOutboxEntry,
 } from './project-team.js';
+export {
+  type SessionMockupState,
+  type SessionMockupReview,
+  type SessionMockups,
+  MOCKUP_HTML_ATTACHMENT,
+  attachmentContentAddress,
+  type MockupScreenRecord,
+  type MockupVerdict,
+  storedMockupScreens,
+  storedMockupState,
+} from './session-mockups.js';
+export { isSessionLinkProject } from './project-session-links.js';
+export type { ChangeSubmission, ChangeSubmissionState } from './change-submissions.js';
+export {
+  GitHubRepositoryIdentityStore,
+  type GitHubRepositoryObservation,
+  type GitHubRepositoryReconciliation,
+} from './github-repository-identity.js';
+export {
+  DEFAULT_SERVER_MONITORING_SETTINGS,
+  ServerMonitoringSettingsStore,
+  type DetailModeStarter,
+  type ServerMonitoringSettings,
+} from './server-monitoring-settings.js';
+export { ProjectChangeFeed } from './project-changes.js';

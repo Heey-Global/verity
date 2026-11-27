@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { createQACoordinator, parseQADecision, type QACoordinatorDeps } from './qa-coordinator.js';
@@ -24,9 +25,14 @@ function harness() {
     authorized: vi.fn(async () => true),
     administrator: vi.fn(async () => true),
     busy: vi.fn(() => false),
-    ensureSession: vi.fn(async (id: string) => {
+    ensureSession: vi.fn(async (projectId: string, id: string) => {
       if (!(await ctx.store.getSession(id)))
-        await ctx.store.createSession({ sessionId: id, worktree: '/wt/qa', model: 'm' });
+        await ctx.store.createSession({
+          sessionId: id,
+          projectId,
+          worktree: `/wt/qa-${id}`,
+          model: 'm',
+        });
     }),
     dispatch: vi.fn<QACoordinatorDeps['dispatch']>(
       async (id, prompt, validate, _sponsor, dispatchId) => {
@@ -56,8 +62,9 @@ async function enroll(mode: 'monitor' | 'automatic' = 'automatic') {
     }),
   );
 }
-async function answer(incident: { id: string }, text?: string) {
-  const state = await ctx.store.repairs.qa();
+const role = async (projectId = 'a') => (await ctx.store.repairs.projectQA.role(projectId))!;
+async function answer(incident: { id: string }, text?: string, projectId = 'a') {
+  const state = await role(projectId);
   await ctx.store.appendEvent(state.session_id!, {
     t: 'text',
     delta:
@@ -83,11 +90,13 @@ describe('QA admission and durable inbox', () => {
     await enroll();
     const { deps, coordinator } = harness();
     await Promise.all([coordinator.tick(), coordinator.tick()]);
-    const first = await ctx.store.repairs.qa();
+    const first = await role();
     await createQACoordinator(deps).tick();
     expect(deps.dispatch).toHaveBeenCalledTimes(1);
-    expect((await ctx.store.repairs.qa()).session_id).toBe(first.session_id);
-    expect((await ctx.store.repairs.qa()).health).toBe('awaiting-confirmed-termination');
+    expect((await role()).session_id).toBe(first.session_id);
+    // The QA session lives in the project it watches.
+    expect((await ctx.store.getSession(first.session_id!))?.projectId).toBe('a');
+    expect((await role()).health).toBe('awaiting-confirmed-termination');
   });
   it('admits a model decision only after termination and with matching evidence', async () => {
     const incident = await enroll();
@@ -173,7 +182,7 @@ describe('QA admission and durable inbox', () => {
     await answer(incident, 'Everything is fixed');
     await coordinator.tick();
     await coordinator.tick();
-    expect((await ctx.store.repairs.qa()).health).toBe('needs-attention');
+    expect((await role()).health).toBe('needs-attention');
     expect(deps.dispatch).toHaveBeenCalledTimes(1);
     expect(deps.delegate).not.toHaveBeenCalled();
   });
@@ -197,7 +206,7 @@ describe('QA admission and durable inbox', () => {
     await coordinator.tick();
     await coordinator.tick();
     expect(deps.dispatch).toHaveBeenCalledTimes(1);
-    expect((await ctx.store.repairs.qa()).active_dispatch).not.toBeNull();
+    expect((await role()).active_dispatch).not.toBeNull();
   });
   it('rejects extra authority fields in decisions', () => {
     expect(
@@ -216,12 +225,33 @@ it('reconsiders an assignment after temporary admission failure', async () => {
   await coordinator.tick();
   expect(deps.dispatch).toHaveBeenCalledTimes(2);
 });
+it('starts no review while the forge cannot be read, and none for a health flap', async () => {
+  await enroll();
+  const { deps, coordinator } = harness();
+  await ctx.store.repairs.health('a', 'unavailable', null);
+  await coordinator.tick();
+  expect(deps.dispatch).not.toHaveBeenCalled();
+  await ctx.store.repairs.health('a', 'healthy', null);
+  await coordinator.tick();
+  expect(deps.dispatch).toHaveBeenCalledTimes(1);
+});
+it('reviews a refused assignment once more, then waits for a change', async () => {
+  const incident = await enroll();
+  const { deps, coordinator } = harness();
+  await coordinator.tick();
+  await answer(incident);
+  await coordinator.tick();
+  await coordinator.tick();
+  await answer(incident);
+  for (let n = 0; n < 4; n++) await coordinator.tick();
+  expect(deps.dispatch).toHaveBeenCalledTimes(2);
+});
 it('releases a review claim when session creation fails before dispatch', async () => {
   await enroll();
   const { deps, coordinator } = harness();
   vi.mocked(deps.ensureSession).mockRejectedValueOnce(new Error('provisioning unavailable'));
   await coordinator.tick();
-  expect((await ctx.store.repairs.qa()).active_dispatch).toBeNull();
+  expect((await role()).active_dispatch).toBeNull();
   expect(deps.dispatch).not.toHaveBeenCalled();
   await coordinator.tick();
   expect(deps.dispatch).toHaveBeenCalledTimes(1);
@@ -258,7 +288,7 @@ it('retries a crashed review without losing its pending observation', async () =
   await enroll();
   const { deps, coordinator } = harness();
   await coordinator.tick();
-  const state = await ctx.store.repairs.qa();
+  const state = await role();
   await ctx.store.appendEvent(state.session_id!, { t: 'status', state: 'crashed' });
   await coordinator.tick();
   await coordinator.tick();
@@ -303,9 +333,9 @@ it.each(['off', 'unauthorized'] as const)(
     vi.mocked(deps.authorized).mockImplementation(async (_user, id) => id === 'a');
     await coordinator.tick();
     expect(deps.dispatch).toHaveBeenCalledTimes(1);
-    expect(JSON.parse((await ctx.store.repairs.qa()).active_snapshot!)).toEqual([
+    expect(JSON.parse((await role()).active_snapshot!)).toEqual(
       expect.objectContaining({ projectId: 'a' }),
-    ]);
+    );
   },
 );
 
@@ -323,10 +353,13 @@ it('shares live QA preparation with repair recovery during slow session creation
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  deps.ensureSession = async (id) => {
-    entered();
-    await gate;
-    await ensure(id);
+  // Slow only after the review was reserved, when the session is prepared for dispatch.
+  deps.ensureSession = async (projectId, id) => {
+    if (await ctx.store.getSession(id)) {
+      entered();
+      await gate;
+    }
+    await ensure(projectId, id);
   };
   const coordinator = createQACoordinator(deps);
   const admission = coordinator.tick();
@@ -349,7 +382,7 @@ it('shares live QA preparation with repair recovery during slow session creation
       dispatch: async () => false,
     });
     await supervisor.sweep();
-    const state = await ctx.store.repairs.qa();
+    const state = await role();
     expect(state.active_dispatch).toBeTruthy();
     expect((await ctx.store.repairs.dispatchReceipt(state.active_dispatch!))?.state).toBe(
       'reserved',
@@ -360,10 +393,9 @@ it('shares live QA preparation with repair recovery during slow session creation
   }
   expect(deps.dispatch).toHaveBeenCalledTimes(1);
   expect(preparingDispatches.size).toBe(0);
-  expect(
-    (await ctx.store.repairs.dispatchReceipt((await ctx.store.repairs.qa()).active_dispatch!))
-      ?.state,
-  ).toBe('admitted');
+  expect((await ctx.store.repairs.dispatchReceipt((await role()).active_dispatch!))?.state).toBe(
+    'admitted',
+  );
 });
 
 it.each(['monitor', 'automatic'] as const)(
@@ -401,3 +433,93 @@ it.each(['monitor', 'automatic'] as const)(
     expect(await ctx.store.repairs.qaProposals()).toEqual([]);
   },
 );
+
+describe('per-project QA', () => {
+  beforeEach(async () => {
+    await ctx.store.upsertProject({
+      id: 'b',
+      owner: 'team',
+      repo: 'site',
+      containerName: 'site',
+      state: 'active',
+    });
+  });
+  async function enrollB() {
+    await ctx.store.repairs.configure('b', 'admin', 'automatic');
+    await ctx.store.repairs.health('b', 'healthy', null);
+    return ctx.store.repairs.observe(
+      'b',
+      'pr:7',
+      'shb',
+      JSON.stringify({
+        observedAt: new Date().toISOString(),
+        status: { pipeline: 'failure', headSha: 'shb' },
+      }),
+    );
+  }
+  it('reviews every project in its own session and keeps decisions inside the project', async () => {
+    const incidentA = await enroll();
+    const incidentB = await enrollB();
+    const { deps, coordinator } = harness();
+    await coordinator.tick();
+    expect(deps.dispatch).toHaveBeenCalledTimes(2);
+    expect((await role('a')).session_id).not.toBe((await role('b')).session_id);
+    // Project a's QA names project b's incident: nothing happens to b.
+    await answer(
+      incidentA,
+      '```qa:decision\n' +
+        JSON.stringify({
+          summary: 'reach across',
+          assignments: [{ projectId: 'b', incidentId: incidentB.id, revision: 'shb' }],
+          escalations: [{ incidentId: incidentB.id, reason: 'not mine' }],
+        }) +
+        '\n```',
+      'a',
+    );
+    await coordinator.tick();
+    expect(deps.delegate).not.toHaveBeenCalled();
+    expect((await ctx.store.repairs.projectQA.issues('b'))[0]?.state).toBe('open');
+  });
+  it('groups incidents with one cause and escalates what exceeds the mandate', async () => {
+    const first = await enroll();
+    const second = await ctx.store.repairs.observe(
+      'a',
+      'pr:43',
+      'sh2',
+      JSON.stringify({
+        observedAt: new Date().toISOString(),
+        status: { pipeline: 'failure', headSha: 'sh2' },
+      }),
+    );
+    const third = await ctx.store.repairs.observe('a', 'pr:44', 'sh3', '{}');
+    const { coordinator } = harness();
+    await coordinator.tick();
+    await answer(
+      first,
+      '```qa:decision\n' +
+        JSON.stringify({
+          summary: 'same lockfile conflict; a migration is needed for 44',
+          assignments: [],
+          groups: [{ incidentIds: [first.id, second.id] }],
+          escalations: [{ incidentId: third.id, reason: 'Needs a major migration' }],
+        }) +
+        '\n```',
+    );
+    await coordinator.tick();
+    const issues = await ctx.store.repairs.projectQA.issues('a');
+    expect(issues).toHaveLength(2);
+    const stopped = issues.find((i) => i.state === 'needs_you');
+    expect(stopped?.reason).toBe('beyond-mandate');
+    expect(stopped?.detail).toBe('Needs a major migration');
+  });
+  it('starts no review while the emergency brake holds', async () => {
+    await enroll();
+    const { deps, coordinator } = harness();
+    await sql`update qa_coordinator set brake_at = now()`.execute(ctx.db);
+    await coordinator.tick();
+    expect(deps.dispatch).not.toHaveBeenCalled();
+    await ctx.store.repairs.projectQA.releaseBrake();
+    await coordinator.tick();
+    expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  });
+});

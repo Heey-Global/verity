@@ -1,4 +1,5 @@
 import { Button, Group, Row, StepIntro, SystemNotice, TextField } from '../../components/ui';
+import { AiAccountNextStep } from '../../components/AiAccountNextStep';
 import { OnboardingProgress } from '../../components/OnboardingProgress';
 import { Page, ignore } from '../team-invitations/parts';
 
@@ -28,7 +29,7 @@ const copy = {
   complete: [
     'You’ve joined',
     'Website relaunch',
-    'Set up your own AI account to start working with the team.',
+    'One more step: connect your own AI account so Verity can work for you.',
   ],
 } as const;
 
@@ -139,11 +140,7 @@ export function JoinMockup({ state }: { state: State }) {
               wrap
             />
           </Group>
-          <SystemNotice
-            intent="needsSetup"
-            title="Connect your own AI account"
-            detail="Your teammates’ accounts stay private. GitHub and other connections can be added later."
-          />
+          <AiAccountNextStep />
         </>
       ) : null}
     </Page>

@@ -1,15 +1,138 @@
-import { ProjectTeamStore } from './project-team.js';
-import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
+import { SessionOrderStore } from './session-order.js';
+import { PackageProtectionStore } from './package-protection.js';
+import { AttendeeStateStore } from './attendee-state.js';
+import { EventHistoryStore, type SequencedEvent } from './event-history.js';
+export type { SequencedEvent } from './event-history.js';
+import { EventSnapshotStore } from './event-snapshots.js';
 import {
-  MESSAGE_PROJECTION_VERSION,
-  pendingMessageProjectionByDb,
-  pendingMessageBackfillsByDb,
+  SessionBackendStateStore,
+  type SessionBackendStateRecord,
+} from './session-backend-state.js';
+import {
+  TurnRecordStore,
+  type QueuedTurnRecord,
+  type QueuedTurnInput,
+  type RunningTurnRecord,
+  type RunnerTurnOwnershipRequest,
+  type RunnerTurnOwnership,
+} from './turn-records.js';
+export type {
+  QueuedTurnRecord,
+  QueuedTurnInput,
+  RunningTurnRecord,
+  RunnerTurnOwnershipRequest,
+  RunnerTurnOwnership,
+} from './turn-records.js';
+import { SecretKeyMetadataStore, type SecretKeyMetaRecord } from './secret-key-metadata.js';
+export type { SecretKeyMetaRecord } from './secret-key-metadata.js';
+import { AuthTokenStore, type AuthTokenRecord } from './auth-tokens.js';
+export type { AuthTokenRecord } from './auth-tokens.js';
+import {
+  ClaudeEgressIdentityStore,
+  type ClaudeEgressCaRecord,
+  type ClaudeEgressClientCertRecord,
+} from './claude-egress-identity.js';
+export type {
+  ClaudeEgressCaRecord,
+  ClaudeEgressClientCertRecord,
+} from './claude-egress-identity.js';
+import {
+  HttpMcpConnectionStore,
+  type HttpMcpConnectionRecord,
+  type ProjectMcpBindingRecord,
+} from './http-mcp-connections.js';
+export {
+  httpMcpConnectionUsableBy,
+  type HttpMcpConnectionRecord,
+  type ProjectMcpBindingRecord,
+} from './http-mcp-connections.js';
+import {
+  DevicePushTokenStore,
+  type DevicePushTokenRecord,
+  type PushReceiptRecord,
+} from './device-push-tokens.js';
+export type { DevicePushTokenRecord, PushReceiptRecord } from './device-push-tokens.js';
+import {
+  PreviewShareStore,
+  type LocalPreviewShareRecord,
+  type PublicPreviewShareState,
+  type PublicPreviewShareRecord,
+  type PublicPreviewShareCreateInput,
+} from './preview-shares.js';
+export type {
+  LocalPreviewShareRecord,
+  PublicPreviewShareState,
+  PublicPreviewShareRecord,
+  PublicPreviewShareCreateInput,
+} from './preview-shares.js';
+import { AttachmentStore, type AttachmentBlob } from './attachments.js';
+export type { AttachmentBlob } from './attachments.js';
+import {
+  EventWriteStore,
+  type RunnerFrameIngest,
+  type RunnerFrameIngestResult,
+} from './event-writes.js';
+export {
+  RUNNER_FRAME_PROTOCOL_VERSION,
+  type RunnerFrameIngest,
+  type RunnerFrameIngestResult,
+} from './event-writes.js';
+import { SessionLifecycleStore } from './session-lifecycle.js';
+export { DeletedProjectError } from './deleted-project-error.js';
+import { ProjectAccessStore } from './project-access.js';
+import { ProjectLifecycleStore } from './project-lifecycle.js';
+import { ProjectChangeFeed } from './project-changes.js';
+import {
+  type ProjectState,
+  type ProjectSetupState,
+  type ProjectKind,
+  type ProjectRecord,
+  type ProjectReleaseStatus,
+  type ProjectUpsertInput,
+} from './project-record.js';
+export {
+  type ProjectState,
+  type ProjectSetupState,
+  type ProjectKind,
+  LOCAL_PROJECT_OWNER,
+  ProjectIdentityClaimConflict,
+  isLocalProject,
+  type ProjectRecord,
+  type ProjectReleaseStatus,
+  type ProjectUpsertInput,
+  PROJECT_NAME_MAX_CHARS,
+  defaultProjectName,
+  InvalidProjectNameError,
+} from './project-record.js';
+import type { SessionMockups } from './session-mockups.js';
+import { PlanImplementationStore, type PlanningConsent } from './plan-implementation.js';
+export type { PlanningConsent } from './plan-implementation.js';
+import { SessionPlanningStore, type SessionPlanning } from './session-planning.js';
+import type { SessionRecord } from './session-rows.js';
+import { CapacityLeaseStore } from './capacity-leases.js';
+import {
+  SessionProjectionStore,
+  type SessionEventStats,
+  type SessionProjectionFacts,
+} from './session-projection.js';
+export type { SessionEventStats, SessionProjectionFacts } from './session-projection.js';
+import {
+  SessionLinkStore,
+  type SessionLinkRecord,
+  type SessionLinkReservation,
+  type PendingSessionLinkMessage,
+} from './session-links.js';
+import { ProjectTeamStore, type ProjectPermission } from './project-team.js';
+import {
+  MessageProjectionStore,
+  type MessageSearchInput,
+  type MessageSearchResult,
   waitForPendingMessageProjections,
   waitForMessageProjectionWork,
-  projectMessageEvent,
-  idChunks,
 } from './message-projection.js';
 export { waitForMessageProjectionWork, waitForPendingMessageProjections };
+export type { MessageSearchInput, MessageSearchResult } from './message-projection.js';
+import { SessionCoordinationStore } from './session-coordination.js';
 import { ProjectInquiryStore } from './project-inquiries.js';
 import { SandboxUpdateStateStore } from './sandbox-update-state.js';
 import { SandboxRepairIntentStore } from './sandbox-repair-intents.js';
@@ -25,6 +148,8 @@ import { UserProfileStore } from './user-profile.js';
 import { UserGitIdentityStore } from './user-git-identity.js';
 import { UserGithubAuthorizationStore } from './user-github-authorization.js';
 import { UserDopplerConnectionStore } from './user-doppler-connection.js';
+import { DopplerConnectionStore } from './doppler-connections.js';
+import { ProjectDopplerBindingStore } from './project-doppler-bindings.js';
 import { ProjectSandboxStore } from './project-sandboxes.js';
 import { SessionMoveStore } from './session-moves.js';
 import { UserProviderConnectionStore } from './user-provider-connections.js';
@@ -40,55 +165,94 @@ import { QAAssignmentStore } from './qa-assignments.js';
 import { RepairSupervisionStore } from './repair-supervision.js';
 import { ProjectEgressStore } from './project-egress.js';
 import { VulnerabilityScanStore } from './vulnerability-scan.js';
+import { SessionPeopleStore } from './session-people.js';
+import { ChangeSubmissionStore } from './change-submissions.js';
+import { GitHubRepositoryIdentityStore } from './github-repository-identity.js';
 import { ForgeConnectionStore } from './forge-connections.js';
 import { CalendarWatchStore } from './calendar-watch.js';
 import { GoogleAccountStore } from './google-accounts.js';
 import {
-  HISTORY_MAX_BYTES,
-  HISTORY_MAX_EVENTS,
-  type BoundedHistoryPage,
-  type BoundedHistoryResult,
-} from '@verity/events';
-import { createHash, randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
+  GoogleWorkspaceStore,
+  type GoogleWorkspaceFileKind,
+  type SessionWorkspaceFileRecord,
+  type SessionSlideDeckRecord,
+  type GoogleSlideImageCleanupRecord,
+} from './google-workspace.js';
+export type {
+  GoogleWorkspaceFileKind,
+  SessionWorkspaceFileRecord,
+  SessionSlideDeckRecord,
+  GoogleSlideImageCleanupRecord,
+} from './google-workspace.js';
 import {
-  type AgentEvent,
-  SESSION_PROJECTION_EVENT_TYPES,
-  type Usage,
-  type UsageTotals,
-  externalizeToolResultImages,
-  externalizeToolResultText,
-  parseAgentEvent,
-  parsePlanningProposal,
-} from '@verity/events';
-import { type Kysely, type Selectable, sql, type Transaction } from 'kysely';
+  GoogleConnectionStore,
+  type SessionGmailConnection,
+  type SessionCalendarConnection,
+  type SessionContactsConnection,
+} from './google-connections.js';
+export type {
+  SessionGmailConnection,
+  SessionCalendarConnection,
+  SessionContactsConnection,
+} from './google-connections.js';
+import type { BoundedHistoryResult } from '@verity/events';
+import { BackupRepositoryStore } from './backup-repositories.js';
+import type { AgentEvent } from '@verity/events';
+import type { Kysely } from 'kysely';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
-import { isManagedDevServerHostPort, nextFreeDevServerHostPort } from './dev-server-ports.js';
+import {
+  DevServerConfigStore,
+  type DevServerRecord,
+  type DevServerCreateInput,
+  type DevServerPatch,
+  type DevServerDetectionStateRecord,
+} from './dev-server-configs.js';
+export type {
+  DevServerRecord,
+  DevServerCreateInput,
+  DevServerPatch,
+  DevServerDetectionStateRecord,
+} from './dev-server-configs.js';
 export {
   DEV_SERVER_HOST_PORT_RANGES,
   DevServerPortRangeExhaustedError,
 } from './dev-server-ports.js';
-import { KnowledgeError, KnowledgeStore } from './knowledge.js';
+import { KnowledgeStore } from './knowledge.js';
 import { IntegrationStore } from './integrations.js';
 import { LiveMeetingStore } from './live-meetings.js';
-import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
-import { scrubNulEscapes } from './nul-scrub.js';
-import { redactSecrets } from './redact.js';
-import { computeNextRun } from './schedule.js';
-import type {
-  Database,
-  PublicPreviewSharesTable,
-  QueuedTurnOpts,
-  ScheduleConfig,
-} from './schema.js';
+import { StarterProjectStore } from './starter-projects.js';
+import {
+  SessionAutomationStore,
+  type SessionAutomationInput,
+  type SessionAutomationOutcome,
+  type SessionAutomationRecord,
+  type SessionAutomationStatus,
+} from './session-automations.js';
+import { SessionPullRequestStore } from './session-pull-requests.js';
+import type { Database } from './schema.js';
 import { ManagedDevServerStore } from './managed-dev-servers.js';
+import {
+  ProjectSettingsStore,
+  type ProjectSettingsRecord,
+  type ProjectSettingsPatch,
+} from './project-settings.js';
+import {
+  VeritySettingsStore,
+  type VeritySettingsPatch,
+  type VeritySettingsRecord,
+} from './verity-settings.js';
+export type { VeritySettingsPatch, VeritySettingsRecord } from './verity-settings.js';
+export {
+  PROJECT_AGENTS,
+  PROJECT_MEMORY_MAX_CHARS,
+  ProjectDefaultModelNotAllowedError,
+  ProjectMemoryTooLargeError,
+  type ProjectSettingsRecord,
+  type ProjectSettingsPatch,
+  type ProjectDesignLevel,
+  type ProjectAgent,
+} from './project-settings.js';
 import { TaskStore } from './tasks.js';
-
-/** A stored image blob: its media type and raw bytes (for serving). */
-export interface AttachmentBlob {
-  mediaType: string;
-  bytes: Buffer;
-}
 
 export {
   backfillInlineAttachments,
@@ -96,172 +260,13 @@ export {
   backfillToolResultText,
 } from './attachment-backfills.js';
 
-export interface SessionRecord {
-  sessionId: string;
-  worktree: string;
-  model: string;
-  /** Operator-assigned display name; `null` until set at spawn or via rename. */
-  name: string | null;
-  /** Project the session runs in (concept §19); `null` for project-less
-   *  (or pre-projects-slice) sessions. */
-  projectId: string | null;
-  /** "Last seen" mark for the overview unread dot (#387): the session's `eventCount`
-   *  at the last open. `null` = never opened → not unread. The store fills in the
-   *  legacy shared column; the server replaces it with the requesting person's mark
-   *  from {@link ViewStateStore} before it reaches a client. */
-  lastSeenEventCount: number | null;
-  /** Planning mode. Optional so records built outside the store need not state it;
-   *  absent and `null` both mean the session never planned. */
-  planning?: SessionPlanning | null;
-  planningRevision?: number;
-  planningPlan?: string | null;
-  /** Mockups the agent presented for review. Absent when it never presented any. */
-  mockupReview?: SessionMockupReview;
-  /** Operator-marked favorite, highlighted in the session list. Global like the
-   *  unread mark, so it syncs across devices. Absent means not a favorite. */
-  favorite?: boolean;
-}
+export type { SessionRecord } from './session-rows.js';
 
-/** `active`: turns run without permission to change files until the operator
- *  ends planning. `implemented` / `discarded`: how the last planning round ended,
- *  which tells the app whether the newest plan was carried out. */
-export type SessionPlanning = 'active' | 'implemented' | 'discarded';
-
-/** `pending`: screens wait for the reviewer, who marks each one and discusses them
- *  in the chat. `revising`: written by earlier versions, which sent comments for a
- *  revision; read as `pending` (see {@link storedMockupState}). `approved`: the user told the agent to implement and
- *  the review ended. */
-export type SessionMockupState = 'pending' | 'revising' | 'approved';
-
-/** One presented screen. The image is a snapshot in the attachment store, so the
- *  round stays as it was reviewed even when the agent rewrites the file later. */
-export interface MockupScreenRecord {
-  name: string;
-  /** SHA-256 of the image in the attachment store. */
-  attachment: string;
-  mediaType: 'image/png' | 'image/jpeg';
-  width: number;
-  height: number;
-  verdict: MockupVerdict;
-}
-
-/** The reviewer's mark on one screen. Only marks: neither starts any work. */
-export type MockupVerdict = 'open' | 'approved' | 'discarded';
-
-/** Stored screens, with marks from earlier versions mapped onto the current ones:
- *  a commented screen was one the reviewer did not accept, so it reads as
- *  discarded and never as approved. */
-export function storedMockupScreens(raw: unknown): MockupScreenRecord[] {
-  if (!Array.isArray(raw)) return [];
-  const entries = raw.filter(
-    (entry): entry is Omit<MockupScreenRecord, 'verdict'> & { verdict: string } =>
-      typeof entry === 'object' &&
-      entry !== null &&
-      typeof (entry as { name?: unknown }).name === 'string' &&
-      typeof (entry as { attachment?: unknown }).attachment === 'string' &&
-      typeof (entry as { width?: unknown }).width === 'number' &&
-      typeof (entry as { height?: unknown }).height === 'number',
-  );
-  return entries.map(({ name, attachment, mediaType, width, height, verdict }) => ({
-    name,
-    attachment,
-    mediaType,
-    width,
-    height,
-    verdict: verdict === 'approved' ? 'approved' : verdict === 'open' ? 'open' : 'discarded',
-  }));
-}
-
-export interface SessionMockupReview {
-  state: SessionMockupState;
-  /** Increments with each presentation; decisions name the round they were made for. */
-  revision: number;
-  screens: MockupScreenRecord[];
-}
-
-/** The review as stored; `state` null before the first presentation. */
-export interface SessionMockups {
-  state: SessionMockupState | null;
-  revision: number;
-  screens: MockupScreenRecord[];
-}
-
-/** A round an earlier version left `revising` already handed its comments to the
- *  agent; nothing moves it on any more, so it reads as open for marks again. */
-export function storedMockupState(state: SessionMockupState | null): SessionMockupState | null {
-  return state === 'revising' ? 'pending' : state;
-}
-
-function mockupReview(
-  rawState: SessionMockupState | null,
-  revision: number,
-  screens: unknown,
-): { mockupReview?: SessionMockupReview } {
-  const state = storedMockupState(rawState);
-  if (state === null) return {};
-  return {
-    mockupReview: {
-      state,
-      revision,
-      screens: storedMockupScreens(screens),
-    },
-  };
-}
-
-export interface SessionLinkRecord {
-  sessionId: string;
-  peerSessionId: string;
-  peerProjectId: string;
-  peerName: string | null;
-}
-
-export type SessionLinkReservation = 'reserved' | 'duplicate' | 'exhausted' | 'unlinked';
-
-export interface PendingSessionLinkMessage {
-  id: string;
-  invocationId: string;
-  sourceSessionId: string;
-  targetSessionId: string;
-  sourceProjectId: string;
-  requestMac: string;
-  macKeyId: string;
-  message: string;
-  approvedAt: Date | null;
-  createdAt: Date;
-}
-
-export type GoogleWorkspaceFileKind = 'slides' | 'docs' | 'sheets';
-
-export interface SessionWorkspaceFileRecord {
-  accountEmail?: string | null;
-  accountName?: string | null;
-  accountId?: string | null;
-  folderLinkId?: string | null;
-  credentialVersion?: number | null;
-  sessionId: string;
-  assignmentId: string;
-  kind: GoogleWorkspaceFileKind;
-  fileId: string;
-  name: string;
-  webViewLink: string;
-  revisionId: string | null;
-  assignedAt: Date;
-}
-
-/** @deprecated Use SessionWorkspaceFileRecord. */
-export type SessionSlideDeckRecord = SessionWorkspaceFileRecord;
-
-export interface GoogleSlideImageCleanupRecord {
-  accountId?: string | null;
-  id: string;
-  sessionId: string;
-  fileId: string;
-  permissionId: string | null;
-  readyAt: Date | null;
-  attempts: number;
-  lastError: string | null;
-  createdAt: Date;
-}
+export type {
+  SessionLinkRecord,
+  SessionLinkReservation,
+  PendingSessionLinkMessage,
+} from './session-links.js';
 
 /** Input to {@link EventStore.createSession}: a {@link SessionRecord} whose
  * `name` is optional (a fresh session starts nameless unless the operator named
@@ -272,933 +277,26 @@ export type SessionInput = Omit<
 > & {
   name?: string | null;
   projectId?: string | null;
+  /** The person starting the session; its requests are theirs (ADR 0023). */
+  createdByUserId?: string | null;
 };
 
-/**
- * Multi-repo fleet-registry project state (concept §19.3, #174). Mirrors the
- * `projects.state` column as a closed string-enum at the app layer. Transitions
- * guarded by a `SELECT … FOR UPDATE` lock (§19.3):
- *   `absent → cloning → container_starting → active`
- *   `cloning|container_starting → failed`
- *   `failed → cloning` (retry via deprovision + re-provision, §19.8).
- */
-export type ProjectState =
-  | 'absent'
-  | 'cloning'
-  | 'container_starting'
-  | 'active'
-  | 'sleeping_starting'
-  | 'sleeping'
-  | 'waking'
-  | 'failed';
-export type ProjectSetupState = 'pending' | 'secrets_skipped' | 'complete';
-export type ProjectKind = 'github' | 'forgejo' | 'control_plane' | 'local';
+export type { SessionBackendStateRecord } from './session-backend-state.js';
+export type { SessionPlanning } from './session-planning.js';
 
-/** Reserved `owner` for projects created without a GitHub repository. Keeps them
- *  inside the existing `UNIQUE(owner, repo)` identity without a nullable owner,
- *  and makes "is this project on GitHub yet" a single-column question. The
- *  leading underscores are forbidden by GitHub's account-name grammar, so this
- *  namespace cannot collide with an installation repository. */
-export const LOCAL_PROJECT_OWNER = '__local__';
-
-/** Thrown when `(owner, repo)` is spoken for by a DIFFERENT project than the one
- *  writing. Carries the driver's unique-violation code so existing callers that
- *  branch on `23505` keep working; exported so the installation sync can tell
- *  "a link is mid-flight" apart from a genuine write failure. */
-export class ProjectIdentityClaimConflict extends Error {
-  readonly code = '23505';
-}
-
-/** Whether a project has no GitHub repository behind it (yet). */
-export function isLocalProject(project: Pick<ProjectRecord, 'kind'>): boolean {
-  return project.kind === 'local';
-}
-
-/**
- * Whether a project's sessions can be linked and messaged. A sleeping project
- * qualifies: a linked message is an ordinary turn, and turn preparation wakes the
- * Sandbox before running it — the same states the turn route admits.
- */
-export function isSessionLinkProject(
-  project: Pick<ProjectRecord, 'kind' | 'state' | 'hiddenAt'>,
-): boolean {
-  return (
-    project.hiddenAt === null &&
-    (project.state === 'active' || project.state === 'sleeping' || project.state === 'waking')
-  );
-}
-
-/**
- * Whether a project row is an unadopted installation-sync placeholder — a row
- * {@link syncProjectsFromInstallation} minted purely because the GitHub App can
- * SEE the repository, not because anyone added it as a project.
- *
- * This exists because those placeholders otherwise make `link-github`
- * unreachable: the sync registers every visible repo within seconds of its
- * creation, so by the time an operator points a local project at a freshly
- * created empty repo, Verity already holds `(owner, repo)` itself and reports
- * its own bookkeeping row as "already registered as a project". The set of repos
- * the linker can push to and the set the sync claims are the SAME set, so
- * without adoption the feature can never succeed.
- *
- * `overviewVisible=false` is the durable provenance marker: explicit project
- * addition sets it true and installation sync deliberately leaves it false.
- * Record-level half of the test only; the authoritative check
- * additionally requires that nothing was ever worked on in the project, which
- * needs a query — see the store's `retireInstallationPlaceholder`. Callers
- * that only hold a {@link ProjectRecord} use this for an early-out and let the
- * store transaction have the final word.
- */
-export function isInstallationPlaceholder(
-  project: Pick<ProjectRecord, 'kind' | 'state' | 'overviewVisible'>,
-): boolean {
-  return (
-    project.kind === 'github' && project.state === 'absent' && project.overviewVisible !== true
-  );
-}
-
-/** Multi-repo fleet-registry project record (`projects` row, concept §19.2). */
-export interface ProjectRecord {
-  id: string;
-  /** The project's own name, independent of its repositories. Set when the
-   *  project is created, changed only by {@link EventStore.renameProject}. */
-  name: string;
-  owner: string;
-  repo: string;
-  containerName: string;
-  kind?: ProjectKind;
-  forgeConnectionId?: string | null;
-  /** 1 for the first project of a repository; a further project of the same
-   *  repository takes the next number. Absent on records from older readers. */
-  repositoryInstance?: number;
-  /** Host clone-directory name override; `null` = derive `<owner>-<repo>`. Set
-   *  for `local` projects and preserved when they are linked to GitHub, so the
-   *  clone (and every session worktree persisted under it) never moves. */
-  cloneDir?: string | null;
-  imageRef: string | null;
-  /** The image the operator pinned for this project, or `null` when Verity
-   *  chooses the default. Configuration, not observation: it says what the next
-   *  provisioning must start from.
-   *
-   *  {@link imageRef} is normally what the last provisioning selected, but a pin
-   *  is written into BOTH, so between the pin and the next provisioning the two
-   *  agree while the Sandbox still runs the older image. Equal values therefore
-   *  mean the effective image is the pinned one — which is what settles that
-   *  Verity did not build it, whatever the image is named. */
-  imageOverrideRef?: string | null;
-  /** Content identity of the runner-boundary trust root the last provisioning
-   *  judged this project against. `null`/absent = unknown, which is NOT the same
-   *  as current — see `projects.toolkit_identity`. */
-  toolkitIdentity?: string | null;
-  state: ProjectState;
-  /** Fingerprint of the runtime contract retained by a sleeping Sandbox. */
-  sleepCompatibilityFingerprint?: string | null;
-  /** When the Sandbox most recently completed the transition to sleeping. */
-  sleepingSince?: Date | null;
-  /** When the current wake attempt claimed the project. */
-  wakeStartedAt?: Date | null;
-  archived?: boolean;
-  provisionError: string | null;
-  provisionWarning: string | null;
-  /** Soft-delete marker: `null` = visible, a `Date` = operator-hidden. Hidden
-   *  projects are excluded from {@link EventStore.listProjects} by default. */
-  hiddenAt: Date | null;
-  /** Operator-defined overview order; `null` for projects never manually sorted. */
-  sortOrder?: number | null;
-  /** Overview fold state; `true` when the project group is collapsed. The store
-   *  fills in the legacy shared column; the server replaces it with the requesting
-   *  person's state from {@link ViewStateStore}. */
-  collapsed?: boolean;
-  /** True once the repo was explicitly added as a Verity project. Paused
-   *  (`state='absent'`) projects with this flag stay visible in the overview. */
-  overviewVisible?: boolean;
-  setupStatus?: ProjectSetupState;
-  /** Persisted display-cache of the repo's latest GitHub release (overview version
-   *  badge). All `null` until a lookup resolves / for a repo with no releases.
-   *  `latestReleasePublishedAt` is GitHub's ISO string (display-only). Written by
-   *  {@link EventStore.updateProjectReleaseStatus}; the live freshness is owned by
-   *  the server's in-memory release service. */
-  latestReleaseTag: string | null;
-  latestReleaseName: string | null;
-  latestReleaseUrl: string | null;
-  latestReleasePublishedAt: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  /** When {@link EventStore.updateProjectState} last wrote `state`. Use this —
-   *  never `updatedAt` — to reason about how long a project has been in its
-   *  current provisioning state: `updatedAt` is bumped by unrelated writers
-   *  (installation sync, release badge, sort order) that leave `state` alone. */
-  stateChangedAt: Date;
-}
-
-export interface MessageSearchInput {
-  query: string;
-  sessionId?: string;
-  projectId?: string;
-  limit?: number;
-  cursor?: { rank: number; createdAt: number; id: number };
-}
-
-export interface MessageSearchResult {
-  id: number;
-  sessionId: string;
-  sessionName: string | null;
-  projectId: string | null;
-  projectName: string | null;
-  role: 'user' | 'agent';
-  kind: 'prompt' | 'text' | 'notice';
-  text: string;
-  firstEventSeq: number;
-  createdAt: number;
-  rank: number;
-}
-
-/** Input to {@link EventStore.updateProjectReleaseStatus} — the latest-release
- *  fields refreshed independently of the installation-sync upsert. A plain shape
- *  (not the server's `ReleaseSummary`) so the store stays free of server types. */
-export interface ProjectReleaseStatus {
-  tag: string | null;
-  name: string | null;
-  url: string | null;
-  publishedAt: string | null;
-}
-
-/** Input to {@link EventStore.upsertProject} — everything but the DB-managed
- * `created_at`/`updated_at`/`provision_error` columns. `id` is caller-supplied
- * (UUID) so an upsert can target an existing row. */
-export interface ProjectUpsertInput {
-  id: string;
-  owner: string;
-  repo: string;
-  containerName: string;
-  kind?: ProjectKind;
-  forgeConnectionId?: string | null;
-  /** Explicit host clone-directory name; omit to derive `<owner>-<repo>`. Only
-   *  written on INSERT — an existing row keeps whatever directory its clone
-   *  already lives in. */
-  cloneDir?: string | null;
-  imageRef?: string | null;
-  state: ProjectState;
-  archived?: boolean;
-  /** When `true`, an upsert that hits an existing (owner, repo) row clears its
-   *  `hidden_at` — the "re-add a previously deleted project" path (POST
-   *  /projects). The GitHub-installation sync omits it, so a re-sync never
-   *  un-hides an operator-removed project. */
-  restore?: boolean;
-  /** Mark this repo as intentionally added to the project overview. Installation
-   *  sync omits it so unadded `absent` repos stay picker-only. */
-  overviewVisible?: boolean;
-  /** The project's name. Only written on INSERT; omitted, it is derived with
-   *  {@link defaultProjectName}. An existing project keeps its name. */
-  name?: string;
-}
-
-/** Maximum UTF-16 length, matching API validation and native text input limits. */
-export const PROJECT_NAME_MAX_CHARS = 100;
-
-/** The name a project carries when none was given: its repository name, or a
- *  local project's directory name — what the app showed before projects had
- *  names of their own, and what migration 0204 copied into existing rows. */
-export function defaultProjectName(project: { repo: string }): string {
-  return project.repo;
-}
-
-/** A rename the store refuses: empty after trimming, or over the limit. */
-export class InvalidProjectNameError extends Error {}
-
-export interface SessionBackendStateRecord {
-  contextFingerprint?: string;
-  sessionId: string;
-  backend: string;
-  backendSessionId: string;
-  contextSeq: number;
-  updatedAt: Date;
-}
+export { isInstallationPlaceholder } from './installation-placeholders.js';
 
 /** How one scheduled automation run settled: `ok` (its check script found
  * nothing to do), `acted` (a turn was dispatched), `skipped` (the session was
  * busy or the project unavailable), or `error`. */
-export type SessionAutomationOutcome = 'ok' | 'acted' | 'error' | 'skipped';
-
-/** Only an `enabled` automation fires. */
-export type SessionAutomationStatus = 'enabled' | 'paused';
-
-/** Consecutive failed runs after which an automation pauses itself. */
-export const SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS = 5;
-
-/** A recurring prompt bound to one session (see {@link SessionAutomationsTable}). */
-export interface SessionAutomationRecord {
-  id: string;
-  sessionId: string;
-  name: string;
-  status: SessionAutomationStatus;
-  schedule: ScheduleConfig;
-  /** The task the session's agent receives on every run. */
-  prompt: string;
-  /** Optional check script; when present the agent is only woken on its signal. */
-  script: string | null;
-  /** Model for the dispatched turn; null keeps the session's model. */
-  model: string | null;
-  consecutiveErrorCount: number;
-  lastRunAt: Date | null;
-  lastOutcome: SessionAutomationOutcome | null;
-  /** Short operator-facing explanation of the last outcome, if any. */
-  lastDetail: string | null;
-  nextRunAt: Date | null;
-  /** The local user who confirmed it; null for automations confirmed before
-   * sponsors were recorded. */
-  sponsorUserId: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-/** Input to {@link EventStore.setSessionAutomation}. */
-export class SessionAutomationWorkspaceChangedError extends Error {
-  constructor() {
-    super('The session workspace changed. Confirm the automation again in its current project.');
-    this.name = 'SessionAutomationWorkspaceChangedError';
-  }
-}
-
-export interface SessionAutomationInput {
-  sessionId: string;
-  name: string;
-  schedule: ScheduleConfig;
-  prompt: string;
-  script?: string | null;
-  model?: string | null;
-  sponsorUserId?: string | null;
-}
-
-export interface ProjectSettingsRecord {
-  /** Absent on older clients; defaults to enabled. Changing it affects the next recreation. */
-  devcontainerEnabled?: boolean;
-  projectId: string;
-  dopplerTokenRef: string | null;
-  dopplerToken: string | null;
-  /** Operator-authorized Doppler binding (#320): plaintext project + config. */
-  dopplerProject: string | null;
-  dopplerConfig: string | null;
-  /** Cached scoped read-only minted token (#320). SECRET — encrypted at rest
-   *  exactly like {@link ProjectSettingsRecord.dopplerToken}. */
-  dopplerMintedToken: string | null;
-  /** Doppler identifier (`slug`) of {@link ProjectSettingsRecord.dopplerMintedToken}
-   *  (#320 follow-up). PLAINTEXT — an opaque token identifier, not a credential;
-   *  used to best-effort revoke the superseded token on rebind. */
-  dopplerMintedTokenSlug: string | null;
-  defaultBranch: string | null;
-  defaultModel: string | null;
-  /** Per-project agent memory (ADR 0008). PLAINTEXT free-text, never encrypted;
-   *  injected into each session's runtime system prompt at context init. */
-  memory: string | null;
-  googleDriveFolderId: string | null;
-  googleDriveFolderName: string | null;
-  googleDriveAccessMode: 'read-only' | 'read-write';
-  /** Design module: whether plans include mockups the user approves before the build. */
-  designLevel: ProjectDesignLevel;
-  /** One line shown under the project's name; null when none was written. */
-  description: string | null;
-  /** Agents sessions in this project may use; null permits every connected agent. */
-  allowedAgents: ProjectAgent[] | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export const PROJECT_AGENTS = ['claude', 'codex', 'opencode'] as const;
-export type ProjectAgent = (typeof PROJECT_AGENTS)[number];
-
-/** An explicit default cannot be persisted outside the project's current agent rule. */
-export class ProjectDefaultModelNotAllowedError extends Error {
-  constructor(readonly model: string) {
-    super(`Project default model ${model} is not allowed.`);
-    this.name = 'ProjectDefaultModelNotAllowedError';
-  }
-}
-
-export interface HttpMcpConnectionRecord {
-  id: string;
-  ownerUserId?: string;
-  name: string;
-  url: string;
-  /** Decrypted only at the trusted store boundary; public APIs must project this out. */
-  authorization: string | null;
-  authType?: 'none' | 'static' | 'oauth';
-  oauthClientId?: string | null;
-  oauthClientSecret?: string | null;
-  oauthTokenAuthMethod?: 'none' | 'client_secret_post' | 'client_secret_basic';
-  oauthAuthorizationEndpoint?: string | null;
-  oauthTokenEndpoint?: string | null;
-  oauthScopes?: string | null;
-  oauthAccessToken?: string | null;
-  oauthRefreshToken?: string | null;
-  oauthExpiresAt?: Date | null;
-  enabled: boolean;
-}
-
-/**
- * Whether a turn run for `userId` may use this HTTP MCP connection (ADR 0023 §3).
- * A connection that carries a credential belongs to its owner and is usable only
- * in the owner's turns; a credential-free server is project configuration and
- * usable by everyone. A turn without an initiator gets no credentialed
- * connection at all — never the administrator's as a fallback.
- */
-export function httpMcpConnectionUsableBy(
-  connection: Pick<HttpMcpConnectionRecord, 'ownerUserId' | 'authType' | 'authorization'>,
-  userId: string | undefined,
-): boolean {
-  const credentialFree =
-    connection.authorization === null && (connection.authType ?? 'none') === 'none';
-  if (credentialFree) return true;
-  return userId !== undefined && connection.ownerUserId === userId;
-}
-
-export interface ProjectMcpBindingRecord {
-  projectId: string;
-  connectionId: string;
-  enabled: boolean;
-}
-
-type ProjectSettingsKey =
-  | 'devcontainerEnabled'
-  | 'dopplerTokenRef'
-  | 'dopplerToken'
-  | 'dopplerProject'
-  | 'dopplerConfig'
-  | 'dopplerMintedToken'
-  | 'dopplerMintedTokenSlug'
-  | 'defaultBranch'
-  | 'defaultModel'
-  | 'memory'
-  | 'googleDriveFolderId'
-  | 'googleDriveFolderName'
-  | 'googleDriveAccessMode'
-  | 'designLevel'
-  | 'description'
-  | 'allowedAgents';
-
-/** `off`: no mockups. `on_request`: mockups when the user asks for them.
- *  `required`: every plan that changes the UI includes mockups. */
-export type ProjectDesignLevel = 'off' | 'on_request' | 'required';
-
-export type ProjectSettingsPatch = {
-  [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
-};
-
-/** One dev server (preview process) of a project. */
-export interface DevServerRecord {
-  id: string;
-  projectId: string;
-  sourceKey: string | null;
-  name: string;
-  command: string | null;
-  url: string | null;
-  workdir: string | null;
-  hostPort: string | null;
-  containerPort: string | null;
-  /** Session whose worktree this server previews instead of the main checkout;
-   *  null = serve main. Cleared automatically when the session is deleted. */
-  previewSessionId: string | null;
-  autoStart: boolean;
-  sortOrder: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface DevServerCreateInput {
-  projectId: string;
-  sourceKey?: string | null;
-  name?: string;
-  command?: string | null;
-  url?: string | null;
-  workdir?: string | null;
-  hostPort?: string | null;
-  containerPort?: string | null;
-  autoStart?: boolean;
-  sortOrder?: number;
-}
-
-export type DevServerPatch = {
-  name?: string;
-  command?: string | null;
-  url?: string | null;
-  workdir?: string | null;
-  hostPort?: string | null;
-  containerPort?: string | null;
-  previewSessionId?: string | null;
-  autoStart?: boolean;
-  sortOrder?: number;
-};
-
-export interface DevServerDetectionStateRecord {
-  projectId: string;
-  fingerprint: string;
-  detectedAt: Date;
-  reviewedFingerprint: string | null;
-  reviewedAt: Date | null;
-}
-
-export interface LocalPreviewShareRecord {
-  id: string;
-  projectId: string;
-  sessionId: string;
-  managedInstanceId: string | null;
-  networkPort: number;
-  url: string;
-  targetPort: number | null;
-  staticPath: string | null;
-  connectorSecret: string;
-  state: 'active' | 'revoking';
-  expiresAt: Date;
-}
-
-export type PublicPreviewShareState =
-  'creating' | 'active' | 'revoking' | 'revoked' | 'expired' | 'failed';
-
-export interface PublicPreviewShareRecord {
-  managedInstanceId?: string | null;
-  pinLocked?: boolean;
-  id: string;
-  projectId: string;
-  devServerId: string | null;
-  containerGeneration: string;
-  targetPort: number | null;
-  targetKind?: 'dev-server' | 'static-folder';
-  staticPath?: string | null;
-  sessionId?: string | null;
-  state: PublicPreviewShareState;
-  publicOrigin: string;
-  edgeUrl: string;
-  pinHash: string;
-  pin: string | null;
-  connectorToken: string;
-  sessionSecret: string;
-  connectorContainerName: string;
-  connectorContainerId: string | null;
-  expiresAt: Date;
-  revokedAt: Date | null;
-  failure: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface PublicPreviewShareCreateInput {
-  managedInstanceId?: string | null;
-  id: string;
-  projectId: string;
-  devServerId: string | null;
-  containerGeneration: string;
-  targetPort: number | null;
-  targetKind?: 'dev-server' | 'static-folder';
-  staticPath?: string | null;
-  sessionId?: string | null;
-  publicOrigin: string;
-  edgeUrl: string;
-  pinHash: string;
-  pin: string;
-  connectorToken: string;
-  sessionSecret: string;
-  connectorContainerName: string;
-  expiresAt: Date;
-}
-
-/** The Verity-owned Claude-egress CA + gateway server identity (singleton). The
- *  `caKeyPem`/`gatewayKeyPem` are decrypted on read; they are SECRETS and never
- *  leave the server. */
-export interface ClaudeEgressCaRecord {
-  caCertPem: string;
-  caKeyPem: string;
-  gatewayServerName: string;
-  gatewayCertPem: string;
-  gatewayKeyPem: string;
-  caExpiresAt: Date;
-  gatewayExpiresAt: Date;
-}
-
-/** A per-project Claude-egress client certificate. `keyPem` is decrypted on read
- *  (a SECRET); the cert + fingerprint are non-secret. */
-export interface ClaudeEgressClientCertRecord {
-  projectId: string;
-  /** The person whose sandbox presents this certificate (ADR 0023 §4). */
-  userId: string;
-  certPem: string;
-  keyPem: string;
-  fingerprint256: string;
-  expiresAt: Date;
-}
-
-/** Thrown by {@link EventStore.createSession} when the session's project has
- *  been soft-deleted (`hidden_at` set). Project deletion reaps the project's
- *  sessions, so a session inserted afterwards would outlive its project and
- *  reappear in the overview as an orphan. Callers map this to the same 404 an
- *  unknown project id gets — a hidden project is gone as far as spawning is
- *  concerned. */
-export class DeletedProjectError extends Error {
-  constructor(readonly projectId: string) {
-    super(`project ${projectId} has been deleted`);
-    this.name = 'DeletedProjectError';
-  }
-}
-
-/** Soft cap on per-project agent memory (ADR 0008), enforced in the shared store
- *  layer so BOTH write paths (operator UI full-replace and agent broker append)
- *  are bounded — otherwise a large blob would bloat every injected system prompt.
- *  A "few KB" per the ADR; an over-cap write is REJECTED (see
- *  {@link ProjectMemoryTooLargeError}), never silently truncated. */
-export const PROJECT_MEMORY_MAX_CHARS = 8_000;
-
-/** Thrown by {@link EventStore.updateProjectSettings} / {@link EventStore.appendProjectMemory}
- *  when a memory write would exceed {@link PROJECT_MEMORY_MAX_CHARS}. Callers (the
- *  memory broker route, the settings API) map this to a 4xx rather than persisting
- *  a truncated blob. */
-export class ProjectMemoryTooLargeError extends Error {
-  constructor(
-    readonly length: number,
-    readonly max: number,
-  ) {
-    super(`project memory too large: ${length} characters exceeds the ${max}-character limit`);
-    this.name = 'ProjectMemoryTooLargeError';
-  }
-}
-
-export interface VeritySettingsRecord {
-  gitUserName: string | null;
-  gitUserEmail: string | null;
-  gitSshPrivateKeyPath: string | null;
-  gitSshPrivateKey: string | null;
-  gitSshPublicKeyPath: string | null;
-  gitSshPublicKey: string | null;
-  gitKnownHostsPath: string | null;
-  gitKnownHosts: string | null;
-  gitAllowedSignersPath: string | null;
-  gitAllowedSigners: string | null;
-  githubAppId: string | null;
-  githubAppInstallationId: string | null;
-  githubAppPrivateKey: string | null;
-  /** The App's OAuth client, used only for each person's own GitHub
-   *  authorization (ADR 0023 §3). The secret is encrypted at rest. */
-  githubAppClientId: string | null;
-  githubAppClientSecret: string | null;
-  /** Account-level Doppler Service Account token (#320). A secret, encrypted at
-   *  rest; decrypted on read via {@link EventStore.getVeritySettings}. */
-  dopplerServiceToken: string | null;
-  transcribeBaseUrl?: string | null;
-  /** OpenAI-compatible transcription token, encrypted at rest. */
-  transcribeApiKey?: string | null;
-  transcribeModel?: string | null;
-  /** Explicit selection made by the app. Null preserves the legacy environment
-   * fallback for installations that predate the first-use chooser. */
-  transcribeBackendMode?: 'local' | 'external' | null;
-  /** Full Claude OAuth credential state from `~/.claude/.credentials.json`.
-   *  A secret, encrypted at rest; used by the server to refresh access tokens
-   *  for Claude account usage probes. */
-  claudeCodeOauthCredentialsJson: string | null;
-  /** Subscription-login credential acquired from `codex login`. The encrypted
-   *  database value is projected only to the agent gateway credential authority;
-   *  it is never materialized into an agent runtime or Sandbox. */
-  codexAuthJson: string | null;
-  opencodeBaseUrl?: string | null;
-  /** OpenCode provider credential, encrypted at rest. */
-  opencodeApiKey?: string | null;
-  /** Server-discovered OpenCode model ids, cached as newline-separated values. */
-  opencodeModels?: string | null;
-  /** Models hidden by the user. Newly discovered models remain enabled by default. */
-  opencodeDisabledModels?: string | null;
-  /** Google connection for Drive imports and Slides editing (ADRs 0009/0016).
-   *  Client id + account email are non-secret;
-   *  the refresh token is a secret, encrypted at rest and decrypted on read via
-   *  {@link EventStore.getVeritySettings}. */
-  googleDriveClientId: string | null;
-  googleDriveAccountEmail: string | null;
-  googleDriveRefreshToken: string | null;
-  /** True after OAuth consent has explicitly included Gmail read/compose scopes. */
-  gmailAuthorized: boolean;
-  /** True after OAuth consent has explicitly included Calendar event scopes. */
-  calendarAuthorized: boolean;
-  /** True after explicit consent to read Google Contacts. */
-  contactsAuthorized: boolean;
-  /** Scopes actually granted to the shared Google credential. */
-  googleGrantedScopes: string[];
-  /** Verity Uplink subscription credential, encrypted at rest. */
-  uplinkSubscriptionKey?: string | null;
-  /** Stable identity assigned and validated by the Uplink. */
-  uplinkInstallationId?: string | null;
-  /** Operator switches for the paid Uplink features. Uplink grants a feature;
-   * the switch decides whether this server uses it. Both default to on. */
-  premiumSharingEnabled?: boolean;
-  premiumRemoteAccessEnabled?: boolean;
-  /** System-wide network protection. When on, every project container starts behind
-   * the host egress fence from its next start. Defaults to off. */
-  projectEgressEnabled?: boolean;
-  advancedModeEnabled?: boolean;
-  /** Days an unassigned live meeting is kept after it ends; null means the default. */
-  unassignedMeetingRetentionDays?: number | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-type VeritySettingsKey =
-  | 'advancedModeEnabled'
-  | 'unassignedMeetingRetentionDays'
-  | 'gitUserName'
-  | 'gitUserEmail'
-  | 'gitSshPrivateKeyPath'
-  | 'gitSshPrivateKey'
-  | 'gitSshPublicKeyPath'
-  | 'gitSshPublicKey'
-  | 'gitKnownHostsPath'
-  | 'gitKnownHosts'
-  | 'gitAllowedSignersPath'
-  | 'gitAllowedSigners'
-  | 'githubAppId'
-  | 'githubAppInstallationId'
-  | 'githubAppPrivateKey'
-  | 'githubAppClientId'
-  | 'githubAppClientSecret'
-  | 'dopplerServiceToken'
-  | 'transcribeBaseUrl'
-  | 'transcribeApiKey'
-  | 'transcribeModel'
-  | 'transcribeBackendMode'
-  | 'claudeCodeOauthCredentialsJson'
-  | 'codexAuthJson'
-  | 'opencodeBaseUrl'
-  | 'opencodeApiKey'
-  | 'opencodeModels'
-  | 'opencodeDisabledModels'
-  | 'googleDriveClientId'
-  | 'googleDriveAccountEmail'
-  | 'googleDriveRefreshToken'
-  | 'gmailAuthorized'
-  | 'calendarAuthorized'
-  | 'contactsAuthorized'
-  | 'googleGrantedScopes'
-  | 'uplinkSubscriptionKey'
-  | 'uplinkInstallationId'
-  | 'premiumSharingEnabled'
-  | 'premiumRemoteAccessEnabled'
-  | 'projectEgressEnabled';
-
-export type VeritySettingsPatch = {
-  [K in VeritySettingsKey]?: VeritySettingsRecord[K] | undefined;
-};
-
-export interface SessionGmailConnection {
-  accountId?: string;
-  source?: 'project' | 'session';
-  sessionId: string;
-  accountEmail: string;
-  enabledAt: Date;
-}
-
-export interface SessionCalendarConnection {
-  accountId?: string;
-  source?: 'project' | 'session';
-  sessionId: string;
-  accountEmail: string;
-  enabledAt: Date;
-}
-
-export interface SessionContactsConnection {
-  accountId?: string;
-  source?: 'project' | 'session';
-  sessionId: string;
-  accountEmail: string;
-  enabledAt: Date;
-}
-
-/** Master-password key-derivation metadata (non-secret): the scrypt salt and a
- *  verifier (a fixed marker encrypted under the derived key). The raw key is
- *  never stored — only re-derived in memory on unlock. */
-export interface SecretKeyMetaRecord {
-  salt: string;
-  verifier: string;
-}
-
-/** A minted per-device API token as stored: an opaque public `id` (for listing/
- *  revoking), the SHA-256 `tokenHash` the gate matches against, and an optional
- *  human `label`. The raw token itself is never persisted. `lastSeenAt` is null
- *  until the device makes its first authenticated request after the server
- *  learned to stamp it. */
-export interface AuthTokenRecord {
-  expiresAt: number | null;
-  id: string;
-  userId: string;
-  tokenHash: string;
-  label: string | null;
-  createdAt: number;
-  lastSeenAt: number | null;
-}
-
-export interface DevicePushTokenRecord {
-  authTokenId: string;
-  expoToken: string;
-  platform: 'ios';
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface PushReceiptRecord {
-  receiptId: string;
-  expoToken: string;
-  availableAt: number;
-  attempts: number;
-  createdAt: number;
-}
-
-/** A persisted event tagged with its monotonic sequence (the bigserial id) and
- * its real persist time. `seq` orders + keys the event; `ts` is the row's
- * `created_at` as epoch milliseconds — store/transport metadata alongside `seq`,
- * NOT part of the canonical {@link AgentEvent} payload. Surfaced so the client can
- * show real wall-clock times instead of using `seq` as a `createdAt` proxy (#32). */
-export interface SequencedEvent {
-  seq: number;
-  /** The row's `created_at` as epoch milliseconds (non-decreasing with `seq`). */
-  ts: number;
-  event: AgentEvent;
-}
-
-/**
- * One token field of a `result` payload, summed across a group — see
- * {@link EventStore.readUsageTotals}.
- *
- * The field name is emitted as a LITERAL rather than a bind parameter. `->>`
- * takes `text` on the right, and a parameter arrives untyped, so Postgres
- * resolves the operator against `jsonb ->> integer` as readily as the text form
- * and answers with an array-index error on an object. The names come from
- * {@link Usage}'s own keys, so there is no value here to smuggle anything in.
- */
-function usageSum(field: keyof Usage) {
-  return sql<string>`sum(coalesce((payload -> 'usage' ->> ${sql.lit(field)})::bigint, 0))`;
-}
-
-/**
- * One event row as the projections consume it.
- *
- * Same contract as {@link EventStore.getEventsAfter}: a payload that does not
- * parse is a corrupted log, not a row to skip past. Events are validated on the
- * way IN, so a row that fails on the way out means the database no longer holds
- * what the server wrote, and a badge quietly rendered from the surviving rows
- * would hide it.
- */
-function sequencedEvent(
-  sessionId: string,
-  id: string | number,
-  payload: unknown,
-  createdAt: Date,
-): SequencedEvent {
-  const parsed = parseAgentEvent(payload);
-  if (!parsed.success) {
-    throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
-  }
-  return { seq: Number(id), ts: createdAt.getTime(), event: parsed.data };
-}
-
-/** What a session with no `result` events has spent. */
-function emptyUsageTotals(): UsageTotals {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    turns: 0,
-  };
-}
-
-/**
- * What the overview projections need from one session's log — see
- * {@link EventStore.listSessionProjectionFacts}.
- */
-export interface SessionEventStats {
-  /** Nonempty agent-text events; used for unread state. */
-  eventCount: number;
-  lastEventSeq: number;
-  lastActivityAt: number | null;
-  /** Changes on every log mutation, including deletions below the latest seq. */
-  revision: string;
-}
-
-export interface SessionProjectionFacts {
-  /** Nonempty agent-text events; the overview unread counter. */
-  eventCount: number;
-  /** Highest event seq visible in the snapshot; bounds a later fallback read. */
-  lastEventSeq: number;
-  /** `created_at` of the newest event in epoch ms; null for an empty log. */
-  lastActivityAt: number | null;
-  /** Ascending by seq, filtered to {@link SESSION_PROJECTION_EVENT_TYPES} — and
-   *  bounded to the NEWEST `tailLimit` of them. Whether that is far enough back
-   *  is a fact about the derivation the caller is running, not about this read,
-   *  so the caller decides, using {@link eventsTruncated} to find out whether
-   *  there is anything older to miss. */
-  events: SequencedEvent[];
-  /** Whether {@link events} hit its limit, i.e. older projected events exist. A
-   *  tail short of the limit IS the whole slice, and nothing asked about it can
-   *  be wrong. */
-  eventsTruncated: boolean;
-  /** The newest `rate_limit` event per provider/window/scope over the WHOLE log,
-   *  in no particular order — the quota states a session is currently under.
-   *
-   *  Separate from {@link events} because a quota state is the last word until
-   *  the provider sends another one: one observed hours ago, thousands of events
-   *  back, is still the truth about the session, and a tail cannot see it. Same
-   *  shape of problem as {@link EventStore.sessionHasTaskLifecycleEvent}. */
-  rateLimitEvents: SequencedEvent[];
-  /** Token totals over every `result` event in the log — summed in SQL, not
-   *  folded out of {@link events}, which is why the slice is free to be a tail. */
-  usage: UsageTotals;
-}
-
-/** A turn persisted in the durable backlog (issue #80): its retract handle, the
- * session it belongs to, the prompt, and the per-turn options (attachments as
- * content-addressed refs). `seq` is the FIFO order the conductor recovers them in. */
-export interface QueuedTurnRecord {
-  id: string;
-  seq: number;
-  sessionId: string;
-  prompt: string;
-  opts: QueuedTurnOpts;
-}
-
-/** Input to {@link EventStore.enqueueTurn}: a queued turn minus the `seq` the
- * database assigns. */
-export interface PlanningConsent {
-  turnId: string;
-  promptSeq: number;
-  runningPromptSeq: number;
-}
-
-export type QueuedTurnInput = Omit<QueuedTurnRecord, 'seq'>;
-
-/** The durable "a turn is in flight for this session" marker (lifecycle Phase 1).
- * Written before a turn launches, cleared on its terminal event; a record still
- * present at startup means the turn was abandoned by a crash/restart. */
-export interface RunningTurnRecord {
-  markerId?: string | null;
-  sessionId: string;
-  /** Seq of the prompt event this turn is executing — recovery/reattach anchor. */
-  promptSeq: number;
-  startedAt: Date;
-  /** ADR 0006 Stage 4: the Server-allocated turn id bound before launch (D2), or
-   * null before an attempt binds it / on the loopback path. Recovery discovers the
-   * turn on the supervisor by this id. */
-  turnId: string | null;
-  /** ADR 0006 Stage 4: the idempotency key for this turn's StartTurn (D2), or null
-   * as for {@link turnId}. Recovery repeats StartTurn under it. */
-  startCommandId: string | null;
-}
-
-/** Local identities are evidence to compare, never an ownership assignment. */
-export interface RunnerTurnOwnershipRequest {
-  turnId: string;
-  startCommandId?: string;
-  runnerInstanceId?: string;
-}
-
-/** Ownership does not assert that a turn has settled or that its cache is idle. */
-export interface RunnerTurnOwnership {
-  turnId: string;
-  sessionId?: string;
-  conflict: boolean;
-}
+export {
+  SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS,
+  SessionAutomationWorkspaceChangedError,
+  type SessionAutomationOutcome,
+  type SessionAutomationStatus,
+  type SessionAutomationRecord,
+  type SessionAutomationInput,
+} from './session-automations.js';
 
 /**
  * The narrow persistence seam the Runner's ingest path drives (ADR 0006 D2). It
@@ -1214,79 +312,12 @@ export interface RunnerTurnOwnership {
  * caller passes it unchanged.
  */
 export interface EventSink {
-  appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }>;
+  appendEvent(
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing?: true }>;
   createSession(session: SessionInput): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
-}
-
-/**
- * The only Runner frame protocol version the Server ingests (ADR 0006 D3). The
- * envelope the Runner stamps carries this so a Server that predates a future
- * protocol bump rejects an unknown frame rather than misreading it. Kept here in
- * `@verity/store` as the single source of truth — `@verity/session` (which depends
- * on this package) imports it to stamp outgoing frames, so writer and reader can
- * never drift.
- */
-export const RUNNER_FRAME_PROTOCOL_VERSION = 1;
-
-/**
- * The Server-side ingest descriptor for one Runner frame (ADR 0006 D4). It is the
- * transport-neutral projection of `@verity/session`'s `RunnerFrame` — carrying only
- * what the idempotent DB claim needs, so `@verity/store` never has to import the
- * session frame union (avoiding a package cycle). `event` normally contains the
- * transported event frame; a permission-request frame may instead carry the
- * server-authored `permission` event that makes the parked prompt durable and
- * replayable. Session/result frames omit it and persist no event row, but still
- * claim their `(turnId, frameSeq)` so the sequence stays contiguous. `payloadHash`
- * is treated as an opaque token: the Server stores it and compares it on replay
- * but never recomputes it, so the hashing algorithm lives solely Runner-side.
- */
-export interface RunnerFrameIngest {
-  protocolVersion: number;
-  runnerInstanceId: string;
-  turnId: string;
-  frameSeq: number;
-  payloadHash: string;
-  /** The event to persist — present for event frames and surfaced permission requests. */
-  event?: AgentEvent;
-  /** Marks the final `result` frame. Its claim atomically closes the matching
-   * running-turn marker and fences all later frames for this turn. */
-  terminal?: true;
-}
-
-/** The outcome of {@link EventStore.ingestRunnerFrame}. `accepted` means the frame
- * was newly claimed (and any `event` newly persisted) — the caller should publish it
- * to live subscribers. `duplicate` means the frame was already ingested (a replay
- * after a crash) — it must NOT be re-published; a reconnecting client receives it via
- * backlog replay instead. `seq`/`ts` are the persisted event's identity, present for
- * event frames in both outcomes. They are consumed today only on the `accepted` path;
- * the `duplicate` seq/ts is carried for the reattach slice (which will re-derive a
- * frame's seq after a post-commit-pre-publish crash) and is not yet read by any
- * caller. */
-export interface RunnerFrameIngestResult {
-  outcome: 'accepted' | 'duplicate';
-  seq?: number;
-  ts?: number;
-}
-
-/**
- * The `payload_hash` that marks a `runner_frames` row as a FENCE rather than a frame
- * the Runner produced — see {@link EventStore.fenceAbandonedTurn}. A real hash is a
- * Runner-minted token, so this cannot collide with one; using the existing column
- * keeps the fence inside the table whose primary key already orders a turn's frames.
- */
-const ABANDONED_TURN_FENCE_HASH = 'verity:abandoned-turn-fence';
-
-/** The `runner_instance_id` a fence carries when the turn never streamed a frame, so
- * there is no real instance to name. Excluded from the turn→instance binding check. */
-const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
-
-const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
-
-/** The person a backend-state key is scoped to, or '' for the unscoped key. */
-function backendStateScope(backend: string): string {
-  const separator = backend.indexOf('#');
-  return separator < 0 ? '' : backend.slice(separator + 1);
 }
 
 /**
@@ -1296,63 +327,41 @@ function backendStateScope(backend: string): string {
  * hand out — an event that violates the schema.
  */
 export class EventStore implements EventSink {
-  listProjectRepositories(projectId: string, options: { includeRemoved?: boolean } = {}) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).list(
-      projectId,
-      options,
-    );
+  private readonly projectRepositories = new ProjectRepositoryStore(
+    () => this.db,
+    (id) => this.getProject(id),
+  );
+
+  listProjectRepositories(projectId: string, options?: { includeRemoved?: boolean }) {
+    return this.projectRepositories.list(projectId, options);
   }
 
   getProjectRepository(projectId: string, repositoryId?: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).get(
-      projectId,
-      repositoryId,
-    );
+    return this.projectRepositories.get(projectId, repositoryId);
   }
 
   addProjectRepository(input: AddProjectRepositoryInput) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).add(input);
+    return this.projectRepositories.add(input);
   }
 
   removeProjectRepository(projectId: string, repositoryId: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).remove(
-      projectId,
-      repositoryId,
-    );
+    return this.projectRepositories.remove(projectId, repositoryId);
   }
 
-  async recordRepositoryPullRequest(
-    projectId: string,
-    repositoryId: string,
-    branch: string,
-    pullRequest: unknown,
-    sessionId?: string,
-  ): Promise<void> {
-    let query = this.db
-      .updateTable('session_repository_workspaces')
-      .set({
-        pull_request: sql`case when pull_request->>'number' = (${JSON.stringify(pullRequest)}::jsonb)->>'number'
-          then pull_request || ${JSON.stringify(pullRequest)}::jsonb
-          else ${JSON.stringify(pullRequest)}::jsonb end`,
-        branch,
-      })
-      .where('project_id', '=', projectId)
-      .where('repository_id', '=', repositoryId);
-    query =
-      sessionId === undefined
-        ? query.where('branch', '=', branch)
-        : query.where('session_id', '=', sessionId);
-    await query.execute();
+  recordRepositoryPullRequest(...args: Parameters<ProjectRepositoryStore['recordPullRequest']>) {
+    return this.projectRepositories.recordPullRequest(...args);
+  }
+
+  sessionRepositoryWorkspaceSessionId(worktree: string) {
+    return this.projectRepositories.workspaceSessionId(worktree);
   }
 
   listSessionRepositoryWorkspaces(sessionId: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).listWorkspaces(
-      sessionId,
-    );
+    return this.projectRepositories.listWorkspaces(sessionId);
   }
 
   upsertSessionRepositoryWorkspace(input: Omit<SessionRepositoryWorkspaceRecord, 'createdAt'>) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).upsertWorkspace(input);
+    return this.projectRepositories.upsertWorkspace(input);
   }
 
   private egressDestinationMutation: EgressDestinationMutation = unguardedEgressDestinationMutation;
@@ -1365,11 +374,7 @@ export class EventStore implements EventSink {
   /** Plain endpoint metadata only; usable while credentials are sealed. */
   async readEgressDestinationUrls(): Promise<string[]> {
     const [settings, mcp, forge, matrix, accounts] = await Promise.all([
-      this.db
-        .selectFrom('verity_settings')
-        .select(['opencode_base_url', 'transcribe_base_url'])
-        .where('id', '=', 'global')
-        .executeTakeFirst(),
+      this.veritySettings.readEgressDestinations(),
       this.db
         .selectFrom('http_mcp_connections')
         .select(['url', 'oauth_authorization_endpoint', 'oauth_token_endpoint'])
@@ -1395,116 +400,56 @@ export class EventStore implements EventSink {
   private get db(): Kysely<Database> {
     return egressDestinationDb(this.rootDb);
   }
-
   withEgressDestinationTransaction<T>(action: () => Promise<T>): Promise<T> {
     return withEgressDestinationTransaction(this.rootDb, action);
   }
-
-  private readonly backupRevocationListeners = new Set<() => Promise<void>>();
-
+  /** Project writes, announced after they commit for live views (ADR 0033). */
+  readonly projectChanges = new ProjectChangeFeed();
   /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
   subscribeBackupRevocations(listener: () => Promise<void>): () => void {
-    this.backupRevocationListeners.add(listener);
-    return () => {
-      this.backupRevocationListeners.delete(listener);
-    };
+    return this.authTokens.subscribeBackupRevocations(listener);
   }
 
-  private async notifyBackupRevocations(): Promise<void> {
-    // A destination outage must not undo or misreport an already committed token deletion.
-    await Promise.allSettled(
-      [...this.backupRevocationListeners].map((listener) => Promise.resolve().then(listener)),
-    );
+  private readonly secretKeyMetadata = new SecretKeyMetadataStore(() => this.db);
+  private readonly authTokens = new AuthTokenStore(() => this.db);
+  private readonly claudeEgressIdentity: ClaudeEgressIdentityStore;
+  private readonly httpMcpConnections = new HttpMcpConnectionStore(
+    () => this.db,
+    (value) => this.encryptSecret(value),
+    (value) => this.decryptSecret(value),
+    (action) => this.egressDestinationMutation(action),
+  );
+  private readonly devicePushTokens = new DevicePushTokenStore(() => this.db);
+  private readonly previewShares = new PreviewShareStore(
+    () => this.db,
+    (value) => this.encryptSecret(value),
+    (value) => this.decryptSecret(value),
+  );
+  private readonly devServerConfigs = new DevServerConfigStore(() => this.db);
+  private readonly sessionBackendState = new SessionBackendStateStore(() => this.db);
+  private readonly turnRecords = new TurnRecordStore(
+    () => this.db,
+    (id) => this.isSessionDeleting(id),
+  );
+  private readonly messageProjection = new MessageProjectionStore(
+    () => this.db,
+    () => this.listSessions(),
+    () => this.scheduleMessageProjection(),
+  );
+  private get attachments(): AttachmentStore {
+    return new AttachmentStore(this.db);
   }
 
-  /** PGlite does not enforce table-lock conflicts across its concurrent async
-   * transactions, so serialize this rare dual-unique mutation in-process too.
-   * The SQL table lock below remains the cross-process Postgres guard. */
-  private pushTokenMutationTail: Promise<void> = Promise.resolve();
-  private devServerPortMutationTail: Promise<void> = Promise.resolve();
-  /** PGlite does not model PostgreSQL advisory-lock contention across concurrent
-   * transactions, so mirror the per-turn DB lock in-process for tests/local mode. */
-  private readonly runnerFrameIngestTails = new Map<string, Promise<void>>();
-  private messageBackfillTail: Promise<void> = Promise.resolve();
-  private messageBackfillRunning = false;
-  private messageBackfillRequested = false;
-  private readonly messageLiveProjectionTails = new Map<string, Promise<void>>();
-  /** One session's event appends run one at a time — see {@link withSessionEventAppend}. */
-  private readonly sessionEventAppendTails = new Map<string, Promise<void>>();
-
-  /**
-   * Serialize every append to one session's event log.
-   *
-   * A conditional append ({@link appendEventForRunningTurn}) tests the log it is about
-   * to write into. Under READ COMMITTED that test only sees what had COMMITTED when the
-   * statement began, so a concurrent append — a Runner frame ingest in particular, whose
-   * insert sits inside a multi-statement transaction — can be invisible to the predicate
-   * and still take the lower id. The result would be a message about a turn that had
-   * already spoken, placed after what it spoke.
-   *
-   * Serializing the appends removes the overlap instead of trying to detect it: each one
-   * commits before the next begins, so the predicate reads a settled log. Server
-   * generations overlap during reattach/cutover, so this in-process tail is only half of
-   * it: every append also takes {@link sessionEventAppendLock} inside its transaction, so
-   * the ordering holds between processes too. The tail is what makes that lock effective
-   * under PGlite, which does not model advisory-lock contention between its concurrent
-   * transactions — the same belt-and-braces pairing frame ingest and the message
-   * projection already use.
-   */
-  private async withSessionEventAppend<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
-    const predecessor = this.sessionEventAppendTails.get(sessionId);
-    let release!: () => void;
-    const queued = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.sessionEventAppendTails.set(sessionId, queued);
-    // Only an append that actually has a predecessor waits. An uncontended one issues
-    // its statement in the caller's tick, as it did before there was a queue — the tail
-    // is claimed synchronously above, so skipping the hop cannot reorder anything.
-    if (predecessor !== undefined) await predecessor;
-    try {
-      return await run();
-    } finally {
-      release();
-      if (this.sessionEventAppendTails.get(sessionId) === queued) {
-        this.sessionEventAppendTails.delete(sessionId);
-      }
-    }
-  }
-
-  /** Serialize one turn's frame claims in-process (PGlite has no advisory locks). */
-  private async withRunnerFrameTurn<T>(turnId: string, run: () => Promise<T>): Promise<T> {
-    const predecessor = this.runnerFrameIngestTails.get(turnId) ?? Promise.resolve();
-    let release!: () => void;
-    const queued = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.runnerFrameIngestTails.set(turnId, queued);
-    await predecessor;
-    try {
-      return await run();
-    } finally {
-      release();
-      if (this.runnerFrameIngestTails.get(turnId) === queued) {
-        this.runnerFrameIngestTails.delete(turnId);
-      }
-    }
-  }
-
-  /**
-   * Transaction-scoped lock every append to one session's log takes first, so appends
-   * from overlapping Server generations cannot interleave either. Taken BEFORE a
-   * per-turn frame lock wherever both are held, so the two never deadlock.
-   */
-  private async sessionEventAppendLock(tx: Kysely<Database>, sessionId: string): Promise<void> {
-    await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
-      tx,
-    );
-  }
-
-  /** The one string every event-append lock hashes, transaction-scoped or inline. */
-  private sessionEventAppendLockKey(sessionId: string): string {
-    return `events:${sessionId}`;
+  private eventWriteStore: EventWriteStore | undefined;
+  private get eventWrites(): EventWriteStore {
+    return (this.eventWriteStore ??= new EventWriteStore({
+      currentDb: () => this.db,
+      isSessionDeleting: (id) => this.isSessionDeleting(id),
+      externalizeToolResult: (event) => this.externalizeToolResult(event),
+      enqueuePersistedMessageEvent: (id, seq, at, event) =>
+        this.enqueuePersistedMessageEvent(id, seq, at, event),
+      scheduleMessageProjection: () => this.scheduleMessageProjection(),
+    }));
   }
 
   private enqueuePersistedMessageEvent(
@@ -1513,75 +458,28 @@ export class EventStore implements EventSink {
     createdAt: Date,
     event: AgentEvent,
   ): void {
-    const predecessor = this.messageLiveProjectionTails.get(sessionId) ?? Promise.resolve();
-    const current = predecessor
-      .catch(() => undefined)
-      .then(async () => {
-        const projected = await this.db.transaction().execute(async (tx) => {
-          await sql`select pg_advisory_xact_lock(hashtext(${'messages:' + sessionId}))`.execute(tx);
-          const state = await tx
-            .selectFrom('message_projection_state')
-            .select(['last_event_seq', 'projection_version'])
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst();
-          if (state !== undefined && state.projection_version !== MESSAGE_PROJECTION_VERSION) {
-            return false;
-          }
-          const previous = await tx
-            .selectFrom('events')
-            .select((eb) => eb.fn.max('id').as('seq'))
-            .where('session_id', '=', sessionId)
-            .where('id', '<', seq)
-            .executeTakeFirst();
-          if (Number(state?.last_event_seq ?? 0) !== Number(previous?.seq ?? 0)) return false;
-          await projectMessageEvent(tx, sessionId, seq, createdAt, event);
-          await tx
-            .insertInto('message_projection_state')
-            .values({
-              session_id: sessionId,
-              last_event_seq: seq,
-              projection_version: MESSAGE_PROJECTION_VERSION,
-            })
-            .onConflict((oc) =>
-              oc.column('session_id').doUpdateSet({
-                last_event_seq: seq,
-                projection_version: MESSAGE_PROJECTION_VERSION,
-              }),
-            )
-            .execute();
-          return true;
-        });
-        return projected;
-      });
-    const safeCurrent = current.catch(() => false);
-    const tail = safeCurrent.then(() => undefined);
-    this.messageLiveProjectionTails.set(sessionId, tail);
-    const pending = Promise.all([
-      pendingMessageProjectionByDb.get(this.db) ?? Promise.resolve(),
-      tail,
-    ]).then(() => undefined);
-    pendingMessageProjectionByDb.set(this.db, pending);
-    void safeCurrent.then((projected) => {
-      if (!projected) this.scheduleMessageProjection();
-    });
-    void tail.finally(() => {
-      if (this.messageLiveProjectionTails.get(sessionId) === tail) {
-        this.messageLiveProjectionTails.delete(sessionId);
-      }
-    });
+    return this.messageProjection.enqueuePersistedMessageEvent(sessionId, seq, createdAt, event);
   }
 
-  /**
-   * @param cipher Encrypts/decrypts secret columns at the DB boundary (ADR 0002
-   *   D3). Defaults to a passthrough (plaintext) cipher so tests and un-keyed
-   *   deployments behave exactly as before; production passes a real
-   *   {@link SecretCipher} whose key is derived from the master password.
-   */
+  /** @param cipher Encrypts secret columns at the DB boundary (ADR 0002 D3).
+   * Defaults to plaintext for tests and un-keyed deployments; production passes
+   * a cipher whose key is derived from the master password. */
   constructor(
     private readonly rootDb: Kysely<Database>,
     private readonly cipher: SecretCipher = createPassthroughCipher(),
   ) {
     const db = rootDb;
+    this.claudeEgressIdentity = new ClaudeEgressIdentityStore(() => this.db, cipher);
+    this.veritySettings = new VeritySettingsStore(
+      () => this.db,
+      cipher,
+      (action) => this.egressDestinationMutation(action),
+      (token, transaction) => this.dopplerConnections.setLegacyToken(token, transaction),
+    );
+    this.sessionAutomations = new SessionAutomationStore(db);
+    this.projectSettings = new ProjectSettingsStore(db, cipher, (id) => this.getProject(id));
+    this.sessionLinks = new SessionLinkStore(db);
+    this.capacityLeases = new CapacityLeaseStore(db);
     this.userContext = new UserContextStore(db);
     this.userProfiles = new UserProfileStore(db);
     this.viewState = new ViewStateStore(db);
@@ -1598,13 +496,30 @@ export class EventStore implements EventSink {
     this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
     this.projectInquiries = new ProjectInquiryStore(db);
+    this.sessionCoordination = new SessionCoordinationStore(db);
     this.wikiOccasions = new WikiOccasionStore(db);
     this.wikiMaintenance = new WikiMaintenanceStore(db);
     this.sandboxUpdateState = new SandboxUpdateStateStore(db);
     this.sandboxRepairIntents = new SandboxRepairIntentStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
+    this.sessionPeople = new SessionPeopleStore(db);
+    this.changeSubmissions = new ChangeSubmissionStore(db);
+    this.githubRepositories = new GitHubRepositoryIdentityStore(db);
   }
 
+  private readonly planImplementation = new PlanImplementationStore(
+    () => this.db,
+    () => this.cipher,
+    () => this.eventWrites,
+    () => this.messageProjection,
+  );
+  private readonly sessionPlanning = new SessionPlanningStore(() => this.db);
+  private readonly sessionPullRequests = new SessionPullRequestStore(() => this.db);
+  private readonly sessionAutomations: SessionAutomationStore;
+  private readonly veritySettings: VeritySettingsStore;
+  private readonly projectSettings: ProjectSettingsStore;
+  private readonly sessionLinks: SessionLinkStore;
+  readonly capacityLeases: CapacityLeaseStore;
   readonly userContext: UserContextStore;
   readonly userProfiles: UserProfileStore;
   /** Per-person overview state: folded projects, read sessions, dismissed Home items. */
@@ -1618,6 +533,7 @@ export class EventStore implements EventSink {
   readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
   readonly projectInquiries: ProjectInquiryStore;
+  readonly sessionCoordination: SessionCoordinationStore;
   /** What a project's Wiki may need to reflect, until a maintenance run read it. */
   readonly wikiOccasions: WikiOccasionStore;
   readonly wikiMaintenance: WikiMaintenanceStore;
@@ -1627,142 +543,51 @@ export class EventStore implements EventSink {
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
+  /** Who started each session, for addressing its requests. */
+  readonly sessionPeople: SessionPeopleStore;
+  /** Session changes members without Code submitted for review. */
+  readonly changeSubmissions: ChangeSubmissionStore;
+  readonly githubRepositories: GitHubRepositoryIdentityStore;
+
+  private readonly attendeeState = new AttendeeStateStore(
+    () => this.db,
+    () => this.cipher,
+  );
 
   async getAttendeeState<T>(id: string): Promise<T | undefined> {
-    const result = await sql<{
-      state_secret: string;
-    }>`select state_secret from attendee_state where id = ${id}`.execute(this.db);
-    const row = result.rows[0];
-    return row ? (JSON.parse(this.cipher.decrypt(row.state_secret)) as T) : undefined;
+    return this.attendeeState.getAttendeeState<T>(id);
   }
 
   async putAttendeeState(id: string, state: unknown): Promise<void> {
-    const encrypted = this.cipher.encrypt(JSON.stringify(state));
-    await sql`insert into attendee_state (id, state_secret) values (${id}, ${encrypted}) on conflict (id) do update set state_secret = excluded.state_secret`.execute(
-      this.db,
-    );
+    return this.attendeeState.putAttendeeState(id, state);
   }
 
   async listAttendeeState<T>(): Promise<Array<{ id: string; state: T }>> {
-    const result = await sql<{
-      id: string;
-      state_secret: string;
-    }>`select id, state_secret from attendee_state where id <> 'config'`.execute(this.db);
-    return result.rows.map((row) => ({
-      id: row.id,
-      state: JSON.parse(this.cipher.decrypt(row.state_secret)) as T,
-    }));
+    return this.attendeeState.listAttendeeState<T>();
   }
 
   async deleteAttendeeState(id: string): Promise<void> {
-    await sql`delete from attendee_state where id = ${id}`.execute(this.db);
+    return this.attendeeState.deleteAttendeeState(id);
   }
 
-  /** One delivery at a time leaves pool capacity for conductor acceptance. */
-  private sessionLinkDeliveryTail: Promise<void> = Promise.resolve();
-
-  async createSessionLink(leftId: string, rightId: string): Promise<boolean> {
-    if (leftId === rightId) throw new Error('a session cannot link to itself');
-    const [sessionA, sessionB] = [leftId, rightId].sort() as [string, string];
-    return this.db.transaction().execute(async (tx) => {
-      const sessions = await tx
-        .selectFrom('sessions')
-        .select(['session_id', 'project_id'])
-        .where('session_id', 'in', [sessionA, sessionB])
-        .orderBy('session_id')
-        .forShare()
-        .execute();
-      if (sessions.length !== 2 || !sessions[0]?.project_id || !sessions[1]?.project_id)
-        throw new Error('linked sessions must belong to projects');
-      const projectIds = [...new Set([sessions[0].project_id, sessions[1].project_id])];
-      const projects = await tx
-        .selectFrom('projects')
-        .select(['id', 'state', 'hidden_at', 'kind'])
-        .where('id', 'in', projectIds)
-        .orderBy('id')
-        .forShare()
-        .execute();
-      if (
-        projects.length !== projectIds.length ||
-        projects.some(
-          (project) =>
-            !isSessionLinkProject({
-              kind: project.kind as ProjectKind,
-              state: project.state as ProjectRecord['state'],
-              hiddenAt: project.hidden_at,
-            }),
-        )
-      )
-        throw new Error('linked sessions require available projects');
-      const inserted = await tx
-        .insertInto('session_links')
-        .values({ session_a: sessionA, session_b: sessionB, remaining_a: 6, remaining_b: 6 })
-        .onConflict((oc) => oc.columns(['session_a', 'session_b']).doNothing())
-        .returning('session_a')
-        .executeTakeFirst();
-      return inserted !== undefined;
-    });
+  async createSessionLink(leftId: string, rightId: string, requestId?: string): Promise<boolean> {
+    return this.sessionLinks.createSessionLink(leftId, rightId, requestId);
   }
 
   async deleteSessionLink(leftId: string, rightId: string): Promise<boolean> {
-    const [sessionA, sessionB] = [leftId, rightId].sort() as [string, string];
-    const deleted = await this.db
-      .deleteFrom('session_links')
-      .where('session_a', '=', sessionA)
-      .where('session_b', '=', sessionB)
-      .returning('session_a')
-      .executeTakeFirst();
-    return deleted !== undefined;
+    return this.sessionLinks.deleteSessionLink(leftId, rightId);
   }
 
-  /** Both endpoints are marked using one query for the overview. */
   async linkedSessionIds(): Promise<Set<string>> {
-    const rows = await this.db
-      .selectFrom('session_links')
-      .select(['session_a', 'session_b'])
-      .execute();
-    return new Set(rows.flatMap((row) => [row.session_a, row.session_b]));
+    return this.sessionLinks.linkedSessionIds();
   }
 
   async listSessionLinks(sessionId: string): Promise<SessionLinkRecord[]> {
-    const rows = await this.db
-      .selectFrom('session_links')
-      .innerJoin('sessions', (join) =>
-        join
-          .onRef('sessions.session_id', '=', 'session_links.session_a')
-          .on('session_links.session_b', '=', sessionId),
-      )
-      .select(['sessions.session_id as peer_id', 'sessions.project_id', 'sessions.name'])
-      .unionAll(
-        this.db
-          .selectFrom('session_links')
-          .innerJoin('sessions', (join) =>
-            join
-              .onRef('sessions.session_id', '=', 'session_links.session_b')
-              .on('session_links.session_a', '=', sessionId),
-          )
-          .select(['sessions.session_id as peer_id', 'sessions.project_id', 'sessions.name']),
-      )
-      .execute();
-    return rows
-      .filter((row) => row.project_id !== null)
-      .map((row) => ({
-        sessionId,
-        peerSessionId: row.peer_id,
-        peerProjectId: row.project_id!,
-        peerName: row.name,
-      }));
+    return this.sessionLinks.listSessionLinks(sessionId);
   }
 
   async sessionLinkHasAllowance(sourceId: string, targetId: string): Promise<boolean> {
-    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const row = await this.db
-      .selectFrom('session_links')
-      .select(['remaining_a', 'remaining_b'])
-      .where('session_a', '=', sessionA)
-      .where('session_b', '=', sessionB)
-      .executeTakeFirst();
-    return row !== undefined && (sourceId === sessionA ? row.remaining_a : row.remaining_b) > 0;
+    return this.sessionLinks.sessionLinkHasAllowance(sourceId, targetId);
   }
 
   async sessionLinkHasDelivery(
@@ -1770,16 +595,7 @@ export class EventStore implements EventSink {
     targetId: string,
     invocationId: string,
   ): Promise<boolean> {
-    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const row = await this.db
-      .selectFrom('session_link_deliveries')
-      .select('invocation_id')
-      .where('invocation_id', '=', invocationId)
-      .where('session_a', '=', sessionA)
-      .where('session_b', '=', sessionB)
-      .where('source_session_id', '=', sourceId)
-      .executeTakeFirst();
-    return row !== undefined;
+    return this.sessionLinks.sessionLinkHasDelivery(sourceId, targetId, invocationId);
   }
 
   async createPendingSessionLinkMessage(input: {
@@ -1792,142 +608,34 @@ export class EventStore implements EventSink {
     macKeyId: string;
     message: string;
   }): Promise<boolean> {
-    const [sessionA, sessionB] = [input.sourceSessionId, input.targetSessionId].sort() as [
-      string,
-      string,
-    ];
-    return this.db.transaction().execute(async (trx) => {
-      // Several links may share one source. Lock that session before counting so
-      // concurrent requests to different peers cannot each fill the last slot.
-      const source = await trx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('session_id', '=', input.sourceSessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!source) return false;
-      const link = await trx
-        .selectFrom('session_links')
-        .select('session_a')
-        .where('session_a', '=', sessionA)
-        .where('session_b', '=', sessionB)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!link) return false;
-      const count = await trx
-        .selectFrom('session_link_pending_messages')
-        .select(sql<number>`count(*)::int`.as('count'))
-        .where('source_session_id', '=', input.sourceSessionId)
-        .executeTakeFirstOrThrow();
-      if (count.count >= 6) throw new Error('too many linked messages awaiting approval');
-      const inserted = await trx
-        .insertInto('session_link_pending_messages')
-        .values({
-          id: input.id,
-          invocation_id: input.invocationId,
-          session_a: sessionA,
-          session_b: sessionB,
-          source_session_id: input.sourceSessionId,
-          target_session_id: input.targetSessionId,
-          source_project_id: input.sourceProjectId,
-          request_mac: input.requestMac,
-          mac_key_id: input.macKeyId,
-          message: input.message,
-          approved_at: null,
-        })
-        .onConflict((oc) => oc.column('invocation_id').doNothing())
-        .returning('id')
-        .executeTakeFirst();
-      return inserted !== undefined;
-    });
+    return this.sessionLinks.createPendingSessionLinkMessage(input);
   }
 
   async listPendingSessionLinkMessages(
     sourceSessionId: string,
   ): Promise<PendingSessionLinkMessage[]> {
-    const rows = await this.db
-      .selectFrom('session_link_pending_messages')
-      .selectAll()
-      .where('source_session_id', '=', sourceSessionId)
-      .orderBy('created_at')
-      .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      invocationId: row.invocation_id,
-      sourceSessionId: row.source_session_id,
-      targetSessionId: row.target_session_id,
-      sourceProjectId: row.source_project_id,
-      requestMac: row.request_mac,
-      macKeyId: row.mac_key_id,
-      message: row.message,
-      approvedAt: row.approved_at,
-      createdAt: row.created_at,
-    }));
+    return this.sessionLinks.listPendingSessionLinkMessages(sourceSessionId);
   }
 
   async pendingSessionLinkMessageIds(
     sessionIds: readonly string[],
   ): Promise<Map<string, string[]>> {
-    const result = new Map<string, string[]>();
-    if (sessionIds.length === 0) return result;
-    const rows = await this.db
-      .selectFrom('session_link_pending_messages')
-      .select(['id', 'source_session_id'])
-      .where('source_session_id', 'in', [...sessionIds])
-      .execute();
-    for (const row of rows) {
-      const ids = result.get(row.source_session_id) ?? [];
-      ids.push(row.id);
-      result.set(row.source_session_id, ids);
-    }
-    return result;
+    return this.sessionLinks.pendingSessionLinkMessageIds(sessionIds);
   }
 
   async getPendingSessionLinkMessage(
     sourceSessionId: string,
     id: string,
   ): Promise<PendingSessionLinkMessage | undefined> {
-    const row = await this.db
-      .selectFrom('session_link_pending_messages')
-      .selectAll()
-      .where('source_session_id', '=', sourceSessionId)
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row === undefined
-      ? undefined
-      : {
-          id: row.id,
-          invocationId: row.invocation_id,
-          sourceSessionId: row.source_session_id,
-          targetSessionId: row.target_session_id,
-          sourceProjectId: row.source_project_id,
-          requestMac: row.request_mac,
-          macKeyId: row.mac_key_id,
-          message: row.message,
-          approvedAt: row.approved_at,
-          createdAt: row.created_at,
-        };
+    return this.sessionLinks.getPendingSessionLinkMessage(sourceSessionId, id);
   }
 
   async approvePendingSessionLinkMessage(sourceSessionId: string, id: string): Promise<boolean> {
-    const updated = await this.db
-      .updateTable('session_link_pending_messages')
-      .set({ approved_at: sql`coalesce(approved_at, now())` })
-      .where('source_session_id', '=', sourceSessionId)
-      .where('id', '=', id)
-      .returning('id')
-      .executeTakeFirst();
-    return updated !== undefined;
+    return this.sessionLinks.approvePendingSessionLinkMessage(sourceSessionId, id);
   }
 
   async deletePendingSessionLinkMessage(sourceSessionId: string, id: string): Promise<boolean> {
-    const deleted = await this.db
-      .deleteFrom('session_link_pending_messages')
-      .where('source_session_id', '=', sourceSessionId)
-      .where('id', '=', id)
-      .returning('id')
-      .executeTakeFirst();
-    return deleted !== undefined;
+    return this.sessionLinks.deletePendingSessionLinkMessage(sourceSessionId, id);
   }
 
   async reserveSessionLinkMessage(
@@ -1937,66 +645,13 @@ export class EventStore implements EventSink {
     approvedRenewal: boolean,
     deliver?: () => Promise<void>,
   ): Promise<SessionLinkReservation> {
-    const [sessionA, sessionB] = [sourceId, targetId].sort() as [string, string];
-    const previous = this.sessionLinkDeliveryTail;
-    let release = (): void => undefined;
-    const finished = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.sessionLinkDeliveryTail = finished;
-    try {
-      await previous;
-      return await this.db.transaction().execute(async (trx) => {
-        const link = await trx
-          .selectFrom('session_links')
-          .selectAll()
-          .where('session_a', '=', sessionA)
-          .where('session_b', '=', sessionB)
-          .forUpdate()
-          .executeTakeFirst();
-        if (!link) return 'unlinked';
-        const prior = await trx
-          .selectFrom('session_link_deliveries')
-          .select(['invocation_id', 'session_a', 'session_b', 'source_session_id'])
-          .where('invocation_id', '=', invocationId)
-          .executeTakeFirst();
-        if (prior) {
-          if (
-            prior.session_a !== sessionA ||
-            prior.session_b !== sessionB ||
-            prior.source_session_id !== sourceId
-          )
-            throw new Error('linked message invocation was reused for a different target');
-          await deliver?.();
-          return 'duplicate';
-        }
-        const column = sourceId === sessionA ? 'remaining_a' : 'remaining_b';
-        const remaining = link[column];
-        if (remaining === 0 && !approvedRenewal) return 'exhausted';
-        await trx
-          .updateTable('session_links')
-          .set({ [column]: remaining === 0 ? 5 : remaining - 1 })
-          .where('session_a', '=', sessionA)
-          .where('session_b', '=', sessionB)
-          .execute();
-        await trx
-          .insertInto('session_link_deliveries')
-          .values({
-            invocation_id: invocationId,
-            session_a: sessionA,
-            session_b: sessionB,
-            source_session_id: sourceId,
-          })
-          .execute();
-        // The row lock keeps unlink and project changes from completing until
-        // the target has accepted this turn. Global serialization leaves pool
-        // capacity for conductor work that uses the same store.
-        await deliver?.();
-        return 'reserved';
-      });
-    } finally {
-      release();
-    }
+    return this.sessionLinks.reserveSessionLinkMessage(
+      sourceId,
+      targetId,
+      invocationId,
+      approvedRenewal,
+      deliver,
+    );
   }
 
   /** Encrypt a normalized secret value for storage (null stays null). */
@@ -2008,17 +663,6 @@ export class EventStore implements EventSink {
    *  through untouched for rows written before encryption was enabled). */
   private decryptSecret(value: string | null): string | null {
     return value === null ? null : this.cipher.decrypt(value);
-  }
-
-  /** Read the central Doppler identity as owned, erasable bytes. */
-  async getDopplerServiceTokenBytes(): Promise<Buffer | undefined> {
-    const row = await this.db
-      .selectFrom('verity_settings')
-      .select('doppler_service_token')
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    const stored = row?.doppler_service_token;
-    return stored === null || stored === undefined ? undefined : this.cipher.decryptBytes(stored);
   }
 
   /**
@@ -2038,135 +682,26 @@ export class EventStore implements EventSink {
    * reap and outlive its project, which is the whole bug.
    */
   async createSession(session: SessionInput): Promise<void> {
-    const values = {
-      session_id: session.sessionId,
-      worktree: session.worktree,
-      model: session.model,
-      initial_model: session.model,
-      name: session.name ?? null,
-      project_id: session.projectId ?? null,
-    };
-    const projectId = session.projectId;
-    const insert = async (tx: Kysely<Database>): Promise<void> => {
-      // Never occupy the serving pool waiting behind long physical cleanup.
-      const admission = await sql<{
-        locked: boolean;
-      }>`select pg_try_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(session.sessionId)})) as locked`.execute(
-        tx,
-      );
-      if (admission.rows[0]?.locked !== true) throw new Error('Session is being deleted');
-      await this.sessionWorktreeLock(tx, session.worktree);
-      if (
-        await tx
-          .selectFrom('session_deletions')
-          .select('session_id')
-          .where('session_id', '=', session.sessionId)
-          .executeTakeFirst()
-      )
-        throw new Error('Session is being deleted');
-      if (
-        await tx
-          .selectFrom('session_deletions')
-          .select('session_id')
-          .where('worktree', '=', resolve(session.worktree))
-          .where('cleanup_pending', '=', true)
-          .executeTakeFirst()
-      )
-        throw new Error('Session worktree is being deleted');
-      if (projectId !== undefined && projectId !== null) {
-        const project = await tx
-          .selectFrom('projects')
-          .select('hidden_at')
-          // SHARE, not UPDATE: unrelated spawns only serialize against a project delete.
-          .forShare()
-          .where('id', '=', projectId)
-          .executeTakeFirst();
-        if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
-      }
-      await tx.insertInto('sessions').values(values).execute();
-    };
-    if (this.db.isTransaction) await insert(this.db);
-    else await this.db.transaction().execute(insert);
+    return this.sessionLifecycle.createSession(session);
   }
 
-  /** The immutable model choice of the newest ordinary session in a scope.
-   * Legacy rows written before `initial_model` existed fall back to their current
-   * model. Used only to seed a subsequent session; runtime model switches never
-   * rewrite the remembered creation choice. */
   async getLastCreatedSessionModel(projectId: string | null): Promise<string | undefined> {
-    let query = this.db.selectFrom('sessions').select(['initial_model', 'model']);
-    query =
-      projectId === null
-        ? query.where('project_id', 'is', null)
-        : query.where('project_id', '=', projectId);
-    const row = await query
-      .orderBy('created_at', 'desc')
-      .orderBy('session_id', 'desc')
-      .executeTakeFirst();
-    return row?.initial_model ?? row?.model;
+    return this.sessionLifecycle.getLastCreatedSessionModel(projectId);
   }
 
-  async getSession(sessionId: string): Promise<SessionRecord | undefined> {
-    const row = await this.db
-      .selectFrom('sessions')
-      .select([
-        'session_id',
-        'worktree',
-        'model',
-        'name',
-        'project_id',
-        'last_seen_event_count',
-        'planning',
-        'planning_revision',
-        'planning_plan',
-        'mockup_review',
-        'mockup_revision',
-        'mockup_screens',
-        'favorite',
-      ])
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    if (!row) return undefined;
-    return {
-      sessionId: row.session_id,
-      worktree: row.worktree,
-      model: row.model,
-      name: row.name,
-      projectId: row.project_id,
-      lastSeenEventCount: row.last_seen_event_count,
-      ...(row.planning !== null ? { planning: row.planning } : {}),
-      planningRevision: row.planning_revision,
-      planningPlan: row.planning_plan,
-      ...mockupReview(row.mockup_review, row.mockup_revision, row.mockup_screens),
-      ...(row.favorite ? { favorite: true } : {}),
-    };
+  getSession(sessionId: string): Promise<SessionRecord | undefined> {
+    return this.sessionLifecycle.getSession(sessionId);
+  }
+
+  /** The session owning a primary worktree, without loading every session. */
+  getSessionByWorktree(worktree: string): Promise<SessionRecord | undefined> {
+    return this.sessionLifecycle.getSessionByWorktree(worktree);
   }
 
   async getSessionWorkspaceFile(
     sessionId: string,
   ): Promise<SessionWorkspaceFileRecord | undefined> {
-    const row = await this.db
-      .selectFrom('session_slide_decks')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    const account = row.account_id ? await this.googleAccounts.get(row.account_id) : undefined;
-    return {
-      accountEmail: account?.email ?? null,
-      accountName: account?.displayName ?? null,
-      accountId: row.account_id,
-      folderLinkId: row.folder_link_id,
-      credentialVersion: account?.credentialVersion ?? null,
-      sessionId: row.session_id,
-      assignmentId: row.assignment_id,
-      kind: row.kind,
-      fileId: row.file_id,
-      name: row.name,
-      webViewLink: row.web_view_link,
-      revisionId: row.revision_id,
-      assignedAt: row.assigned_at,
-    };
+    return this.googleWorkspace.getSessionWorkspaceFile(sessionId);
   }
 
   async getSessionSlideDeck(sessionId: string): Promise<SessionSlideDeckRecord | undefined> {
@@ -2184,72 +719,7 @@ export class EventStore implements EventSink {
     webViewLink: string;
     revisionId?: string | null;
   }): Promise<SessionWorkspaceFileRecord> {
-    const row = await this.db.transaction().execute(async (trx) => {
-      const assigned = await trx
-        .insertInto('session_slide_decks')
-        .values({
-          account_id: input.accountId ?? null,
-          folder_link_id: input.folderLinkId ?? null,
-          session_id: input.sessionId,
-          assignment_id: randomUUID(),
-          kind: input.kind,
-          file_id: input.fileId,
-          name: input.name,
-          web_view_link: input.webViewLink,
-          revision_id: input.revisionId ?? null,
-        })
-        .onConflict((conflict) =>
-          conflict.column('session_id').doUpdateSet({
-            account_id: input.accountId ?? null,
-            folder_link_id: input.folderLinkId ?? null,
-            assignment_id: randomUUID(),
-            kind: input.kind,
-            file_id: input.fileId,
-            name: input.name,
-            web_view_link: input.webViewLink,
-            revision_id: input.revisionId ?? null,
-            assigned_at: sql`now()`,
-          }),
-        )
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      if (input.accountId)
-        await trx
-          .insertInto('google_workspace_recents')
-          .values({
-            account_id: input.accountId,
-            file_id: input.fileId,
-            kind: input.kind,
-          })
-          .onConflict((conflict) =>
-            conflict
-              .columns(['account_id', 'file_id'])
-              .doUpdateSet({ kind: input.kind, last_assigned_at: sql`now()` }),
-          )
-          .execute();
-      await trx
-        .insertInto('recent_google_slide_decks')
-        .values({ file_id: input.fileId, kind: input.kind, account_id: input.accountId ?? null })
-        .onConflict((conflict) =>
-          conflict
-            .column('file_id')
-            .doUpdateSet({ kind: input.kind, last_assigned_at: sql`now()` }),
-        )
-        .execute();
-      return assigned;
-    });
-    return {
-      accountId: row.account_id,
-      folderLinkId: row.folder_link_id,
-      sessionId: row.session_id,
-      assignmentId: row.assignment_id,
-      kind: row.kind,
-      fileId: row.file_id,
-      name: row.name,
-      webViewLink: row.web_view_link,
-      revisionId: row.revision_id,
-      assignedAt: row.assigned_at,
-    };
+    return this.googleWorkspace.setSessionWorkspaceFile(input);
   }
 
   async setSessionSlideDeck(
@@ -2259,15 +729,11 @@ export class EventStore implements EventSink {
   }
 
   async clearSessionWorkspaceFile(sessionId: string): Promise<void> {
-    await this.db.deleteFrom('session_slide_decks').where('session_id', '=', sessionId).execute();
+    return this.googleWorkspace.clearSessionWorkspaceFile(sessionId);
   }
 
   async clearSessionSlideDeck(sessionId: string): Promise<void> {
-    await this.db
-      .deleteFrom('session_slide_decks')
-      .where('session_id', '=', sessionId)
-      .where('kind', '=', 'slides')
-      .execute();
+    return this.googleWorkspace.clearSessionSlideDeck(sessionId);
   }
 
   get forgeConnections(): ForgeConnectionStore {
@@ -2280,16 +746,23 @@ export class EventStore implements EventSink {
     return new UserProviderConnectionStore(this.db, this.cipher);
   }
 
-  get projectTeam(): ProjectTeamStore {
-    return new ProjectTeamStore(this.db, this.cipher);
+  private get projectAccess(): ProjectAccessStore {
+    return new ProjectAccessStore(this.db);
   }
-
   get projectSandboxes(): ProjectSandboxStore {
     return new ProjectSandboxStore(this.db);
   }
 
   get userDopplerConnections(): UserDopplerConnectionStore {
     return new UserDopplerConnectionStore(this.db, this.cipher);
+  }
+
+  get dopplerConnections(): DopplerConnectionStore {
+    return new DopplerConnectionStore(this.db, this.cipher);
+  }
+
+  get projectDopplerBindings(): ProjectDopplerBindingStore {
+    return new ProjectDopplerBindingStore(this.db);
   }
 
   get userGithubAuthorizations(): UserGithubAuthorizationStore {
@@ -2304,6 +777,38 @@ export class EventStore implements EventSink {
     return new GoogleAccountStore(this.db, this.cipher);
   }
 
+  private get googleConnections(): GoogleConnectionStore {
+    return new GoogleConnectionStore(
+      () => this.db,
+      () => this.googleAccounts,
+      (sessionId) => this.getSession(sessionId),
+      (projectId, service) => this.getProjectGoogleConnection(projectId, service),
+    );
+  }
+
+  private readonly googleWorkspace = new GoogleWorkspaceStore(
+    () => this.db,
+    () => this.googleAccounts,
+  );
+  readonly sessionProjections = new SessionProjectionStore(() => this.db);
+  private readonly eventHistory = new EventHistoryStore(
+    () => this.db,
+    (sessionId, limit, beforeSeq) => this.getEventsBeforeSeq(sessionId, limit, beforeSeq),
+    (sessionId, afterSeq) => this.getEventsAfter(sessionId, afterSeq),
+  );
+  private readonly eventSnapshots = new EventSnapshotStore(() => this.db);
+  private readonly starterProjects = new StarterProjectStore(() => this.db);
+  readonly projectTeam = new ProjectTeamStore(
+    () => this.db,
+    () => this.cipher,
+    () => this.projectChanges,
+  );
+  private readonly projectLifecycle = new ProjectLifecycleStore(
+    () => this.db,
+    (id) => this.getProject(id),
+    this.projectChanges,
+  );
+
   get calendarWatch(): CalendarWatchStore {
     return new CalendarWatchStore(this.db, this.cipher);
   }
@@ -2315,48 +820,18 @@ export class EventStore implements EventSink {
     service: 'gmail' | 'calendar' | 'contacts',
     userId: string | undefined,
   ) {
-    const effective = await this.googleAccounts.effectiveAccess(sessionId, service, userId);
-    if (!effective) return undefined;
-    const credentials = await this.googleAccounts.credentials(effective.account.id);
-    if (!credentials) return undefined;
-    return {
-      ...credentials,
-      accountId: effective.account.id,
-      accountEmail: effective.account.email,
-      scopes: effective.account.scopes,
-      source: effective.source,
-    };
+    return this.googleConnections.getGoogleServiceCredentials(sessionId, service, userId);
   }
 
   async countLegacyProjectGoogleSessions(
     projectId: string,
     service: 'gmail' | 'calendar' | 'contacts',
   ): Promise<number> {
-    const table =
-      service === 'gmail'
-        ? 'session_gmail_connections'
-        : service === 'calendar'
-          ? 'session_calendar_connections'
-          : 'session_contacts_connections';
-    const result = await this.db
-      .selectFrom(table)
-      .innerJoin('sessions', 'sessions.session_id', `${table}.session_id`)
-      .select((eb) => eb.fn.countAll().as('count'))
-      .where('sessions.project_id', '=', projectId)
-      .executeTakeFirstOrThrow();
-    return Number(result.count);
+    return this.googleConnections.countLegacyProjectGoogleSessions(projectId, service);
   }
 
   async getProjectGoogleConnection(projectId: string, service: 'gmail' | 'calendar' | 'contacts') {
-    const row = await this.db
-      .selectFrom('project_google_connections')
-      .selectAll()
-      .where('project_id', '=', projectId)
-      .where('service', '=', service)
-      .executeTakeFirst();
-    return row === undefined
-      ? undefined
-      : { accountEmail: row.account_email, enabledAt: row.enabled_at };
+    return this.googleConnections.getProjectGoogleConnection(projectId, service);
   }
 
   async enableProjectGoogleConnection(
@@ -2365,24 +840,12 @@ export class EventStore implements EventSink {
     accountEmail: string,
     userId: string,
   ): Promise<void> {
-    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
-    const account = (await this.googleAccounts.list(userId)).find(
-      (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
+    return this.googleConnections.enableProjectGoogleConnection(
+      projectId,
+      service,
+      accountEmail,
+      userId,
     );
-    if (anyAccounts && !account) throw new Error('Google account is not connected');
-    if (account) {
-      await this.googleAccounts.setProjectAccess(projectId, service, userId, account.id);
-      return;
-    }
-    await this.db
-      .insertInto('project_google_connections')
-      .values({ project_id: projectId, service, user_id: userId, account_email: accountEmail })
-      .onConflict((conflict) =>
-        conflict
-          .columns(['project_id', 'service', 'user_id'])
-          .doUpdateSet({ account_email: accountEmail }),
-      )
-      .execute();
   }
 
   async disableProjectGoogleConnection(
@@ -2390,71 +853,14 @@ export class EventStore implements EventSink {
     service: 'gmail' | 'calendar' | 'contacts',
     userId: string,
   ): Promise<void> {
-    if ((await this.googleAccounts.listAll()).length > 0) {
-      await this.googleAccounts.setProjectAccess(projectId, service, userId, null);
-      return;
-    }
-    await this.db.transaction().execute(async (transaction) => {
-      await transaction
-        .deleteFrom('project_google_connections')
-        .where('project_id', '=', projectId)
-        .where('service', '=', service)
-        .where('user_id', '=', userId)
-        .execute();
-      // Disabling the project also revokes legacy grants in its sessions.
-      const sessionIds = transaction
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('project_id', '=', projectId);
-      const table =
-        service === 'gmail'
-          ? 'session_gmail_connections'
-          : service === 'calendar'
-            ? 'session_calendar_connections'
-            : 'session_contacts_connections';
-      await transaction.deleteFrom(table).where('session_id', 'in', sessionIds).execute();
-    });
-  }
-
-  private async getProjectGoogleConnectionForSession(
-    sessionId: string,
-    service: 'gmail' | 'calendar' | 'contacts',
-  ) {
-    const session = await this.getSession(sessionId);
-    if (!session?.projectId) return undefined;
-    const grant = await this.getProjectGoogleConnection(session.projectId, service);
-    return grant === undefined ? undefined : { sessionId, ...grant };
+    return this.googleConnections.disableProjectGoogleConnection(projectId, service, userId);
   }
 
   async getSessionGmailConnection(
     sessionId: string,
     userId: string | undefined,
   ): Promise<SessionGmailConnection | undefined> {
-    const override = await this.googleAccounts.sessionAccess(sessionId, 'gmail');
-    if (override.mode !== 'inherit' || (await this.googleAccounts.listAll()).length > 0) {
-      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'gmail', userId);
-      return effective
-        ? {
-            sessionId,
-            accountId: effective.account.id,
-            accountEmail: effective.account.email,
-            enabledAt: new Date(),
-            source: effective.source,
-          }
-        : undefined;
-    }
-    const row = await this.db
-      .selectFrom('session_gmail_connections')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return row === undefined
-      ? await this.getProjectGoogleConnectionForSession(sessionId, 'gmail')
-      : {
-          sessionId: row.session_id,
-          accountEmail: row.account_email,
-          enabledAt: row.enabled_at,
-        };
+    return this.googleConnections.getSessionGmailConnection(sessionId, userId);
   }
 
   async enableSessionGmail(
@@ -2462,76 +868,24 @@ export class EventStore implements EventSink {
     accountEmail: string,
     userId: string,
   ): Promise<SessionGmailConnection> {
-    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
-    const account = (await this.googleAccounts.list(userId)).find(
-      (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
-    );
-    if (anyAccounts && !account) throw new Error('Google account is not connected');
-    if (account)
-      await this.googleAccounts.setSessionAccess(sessionId, 'gmail', {
-        mode: 'account',
-        accountId: account.id,
-      });
-    const row = await this.db
-      .insertInto('session_gmail_connections')
-      .values({ session_id: sessionId, account_email: accountEmail })
-      .onConflict((conflict) =>
-        conflict.column('session_id').doUpdateSet({ account_email: accountEmail }),
-      )
-      .returningAll()
-      .executeTakeFirst();
-    return (
-      (await this.getSessionGmailConnection(sessionId, userId)) ?? {
-        sessionId,
-        accountEmail,
-        enabledAt: row!.enabled_at,
-      }
+    return this.googleConnections.enableSessionGmail(sessionId, accountEmail, userId, (id, owner) =>
+      this.getSessionGmailConnection(id, owner),
     );
   }
 
   async disableSessionGmail(sessionId: string): Promise<void> {
-    if ((await this.googleAccounts.listAll()).length > 0)
-      await this.googleAccounts.setSessionAccess(sessionId, 'gmail', { mode: 'disabled' });
-    await this.db
-      .deleteFrom('session_gmail_connections')
-      .where('session_id', '=', sessionId)
-      .execute();
+    return this.googleConnections.disableSessionGmail(sessionId);
   }
 
   async clearSessionGmailConnections(): Promise<void> {
-    await this.db.deleteFrom('session_gmail_connections').execute();
-    await this.db.deleteFrom('project_google_connections').where('service', '=', 'gmail').execute();
+    return this.googleConnections.clearSessionGmailConnections();
   }
 
   async getSessionCalendarConnection(
     sessionId: string,
     userId: string | undefined,
   ): Promise<SessionCalendarConnection | undefined> {
-    const override = await this.googleAccounts.sessionAccess(sessionId, 'calendar');
-    if (override.mode !== 'inherit' || (await this.googleAccounts.listAll()).length > 0) {
-      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'calendar', userId);
-      return effective
-        ? {
-            sessionId,
-            accountId: effective.account.id,
-            accountEmail: effective.account.email,
-            enabledAt: new Date(),
-            source: effective.source,
-          }
-        : undefined;
-    }
-    const row = await this.db
-      .selectFrom('session_calendar_connections')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return row === undefined
-      ? await this.getProjectGoogleConnectionForSession(sessionId, 'calendar')
-      : {
-          sessionId: row.session_id,
-          accountEmail: row.account_email,
-          enabledAt: row.enabled_at,
-        };
+    return this.googleConnections.getSessionCalendarConnection(sessionId, userId);
   }
 
   async enableSessionCalendar(
@@ -2539,79 +893,27 @@ export class EventStore implements EventSink {
     accountEmail: string,
     userId: string,
   ): Promise<SessionCalendarConnection> {
-    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
-    const account = (await this.googleAccounts.list(userId)).find(
-      (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
-    );
-    if (anyAccounts && !account) throw new Error('Google account is not connected');
-    if (account)
-      await this.googleAccounts.setSessionAccess(sessionId, 'calendar', {
-        mode: 'account',
-        accountId: account.id,
-      });
-    const row = await this.db
-      .insertInto('session_calendar_connections')
-      .values({ session_id: sessionId, account_email: accountEmail })
-      .onConflict((conflict) =>
-        conflict.column('session_id').doUpdateSet({ account_email: accountEmail }),
-      )
-      .returningAll()
-      .executeTakeFirst();
-    return (
-      (await this.getSessionCalendarConnection(sessionId, userId)) ?? {
-        sessionId,
-        accountEmail,
-        enabledAt: row!.enabled_at,
-      }
+    return this.googleConnections.enableSessionCalendar(
+      sessionId,
+      accountEmail,
+      userId,
+      (id, owner) => this.getSessionCalendarConnection(id, owner),
     );
   }
 
   async disableSessionCalendar(sessionId: string): Promise<void> {
-    if ((await this.googleAccounts.listAll()).length > 0)
-      await this.googleAccounts.setSessionAccess(sessionId, 'calendar', { mode: 'disabled' });
-    await this.db
-      .deleteFrom('session_calendar_connections')
-      .where('session_id', '=', sessionId)
-      .execute();
+    return this.googleConnections.disableSessionCalendar(sessionId);
   }
 
   async clearSessionCalendarConnections(): Promise<void> {
-    await this.db.deleteFrom('session_calendar_connections').execute();
-    await this.db
-      .deleteFrom('project_google_connections')
-      .where('service', '=', 'calendar')
-      .execute();
+    return this.googleConnections.clearSessionCalendarConnections();
   }
 
   async getSessionContactsConnection(
     sessionId: string,
     userId: string | undefined,
   ): Promise<SessionContactsConnection | undefined> {
-    const override = await this.googleAccounts.sessionAccess(sessionId, 'contacts');
-    if (override.mode !== 'inherit' || (await this.googleAccounts.listAll()).length > 0) {
-      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'contacts', userId);
-      return effective
-        ? {
-            sessionId,
-            accountId: effective.account.id,
-            accountEmail: effective.account.email,
-            enabledAt: new Date(),
-            source: effective.source,
-          }
-        : undefined;
-    }
-    const row = await this.db
-      .selectFrom('session_contacts_connections')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return row === undefined
-      ? await this.getProjectGoogleConnectionForSession(sessionId, 'contacts')
-      : {
-          sessionId: row.session_id,
-          accountEmail: row.account_email,
-          enabledAt: row.enabled_at,
-        };
+    return this.googleConnections.getSessionContactsConnection(sessionId, userId);
   }
 
   async enableSessionContacts(
@@ -2619,48 +921,20 @@ export class EventStore implements EventSink {
     accountEmail: string,
     userId: string,
   ): Promise<SessionContactsConnection> {
-    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
-    const account = (await this.googleAccounts.list(userId)).find(
-      (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
-    );
-    if (anyAccounts && !account) throw new Error('Google account is not connected');
-    if (account)
-      await this.googleAccounts.setSessionAccess(sessionId, 'contacts', {
-        mode: 'account',
-        accountId: account.id,
-      });
-    const row = await this.db
-      .insertInto('session_contacts_connections')
-      .values({ session_id: sessionId, account_email: accountEmail })
-      .onConflict((conflict) =>
-        conflict.column('session_id').doUpdateSet({ account_email: accountEmail }),
-      )
-      .returningAll()
-      .executeTakeFirst();
-    return (
-      (await this.getSessionContactsConnection(sessionId, userId)) ?? {
-        sessionId,
-        accountEmail,
-        enabledAt: row!.enabled_at,
-      }
+    return this.googleConnections.enableSessionContacts(
+      sessionId,
+      accountEmail,
+      userId,
+      (id, owner) => this.getSessionContactsConnection(id, owner),
     );
   }
 
   async disableSessionContacts(sessionId: string): Promise<void> {
-    if ((await this.googleAccounts.listAll()).length > 0)
-      await this.googleAccounts.setSessionAccess(sessionId, 'contacts', { mode: 'disabled' });
-    await this.db
-      .deleteFrom('session_contacts_connections')
-      .where('session_id', '=', sessionId)
-      .execute();
+    return this.googleConnections.disableSessionContacts(sessionId);
   }
 
   async clearSessionContactsConnections(): Promise<void> {
-    await this.db.deleteFrom('session_contacts_connections').execute();
-    await this.db
-      .deleteFrom('project_google_connections')
-      .where('service', '=', 'contacts')
-      .execute();
+    return this.googleConnections.clearSessionContactsConnections();
   }
 
   /** Persist an observed revision only while the same deck is still assigned.
@@ -2670,13 +944,7 @@ export class EventStore implements EventSink {
     assignmentId: string,
     revisionId: string,
   ): Promise<boolean> {
-    const result = await this.db
-      .updateTable('session_slide_decks')
-      .set({ revision_id: revisionId })
-      .where('session_id', '=', sessionId)
-      .where('assignment_id', '=', assignmentId)
-      .executeTakeFirst();
-    return Number(result.numUpdatedRows) === 1;
+    return this.googleWorkspace.updateSessionWorkspaceRevision(sessionId, assignmentId, revisionId);
   }
 
   async updateSessionSlideDeckRevision(
@@ -2687,48 +955,12 @@ export class EventStore implements EventSink {
     return this.updateSessionWorkspaceRevision(sessionId, assignmentId, revisionId);
   }
 
-  async listRecentGoogleWorkspaceFileIds(limit = 8, accountId?: string): Promise<string[]> {
-    if (accountId) {
-      const rows = await this.db
-        .selectFrom('google_workspace_recents')
-        .select('file_id')
-        .where('account_id', '=', accountId)
-        .orderBy('last_assigned_at', 'desc')
-        .limit(limit)
-        .execute();
-      return rows.map((row) => row.file_id);
-    }
-    const rows = await this.db
-      .selectFrom('recent_google_slide_decks')
-      .select('file_id')
-      .$if(accountId !== undefined, (query) => query.where('account_id', '=', accountId!))
-      .orderBy('last_assigned_at', 'desc')
-      .limit(limit)
-      .execute();
-    return rows.map((row) => row.file_id);
+  async listRecentGoogleWorkspaceFileIds(limit?: number, accountId?: string): Promise<string[]> {
+    return this.googleWorkspace.listRecentGoogleWorkspaceFileIds(limit, accountId);
   }
 
-  async listRecentGoogleSlideDeckFileIds(limit = 8, accountId?: string): Promise<string[]> {
-    if (accountId) {
-      const rows = await this.db
-        .selectFrom('google_workspace_recents')
-        .select('file_id')
-        .where('account_id', '=', accountId)
-        .where('kind', '=', 'slides')
-        .orderBy('last_assigned_at', 'desc')
-        .limit(limit)
-        .execute();
-      return rows.map((row) => row.file_id);
-    }
-    const rows = await this.db
-      .selectFrom('recent_google_slide_decks')
-      .select('file_id')
-      .where('kind', '=', 'slides')
-      .$if(accountId !== undefined, (query) => query.where('account_id', '=', accountId!))
-      .orderBy('last_assigned_at', 'desc')
-      .limit(limit)
-      .execute();
-    return rows.map((row) => row.file_id);
+  async listRecentGoogleSlideDeckFileIds(limit?: number, accountId?: string): Promise<string[]> {
+    return this.googleWorkspace.listRecentGoogleSlideDeckFileIds(limit, accountId);
   }
 
   async createGoogleSlideImageCleanup(input: {
@@ -2737,82 +969,27 @@ export class EventStore implements EventSink {
     sessionId: string;
     fileId: string;
   }): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      if (input.accountId != null) {
-        // Keep account removal behind the cleanup record that retains its credentials.
-        await tx
-          .selectFrom('google_accounts')
-          .select('id')
-          .where('id', '=', input.accountId)
-          .forUpdate()
-          .executeTakeFirstOrThrow();
-      }
-      await tx
-        .insertInto('google_slide_image_cleanup')
-        .values({
-          id: input.id,
-          session_id: input.sessionId,
-          file_id: input.fileId,
-          account_id: input.accountId ?? null,
-        })
-        .execute();
-    });
+    return this.googleWorkspace.createGoogleSlideImageCleanup(input);
   }
 
   async setGoogleSlideImageCleanupPermission(id: string, permissionId: string): Promise<void> {
-    await this.db
-      .updateTable('google_slide_image_cleanup')
-      .set({ permission_id: permissionId })
-      .where('id', '=', id)
-      .execute();
+    return this.googleWorkspace.setGoogleSlideImageCleanupPermission(id, permissionId);
   }
 
   async markGoogleSlideImageCleanupReady(id: string): Promise<void> {
-    await this.db
-      .updateTable('google_slide_image_cleanup')
-      .set({ ready_at: sql`now()` })
-      .where('id', '=', id)
-      .execute();
+    return this.googleWorkspace.markGoogleSlideImageCleanupReady(id);
   }
 
   async failGoogleSlideImageCleanup(id: string, error: string): Promise<void> {
-    await this.db
-      .updateTable('google_slide_image_cleanup')
-      .set({ attempts: sql`attempts + 1`, last_error: error.slice(0, 200) })
-      .where('id', '=', id)
-      .execute();
+    return this.googleWorkspace.failGoogleSlideImageCleanup(id, error);
   }
 
   async completeGoogleSlideImageCleanup(id: string): Promise<void> {
-    await this.db.deleteFrom('google_slide_image_cleanup').where('id', '=', id).execute();
+    return this.googleWorkspace.completeGoogleSlideImageCleanup(id);
   }
 
-  async listGoogleSlideImageCleanups(limit = 100): Promise<GoogleSlideImageCleanupRecord[]> {
-    const rows = await this.db
-      .selectFrom('google_slide_image_cleanup')
-      .selectAll()
-      // A live insertion owns a fresh row. Explicitly finished rows are ready
-      // immediately; an old unmarked row means the process died before finally.
-      .where((eb) =>
-        eb.or([
-          eb('ready_at', 'is not', null),
-          eb('created_at', '<', sql<Date>`now() - interval '10 minutes'`),
-        ]),
-      )
-      .orderBy('created_at', 'asc')
-      .limit(limit)
-      .execute();
-    return rows.map((row) => ({
-      accountId: row.account_id,
-      id: row.id,
-      sessionId: row.session_id,
-      fileId: row.file_id,
-      permissionId: row.permission_id,
-      readyAt: row.ready_at,
-      attempts: row.attempts,
-      lastError: row.last_error,
-      createdAt: row.created_at,
-    }));
+  async listGoogleSlideImageCleanups(limit?: number): Promise<GoogleSlideImageCleanupRecord[]> {
+    return this.googleWorkspace.listGoogleSlideImageCleanups(limit);
   }
 
   async claimGoogleSlideInvocation(input: {
@@ -2820,37 +997,11 @@ export class EventStore implements EventSink {
     sessionId: string;
     turnId: string;
   }): Promise<{ status: 'claimed' | 'pending' } | { status: 'completed'; result: unknown }> {
-    const inserted = await this.db
-      .insertInto('google_slide_invocations')
-      .values({
-        invocation_id: input.invocationId,
-        session_id: input.sessionId,
-        turn_id: input.turnId,
-      })
-      .onConflict((conflict) => conflict.column('invocation_id').doNothing())
-      .returning('invocation_id')
-      .executeTakeFirst();
-    if (inserted !== undefined) return { status: 'claimed' };
-    const existing = await this.db
-      .selectFrom('google_slide_invocations')
-      .select(['session_id', 'turn_id', 'result_json'])
-      .where('invocation_id', '=', input.invocationId)
-      .executeTakeFirstOrThrow();
-    if (existing.session_id !== input.sessionId || existing.turn_id !== input.turnId) {
-      throw new Error('Google Slides invocation id was reused across turns');
-    }
-    if (existing.result_json === null) return { status: 'pending' };
-    return { status: 'completed', result: JSON.parse(existing.result_json) as unknown };
+    return this.googleWorkspace.claimGoogleSlideInvocation(input);
   }
 
   async completeGoogleSlideInvocation(invocationId: string, result: unknown): Promise<void> {
-    const resultJson = JSON.stringify(result);
-    if (resultJson === undefined) throw new Error('Google Slides invocation result is not JSON');
-    await this.db
-      .updateTable('google_slide_invocations')
-      .set({ result_json: resultJson })
-      .where('invocation_id', '=', invocationId)
-      .execute();
+    return this.googleWorkspace.completeGoogleSlideInvocation(invocationId, result);
   }
 
   async claimGoogleWorkspaceInvocation(
@@ -2864,17 +1015,7 @@ export class EventStore implements EventSink {
     sessionId: string;
     turnId: string;
   }): Promise<{ result: unknown } | undefined> {
-    const row = await this.db
-      .selectFrom('google_slide_invocations')
-      .select(['session_id', 'turn_id', 'result_json'])
-      .where('invocation_id', '=', input.invocationId)
-      .executeTakeFirst();
-    if (!row) return undefined;
-    if (row.session_id !== input.sessionId || row.turn_id !== input.turnId)
-      throw new Error('Google Workspace invocation id was reused across turns');
-    return row.result_json === null
-      ? undefined
-      : { result: JSON.parse(row.result_json) as unknown };
+    return this.googleWorkspace.getCompletedGoogleWorkspaceInvocation(input);
   }
 
   async completeGoogleWorkspaceInvocation(invocationId: string, result: unknown): Promise<void> {
@@ -2882,148 +1023,30 @@ export class EventStore implements EventSink {
   }
 
   async pruneGoogleSlideInvocations(olderThan: Date): Promise<void> {
-    await this.db
-      .deleteFrom('google_slide_invocations')
-      .where('created_at', '<', olderThan)
-      // The bearer that can replay this id exists only while its turn marker
-      // exists. Keep the result for that entire lifetime, however old it gets.
-      .where(
-        sql<boolean>`not exists (
-          select 1 from running_turns
-          where running_turns.session_id = google_slide_invocations.session_id
-            and running_turns.turn_id = google_slide_invocations.turn_id
-        )`,
-      )
-      .execute();
+    return this.googleWorkspace.pruneGoogleSlideInvocations(olderThan);
   }
 
   async listSessions(): Promise<SessionRecord[]> {
-    const rows = await this.db
-      .selectFrom('sessions')
-      .select([
-        'session_id',
-        'worktree',
-        'model',
-        'name',
-        'project_id',
-        'last_seen_event_count',
-        'planning',
-        'planning_revision',
-        'planning_plan',
-        'mockup_review',
-        'mockup_revision',
-        'mockup_screens',
-        'favorite',
-      ])
-      // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
-      // inserts can share a timestamp — without this the order is unspecified.
-      .orderBy('created_at', 'asc')
-      .orderBy('session_id', 'asc')
-      .execute();
-    return rows.map((r) => ({
-      sessionId: r.session_id,
-      worktree: r.worktree,
-      model: r.model,
-      name: r.name,
-      projectId: r.project_id,
-      lastSeenEventCount: r.last_seen_event_count,
-      ...(r.planning !== null ? { planning: r.planning } : {}),
-      planningRevision: r.planning_revision,
-      planningPlan: r.planning_plan,
-      ...mockupReview(r.mockup_review, r.mockup_revision, r.mockup_screens),
-      ...(r.favorite ? { favorite: true } : {}),
-    }));
+    return this.sessionLifecycle.listSessions();
   }
 
   /** Overview positions are separate from the chronological session registry. */
+  private readonly sessionOrder = new SessionOrderStore(() => this.db);
+
   async sessionSortOrders(sessions: readonly SessionRecord[]): Promise<Map<string, number>> {
-    const groups = await this.db.selectFrom('session_overview_order').selectAll().execute();
-    const result = new Map<string, number>();
-    for (const group of groups) {
-      const members = sessions.filter((session) => session.projectId === group.project_id);
-      const live = new Set(members.map((session) => session.sessionId));
-      const stored = new Set(group.ids);
-      // Append new sessions so creating one does not shift the manual order.
-      const ids = [
-        ...group.ids.filter((id) => live.has(id)),
-        ...members
-          .filter((session) => !stored.has(session.sessionId))
-          .map((session) => session.sessionId),
-      ];
-      ids.forEach((id, index) => result.set(id, index));
-    }
-    return result;
+    return this.sessionOrder.sessionSortOrders(sessions);
   }
 
   async reorderSessions(projectId: string | null, ids: readonly string[]): Promise<string[]> {
-    if (new Set(ids).size !== ids.length) throw new Error('Duplicate session IDs');
-    return this.db.transaction().execute(async (tx) => {
-      // Serialize reorders against membership changes, including moves and inserts.
-      // Reordering is infrequent; a short registry lock avoids lost concurrent additions.
-      await sql`lock table sessions in share row exclusive mode`.execute(tx);
-      if (
-        projectId !== null &&
-        !(await tx
-          .selectFrom('projects')
-          .select('id')
-          .where('id', '=', projectId)
-          .executeTakeFirst())
-      ) {
-        throw new Error('Project not found');
-      }
-      const sessions = await tx
-        .selectFrom('sessions')
-        .select(['session_id', 'project_id'])
-        .orderBy('created_at', 'asc')
-        .orderBy('session_id', 'asc')
-        .execute();
-      const requested = new Set(ids);
-      if (
-        sessions.some(
-          (session) => requested.has(session.session_id) && session.project_id !== projectId,
-        )
-      ) {
-        throw new Error('Session belongs to another project');
-      }
-      const members = sessions.filter((session) => session.project_id === projectId);
-      const live = new Set(members.map((session) => session.session_id));
-      const canonical = [
-        ...ids.filter((id) => live.has(id)),
-        ...members
-          .filter((session) => !requested.has(session.session_id))
-          .map((session) => session.session_id),
-      ];
-      await tx
-        .insertInto('session_overview_order')
-        .values({
-          group_key: JSON.stringify(projectId),
-          project_id: projectId,
-          ids: sql<string[]>`${JSON.stringify(canonical)}::jsonb`,
-        })
-        .onConflict((conflict) =>
-          conflict
-            .column('group_key')
-            .doUpdateSet({ ids: sql<string[]>`${JSON.stringify(canonical)}::jsonb` }),
-        )
-        .execute();
-      return canonical;
-    });
+    return this.sessionOrder.reorderSessions(projectId, ids);
   }
 
   async listPreparedSessionMoves() {
-    return await this.db
-      .selectFrom('session_moves')
-      .selectAll()
-      .where('result_json', 'is', null)
-      .execute();
+    return this.sessionMoves.listPreparedSessionMoves();
   }
 
   async listMovePreviewRestarts() {
-    return await this.db
-      .selectFrom('session_moves')
-      .selectAll()
-      .where('preview_restart_json', 'is not', null)
-      .execute();
+    return this.sessionMoves.listMovePreviewRestarts();
   }
 
   async setMovePreviewRestart(
@@ -3031,32 +1054,15 @@ export class EventStore implements EventSink {
     operationId: string,
     serverIds: string[] | null,
   ): Promise<void> {
-    await this.db
-      .updateTable('session_moves')
-      .set({ preview_restart_json: serverIds === null ? null : JSON.stringify(serverIds) })
-      .where('session_id', '=', sessionId)
-      .where('operation_id', '=', operationId)
-      .execute();
+    return this.sessionMoves.setMovePreviewRestart(sessionId, operationId, serverIds);
   }
 
   async getSessionMove(sessionId: string, operationId: string) {
-    return await this.db
-      .selectFrom('session_moves')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .where('operation_id', '=', operationId)
-      .executeTakeFirst();
+    return this.sessionMoves.getSessionMove(sessionId, operationId);
   }
 
   async getSessionMoveNotice(sessionId: string): Promise<string | undefined> {
-    const row = await this.db
-      .selectFrom('session_moves')
-      .select('notice')
-      .where('session_id', '=', sessionId)
-      .where('result_json', 'is not', null)
-      .orderBy('created_at', 'desc')
-      .executeTakeFirst();
-    return row?.notice;
+    return this.sessionMoves.getSessionMoveNotice(sessionId);
   }
 
   /** Reserve a destination before touching disk, so an interrupted preparation remains identifiable. */
@@ -3070,27 +1076,9 @@ export class EventStore implements EventSink {
     branch: string;
     onCommits: string;
   }): Promise<void> {
-    await this.db
-      .insertInto('session_moves')
-      .values({
-        session_id: input.sessionId,
-        operation_id: input.operationId,
-        source_project_id: input.sourceProjectId,
-        source_worktree: input.sourceWorktree,
-        target_project_id: input.targetProjectId,
-        target_worktree: input.targetWorktree,
-        branch: input.branch,
-        on_commits: input.onCommits,
-        backend_ids_json: JSON.stringify([
-          input.sessionId,
-          ...(await this.getSessionBackendStates(input.sessionId)).map(
-            (binding) => binding.backendSessionId,
-          ),
-        ]),
-        notice: '',
-        result_json: null,
-      })
-      .execute();
+    return this.sessionMoves.prepareSessionMove(input, (sessionId) =>
+      this.getSessionBackendStates(sessionId),
+    );
   }
 
   async commitSessionMove(
@@ -3100,6 +1088,10 @@ export class EventStore implements EventSink {
     resultJson: string,
   ): Promise<void> {
     await this.sessionMoves.commit(sessionId, operationId, notice, resultJson);
+  }
+
+  private get sessionLifecycle(): SessionLifecycleStore {
+    return new SessionLifecycleStore(() => this.db);
   }
 
   get sessionMoves(): SessionMoveStore {
@@ -3114,35 +1106,13 @@ export class EventStore implements EventSink {
     next: string,
     note: string,
   ): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      const project = await tx
-        .selectFrom('projects')
-        .select(['kind', 'hidden_at'])
-        .where('id', '=', projectId)
-        .forShare()
-        .executeTakeFirstOrThrow();
-      if (project.kind !== 'local' || project.hidden_at !== null)
-        throw new Error('Local project is unavailable');
-      const session = await tx
-        .selectFrom('sessions')
-        .select(['worktree', 'project_id'])
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!session) return;
-      if (session.project_id !== projectId)
-        throw new Error('Session changed project during migration');
-      if (session.worktree === next) return;
-      if (session.worktree !== previous)
-        throw new Error('Session changed workspace during migration');
-      await tx
-        .updateTable('sessions')
-        .set({ worktree: next })
-        .where('session_id', '=', sessionId)
-        .execute();
-      await tx.deleteFrom('session_backend_state').where('session_id', '=', sessionId).execute();
-      await tx.insertInto('session_pending_note').values({ session_id: sessionId, note }).execute();
-    });
+    return this.sessionMoves.replaceLocalSessionWorkspace(
+      sessionId,
+      projectId,
+      previous,
+      next,
+      note,
+    );
   }
 
   /**
@@ -3160,51 +1130,7 @@ export class EventStore implements EventSink {
    * the project re-resolved via GitHub sync).
    */
   async setSessionProject(sessionId: string, projectId: string | null): Promise<boolean> {
-    if (projectId !== null) {
-      return await this.db.transaction().execute(async (tx) => {
-        const project = await tx
-          .selectFrom('projects')
-          .select('hidden_at')
-          .forShare()
-          .where('id', '=', projectId)
-          .executeTakeFirst();
-        if (project?.hidden_at != null) throw new DeletedProjectError(projectId);
-        await tx
-          .selectFrom('sessions')
-          .select('session_id')
-          .where('session_id', '=', sessionId)
-          .forUpdate()
-          .executeTakeFirst();
-        await tx
-          .deleteFrom('session_links')
-          .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
-          .execute();
-        const result = await tx
-          .updateTable('sessions')
-          .set({ project_id: projectId })
-          .where('session_id', '=', sessionId)
-          .executeTakeFirst();
-        return result.numUpdatedRows > 0n;
-      });
-    }
-    return this.db.transaction().execute(async (tx) => {
-      await tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      await tx
-        .deleteFrom('session_links')
-        .where((eb) => eb.or([eb('session_a', '=', sessionId), eb('session_b', '=', sessionId)]))
-        .execute();
-      const result = await tx
-        .updateTable('sessions')
-        .set({ project_id: null })
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst();
-      return result.numUpdatedRows > 0n;
-    });
+    return this.sessionMoves.setSessionProject(sessionId, projectId);
   }
 
   /**
@@ -3214,25 +1140,12 @@ export class EventStore implements EventSink {
    * metadata: never touches the durable event log.
    */
   async renameSession(sessionId: string, name: string | null): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({ name })
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionLifecycle.renameSession(sessionId, name);
   }
 
-  /**
-   * Mark or unmark a session as an operator favorite. Returns `false` if the
-   * session id is unknown, like {@link renameSession}.
-   */
+  /** Mark a session as a favorite; returns false when the session is unknown. */
   async setSessionFavorite(sessionId: string, favorite: boolean): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({ favorite })
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionLifecycle.setSessionFavorite(sessionId, favorite);
   }
 
   /**
@@ -3243,13 +1156,7 @@ export class EventStore implements EventSink {
    * clobber an operator's manual rename (the TOCTOU the unguarded rename had).
    */
   async renameSessionIfUnnamed(sessionId: string, name: string): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({ name })
-      .where('session_id', '=', sessionId)
-      .where('name', 'is', null)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionLifecycle.renameSessionIfUnnamed(sessionId, name);
   }
 
   /**
@@ -3263,12 +1170,7 @@ export class EventStore implements EventSink {
    * `false` to a 404). Pure metadata: never touches the durable event log.
    */
   async setSessionModel(sessionId: string, model: string): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({ model })
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionLifecycle.setSessionModel(sessionId, model);
   }
 
   /** Move a session into or out of planning mode. `from` makes the write
@@ -3280,56 +1182,15 @@ export class EventStore implements EventSink {
     from?: readonly (SessionPlanning | null)[],
     expectedRevision?: number,
   ): Promise<boolean> {
-    let query = this.db
-      .updateTable('sessions')
-      .set({ planning })
-      .where('session_id', '=', sessionId);
-    if (from !== undefined) {
-      const states = from.filter((state): state is SessionPlanning => state !== null);
-      query = query.where((eb) =>
-        eb.or([
-          ...(states.length > 0 ? [eb('planning', 'in', states)] : []),
-          ...(from.includes(null) ? [eb('planning', 'is', null)] : []),
-        ]),
-      );
-    }
-    // A device can approve an old card while another device is publishing its revision.
-    // Checking in this UPDATE prevents the read-before-write race from accepting it.
-    if (expectedRevision !== undefined) {
-      query = query.where('planning_revision', '=', expectedRevision);
-      if (planning !== 'discarded') query = query.where('planning_plan', 'is not', null);
-    }
-    const result = await query.executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionPlanning.setSessionPlanning(sessionId, planning, from, expectedRevision);
   }
 
   async startSessionPlanning(sessionId: string): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({
-        planning: 'active',
-        // A new plan revokes reviews belonging to the previous accepted work.
-        mockup_review: null,
-        mockup_screens: '[]',
-        mockup_revision: sql`mockup_revision + 1`,
-        planning_plan: null,
-        planning_revision: sql`planning_revision + 1`,
-      })
-      .where('session_id', '=', sessionId)
-      .where((eb) => eb.or([eb('planning', 'is', null), eb('planning', '!=', 'active')]))
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionPlanning.startSessionPlanning(sessionId);
   }
 
   async presentSessionPlan(sessionId: string, plan: string): Promise<number | undefined> {
-    const row = await this.db
-      .updateTable('sessions')
-      .set({ planning_plan: plan, planning_revision: sql`planning_revision + 1` })
-      .where('session_id', '=', sessionId)
-      .where('planning', '=', 'active')
-      .returning('planning_revision')
-      .executeTakeFirst();
-    return row?.planning_revision;
+    return this.sessionPlanning.presentSessionPlan(sessionId, plan);
   }
 
   /**
@@ -3343,64 +1204,14 @@ export class EventStore implements EventSink {
     change: (current: SessionMockups) => SessionMockups | undefined,
     expectedPlanningRevision?: number,
   ): Promise<SessionMockups | undefined> {
-    return this.db.transaction().execute(async (tx) => {
-      const row = await tx
-        .selectFrom('sessions')
-        .select(['mockup_review', 'mockup_revision', 'mockup_screens', 'planning_revision'])
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!row) return undefined;
-      if (
-        expectedPlanningRevision !== undefined &&
-        row.planning_revision !== expectedPlanningRevision
-      )
-        return undefined;
-      const next = change({
-        state: storedMockupState(row.mockup_review),
-        revision: row.mockup_revision,
-        screens: storedMockupScreens(row.mockup_screens),
-      });
-      if (next === undefined) return undefined;
-      await tx
-        .updateTable('sessions')
-        .set({
-          mockup_review: next.state,
-          mockup_revision: next.revision,
-          mockup_screens: JSON.stringify(next.screens),
-        })
-        .where('session_id', '=', sessionId)
-        .execute();
-      return next;
-    });
+    return this.sessionPlanning.updateSessionMockups(sessionId, change, expectedPlanningRevision);
   }
 
   async getSessionBackendState(
     sessionId: string,
     backend: string,
   ): Promise<SessionBackendStateRecord | undefined> {
-    const row = await this.db
-      .selectFrom('session_backend_state')
-      .select([
-        'session_id',
-        'backend',
-        'backend_session_id',
-        'context_seq',
-        'updated_at',
-        'context_fingerprint',
-      ])
-      .where('session_id', '=', sessionId)
-      .where('backend', '=', backend)
-      .executeTakeFirst();
-    if (!row) return undefined;
-    return {
-      sessionId: row.session_id,
-      backend: row.backend,
-      backendSessionId: row.backend_session_id,
-      contextSeq: Number(row.context_seq),
-      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
-      updatedAt: row.updated_at,
-    };
+    return this.sessionBackendState.getSessionBackendState(sessionId, backend);
   }
 
   /**
@@ -3421,97 +1232,15 @@ export class EventStore implements EventSink {
     contextSeq: number;
     contextFingerprint?: string;
   }): Promise<SessionBackendStateRecord[]> {
-    return await this.db.transaction().execute(async (tx) => {
-      // Read before delete rather than `DELETE … RETURNING`: this runs on every bind,
-      // against both the Postgres and PGlite dialects, and the extra round trip inside
-      // the transaction is cheaper than a dialect-specific surprise here.
-      // A key `backend#person` is one person's own thread (ADR 0023 §3); a bind
-      // displaces only the same person's other backend, never someone else's.
-      const scope = backendStateScope(input.backend);
-      const displaced = (
-        await tx
-          .selectFrom('session_backend_state')
-          .select([
-            'session_id',
-            'backend',
-            'backend_session_id',
-            'context_seq',
-            'updated_at',
-            'context_fingerprint',
-          ])
-          .where('session_id', '=', input.sessionId)
-          .where('backend', '!=', input.backend)
-          .execute()
-      ).filter((row) => backendStateScope(row.backend) === scope);
-      if (displaced.length > 0)
-        await tx
-          .deleteFrom('session_backend_state')
-          .where('session_id', '=', input.sessionId)
-          .where(
-            'backend',
-            'in',
-            displaced.map((row) => row.backend),
-          )
-          .execute();
-      await tx
-        .insertInto('session_backend_state')
-        .values({
-          session_id: input.sessionId,
-          backend: input.backend,
-          backend_session_id: input.backendSessionId,
-          context_seq: input.contextSeq,
-          context_fingerprint: input.contextFingerprint ?? null,
-        })
-        .onConflict((oc) =>
-          oc.columns(['session_id', 'backend']).doUpdateSet({
-            backend_session_id: input.backendSessionId,
-            context_seq: input.contextSeq,
-            context_fingerprint: input.contextFingerprint ?? null,
-            updated_at: sql`now()`,
-          }),
-        )
-        .execute();
-      return displaced.map((row) => ({
-        sessionId: row.session_id,
-        backend: row.backend,
-        backendSessionId: row.backend_session_id,
-        contextSeq: Number(row.context_seq),
-        ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
-        updatedAt: row.updated_at,
-      }));
-    });
+    return this.sessionBackendState.upsertSessionBackendState(input);
   }
 
   async deleteSessionBackendState(sessionId: string, backend: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('session_backend_state')
-      .where('session_id', '=', sessionId)
-      .where('backend', '=', backend)
-      .executeTakeFirst();
-    return result.numDeletedRows > 0n;
+    return this.sessionBackendState.deleteSessionBackendState(sessionId, backend);
   }
 
   async getSessionBackendStates(sessionId: string): Promise<SessionBackendStateRecord[]> {
-    const rows = await this.db
-      .selectFrom('session_backend_state')
-      .select([
-        'session_id',
-        'backend',
-        'backend_session_id',
-        'context_seq',
-        'updated_at',
-        'context_fingerprint',
-      ])
-      .where('session_id', '=', sessionId)
-      .execute();
-    return rows.map((row) => ({
-      sessionId: row.session_id,
-      backend: row.backend,
-      backendSessionId: row.backend_session_id,
-      contextSeq: Number(row.context_seq),
-      ...(row.context_fingerprint ? { contextFingerprint: row.context_fingerprint } : {}),
-      updatedAt: row.updated_at,
-    }));
+    return this.sessionBackendState.getSessionBackendStates(sessionId);
   }
 
   /**
@@ -3526,23 +1255,7 @@ export class EventStore implements EventSink {
    * them, and a partial answer here would delete a live conversation.
    */
   async listLiveBackendSessionIds(): Promise<string[]> {
-    const [bindings, sessions, moves] = await Promise.all([
-      this.db.selectFrom('session_backend_state').select('backend_session_id').execute(),
-      this.db.selectFrom('sessions').select('session_id').execute(),
-      this.db
-        .selectFrom('session_moves')
-        .innerJoin('projects', 'projects.id', 'session_moves.source_project_id')
-        .select('backend_ids_json')
-        .where('projects.hidden_at', 'is', null)
-        .execute(),
-    ]);
-    return [
-      ...new Set([
-        ...bindings.map((row) => row.backend_session_id),
-        ...sessions.map((row) => row.session_id),
-        ...moves.flatMap((row) => JSON.parse(row.backend_ids_json) as string[]),
-      ]),
-    ];
+    return this.sessionBackendState.listLiveBackendSessionIds();
   }
 
   /**
@@ -3557,40 +1270,15 @@ export class EventStore implements EventSink {
    * `session-artifact-sweep.ts`.
    */
   async listSessionWorktrees(): Promise<string[]> {
-    const rows = await this.db.selectFrom('sessions').select('worktree').execute();
-    const retained = await this.db
-      .selectFrom('session_moves')
-      .innerJoin('projects', 'projects.id', 'session_moves.source_project_id')
-      .select('source_worktree')
-      .where('projects.hidden_at', 'is', null)
-      .where('result_json', 'is not', null)
-      .execute();
-    return [
-      ...new Set([
-        ...rows.map((row) => row.worktree),
-        ...retained.map((row) => row.source_worktree),
-      ]),
-    ];
+    return this.sessionBackendState.listSessionWorktrees();
   }
 
   async deleteSessionBackendStates(sessionId: string): Promise<number> {
-    const result = await this.db
-      .deleteFrom('session_backend_state')
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return Number(result.numDeletedRows);
+    return this.sessionBackendState.deleteSessionBackendStates(sessionId);
   }
 
   async deleteProjectSessionBackendStates(projectId: string): Promise<number> {
-    const result = await this.db
-      .deleteFrom('session_backend_state')
-      .where(
-        'session_id',
-        'in',
-        this.db.selectFrom('sessions').select('session_id').where('project_id', '=', projectId),
-      )
-      .executeTakeFirst();
-    return Number(result.numDeletedRows);
+    return this.sessionBackendState.deleteProjectSessionBackendStates(projectId);
   }
 
   /**
@@ -3601,10 +1289,7 @@ export class EventStore implements EventSink {
    * branch moved without a visible transcript line.
    */
   async appendPendingNote(sessionId: string, note: string): Promise<void> {
-    await this.db
-      .insertInto('session_pending_note')
-      .values({ session_id: sessionId, note })
-      .execute();
+    return this.sessionLifecycle.appendPendingNote(sessionId, note);
   }
 
   /**
@@ -3613,15 +1298,7 @@ export class EventStore implements EventSink {
    * turn. Returns the note texts in insert order; empty when there are none.
    */
   async consumePendingNotes(sessionId: string): Promise<string[]> {
-    const rows = await this.db
-      .deleteFrom('session_pending_note')
-      .where('session_id', '=', sessionId)
-      .returning(['id', 'note'])
-      .execute();
-    // `execute()` returns a fresh array, so sort it in place. Postgres does not
-    // guarantee RETURNING order (and DELETE takes no ORDER BY), so sort by the
-    // serial `id` to restore insert order.
-    return rows.sort((a, b) => Number(a.id) - Number(b.id)).map((r) => r.note);
+    return this.sessionLifecycle.consumePendingNotes(sessionId);
   }
 
   /**
@@ -3630,103 +1307,24 @@ export class EventStore implements EventSink {
    * deleted (projects are soft-deleted), so it is never recreated.
    */
   async recordStarterProject(projectId: string): Promise<boolean> {
-    const result = await this.db
-      .insertInto('starter_project')
-      .values({ singleton: true, project_id: projectId })
-      .onConflict((oc) => oc.column('singleton').doNothing())
-      .executeTakeFirst();
-    return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+    return this.starterProjects.recordStarterProject(projectId);
   }
 
   /** Explicit tour replay restores only the recorded starter, never a name match. */
   async ensureReplayStarterProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
-    const row = await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const recorded = await tx
-        .selectFrom('starter_project')
-        .select('project_id')
-        .executeTakeFirst();
-      if (recorded) {
-        const existing = await tx
-          .selectFrom('projects')
-          .selectAll()
-          .where('id', '=', recorded.project_id)
-          .forUpdate()
-          .executeTakeFirst();
-        if (existing) {
-          if (existing.hidden_at === null) return existing;
-          const restored = await tx
-            .updateTable('projects')
-            .set({
-              hidden_at: null,
-              archived: false,
-              overview_visible: true,
-              state: 'absent',
-              provision_error: null,
-              provision_warning: null,
-              sleep_compatibility_fingerprint: null,
-              sleeping_since: null,
-              wake_started_at: null,
-              state_changed_at: sql`now()`,
-              updated_at: sql`now()`,
-            })
-            .where('id', '=', existing.id)
-            .returningAll()
-            .executeTakeFirstOrThrow();
-          await ensureProjectKnowledgeSpace(tx, restored.id, restored.repo);
-          return restored;
-        }
-      }
-      // A unique replay identity cannot claim a user's similarly named project.
-      await tx
-        .insertInto('project_identity_claims')
-        .values({ owner: input.owner, repo: input.repo, project_id: input.id })
-        .execute();
-      const created = await tx
-        .insertInto('projects')
-        .values({
-          id: input.id,
-          name: input.name ?? defaultProjectName(input),
-          owner: input.owner,
-          repo: input.repo,
-          container_name: input.containerName,
-          kind: 'local',
-          clone_dir: input.cloneDir ?? null,
-          state: 'absent',
-          overview_visible: true,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      await tx
-        .insertInto('starter_project')
-        .values({ singleton: true, project_id: created.id })
-        .onConflict((oc) => oc.column('singleton').doUpdateSet({ project_id: created.id }))
-        .execute();
-      await ensureProjectKnowledgeSpace(tx, created.id, created.repo);
-      return created;
-    });
-    return this.projectRowToRecord(row);
+    return this.starterProjects.ensureReplayStarterProject(input);
   }
 
   async getStarterWelcomeSessionId(): Promise<string | undefined> {
-    const row = await this.db
-      .selectFrom('starter_project')
-      .select('welcome_session_id')
-      .executeTakeFirst();
-    return row?.welcome_session_id ?? undefined;
+    return this.starterProjects.getStarterWelcomeSessionId();
   }
 
   async recordStarterWelcomeSession(sessionId: string): Promise<void> {
-    await this.db
-      .updateTable('starter_project')
-      .set({ welcome_session_id: sessionId })
-      .where('singleton', '=', true)
-      .execute();
+    return this.starterProjects.recordStarterWelcomeSession(sessionId);
   }
 
   async getStarterProjectId(): Promise<string | undefined> {
-    const row = await this.db.selectFrom('starter_project').select('project_id').executeTakeFirst();
-    return row?.project_id;
+    return this.starterProjects.getStarterProjectId();
   }
 
   /**
@@ -3735,12 +1333,7 @@ export class EventStore implements EventSink {
    * attempts for the same `(session, marker)` return `false`.
    */
   async markSessionAutomation(sessionId: string, marker: string): Promise<boolean> {
-    const result = await this.db
-      .insertInto('session_automation_marker')
-      .values({ session_id: sessionId, marker })
-      .onConflict((oc) => oc.columns(['session_id', 'marker']).doNothing())
-      .executeTakeFirst();
-    return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+    return this.sessionAutomations.markSessionAutomation(sessionId, marker);
   }
 
   /** Keep a terminal PR hidden after the workspace first changes, across restarts. */
@@ -3750,15 +1343,12 @@ export class EventStore implements EventSink {
     url: string,
     fingerprint: string,
   ): Promise<boolean> {
-    const result = await sql<{ hidden: boolean }>`
-      insert into session_pr_visibility(session_id, worktree, pr_url, fingerprint, hidden)
-      values (${sessionId}, ${worktree}, ${url}, ${fingerprint}, false)
-      on conflict (session_id, worktree, pr_url) do update set
-        hidden = session_pr_visibility.hidden or
-          session_pr_visibility.fingerprint <> excluded.fingerprint
-      returning hidden
-    `.execute(this.db);
-    return result.rows[0]!.hidden;
+    return this.sessionPullRequests.observeSessionPrVisibility(
+      sessionId,
+      worktree,
+      url,
+      fingerprint,
+    );
   }
 
   async getSessionPrVisibility(
@@ -3766,23 +1356,12 @@ export class EventStore implements EventSink {
     worktree: string,
     url: string,
   ): Promise<{ fingerprint: string; hidden: boolean } | undefined> {
-    return this.db
-      .selectFrom('session_pr_visibility')
-      .select(['fingerprint', 'hidden'])
-      .where('session_id', '=', sessionId)
-      .where('worktree', '=', worktree)
-      .where('pr_url', '=', url)
-      .executeTakeFirst();
+    return this.sessionPullRequests.getSessionPrVisibility(sessionId, worktree, url);
   }
 
   /** Seed the final baseline after managed post-merge housekeeping has settled. */
   async clearSessionPrVisibility(sessionId: string, worktree: string, url: string): Promise<void> {
-    await this.db
-      .deleteFrom('session_pr_visibility')
-      .where('session_id', '=', sessionId)
-      .where('worktree', '=', worktree)
-      .where('pr_url', '=', url)
-      .execute();
+    return this.sessionPullRequests.clearSessionPrVisibility(sessionId, worktree, url);
   }
 
   async resetSessionPrVisibility(
@@ -3791,15 +1370,7 @@ export class EventStore implements EventSink {
     url: string,
     fingerprint: string,
   ): Promise<void> {
-    await this.db
-      .insertInto('session_pr_visibility')
-      .values({ session_id: sessionId, worktree, pr_url: url, fingerprint, hidden: false })
-      .onConflict((oc) =>
-        oc
-          .columns(['session_id', 'worktree', 'pr_url'])
-          .doUpdateSet({ fingerprint, hidden: false }),
-      )
-      .execute();
+    return this.sessionPullRequests.resetSessionPrVisibility(sessionId, worktree, url, fingerprint);
   }
 
   /** Reserve before transport: a crash spends a bounded attempt instead of resetting it. */
@@ -3808,18 +1379,7 @@ export class EventStore implements EventSink {
     marker: string,
     now: number,
   ): Promise<string | undefined> {
-    const claim = randomUUID();
-    const result = await sql<{ claim_id: string }>`
-      insert into pr_ready_delivery(session_id, marker, attempts, next_attempt_at, claim_id, lease_until)
-      values (${sessionId}, ${marker}, 1, ${now + 60_000}, ${claim}, ${now + 300_000})
-      on conflict (session_id, marker) do update set
-        attempts = pr_ready_delivery.attempts + 1,
-        next_attempt_at = case when pr_ready_delivery.attempts = 0 then ${now + 60_000}::bigint else ${now + 300_000}::bigint end, claim_id = ${claim}, lease_until = ${now + 300_000}
-      where not pr_ready_delivery.completed and pr_ready_delivery.attempts < 3
-        and pr_ready_delivery.next_attempt_at <= ${now} and pr_ready_delivery.lease_until <= ${now}
-      returning claim_id
-    `.execute(this.db);
-    return result.rows[0]?.claim_id;
+    return this.sessionPullRequests.claimPrReadyDelivery(sessionId, marker, now);
   }
 
   async finishPrReadyDelivery(
@@ -3829,153 +1389,28 @@ export class EventStore implements EventSink {
     outcome: 'done' | 'failed' | 'unattempted',
     now: number,
   ): Promise<void> {
-    // Claim identity fences a slow former sender after its lease expired.
-    await sql`update pr_ready_delivery set
-      attempts = attempts - ${outcome === 'unattempted' ? 1 : 0},
-      next_attempt_at = case when ${outcome === 'unattempted'} then ${now + 30_000} else next_attempt_at end,
-      completed = ${outcome === 'done'}, claim_id = null, lease_until = 0
-      where session_id = ${sessionId} and marker = ${marker} and claim_id = ${claim}`.execute(
-      this.db,
-    );
+    return this.sessionPullRequests.finishPrReadyDelivery(sessionId, marker, claim, outcome, now);
   }
 
   async hasSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {
-    const row = await this.db
-      .selectFrom('session_automation_marker')
-      .select('session_id')
-      .where('session_id', '=', sessionId)
-      .where('marker', '=', marker)
-      .executeTakeFirst();
-    return row !== undefined;
+    return this.sessionAutomations.hasSessionAutomationMarker(sessionId, marker);
   }
 
   async deleteSessionAutomationMarker(sessionId: string, marker: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('session_automation_marker')
-      .where('session_id', '=', sessionId)
-      .where('marker', '=', marker)
-      .executeTakeFirst();
-    return result.numDeletedRows > 0n;
+    return this.sessionAutomations.deleteSessionAutomationMarker(sessionId, marker);
   }
 
   /** Constant-size log marker; a never-written session has no stats row. */
   async getSessionEventStats(sessionId: string): Promise<SessionEventStats | undefined> {
-    const row = await this.db
-      .selectFrom('session_event_stats')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    return {
-      eventCount: Number(row.event_count),
-      lastEventSeq: Number(row.last_event_seq),
-      lastActivityAt: row.last_activity_at?.getTime() ?? null,
-      revision: String(row.revision),
-    };
+    return this.eventHistory.getSessionEventStats(sessionId);
   }
 
   async latestEventSeq(sessionId: string): Promise<number> {
-    const row = await this.db
-      .selectFrom('events')
-      .select((eb) => eb.fn.max('id').as('seq'))
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return Number(row?.seq ?? 0);
-  }
-
-  /** Bring the rebuildable message view up to date in resumable event batches. */
-  private async backfillMessageProjectionUnlocked(): Promise<void> {
-    const sessions = await this.listSessions();
-    for (const session of sessions) {
-      for (;;) {
-        const processed = await this.db.transaction().execute(async (tx) => {
-          await sql`select pg_advisory_xact_lock(hashtext(${'messages:' + session.sessionId}))`.execute(
-            tx,
-          );
-          let state = await tx
-            .selectFrom('message_projection_state')
-            .select(['last_event_seq', 'projection_version'])
-            .where('session_id', '=', session.sessionId)
-            .executeTakeFirst();
-          if (state !== undefined && state.projection_version !== MESSAGE_PROJECTION_VERSION) {
-            await tx.deleteFrom('messages').where('session_id', '=', session.sessionId).execute();
-            await tx
-              .deleteFrom('message_projection_state')
-              .where('session_id', '=', session.sessionId)
-              .execute();
-            state = undefined;
-          }
-          const rows = await tx
-            .selectFrom('events')
-            .select(['id', 'payload', 'created_at'])
-            .where('session_id', '=', session.sessionId)
-            .where('id', '>', Number(state?.last_event_seq ?? 0))
-            .orderBy('id', 'asc')
-            .limit(500)
-            .execute();
-          for (const row of rows) {
-            await projectMessageEvent(
-              tx,
-              session.sessionId,
-              Number(row.id),
-              row.created_at,
-              row.payload,
-            );
-          }
-          const last = rows.at(-1);
-          if (last !== undefined) {
-            await tx
-              .insertInto('message_projection_state')
-              .values({
-                session_id: session.sessionId,
-                last_event_seq: Number(last.id),
-                projection_version: MESSAGE_PROJECTION_VERSION,
-              })
-              .onConflict((oc) =>
-                oc.column('session_id').doUpdateSet({
-                  last_event_seq: Number(last.id),
-                  projection_version: MESSAGE_PROJECTION_VERSION,
-                }),
-              )
-              .execute();
-          }
-          return rows.length;
-        });
-        if (processed === 0) break;
-      }
-    }
+    return this.eventHistory.latestEventSeq(sessionId);
   }
 
   scheduleMessageProjection(): void {
-    if (this.messageBackfillRunning) {
-      this.messageBackfillRequested = true;
-      return;
-    }
-    this.messageBackfillRunning = true;
-    const current = this.messageBackfillTail
-      .catch(() => undefined)
-      .then(async () => {
-        await waitForPendingMessageProjections(this.db);
-        do {
-          this.messageBackfillRequested = false;
-          await this.backfillMessageProjectionUnlocked();
-        } while (this.messageBackfillRequested);
-      })
-      .finally(() => {
-        this.messageBackfillRunning = false;
-      });
-    this.messageBackfillTail = current;
-    let pendingBackfills = pendingMessageBackfillsByDb.get(this.db);
-    if (pendingBackfills === undefined) {
-      pendingBackfills = new Set();
-      pendingMessageBackfillsByDb.set(this.db, pendingBackfills);
-    }
-    pendingBackfills.add(current);
-    void current.then(
-      () => pendingBackfills.delete(current),
-      () => pendingBackfills.delete(current),
-    );
-    void current.catch(() => undefined);
+    return this.messageProjection.scheduleMessageProjection();
   }
 
   /** Wait until both ordered live projection and any recovery/search backfill are
@@ -3984,92 +1419,11 @@ export class EventStore implements EventSink {
    * The barrier waits for all resulting recovery attempts, but does not assert that
    * a deliberately unavailable projection became healthy. */
   async waitForMessageProjectionIdle(): Promise<void> {
-    for (;;) {
-      await waitForMessageProjectionWork(this.db);
-      if (this.messageLiveProjectionTails.size === 0) return;
-      // A settled tail unregisters from the map in a `finally` that is one
-      // microtask behind the queue barrier above; give it that turn instead of
-      // spinning on the map.
-      await Promise.resolve();
-    }
+    return this.messageProjection.waitForMessageProjectionIdle();
   }
 
   async searchMessages(input: MessageSearchInput): Promise<MessageSearchResult[]> {
-    // Never let replay race the ordered live projector for the same events. A
-    // short live tail lands first; if it is still busy after the latency budget,
-    // return the currently indexed view and let that tail finish asynchronously.
-    const liveCaughtUp = await Promise.race([
-      waitForPendingMessageProjections(this.db).then(() => true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 50)),
-    ]);
-    if (liveCaughtUp) {
-      this.scheduleMessageProjection();
-      await Promise.race([
-        this.messageBackfillTail.catch(() => undefined),
-        new Promise<void>((resolve) => setTimeout(resolve, 50)),
-      ]);
-    }
-    const query = input.query.trim();
-    if (query.length === 0) return [];
-    const tsQuery = sql`websearch_to_tsquery('simple', ${query})`;
-    const rank = sql<number>`ts_rank_cd(to_tsvector('simple', m.text), ${tsQuery})`;
-    let select = this.db
-      .selectFrom('messages as m')
-      .innerJoin('sessions as s', 's.session_id', 'm.session_id')
-      .leftJoin('projects as p', 'p.id', 's.project_id')
-      .select([
-        'm.id',
-        'm.session_id',
-        's.name as session_name',
-        's.project_id',
-        'm.role',
-        'm.kind',
-        'm.first_event_seq',
-        'm.created_at',
-        rank.as('search_rank'),
-        sql<string>`ts_headline(
-          'simple', m.text, ${tsQuery},
-          'MaxWords=35, MinWords=12, ShortWord=2, MaxFragments=2, StartSel=⟦, StopSel=⟧'
-        )`.as('snippet'),
-        sql<string | null>`case when p.id is null then null else p.owner || '/' || p.repo end`.as(
-          'project_name',
-        ),
-      ])
-      .where('m.finalized', '=', true)
-      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`)
-      // The Wiki maintenance run quotes untrusted transcripts and appears nowhere.
-      .where(
-        sql<boolean>`not exists (select 1 from wiki_maintenance w where w.session_id = m.session_id)`,
-      );
-    if (input.sessionId !== undefined) select = select.where('m.session_id', '=', input.sessionId);
-    if (input.projectId !== undefined) select = select.where('s.project_id', '=', input.projectId);
-    if (input.cursor !== undefined) {
-      const cursorDate = new Date(input.cursor.createdAt);
-      select = select.where(
-        sql<boolean>`(${rank} < ${input.cursor.rank}) or
-          (${rank} = ${input.cursor.rank} and m.created_at < ${cursorDate}) or
-          (${rank} = ${input.cursor.rank} and m.created_at = ${cursorDate} and m.id < ${input.cursor.id})`,
-      );
-    }
-    const rows = await select
-      .orderBy(rank, 'desc')
-      .orderBy('m.created_at', 'desc')
-      .orderBy('m.id', 'desc')
-      .limit(Math.min(input.limit ?? 30, 100))
-      .execute();
-    return rows.map((row) => ({
-      id: Number(row.id),
-      sessionId: row.session_id,
-      sessionName: row.session_name,
-      projectId: row.project_id,
-      projectName: row.project_name,
-      role: row.role,
-      kind: row.kind,
-      text: row.snippet.replace(/[⟦⟧]/g, ''),
-      firstEventSeq: Number(row.first_event_seq),
-      createdAt: row.created_at.getTime(),
-      rank: row.search_rank,
-    }));
+    return this.messageProjection.searchMessages(input);
   }
 
   /**
@@ -4085,115 +1439,29 @@ export class EventStore implements EventSink {
    */
   /** Permanent admission tombstone; cleanup payload survives the session FK cascade. */
   async queueSessionDeletion(sessionId: string, payload: string): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      await this.sessionEventAppendLock(tx, sessionId);
-      if (
-        await tx
-          .selectFrom('session_deletions')
-          .select('session_id')
-          .where('session_id', '=', sessionId)
-          .executeTakeFirst()
-      )
-        return;
-      const parsed = JSON.parse(payload) as SessionDeletionState;
-      const session = await tx
-        .selectFrom('sessions')
-        .select('worktree')
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst();
-      const path = parsed.session?.worktree ?? session?.worktree;
-      const worktree = path === undefined ? null : resolve(path);
-      if (worktree !== null) {
-        await this.sessionWorktreeLock(tx, worktree);
-        if (
-          await tx
-            .selectFrom('session_deletions')
-            .select('session_id')
-            .where('worktree', '=', worktree)
-            .where('cleanup_pending', '=', true)
-            .executeTakeFirst()
-        )
-          throw new Error('Session worktree is being deleted');
-      }
-      await tx
-        .insertInto('session_deletions')
-        .values({ session_id: sessionId, payload, worktree })
-        .execute();
-    });
-  }
-
-  private async sessionWorktreeLock(tx: Kysely<Database>, path: string): Promise<void> {
-    const result = await sql<{
-      locked: boolean;
-    }>`select pg_try_advisory_xact_lock(hashtext(${'session-worktree:' + resolve(path)})) as locked`.execute(
-      tx,
-    );
-    if (result.rows[0]?.locked !== true) throw new Error('Session worktree is being deleted');
+    return this.sessionLifecycle.queueSessionDeletion(sessionId, payload);
   }
 
   async isWorktreeBeingDeleted(path: string): Promise<boolean> {
-    return (
-      (await this.db
-        .selectFrom('session_deletions')
-        .select('session_id')
-        .where('worktree', '=', resolve(path))
-        .where('cleanup_pending', '=', true)
-        .executeTakeFirst()) !== undefined
-    );
+    return this.sessionLifecycle.isWorktreeBeingDeleted(path);
   }
 
   async getSessionDeletion(
     sessionId: string,
   ): Promise<{ payload: string; cleanupPending: boolean } | undefined> {
-    const row = await this.db
-      .selectFrom('session_deletions')
-      .select(['payload', 'cleanup_pending'])
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return row === undefined
-      ? undefined
-      : { payload: row.payload, cleanupPending: row.cleanup_pending };
+    return this.sessionLifecycle.getSessionDeletion(sessionId);
   }
 
   async isSessionDeleting(sessionId: string): Promise<boolean> {
-    return (
-      (await this.db
-        .selectFrom('session_deletions')
-        .select('session_id')
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst()) !== undefined
-    );
+    return this.sessionLifecycle.isSessionDeleting(sessionId);
   }
 
   async listPendingSessionDeletions(): Promise<{ sessionId: string; payload: string }[]> {
-    const rows = await this.db
-      .selectFrom('session_deletions')
-      .select(['session_id', 'payload'])
-      .where('cleanup_pending', '=', true)
-      .execute();
-    return rows.map((row) => ({ sessionId: row.session_id, payload: row.payload }));
+    return this.sessionLifecycle.listPendingSessionDeletions();
   }
 
   async updateSessionDeletionPayload(sessionId: string, payload: string): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      await this.sessionEventAppendLock(tx, sessionId);
-      const current = await tx
-        .selectFrom('session_deletions')
-        .select(['payload', 'cleanup_pending'])
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!current?.cleanup_pending) return;
-      const merged = mergeSessionDeletionState(
-        JSON.parse(current.payload) as SessionDeletionState,
-        JSON.parse(payload) as SessionDeletionState,
-      );
-      await tx
-        .updateTable('session_deletions')
-        .set({ payload: JSON.stringify(merged) })
-        .where('session_id', '=', sessionId)
-        .execute();
-    });
+    return this.sessionLifecycle.updateSessionDeletionPayload(sessionId, payload);
   }
 
   async finishSessionDeletionCleanup(sessionId: string): Promise<void> {
@@ -4207,184 +1475,18 @@ export class EventStore implements EventSink {
     sessionId: string,
     work: (payload: string) => Promise<boolean>,
   ): Promise<boolean> {
-    let tails = sessionDeletionCleanupTails.get(this.db);
-    if (!tails) {
-      tails = new Map();
-      sessionDeletionCleanupTails.set(this.db, tails);
-    }
-    const previous = tails.get(sessionId) ?? Promise.resolve();
-    let release!: () => void;
-    const completion = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const queued = previous.catch(() => undefined).then(() => completion);
-    tails.set(sessionId, queued);
-    await previous.catch(() => undefined);
-    try {
-      return await this.db.connection().execute(async (connection) => {
-        const sessionKey = `session-cleanup:${sessionId}`;
-        await sql`select pg_advisory_lock(hashtext(${sessionKey}))`.execute(connection);
-        let worktree: string | null = null;
-        try {
-          const owned = await connection
-            .selectFrom('session_deletions')
-            .select(['worktree', 'payload', 'cleanup_pending'])
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst();
-          if (!owned?.cleanup_pending) return true;
-          worktree = owned.worktree;
-          if (worktree !== null)
-            await sql`select pg_advisory_lock(hashtext(${'session-worktree:' + worktree}))`.execute(
-              connection,
-            );
-          // A completed tombstone is permanent: stale requests cannot restart cleanup
-          // after a different session legitimately reused the released worktree path.
-          const current = await connection
-            .selectFrom('session_deletions')
-            .select(['payload', 'cleanup_pending'])
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst();
-          if (!current?.cleanup_pending) return true;
-          if (!(await work(current.payload))) return false;
-          await connection
-            .updateTable('session_deletions')
-            .set({ cleanup_pending: false, payload: '{}', worktree: null })
-            .where('session_id', '=', sessionId)
-            .execute();
-          return true;
-        } finally {
-          try {
-            if (worktree !== null)
-              await sql`select pg_advisory_unlock(hashtext(${'session-worktree:' + worktree}))`.execute(
-                connection,
-              );
-          } finally {
-            await sql`select pg_advisory_unlock(hashtext(${sessionKey}))`.execute(connection);
-          }
-        }
-      });
-    } finally {
-      release();
-      if (tails.get(sessionId) === queued) tails.delete(sessionId);
-    }
+    return this.sessionLifecycle.withSessionDeletionCleanup(sessionId, work);
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    await waitForPendingMessageProjections(this.db);
-    return this.db.transaction().execute(async (tx) => {
-      await this.sessionEventAppendLock(tx, sessionId);
-      // Freeze FK-backed creations before capturing the IDs the cascade will erase.
-      // A start committed after the initial HTTP snapshot must still be cleaned up.
-      await tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .execute();
-      const deletion = await tx
-        .selectFrom('session_deletions')
-        .select('payload')
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (deletion) {
-        const payload = JSON.parse(deletion.payload) as SessionDeletionState;
-        if (payload.session?.sessionId === sessionId) {
-          const bindings = await tx
-            .selectFrom('session_backend_state')
-            .select(['backend', 'backend_session_id'])
-            .where('session_id', '=', sessionId)
-            .execute();
-          payload.artifactBindings =
-            mergeSessionDeletionState(payload, {
-              artifactBindings: bindings.map((row) => ({
-                backend: row.backend,
-                backendSessionId: row.backend_session_id,
-              })),
-            }).artifactBindings ?? [];
-          const previews = await tx
-            .selectFrom('local_preview_shares')
-            .select('id')
-            .where('session_id', '=', sessionId)
-            .execute();
-          const instances = await tx
-            .selectFrom('managed_dev_server_instances')
-            .select(['id', 'project_id'])
-            .where('session_id', '=', sessionId)
-            .execute();
-          payload.previewIds = [
-            ...new Set([...(payload.previewIds ?? []), ...previews.map((row) => row.id)]),
-          ];
-          if (payload.managed || instances.length > 0)
-            payload.managed = {
-              sessionId,
-              projectId:
-                payload.managed?.projectId ??
-                instances[0]?.project_id ??
-                payload.session.projectId ??
-                null,
-              instanceIds: [
-                ...new Set([
-                  ...(payload.managed?.instanceIds ?? []),
-                  ...instances.map((row) => row.id),
-                ]),
-              ],
-            };
-          await tx
-            .updateTable('session_deletions')
-            .set({ payload: JSON.stringify(payload) })
-            .where('session_id', '=', sessionId)
-            .execute();
-        }
-      }
-      await tx.deleteFrom('transcript_lines').where('session_id', '=', sessionId).execute();
-      await tx.deleteFrom('events').where('session_id', '=', sessionId).execute();
-      // A session-scoped secret permission (ADR 0011 D2) is supposed to die with its
-      // session, but nothing else expires it: it carries no expiry and no foreign key.
-      // Left behind it would stay listed as live forever, and would auto-approve again
-      // if this id were ever restored or reused. Ending it belongs in this transaction.
-      await tx
-        .updateTable('secret_provider_permissions')
-        .set({ state: 'revoked', updated_at: new Date().toISOString() })
-        .where('session_id', '=', sessionId)
-        .where('state', '=', 'active')
-        .execute();
-      // The agent's unfinished steps were its plan for this session and end with
-      // it; the operator's own tasks only lose the assignment (FK set null).
-      await tx
-        .updateTable('tasks')
-        .set((eb) => ({
-          status: 'dropped',
-          completed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          revision: eb('revision', '+', 1),
-        }))
-        .where('session_id', '=', sessionId)
-        .where('origin', '=', 'agent')
-        .where('status', 'in', ['open', 'in_progress'])
-        .execute();
-      await sql`delete from project_inquiries where target_session_id=${sessionId}`.execute(tx);
-      const result = await tx
-        .deleteFrom('sessions')
-        .where('session_id', '=', sessionId)
-        .executeTakeFirst();
-      return result.numDeletedRows > 0n;
-    });
+    return this.sessionLifecycle.deleteSession(sessionId);
   }
 
   /** Accept a background dispatch, its prompt and recovery marker in one commit.
    * Cancellation races on the same receipt row; only the winner can run the backend. */
   /** Reserve a server-authored dispatch for atomic prompt admission and replay. */
   async reserveBackgroundDispatch(id: string, sessionId: string): Promise<void> {
-    await this.db
-      .insertInto('qa_dispatches')
-      .values({
-        id,
-        session_id: sessionId,
-        state: 'reserved',
-      })
-      .onConflict((oc) => oc.column('id').doNothing())
-      .execute();
+    return this.eventWrites.reserveBackgroundDispatch(id, sessionId);
   }
 
   async admitBackgroundDispatch(
@@ -4392,77 +1494,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     event: AgentEvent,
   ): Promise<{ seq: number; ts: number; existing: boolean; markerId?: string } | undefined> {
-    const eventRow = await this.prepareEventRow(event);
-    const result = await this.db.transaction().execute(async (trx) => {
-      const receipt = await trx
-        .selectFrom('qa_dispatches')
-        .selectAll()
-        .where('id', '=', id)
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!receipt || receipt.state === 'cancelled' || receipt.state === 'legacy') return undefined;
-      if (receipt.state === 'admitted')
-        return {
-          seq: Number(receipt.prompt_seq),
-          ts: receipt.created_at.getTime(),
-          existing: true,
-        };
-      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(sessionId)}))`.execute(
-        trx,
-      );
-      const predecessor = await trx
-        .selectFrom('running_turns')
-        .selectAll()
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (predecessor) {
-        // Transcript terminal events may be late, unrelated or merely announce
-        // cancellation. Only a server-confirmed completion or the exact
-        // Runner's durable terminal/fence claim establishes relinquished ownership.
-        const runnerClosed =
-          predecessor.turn_id === null
-            ? undefined
-            : await trx
-                .selectFrom('runner_frames')
-                .select('turn_id')
-                .where('session_id', '=', sessionId)
-                .where('turn_id', '=', predecessor.turn_id)
-                .where('terminal', '=', true)
-                .executeTakeFirst();
-        if (!predecessor.settled && !runnerClosed) return undefined;
-        await trx
-          .deleteFrom('running_turns')
-          .where('session_id', '=', sessionId)
-          .where('prompt_seq', '=', predecessor.prompt_seq)
-          .execute();
-      }
-      const markerId = randomUUID();
-      const row = await trx
-        .insertInto('events')
-        .values({ session_id: sessionId, type: eventRow.type, payload: eventRow.payload })
-        .returning(['id', 'created_at'])
-        .executeTakeFirstOrThrow();
-      await trx
-        .insertInto('running_turns')
-        .values({ session_id: sessionId, prompt_seq: row.id, marker_id: markerId })
-        .execute();
-      await trx
-        .updateTable('qa_dispatches')
-        .set({ state: 'admitted', prompt_seq: row.id })
-        .where('id', '=', id)
-        .execute();
-      return { seq: Number(row.id), ts: row.created_at.getTime(), existing: false, markerId };
-    });
-    if (result && !result.existing)
-      this.enqueuePersistedMessageEvent(
-        sessionId,
-        result.seq,
-        new Date(result.ts),
-        JSON.parse(eventRow.payload) as AgentEvent,
-      );
-    return result;
+    return this.eventWrites.admitBackgroundDispatch(id, sessionId, event);
   }
 
   /**
@@ -4473,42 +1505,11 @@ export class EventStore implements EventSink {
    * milliseconds (`ts`), so the live fan-out can broadcast the real persist time
    * alongside `seq` (#32) — matching what the read paths surface.
    */
-  async appendEvent(sessionId: string, event: AgentEvent): Promise<{ seq: number; ts: number }> {
-    if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
-    const { type, payload } = await this.prepareEventRow(event);
-    // Takes the cross-process append lock like every other writer. Server generations
-    // overlap during reattach/cutover, so "the generation that writes a session's events
-    // is the generation that sweeps it" is a convention, not something the database
-    // enforces: a draining generation can still be streaming a live turn's output through
-    // here while the new one probes that same turn. An advisory lock only orders holders
-    // OF it, so an append that skipped it would be invisible to
-    // {@link appendEventForRunningTurn}'s predicate and still take the lower id — exactly
-    // the reversal that lock exists to rule out.
-    //
-    // READ COMMITTED takes a new snapshot per statement. Acquire the lock before
-    // the INSERT so a tombstone committed during lock contention is visible.
-    const row = await this.withSessionEventAppend(sessionId, () =>
-      this.db.transaction().execute(async (tx) => {
-        await this.sessionEventAppendLock(tx, sessionId);
-        const result = await sql<{ id: number; created_at: Date }>`
-          insert into events (session_id, type, payload)
-          select ${sessionId}, ${type}, ${payload}::jsonb
-          where not exists (select 1 from session_deletions where session_id = ${sessionId})
-          returning id, created_at
-        `.execute(tx);
-        const inserted = result.rows[0];
-        if (inserted === undefined)
-          throw new Error(`failed to append event to session ${sessionId}`);
-        return inserted;
-      }),
-    );
-    this.enqueuePersistedMessageEvent(
-      sessionId,
-      Number(row.id),
-      row.created_at,
-      JSON.parse(payload) as AgentEvent,
-    );
-    return { seq: Number(row.id), ts: row.created_at.getTime() };
+  async appendEvent(
+    sessionId: string,
+    event: AgentEvent,
+  ): Promise<{ seq: number; ts: number; existing?: true }> {
+    return this.eventWrites.appendEvent(sessionId, event);
   }
 
   /**
@@ -4523,7 +1524,7 @@ export class EventStore implements EventSink {
    * that follows it, and the successor it drains can all land between the check and the
    * insert — putting a message about a dead turn after a successful result, or into a
    * healthy turn's transcript. `insert … select … where` is one statement, so what it
-   * tests cannot be overtaken by what it writes, and {@link withSessionEventAppend}
+   * tests cannot be overtaken by what it writes, and {@link EventWriteStore.withSessionEventAppend}
    * keeps a concurrent append from being invisible to the test yet ordered before it.
    *
    * `turn_id` is part of the anchor, not just `prompt_seq`: a resume-retry re-anchors the
@@ -4538,66 +1539,7 @@ export class EventStore implements EventSink {
     anchor: { promptSeq: number; turnId: string | null; silentSinceSeq: number },
     event: AgentEvent,
   ): Promise<{ seq: number; ts: number } | null> {
-    const { type, payload } = await this.prepareEventRow(event);
-    const result = await this.withSessionEventAppend(sessionId, () =>
-      this.db.transaction().execute(async (tx) => {
-        await this.sessionEventAppendLock(tx, sessionId);
-        return await sql<{ id: number; created_at: Date }>`
-          insert into events (session_id, type, payload)
-          select ${sessionId}, ${type}, ${payload}::jsonb
-          from running_turns
-          where session_id = ${sessionId}
-            and not exists (select 1 from session_deletions where session_id = ${sessionId})
-            and prompt_seq = ${anchor.promptSeq}
-            and turn_id is not distinct from ${anchor.turnId}
-            and not exists (
-              select 1 from events
-              where session_id = ${sessionId} and id > ${anchor.silentSinceSeq}
-            )
-          returning id, created_at
-        `.execute(tx);
-      }),
-    );
-    const row = result.rows[0];
-    if (row === undefined) return null;
-    this.enqueuePersistedMessageEvent(
-      sessionId,
-      Number(row.id),
-      row.created_at,
-      JSON.parse(payload) as AgentEvent,
-    );
-    return { seq: Number(row.id), ts: row.created_at.getTime() };
-  }
-
-  /** Validate, externalize, and redact an event into the exact `(type, payload)`
-   * an `events` row stores. Shared by {@link appendEvent} and the Runner-frame
-   * ingest path so both persist byte-identical rows. Runs the content-addressed
-   * externalization (which writes to `attachments`) — that is idempotent and safe
-   * to perform BEFORE the ingest transaction, so the transaction stays a tight
-   * `events` + `runner_frames` claim. */
-  private async prepareEventRow(event: AgentEvent): Promise<{ type: string; payload: string }> {
-    const parsed = parseAgentEvent(event);
-    if (!parsed.success) {
-      throw new Error(`refusing to persist invalid event: ${parsed.error.message}`);
-    }
-    // Externalize a tool result's heavy inline payloads into the content-addressed
-    // blob table, so the PERSISTED event carries lazy refs (images #115, and large
-    // text bodies) instead of the full bytes — a reload transfers only previews +
-    // the visible images, not the whole backlog. The caller's `event` is left
-    // untouched (only a copy is stored), so the live broadcast still ships the
-    // inline bytes the client already has and can render without a round-trip.
-    const canonical = parsed.data;
-    const toStore =
-      canonical.t === 'tool_result' ? await this.externalizeToolResult(canonical) : canonical;
-    // Redact recognized credentials from the PERSISTED copy (audit M9). Token
-    // characters never include JSON structural chars, so redacting the serialized
-    // payload keeps it valid JSON. The caller's live `event` is left untouched, so
-    // the broadcast to the operator's own device is unaffected.
-    // Scrub U+0000 from the PERSISTED copy last: PostgreSQL rejects a `jsonb`
-    // document that carries one, which used to abort the whole turn on any agent
-    // output echoing a NUL. Runs after redaction so both rewrites see the same
-    // serialized string; the caller's live `event` again stays untouched.
-    return { type: canonical.t, payload: scrubNulEscapes(redactSecrets(JSON.stringify(toStore))) };
+    return this.eventWrites.appendEventForRunningTurn(sessionId, anchor, event);
   }
 
   /**
@@ -4625,261 +1567,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     frame: RunnerFrameIngest,
   ): Promise<RunnerFrameIngestResult> {
-    // Two kinds of frame decide what a conditional append sees: one that carries an
-    // event appends to the session's log, and a TERMINAL one closes the marker that
-    // append tests. Both do it from inside a multi-statement transaction, so either can
-    // be invisible to a concurrent {@link appendEventForRunningTurn} — which would then
-    // write "the Runner is gone" onto a turn that had just ended normally. Both join the
-    // session's append order; a frame that only claims a mid-turn seq stays out of it.
-    if (frame.event === undefined && frame.terminal !== true) {
-      return await this.ingestRunnerFrameInner(sessionId, frame);
-    }
-    return await this.withSessionEventAppend(sessionId, () =>
-      this.ingestRunnerFrameInner(sessionId, frame),
-    );
-  }
-
-  private async ingestRunnerFrameInner(
-    sessionId: string,
-    frame: RunnerFrameIngest,
-  ): Promise<RunnerFrameIngestResult> {
-    if (await this.isSessionDeleting(sessionId)) throw new Error('Session is being deleted');
-    if (frame.protocolVersion !== RUNNER_FRAME_PROTOCOL_VERSION) {
-      throw new Error(
-        `unsupported runner frame protocol version ${frame.protocolVersion} ` +
-          `(this server ingests version ${RUNNER_FRAME_PROTOCOL_VERSION})`,
-      );
-    }
-    if (!Number.isInteger(frame.frameSeq) || frame.frameSeq < 1) {
-      throw new Error(`runner frame seq must be a positive integer, got ${frame.frameSeq}`);
-    }
-    if (frame.terminal === true && frame.event !== undefined) {
-      throw new Error('runner terminal frame cannot also carry an event');
-    }
-    // The fence below is recognized by its reserved `payload_hash`, and nothing
-    // constrains what a Runner puts in that column — so refuse the sentinel here
-    // rather than trust that no frame carries it. This is what makes "a row with
-    // this hash is a fence" true instead of merely likely: a frame claiming it is
-    // rejected before it can be stored, so no turn can be fenced by its own stream.
-    if (frame.payloadHash === ABANDONED_TURN_FENCE_HASH) {
-      throw new Error(
-        `runner frame refused: payload hash ${ABANDONED_TURN_FENCE_HASH} is reserved ` +
-          'for recovery fences',
-      );
-    }
-    // Prepare the event row (validate + externalize + redact) BEFORE the transaction:
-    // externalization writes content-addressed `attachments` rows that are idempotent
-    // and harmless if the transaction later rolls back, keeping the claim atomic and small.
-    const eventRow =
-      frame.event !== undefined ? await this.prepareEventRow(frame.event) : undefined;
-
-    const predecessor = this.runnerFrameIngestTails.get(frame.turnId) ?? Promise.resolve();
-    let release!: () => void;
-    const queued = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.runnerFrameIngestTails.set(frame.turnId, queued);
-    await predecessor;
-    try {
-      return await this.db.transaction().execute(async (tx) => {
-        // Multiple Server generations may overlap during reattach/cutover. Serialize
-        // claims for one turn across processes, not merely within one file tail, so
-        // terminal fencing cannot race a later frame. The lock is transaction-scoped.
-        // An ingest that appends an event or closes the marker takes the session's
-        // append lock first, in that order everywhere, so it cannot be invisible to a
-        // conditional append yet ordered ahead of it — and the two locks cannot be
-        // taken in opposite orders.
-        if (eventRow !== undefined || frame.terminal === true) {
-          await this.sessionEventAppendLock(tx, sessionId);
-        }
-        await sql`select pg_advisory_xact_lock(hashtext(${frame.turnId}))`.execute(tx);
-        if (
-          await tx
-            .selectFrom('session_deletions')
-            .select('session_id')
-            .where('session_id', '=', sessionId)
-            .executeTakeFirst()
-        )
-          throw new Error('Session is being deleted');
-
-        // (0) the turn was abandoned by recovery — refuse everything from the fence on.
-        // Contiguity puts every already-claimed frame below it, so a replay of what the
-        // turn said while it still held the session stays a valid duplicate below.
-        const fence = await tx
-          .selectFrom('runner_frames')
-          .select('frame_seq')
-          .where('turn_id', '=', frame.turnId)
-          .where('payload_hash', '=', ABANDONED_TURN_FENCE_HASH)
-          .executeTakeFirst();
-        if (fence !== undefined && frame.frameSeq >= Number(fence.frame_seq)) {
-          throw new Error(
-            `runner frame refused: turn ${frame.turnId} was abandoned by recovery at seq ` +
-              `${fence.frame_seq}, refusing seq ${frame.frameSeq}`,
-          );
-        }
-
-        // (1) immutable turn → runner-instance binding. Fence rows are excluded: the
-        // fence may have been planted before the turn ever streamed a frame, and its
-        // placeholder instance id is not the turn's binding.
-        const bound = await tx
-          .selectFrom('runner_frames')
-          .select(['runner_instance_id', 'session_id'])
-          .where('turn_id', '=', frame.turnId)
-          .where('payload_hash', '!=', ABANDONED_TURN_FENCE_HASH)
-          .limit(1)
-          .executeTakeFirst();
-        if (bound !== undefined && bound.runner_instance_id !== frame.runnerInstanceId) {
-          throw new Error(
-            `runner frame corruption: turn ${frame.turnId} is bound to runner instance ` +
-              `${bound.runner_instance_id}, refusing a frame from ${frame.runnerInstanceId}`,
-          );
-        }
-        if (bound !== undefined && bound.session_id !== sessionId) {
-          throw new Error(
-            `runner frame corruption: turn ${frame.turnId} is bound to session ` +
-              `${bound.session_id}, refusing a frame for ${sessionId}`,
-          );
-        }
-
-        // (2) already claimed → duplicate (a replay). Guard the payload hash.
-        const existing = await tx
-          .selectFrom('runner_frames')
-          .select(['payload_hash', 'event_id', 'terminal'])
-          .where('turn_id', '=', frame.turnId)
-          .where('frame_seq', '=', frame.frameSeq)
-          .executeTakeFirst();
-        if (existing !== undefined) {
-          if (existing.payload_hash !== frame.payloadHash) {
-            throw new Error(
-              `runner frame corruption: (turn ${frame.turnId}, seq ${frame.frameSeq}) was ` +
-                `replayed with a changed payload`,
-            );
-          }
-          // Rolling-deploy compatibility: pre-0053/older Servers wrote result claims
-          // without the terminal bit. A hash-identical replay from a new Server carries
-          // the missing kind information, so promote that claim and close its marker in
-          // this transaction. This is idempotent and scoped away from newer turns.
-          if (frame.terminal === true && !existing.terminal) {
-            const later = await tx
-              .selectFrom('runner_frames')
-              .select('frame_seq')
-              .where('turn_id', '=', frame.turnId)
-              .where('frame_seq', '>', frame.frameSeq)
-              .executeTakeFirst();
-            if (later !== undefined) {
-              throw new Error(
-                `runner frame corruption: cannot promote terminal seq ${frame.frameSeq} for turn ` +
-                  `${frame.turnId}; later seq ${later.frame_seq} already exists`,
-              );
-            }
-            await tx
-              .updateTable('runner_frames')
-              .set({ terminal: true })
-              .where('turn_id', '=', frame.turnId)
-              .where('frame_seq', '=', frame.frameSeq)
-              .execute();
-            await tx
-              .deleteFrom('running_turns')
-              .where('session_id', '=', sessionId)
-              .where('turn_id', '=', frame.turnId)
-              .execute();
-          }
-          if (existing.event_id !== null) {
-            const ev = await tx
-              .selectFrom('events')
-              .select('created_at')
-              .where('id', '=', existing.event_id)
-              .executeTakeFirst();
-            if (ev !== undefined) {
-              return {
-                outcome: 'duplicate',
-                seq: Number(existing.event_id),
-                ts: ev.created_at.getTime(),
-              };
-            }
-          }
-          return { outcome: 'duplicate' };
-        }
-
-        // A result is the final frame (D3). Once its claim commits, a second result
-        // or any other later frame is corruption rather than another harmless replay.
-        // Same-sequence replays returned above remain valid duplicates.
-        const terminal = await tx
-          .selectFrom('runner_frames')
-          .select('frame_seq')
-          .where('turn_id', '=', frame.turnId)
-          .where('terminal', '=', true)
-          .executeTakeFirst();
-        if (terminal !== undefined) {
-          throw new Error(
-            `runner frame corruption: turn ${frame.turnId} already terminated at seq ` +
-              `${terminal.frame_seq}, refusing seq ${frame.frameSeq}`,
-          );
-        }
-
-        // (3) contiguity: seq 1 is the anchor; otherwise the predecessor must exist.
-        if (frame.frameSeq > 1) {
-          const prev = await tx
-            .selectFrom('runner_frames')
-            .select('frame_seq')
-            .where('turn_id', '=', frame.turnId)
-            .where('frame_seq', '=', frame.frameSeq - 1)
-            .executeTakeFirst();
-          if (prev === undefined) {
-            throw new Error(
-              `runner frame gap: turn ${frame.turnId} received seq ${frame.frameSeq} ` +
-                `before seq ${frame.frameSeq - 1}`,
-            );
-          }
-        }
-
-        // (4) persist the event, if any — atomically with the claim below.
-        let eventId: number | null = null;
-        let result: RunnerFrameIngestResult = { outcome: 'accepted' };
-        if (eventRow !== undefined) {
-          const row = await tx
-            .insertInto('events')
-            .values({ session_id: sessionId, type: eventRow.type, payload: eventRow.payload })
-            .returning(['id', 'created_at'])
-            .executeTakeFirstOrThrow();
-          eventId = Number(row.id);
-          result = { outcome: 'accepted', seq: eventId, ts: row.created_at.getTime() };
-        }
-
-        // (5) claim (turn_id, frame_seq) under the primary key.
-        await tx
-          .insertInto('runner_frames')
-          .values({
-            turn_id: frame.turnId,
-            frame_seq: frame.frameSeq,
-            runner_instance_id: frame.runnerInstanceId,
-            session_id: sessionId,
-            payload_hash: frame.payloadHash,
-            event_id: eventId,
-            terminal: frame.terminal === true,
-          })
-          .execute();
-
-        // Scope by BOTH session and turn identity: a late terminal from an older turn
-        // must never delete a newer marker for the same session. This delete commits
-        // atomically with the terminal claim, eliminating the append/commit crash gap.
-        if (frame.terminal === true) {
-          await tx
-            .deleteFrom('running_turns')
-            .where('session_id', '=', sessionId)
-            .where('turn_id', '=', frame.turnId)
-            .execute();
-        }
-
-        return result;
-      });
-    } finally {
-      if (eventRow !== undefined) this.scheduleMessageProjection();
-      release();
-      if (this.runnerFrameIngestTails.get(frame.turnId) === queued) {
-        this.runnerFrameIngestTails.delete(frame.turnId);
-      }
-    }
+    return this.eventWrites.ingestRunnerFrame(sessionId, frame);
   }
 
   /**
@@ -4904,42 +1592,11 @@ export class EventStore implements EventSink {
    */
   /** An abandoned stream fence closes the log, but never proves worker exit. */
   async hasAbandonedRunnerTurns(sessionId: string): Promise<boolean> {
-    return (
-      (await this.db
-        .selectFrom('runner_frames')
-        .select('turn_id')
-        .where('session_id', '=', sessionId)
-        .where('payload_hash', '=', ABANDONED_TURN_FENCE_HASH)
-        .executeTakeFirst()) !== undefined
-    );
+    return this.eventWrites.hasAbandonedRunnerTurns(sessionId);
   }
 
   async fenceAbandonedTurn(sessionId: string, turnId: string): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);
-      const rows = await tx
-        .selectFrom('runner_frames')
-        .select(['frame_seq', 'runner_instance_id', 'payload_hash'])
-        .where('turn_id', '=', turnId)
-        .orderBy('frame_seq', 'desc')
-        .execute();
-      if (rows.some((row) => row.payload_hash === ABANDONED_TURN_FENCE_HASH)) return;
-      const last = rows[0];
-      await tx
-        .insertInto('runner_frames')
-        .values({
-          turn_id: turnId,
-          frame_seq: last === undefined ? 1 : Number(last.frame_seq) + 1,
-          // Carry the turn's real binding when it has one, so the instance check keeps
-          // reading the same value whether or not the fence row is present.
-          runner_instance_id: last?.runner_instance_id ?? ABANDONED_TURN_FENCE_INSTANCE,
-          session_id: sessionId,
-          payload_hash: ABANDONED_TURN_FENCE_HASH,
-          event_id: null,
-          terminal: true,
-        })
-        .execute();
-    });
+    return this.eventWrites.fenceAbandonedTurn(sessionId, turnId);
   }
 
   /**
@@ -4954,81 +1611,7 @@ export class EventStore implements EventSink {
     latestSeq: number,
     event?: AgentEvent,
   ): Promise<{ seq: number; ts: number; fenceSeq: number; noticeSeq: number | null } | null> {
-    if (anchor.turnId === null) return null;
-    const turnId = anchor.turnId;
-    const eventRow = event === undefined ? undefined : await this.prepareEventRow(event);
-    const result = await this.withSessionEventAppend(anchor.sessionId, () =>
-      this.withRunnerFrameTurn(turnId, () =>
-        this.db.transaction().execute(async (tx) => {
-          // Keep the global order used by event-bearing frame ingestion: session
-          // append lock first, then turn lock. The former makes the MAX(events.id)
-          // predicate atomic with every canonical event writer; the latter makes
-          // the fence atomic with every frame claim.
-          await this.sessionEventAppendLock(tx, anchor.sessionId);
-          await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);
-          const marker = await tx
-            .selectFrom('running_turns')
-            .select(['prompt_seq', 'turn_id'])
-            .where('session_id', '=', anchor.sessionId)
-            .executeTakeFirst();
-          if (
-            marker === undefined ||
-            Number(marker.prompt_seq) !== anchor.promptSeq ||
-            marker.turn_id !== turnId
-          ) {
-            return null;
-          }
-          const newest = await tx
-            .selectFrom('events')
-            .select((eb) => eb.fn.max('id').as('seq'))
-            .where('session_id', '=', anchor.sessionId)
-            .executeTakeFirst();
-          if (Number(newest?.seq ?? 0) !== latestSeq) return null;
-
-          const rows = await tx
-            .selectFrom('runner_frames')
-            .select(['frame_seq', 'runner_instance_id', 'payload_hash'])
-            .where('turn_id', '=', turnId)
-            .orderBy('frame_seq', 'desc')
-            .execute();
-          if (rows.some((row) => row.payload_hash === ABANDONED_TURN_FENCE_HASH)) return null;
-
-          let persisted: { seq: number; ts: number } = { seq: latestSeq, ts: Date.now() };
-          if (eventRow !== undefined) {
-            const inserted = await tx
-              .insertInto('events')
-              .values({
-                session_id: anchor.sessionId,
-                type: eventRow.type,
-                payload: eventRow.payload,
-              })
-              .returning(['id', 'created_at'])
-              .executeTakeFirstOrThrow();
-            persisted = { seq: Number(inserted.id), ts: inserted.created_at.getTime() };
-          }
-
-          const last = rows[0];
-          await tx
-            .insertInto('runner_frames')
-            .values({
-              turn_id: turnId,
-              frame_seq: last === undefined ? 1 : Number(last.frame_seq) + 1,
-              runner_instance_id: last?.runner_instance_id ?? ABANDONED_TURN_FENCE_INSTANCE,
-              session_id: anchor.sessionId,
-              payload_hash: ABANDONED_TURN_FENCE_HASH,
-              event_id: null,
-              terminal: true,
-            })
-            .execute();
-          return {
-            ...persisted,
-            fenceSeq: last === undefined ? 1 : Number(last.frame_seq) + 1,
-            noticeSeq: eventRow === undefined ? null : persisted.seq,
-          };
-        }),
-      ),
-    );
-    return result;
+    return this.eventWrites.fenceRunningTurnIfSilent(anchor, latestSeq, event);
   }
 
   /** Undo a stalled-turn fence when shutdown won immediately after it committed. */
@@ -5037,50 +1620,7 @@ export class EventStore implements EventSink {
     noticeSeq: number | null,
     fenceSeq: number,
   ): Promise<void> {
-    if (anchor.turnId === null) return;
-    const turnId = anchor.turnId;
-    let projectionInvalidated = false;
-    await this.withSessionEventAppend(anchor.sessionId, () =>
-      this.withRunnerFrameTurn(turnId, () =>
-        this.db.transaction().execute(async (tx) => {
-          await this.sessionEventAppendLock(tx, anchor.sessionId);
-          await sql`select pg_advisory_xact_lock(hashtext(${turnId}))`.execute(tx);
-          const removed = await tx
-            .deleteFrom('runner_frames')
-            .where('turn_id', '=', turnId)
-            .where('frame_seq', '=', fenceSeq)
-            .where('payload_hash', '=', ABANDONED_TURN_FENCE_HASH)
-            .executeTakeFirst();
-          if (removed.numDeletedRows === 0n) return;
-          if (noticeSeq !== null) {
-            const deleted = await tx
-              .deleteFrom('events')
-              .where('session_id', '=', anchor.sessionId)
-              .where('id', '=', noticeSeq)
-              .executeTakeFirst();
-            if (deleted.numDeletedRows > 0n) {
-              // The search view may already contain this provisional notice and its
-              // cursor may point beyond the now-removed event. Reset it in the same
-              // transaction, then rebuild from the surviving canonical log after
-              // commit. Serialize with both live projection and backfill before
-              // resetting: either may already have read the notice and would
-              // otherwise reinsert it after this transaction commits. A rollback
-              // therefore restores both canonical and projected state together.
-              await sql`select pg_advisory_xact_lock(hashtext(${
-                'messages:' + anchor.sessionId
-              }))`.execute(tx);
-              await tx.deleteFrom('messages').where('session_id', '=', anchor.sessionId).execute();
-              await tx
-                .deleteFrom('message_projection_state')
-                .where('session_id', '=', anchor.sessionId)
-                .execute();
-              projectionInvalidated = true;
-            }
-          }
-        }),
-      ),
-    );
-    if (projectionInvalidated) this.scheduleMessageProjection();
+    return this.eventWrites.releaseRunningTurnFence(anchor, noticeSeq, fenceSeq);
   }
 
   /** Rewrite a `tool_result`'s heavy inline payloads to content-addressed refs:
@@ -5091,18 +1631,11 @@ export class EventStore implements EventSink {
   private async externalizeToolResult(
     event: Extract<AgentEvent, { t: 'tool_result' }>,
   ): Promise<AgentEvent> {
-    const imaged = await externalizeToolResultImages(event.output, (mediaType, data) =>
-      this.putAttachment(mediaType, data),
+    return this.attachments.externalizeToolResult(
+      event,
+      (mediaType, data) => this.putAttachment(mediaType, data),
+      (jsonText) => this.putTextBlob(jsonText),
     );
-    const texted = await externalizeToolResultText(imaged.output, (jsonText) =>
-      this.putTextBlob(jsonText),
-    );
-    if (!imaged.changed && texted.ref === undefined) return event;
-    return {
-      ...event,
-      output: texted.output,
-      ...(texted.ref !== undefined ? { outputRef: texted.ref } : {}),
-    };
   }
 
   /**
@@ -5113,80 +1646,32 @@ export class EventStore implements EventSink {
    * because the externalized body is the JSON serialization of the tool output.
    */
   async putTextBlob(jsonText: string): Promise<string> {
-    // Redact credentials from the externalized tool-output blob too (audit M9), so
-    // a token echoed in a large tool result isn't persisted in clear. Content-
-    // addressed by the REDACTED bytes, so the event's outputRef stays consistent.
-    const bytes = Buffer.from(redactSecrets(jsonText), 'utf8');
-    const hash = createHash('sha256').update(bytes).digest('hex');
-    await this.db
-      .insertInto('attachments')
-      .values({ hash, media_type: 'application/json', bytes })
-      .onConflict((oc) => oc.column('hash').doNothing())
-      .execute();
-    return hash;
+    return this.attachments.putTextBlob(jsonText);
   }
 
-  /**
-   * Store an image blob from its base64 payload, content-addressed by the SHA-256
-   * of the decoded bytes. Idempotent: a re-upload of identical bytes is a no-op
-   * (ON CONFLICT DO NOTHING), so the same image dedupes to one row. Returns the
-   * hash — the `id` a `prompt` event references and the client fetches by.
-   */
-  async putAttachment(mediaType: string, base64Data: string): Promise<string> {
-    const bytes = Buffer.from(base64Data, 'base64');
-    const hash = createHash('sha256').update(bytes).digest('hex');
-    await this.db
-      .insertInto('attachments')
-      .values({ hash, media_type: mediaType, bytes })
-      .onConflict((oc) => oc.column('hash').doNothing())
-      .execute();
-    return hash;
+  async putAttachment(
+    mediaType: string,
+    base64Data: string,
+    mockupSessionId?: string,
+  ): Promise<string> {
+    return this.attachments.putAttachment(mediaType, base64Data, mockupSessionId);
   }
 
   /** Read a stored blob; an optional byte ceiling filters it before transfer. */
   async getAttachment(hash: string, maxBytes?: number): Promise<AttachmentBlob | undefined> {
-    let query = this.db
-      .selectFrom('attachments')
-      .select(['media_type', 'bytes'])
-      .where('hash', '=', hash);
-    if (maxBytes !== undefined) {
-      query = query.where(sql<number>`octet_length(bytes)`, '<=', maxBytes);
-    }
-    const row = await query.executeTakeFirst();
-    if (!row) return undefined;
-    return { mediaType: row.media_type, bytes: Buffer.from(row.bytes) };
+    return this.attachments.getAttachment(hash, maxBytes);
   }
 
   /** Whether a prompt in this session references the content-addressed attachment. */
   async sessionHasAttachment(sessionId: string, hash: string): Promise<boolean> {
-    const row = await this.db
-      .selectFrom('events')
-      .select('id')
-      .where('session_id', '=', sessionId)
-      .where('type', '=', 'prompt')
-      .where(sql<boolean>`payload @> ${JSON.stringify({ attachments: [{ id: hash }] })}::jsonb`)
-      .executeTakeFirst();
-    return row !== undefined;
+    return this.attachments.sessionHasAttachment(sessionId, hash);
   }
 
   /** Restore listener discovery's baseline without reading the session's transcript. */
   async getLatestDevServersEvent(
     sessionId: string,
   ): Promise<Extract<AgentEvent, { t: 'dev_servers_changed' }> | undefined> {
-    const row = await this.db
-      .selectFrom('events')
-      .select('payload')
-      .where('session_id', '=', sessionId)
-      .where('type', '=', 'dev_servers_changed')
-      .orderBy('id', 'desc')
-      .limit(1)
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    const parsed = parseAgentEvent(row.payload);
-    if (!parsed.success || parsed.data.t !== 'dev_servers_changed') {
-      throw new Error(`corrupt listener snapshot in session ${sessionId}`);
-    }
-    return parsed.data;
+    return this.eventSnapshots.getLatestDevServersEvent(sessionId);
   }
 
   /** Fetch one app snapshot without hydrating the surrounding transcript. */
@@ -5194,25 +1679,12 @@ export class EventStore implements EventSink {
     sessionId: string,
     appId: string,
   ): Promise<Extract<AgentEvent, { t: 'mcp_app' }> | undefined> {
-    const row = await this.db
-      .selectFrom('events')
-      .select('payload')
-      .where('session_id', '=', sessionId)
-      .where('type', '=', 'mcp_app')
-      .where(sql<string>`payload->>'appId'`, '=', appId)
-      .orderBy('id', 'desc')
-      .limit(1)
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    const parsed = parseAgentEvent(row.payload);
-    if (!parsed.success || parsed.data.t !== 'mcp_app') throw new Error('Corrupt MCP app snapshot');
-    return parsed.data;
+    return this.eventSnapshots.getMcpAppEvent(sessionId, appId);
   }
 
   /** Read a session's full event log in append order. Validates each payload. */
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
-    const sequenced = await this.getEventsAfter(sessionId, 0);
-    return sequenced.map((s) => s.event);
+    return this.eventHistory.getEvents(sessionId);
   }
 
   /** Return a contiguous suffix of complete events within the negotiated wire
@@ -5223,62 +1695,7 @@ export class EventStore implements EventSink {
     snapshotSeq?: number,
     eventOffset?: number,
   ): Promise<BoundedHistoryResult> {
-    // One query establishes the initial snapshot, including the empty-log case.
-    const source = await this.getEventsBeforeSeq(
-      sessionId,
-      eventOffset === undefined ? HISTORY_MAX_EVENTS : 1,
-      snapshotSeq === undefined ? beforeSeq : Math.min(beforeSeq ?? Infinity, snapshotSeq + 1),
-    );
-    const snapshot = snapshotSeq ?? source.events.at(-1)?.seq ?? 0;
-    const page: BoundedHistoryPage = {
-      contract: 'bounded-history-v1',
-      kind: 'page',
-      events: [],
-      snapshotSeq: snapshot,
-      beforeSeq: null,
-      hasMore: false,
-    };
-    for (let i = source.events.length - 1; i >= 0; i -= 1) {
-      const event = source.events[i]!;
-      const candidate: BoundedHistoryPage = {
-        ...page,
-        events: [event, ...page.events],
-        beforeSeq: event.seq,
-        hasMore: i > 0 || source.hasMore,
-      };
-      const requiredBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
-      if (requiredBytes > HISTORY_MAX_BYTES) {
-        if (page.events.length === 0) {
-          if (eventOffset !== undefined) {
-            const serialized = JSON.stringify(candidate);
-            // A JSON string needs at most six UTF-8 bytes per UTF-16 code unit.
-            // Leave room for the chunk envelope, including all numeric cursors.
-            const chunkChars = Math.floor((HISTORY_MAX_BYTES - 1024) / 6);
-            if (eventOffset >= serialized.length) throw new RangeError('invalid history offset');
-            return {
-              contract: 'bounded-history-v1',
-              kind: 'event-chunk',
-              seq: event.seq,
-              snapshotSeq: snapshot,
-              offset: eventOffset,
-              totalChars: serialized.length,
-              data: serialized.slice(eventOffset, eventOffset + chunkChars),
-            };
-          }
-          return {
-            contract: 'bounded-history-v1',
-            kind: 'oversized-event',
-            seq: event.seq,
-            requiredBytes,
-            maxBytes: HISTORY_MAX_BYTES,
-            snapshotSeq: snapshot,
-          };
-        }
-        return page;
-      }
-      Object.assign(page, candidate);
-    }
-    return page;
+    return this.eventHistory.getBoundedHistory(sessionId, beforeSeq, snapshotSeq, eventOffset);
   }
 
   /**
@@ -5294,41 +1711,13 @@ export class EventStore implements EventSink {
     limit: number,
     beforeSeq?: number,
   ): Promise<{ events: SequencedEvent[]; hasMore: boolean }> {
-    let q = this.db
-      .selectFrom('events')
-      .select(['id', 'payload', 'created_at'])
-      .where('session_id', '=', sessionId);
-    if (beforeSeq !== undefined) q = q.where('id', '<', beforeSeq);
-    // One extra row probes whether an older page exists, then is dropped.
-    const rows = await q
-      .orderBy('id', 'desc')
-      .limit(limit + 1)
-      .execute();
-    const hasMore = rows.length > limit;
-    const page = (hasMore ? rows.slice(0, limit) : rows).reverse();
-    const events = page.map((row) => {
-      const parsed = parseAgentEvent(row.payload);
-      if (!parsed.success) {
-        throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
-      }
-      return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
-    });
-    return { events, hasMore };
+    return this.eventHistory.getEventsBeforeSeq(sessionId, limit, beforeSeq);
   }
 
   /** The user behind the session's most recent prompt that names one, or `undefined`
    *  when no prompt in the session has an initiator. */
   async latestPromptInitiator(sessionId: string): Promise<{ userId: string } | undefined> {
-    const row = await this.db
-      .selectFrom('events')
-      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
-      .where('session_id', '=', sessionId)
-      .where(sql<boolean>`payload->>'t' = 'prompt'`)
-      .where(sql<boolean>`payload->'initiatedBy'->>'userId' is not null`)
-      .orderBy('id', 'desc')
-      .limit(1)
-      .executeTakeFirst();
-    return row?.userId ? { userId: row.userId } : undefined;
+    return this.eventHistory.latestPromptInitiator(sessionId);
   }
 
   /** The user a turn runs for while it is the session's running turn, or
@@ -5347,14 +1736,7 @@ export class EventStore implements EventSink {
    *  event is not a prompt or names no initiator. Recovery uses it to resume a
    *  turn under the identity it started with rather than the latest one. */
   async promptInitiatorAt(sessionId: string, seq: number): Promise<{ userId: string } | undefined> {
-    const row = await this.db
-      .selectFrom('events')
-      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
-      .where('session_id', '=', sessionId)
-      .where('id', '=', seq)
-      .where(sql<boolean>`payload->>'t' = 'prompt'`)
-      .executeTakeFirst();
-    return row?.userId ? { userId: row.userId } : undefined;
+    return this.eventHistory.promptInitiatorAt(sessionId, seq);
   }
 
   /**
@@ -5367,526 +1749,46 @@ export class EventStore implements EventSink {
     afterSeq: number,
     limit?: number,
   ): Promise<SequencedEvent[]> {
-    let query = this.db
-      .selectFrom('events')
-      .select(['id', 'payload', 'created_at'])
-      .where('session_id', '=', sessionId)
-      .where('id', '>', afterSeq)
-      .orderBy('id', 'asc');
-    // Paged readers (the live replay) bound each read; recovery reads stay whole.
-    if (limit !== undefined) query = query.limit(limit);
-    const rows = await query.execute();
-    return rows.map((row) => {
-      const parsed = parseAgentEvent(row.payload);
-      if (!parsed.success) {
-        throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
-      }
-      return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
-    });
+    return this.eventHistory.getEventsAfter(sessionId, afterSeq, limit);
   }
 
-  /**
-   * Read what the overview projections need from a set of session logs, WITHOUT
-   * hydrating those logs.
-   *
-   * The session list, the session detail and the project detail each derive five
-   * things per session: the status badge, the cumulative usage, the latest
-   * rate-limit states, `eventCount` (the unread badge compares it against
-   * `lastSeenEventCount`) and `lastActivityAt`. Deriving them used to mean
-   * `getEventsAfter(id, 0)` per
-   * session on a route the app polls every two seconds: every row of every log
-   * off the heap, its jsonb payload parsed and Zod-validated, to answer a badge
-   * and two numbers — enough of it to saturate the connection pool and stall
-   * every other request behind it.
-   *
-   * The first three read only {@link SESSION_PROJECTION_EVENT_TYPES}, which the
-   * denormalized `events.type` column can filter on directly (index
-   * `events_session_id_type_id_idx`). What that removes is the payload: the heap
-   * fetches, the JSON parse and the validation, which is where essentially all of
-   * the cost was.
-   *
-   * WHAT THE SLICE NO LONGER IS: the whole log's worth of projected events. Even
-   * narrowed to eight discriminants it still grew with history — ~1.6 KB per
-   * event on a seeded log — on a route polled every ~2 s per device, and V8 does
-   * not hand a peak like that back to the OS, so the churn settles in as resident
-   * memory. Each of the three now reads only what it can prove it needs:
-   *
-   * - usage sums in SQL over the whole log ({@link readUsageTotals}), so it never
-   *   needed the slice in the first place;
-   * - the rate-limit states come from a per-key `distinct on`
-   *   ({@link readLatestRateLimits}), because the newest quota state for a window
-   *   can be arbitrarily far back and a tail would silently drop it;
-   * - what is left — the status badge and the permission question — reads a
-   *   `tailLimit`-event TAIL, and both stop at the most recent non-steered
-   *   `prompt`, so a tail reaching past one answers identically to the full
-   *   slice. That is the caller's proof to make (`projectionTailIsSelfContained`
-   *   in the server), which is why `eventsTruncated` comes back with it.
-   *
-   * Exact counters and the newest event timestamp come from the trigger-maintained
-   * `session_event_stats` row. Every event mutation updates it transactionally,
-   * including writes from older server generations and provisional fence removal.
-   * The counters therefore stay constant-size reads as text history grows.
-   *
-   * BATCHED ON PURPOSE: `GET /sessions` needs every session at once, so this
-   * answers all of them in four queries (tails, rate-limit states, sums,
-   * counters) rather than four per session — four per `PROJECTION_ID_CHUNK` (message-projection.ts)
-   * sessions, precisely, since the bind-parameter ceiling forces a chunk loop
-   * above that many ids. Sessions with an empty log are present in the map with
-   * `eventCount: 0` — absent from the map means the session id was not asked for.
-   *
-   * `tailLimit` is how many projected events the caller wants at the end of each
-   * log. It is a parameter and not a constant here because "far enough back" is a
-   * property of what the caller derives, and this read cannot check it — see
-   * {@link listRecentSessionProjectionEvents}, which takes it for the same reason.
-   */
   async listSessionProjectionFacts(
     sessionIds: readonly string[],
     tailLimit: number,
   ): Promise<Map<string, SessionProjectionFacts>> {
-    const facts = new Map<string, SessionProjectionFacts>(
-      sessionIds.map((sessionId) => [
-        sessionId,
-        {
-          eventCount: 0,
-          lastEventSeq: 0,
-          lastActivityAt: null,
-          events: [],
-          eventsTruncated: false,
-          rateLimitEvents: [],
-          usage: emptyUsageTotals(),
-        },
-      ]),
-    );
-    if (facts.size === 0) return facts;
-    const chunks = idChunks([...facts.keys()]);
-
-    // Every part of this must describe the SAME log prefix. Under Postgres'
-    // default READ COMMITTED isolation each statement gets a new snapshot, so a
-    // result or rate-limit event appended between them could appear in only one
-    // half and briefly produce a status/usage combination that never existed.
-    // REPEATABLE READ fixes the snapshot for the complete batched read, including
-    // every chunk on installs large enough to cross the bind-parameter ceiling.
-    //
-    // That matters more now than it did when the slice answered three of these
-    // questions by itself: the tail, the quota states and the token sums are
-    // three separate reads of one log, and nothing else would keep "this turn
-    // finished", "this is what it cost" and "this is the quota it ran under"
-    // describing the same moment.
-    await this.db
-      .transaction()
-      .setIsolationLevel('repeatable read')
-      .execute(async (tx) => {
-        await this.readProjectionTails(chunks, facts, tailLimit, tx);
-        await this.readLatestRateLimits(chunks, facts, tx);
-        await this.readUsageTotals(chunks, facts, tx);
-
-        // Triggers keep exact counters in the same transaction as every event
-        // mutation, so this read shares the tail/usage snapshot without scanning
-        // one index entry per streamed delta on every overview poll.
-        for (const ids of chunks) {
-          const totals = await tx
-            .selectFrom('session_event_stats')
-            .select(['session_id', 'event_count', 'last_event_seq', 'last_activity_at'])
-            .where('session_id', 'in', ids)
-            .execute();
-          for (const row of totals) {
-            const entry = facts.get(row.session_id);
-            if (entry === undefined) continue;
-            entry.eventCount = Number(row.event_count);
-            entry.lastEventSeq = Number(row.last_event_seq);
-            entry.lastActivityAt = row.last_activity_at?.getTime() ?? null;
-          }
-        }
-      });
-    return facts;
+    return this.sessionProjections.listSessionProjectionFacts(sessionIds, tailLimit);
   }
 
-  /**
-   * The newest `limit` projected events of each listed session, ascending by
-   * `seq` — the batched counterpart of {@link listRecentSessionProjectionEvents},
-   * and the reason {@link listSessionProjectionFacts} no longer grows with
-   * history.
-   *
-   * One statement per chunk, not one per session: a `cross join lateral` runs the
-   * same descending index range per id, so Postgres stops at `limit` rows for
-   * EACH session instead of fetching every projected row and discarding all but
-   * the end of it. A window function over the whole set would be the same query
-   * to read and a full scan to run.
-   *
-   * The ids ride in as ONE array parameter, so this statement binds two
-   * parameters whatever the chunk size. The chunk loop stays anyway: the other
-   * reads in this transaction still bind one parameter per id, and a tail read
-   * that silently diverged from them on chunk boundaries would be a trap for
-   * whoever changes this next.
-   *
-   * Each session's rows arrive newest-first, because that is the only way a
-   * `limit` lands on the end of a log; they are sorted back into `seq` order
-   * here, which is what every derivation over them assumes.
-   */
-  private async readProjectionTails(
-    chunks: readonly (readonly string[])[],
-    into: ReadonlyMap<string, { events: SequencedEvent[]; eventsTruncated: boolean }>,
-    limit: number,
-    db: Transaction<Database>,
-  ): Promise<void> {
-    for (const ids of chunks) {
-      const rows = await sql<{
-        session_id: string;
-        id: string | number;
-        payload: unknown;
-        created_at: Date;
-      }>`
-        select s.session_id, tail.id, tail.payload, tail.created_at
-        from unnest(${[...ids]}::text[]) as s(session_id)
-        cross join lateral (
-          select e.id, e.payload, e.created_at
-          from events e
-          where e.session_id = s.session_id
-            and e.type = any(${[...SESSION_PROJECTION_EVENT_TYPES]}::text[])
-          order by e.id desc
-          limit ${limit}
-        ) as tail
-      `.execute(db);
-      for (const row of rows.rows) {
-        const entry = into.get(row.session_id);
-        if (entry === undefined) continue;
-        entry.events.push(sequencedEvent(row.session_id, row.id, row.payload, row.created_at));
-      }
-      for (const id of ids) {
-        const entry = into.get(id);
-        if (entry === undefined) continue;
-        entry.events.sort((a, b) => a.seq - b.seq);
-        // At the limit means the scan stopped on budget rather than on rows, so
-        // older projected events exist and this tail is not the whole slice.
-        entry.eventsTruncated = entry.events.length === limit;
-      }
-    }
-  }
-
-  /**
-   * The newest `rate_limit` event per provider/window/scope of each listed
-   * session, over the WHOLE log.
-   *
-   * A quota state stands until the provider replaces it, so the one that matters
-   * can sit thousands of events back — a tail that missed it would not report a
-   * degraded state, it would report none, which reads as "no limit in force".
-   * `distinct on` answers it per key in one statement per chunk, walking each
-   * session's `rate_limit` rows newest-first and keeping the first of each key.
-   *
-   * The key expressions repeat `latestRateLimits`' defaults (`Claude`,
-   * `all_models`) rather than grouping on the raw fields. An older event that
-   * omits `providerLabel` and a newer one that spells it out are ONE quota state
-   * to the caller, and grouping them apart here would hand it two — and let the
-   * older of them survive as the newest of its group.
-   *
-   * Returned unsorted: the caller keys them itself and sorts the result by
-   * severity, and any order this imposed would be discarded there.
-   */
-  private async readLatestRateLimits(
-    chunks: readonly (readonly string[])[],
-    into: ReadonlyMap<string, { rateLimitEvents: SequencedEvent[] }>,
-    db: Transaction<Database>,
-  ): Promise<void> {
-    const providerLabel = sql`coalesce(e.payload ->> 'providerLabel', 'Claude')`;
-    const window = sql`coalesce(e.payload ->> 'window', '')`;
-    const scope = sql`coalesce(e.payload ->> 'scope', 'all_models')`;
-    for (const ids of chunks) {
-      const rows = await sql<{
-        session_id: string;
-        id: string | number;
-        payload: unknown;
-        created_at: Date;
-      }>`
-        select distinct on (e.session_id, ${providerLabel}, ${window}, ${scope})
-          e.session_id, e.id, e.payload, e.created_at
-        from events e
-        where e.session_id = any(${[...ids]}::text[])
-          and e.type = 'rate_limit'
-        order by e.session_id, ${providerLabel}, ${window}, ${scope}, e.id desc
-      `.execute(db);
-      for (const row of rows.rows) {
-        const entry = into.get(row.session_id);
-        if (entry === undefined) continue;
-        entry.rateLimitEvents.push(
-          sequencedEvent(row.session_id, row.id, row.payload, row.created_at),
-        );
-      }
-    }
-  }
-
-  /**
-   * Cumulative token usage per session, summed in the DATABASE — the totals half
-   * of {@link listSessionProjectionFacts}.
-   *
-   * `aggregateUsage` answers the same question by folding every `result` event of
-   * every listed session in the server process, which is why the overview has to
-   * hydrate whole logs it otherwise only reads the end of. It is the one consumer
-   * of the slice whose answer genuinely depends on the entire log, so it has to
-   * move before the slice can be bounded — see the note on `aggregateUsage`,
-   * which named a store-side SUM as the eventual path.
-   *
-   * Sums are taken as `bigint`: a busy session's `cacheReadTokens` runs to
-   * billions, and `int` would overflow long before the total stops being
-   * interesting. They come back as strings and are narrowed here, which is exact
-   * up to 2^53 — past that the process could not hold the number anyway.
-   *
-   * A session with no `result` events produces no row at all, which is why the
-   * caller seeds a zeroed total rather than letting an absent one read as missing.
-   *
-   * `events_session_id_type_id_idx` leads with `(session_id, type)`, so the scan
-   * reaches only the `result` rows — one per completed turn — rather than every
-   * event of every listed session. The payload still comes from the heap, which
-   * is the cost this read pays and the reason it sums four fields in one pass.
-   *
-   * Takes the transaction rather than defaulting to {@link EventStore.db}: these
-   * sums are only comparable to the slice and the counters when all three read
-   * the same snapshot, so there is no correct way to call this outside one.
-   */
-  private async readUsageTotals(
-    chunks: readonly (readonly string[])[],
-    into: ReadonlyMap<string, { usage: UsageTotals }>,
-    db: Transaction<Database>,
-  ): Promise<void> {
-    for (const ids of chunks) {
-      const rows = await db
-        .selectFrom('events')
-        .select((eb) => [
-          'session_id',
-          // `coalesce` INSIDE the sum, not around it: a single NULL addend turns
-          // the whole group's sum NULL, so one unreadable row would zero a total
-          // over rows that are fine. It should be unreachable — `usage` is
-          // required on a `result` event, events are validated on the way in, and
-          // {@link readProjectionSlices} refuses a payload that no longer parses
-          // earlier in this very transaction — which is exactly why it is worth a
-          // keyword rather than a branch.
-          //
-          // `turns` counts the `result` rows unconditionally, which is what
-          // `aggregateUsage` does with the same log: it adds a turn for every
-          // `result` event it sees, without consulting the payload.
-          usageSum('inputTokens').as('input_tokens'),
-          usageSum('outputTokens').as('output_tokens'),
-          usageSum('cacheReadTokens').as('cache_read_tokens'),
-          usageSum('cacheCreationTokens').as('cache_creation_tokens'),
-          eb.fn.countAll<string | number | bigint>().as('turns'),
-        ])
-        .where('session_id', 'in', ids)
-        .where('type', '=', 'result')
-        .groupBy('session_id')
-        .execute();
-      for (const row of rows) {
-        const entry = into.get(row.session_id);
-        if (entry === undefined) continue;
-        entry.usage = {
-          inputTokens: Number(row.input_tokens),
-          outputTokens: Number(row.output_tokens),
-          cacheReadTokens: Number(row.cache_read_tokens),
-          cacheCreationTokens: Number(row.cache_creation_tokens),
-          turns: Number(row.turns),
-        };
-      }
-    }
-  }
-
-  /**
-   * The projection slice ALONE, for callers that need the events and not the
-   * counters.
-   *
-   * `GET /sessions/:id/activity` is the whole reason this exists. It polls every
-   * 1.5 s per open session, and it reads the log for exactly one question: is a
-   * background task still open behind a turn that already reported its result. It
-   * never returns counters, usage, or quota states, so fetching the other
-   * projection facts would add work whose result this caller discards.
-   *
-   * A separate method rather than a flag on the other one, because the flag would
-   * have to leave `eventCount: 0` behind — and a zero count is not an absence,
-   * it is what {@link deriveSessionStatusFromProjection} reads as `idle`.
-   */
   async listSessionProjectionEvents(
     sessionIds: readonly string[],
     throughSeq?: number,
   ): Promise<Map<string, SequencedEvent[]>> {
-    const slices = new Map<string, SequencedEvent[]>(
-      sessionIds.map((sessionId) => [sessionId, []]),
-    );
-    if (slices.size === 0) return slices;
-    await this.readProjectionSlices(idChunks([...slices.keys()]), slices, this.db, throughSeq);
-    return slices;
+    return this.sessionProjections.listSessionProjectionEvents(sessionIds, throughSeq);
   }
 
-  /** Batched fallback with one connection and at most one hydrated history plus a page.
-   * Keyset pages bound decoding bursts without a connection checkout per session. */
   async visitSessionProjectionEvents(
     boundaries: ReadonlyMap<string, number>,
     visit: (sessionId: string, events: SequencedEvent[]) => Promise<void>,
   ): Promise<void> {
-    if (boundaries.size === 0) return;
-    const input = JSON.stringify([...boundaries].map(([session_id, seq]) => ({ session_id, seq })));
-    await this.db.connection().execute(async (db) => {
-      let afterSession = '';
-      let afterSeq = 0;
-      let currentId: string | undefined;
-      let current: SequencedEvent[] = [];
-      for (;;) {
-        const page = await sql<{
-          session_id: string;
-          id: string | number;
-          payload: unknown;
-          created_at: Date;
-        }>`
-          select e.session_id, e.id, e.payload, e.created_at
-          from jsonb_to_recordset(${input}::jsonb) as boundary(session_id text, seq bigint)
-          join events e on e.session_id = boundary.session_id and e.id <= boundary.seq
-          where e.type = any(${[...SESSION_PROJECTION_EVENT_TYPES]}::text[])
-            and (e.session_id, e.id) > (${afterSession}, ${afterSeq}::bigint)
-          order by e.session_id, e.id limit 500
-        `.execute(db);
-        for (const row of page.rows) {
-          if (currentId !== undefined && currentId !== row.session_id) {
-            await visit(currentId, current);
-            current = [];
-          }
-          currentId = row.session_id;
-          current.push(sequencedEvent(row.session_id, row.id, row.payload, row.created_at));
-          afterSession = row.session_id;
-          afterSeq = Number(row.id);
-        }
-        if (page.rows.length < 500) break;
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
-      if (currentId !== undefined) await visit(currentId, current);
-    });
+    return this.sessionProjections.visitSessionProjectionEvents(boundaries, visit);
   }
 
-  /**
-   * The TAIL of one session's projection slice — its newest `limit` events, still
-   * ascending by `seq`.
-   *
-   * {@link listSessionProjectionEvents} is linear in log length, and the activity
-   * poll that calls it runs every 1.5 s for every idle session. Measured against a
-   * seeded log, that slice costs ~1.6 KB per event: a session with 800 prompts
-   * spends ~50 MB a minute being asked a question whose answer is at the end of
-   * its log. Nothing retains it, so this is churn rather than a leak — but V8 does
-   * not return the peak to the OS, so the process wears it for good.
-   *
-   * WHY A TAIL IS ENOUGH is a fact about the status derivation, not about this
-   * query, so the caller checks it: see `projectionTailIsSelfContained`. In short,
-   * both passes of `deriveSessionStatusFromProjection` stop at the most recent
-   * non-steered `prompt`, so a tail reaching back past one answers identically to
-   * the whole slice. A tail that does NOT reach one proves nothing, and the caller
-   * falls back to the full read.
-   *
-   * Ordering note: the LIMIT has to apply to a DESCENDING scan or it would return
-   * the OLDEST `limit` events — the same cost, and the wrong half of the log. The
-   * rows are reversed here so callers still see ascending `seq`, which is what
-   * both passes of the derivation assume.
-   */
   async listRecentSessionProjectionEvents(
     sessionId: string,
     limit: number,
   ): Promise<SequencedEvent[]> {
-    const rows = await this.db
-      .selectFrom('events')
-      .select(['id', 'payload', 'created_at'])
-      .where('session_id', '=', sessionId)
-      .where('type', 'in', [...SESSION_PROJECTION_EVENT_TYPES])
-      .orderBy('id', 'desc')
-      .limit(limit)
-      .execute();
-    const events: SequencedEvent[] = [];
-    for (const row of rows.reverse()) {
-      const parsed = parseAgentEvent(row.payload);
-      // Same contract as the batched slice read below: a payload that does not
-      // parse is a corrupted log, not a row to skip past.
-      if (!parsed.success) {
-        throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
-      }
-      events.push({ seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data });
-    }
-    return events;
+    return this.sessionProjections.listRecentSessionProjectionEvents(sessionId, limit);
   }
 
-  /** Task updates must not hide the completion that releases a repair claim. */
   async latestSessionTurnControlEvent(
     sessionId: string,
     afterSeq: number,
   ): Promise<SequencedEvent | undefined> {
-    const row = await this.db
-      .selectFrom('events')
-      .select(['id', 'payload', 'created_at'])
-      .where('session_id', '=', sessionId)
-      .where('id', '>', afterSeq)
-      .where('type', 'in', ['status', 'prompt', 'interrupted'])
-      .orderBy('id', 'desc')
-      .limit(1)
-      .executeTakeFirst();
-    if (!row) return undefined;
-    const parsed = parseAgentEvent(row.payload);
-    if (!parsed.success)
-      throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
-    return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
+    return this.sessionProjections.latestSessionTurnControlEvent(sessionId, afterSeq);
   }
 
-  /**
-   * Whether this session's log holds a `task` event ANYWHERE.
-   *
-   * The companion to {@link listRecentSessionProjectionEvents}, and the one
-   * question a tail cannot answer for itself. The activity poll gates its
-   * log-derived busy state on a task lifecycle existing at all — over the whole
-   * log, not the current turn — so a tail that reaches back far enough for the
-   * status derivation may still be short of this. Asking directly costs one
-   * lookup in `events_session_id_type_id_idx` and fetches no payload, which is
-   * the entire reason the tail is worth reading in the first place.
-   *
-   * `limit(1)` is the point: this is an existence question, and counting the
-   * matching rows instead would restore exactly the full-log scan being avoided.
-   */
   async sessionHasTaskLifecycleEvent(sessionId: string): Promise<boolean> {
-    const row = await this.db
-      .selectFrom('events')
-      .select('id')
-      .where('session_id', '=', sessionId)
-      .where('type', '=', 'task')
-      .limit(1)
-      .executeTakeFirst();
-    return row !== undefined;
-  }
-
-  /** The slice read shared by {@link listSessionProjectionFacts} and
-   *  {@link listSessionProjectionEvents}: appends each session's projected events,
-   *  in `seq` order, to the array already sitting under its id. */
-  private async readProjectionSlices(
-    chunks: readonly (readonly string[])[],
-    into: ReadonlyMap<string, SequencedEvent[]>,
-    db: Kysely<Database> | Transaction<Database> = this.db,
-    throughSeq?: number,
-  ): Promise<void> {
-    for (const ids of chunks) {
-      let query = db
-        .selectFrom('events')
-        .select(['session_id', 'id', 'payload', 'created_at'])
-        .where('session_id', 'in', ids)
-        .where('type', 'in', [...SESSION_PROJECTION_EVENT_TYPES]);
-      if (throughSeq !== undefined) query = query.where('id', '<=', throughSeq);
-      const rows = await query.orderBy('session_id', 'asc').orderBy('id', 'asc').execute();
-      for (const row of rows) {
-        const events = into.get(row.session_id);
-        if (events === undefined) continue;
-        const parsed = parseAgentEvent(row.payload);
-        if (!parsed.success) {
-          // Same contract as {@link getEventsAfter}: a payload that does not
-          // parse is a corrupted log, not a row to skip past. Batching widens the
-          // blast radius — one bad row now fails the whole list rather than one
-          // session — and that is the right trade: events are validated on the
-          // way IN, so a row that fails on the way out means the database no
-          // longer holds what the server wrote, and a badge quietly rendered from
-          // the surviving rows would hide it.
-          throw new Error(
-            `corrupt event payload in session ${row.session_id}: ${parsed.error.message}`,
-          );
-        }
-        events.push({ seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data });
-      }
-    }
+    return this.sessionProjections.sessionHasTaskLifecycleEvent(sessionId);
   }
 
   /**
@@ -5896,15 +1798,7 @@ export class EventStore implements EventSink {
    * fixes the FIFO order; `id` is the conductor-minted retract handle.
    */
   async enqueueTurn(input: QueuedTurnInput): Promise<void> {
-    await this.db
-      .insertInto('queued_turns')
-      .values({
-        id: input.id,
-        session_id: input.sessionId,
-        prompt: input.prompt,
-        opts: JSON.stringify(input.opts),
-      })
-      .execute();
+    return this.turnRecords.enqueueTurn(input);
   }
 
   /** Accept a plan and its implementation backlog entry together. A restart
@@ -5915,117 +1809,7 @@ export class EventStore implements EventSink {
     onPersisted?: (event: SequencedEvent) => void,
     consent?: PlanningConsent,
   ): Promise<boolean> {
-    const persisted: { seq: number; createdAt: Date; event: AgentEvent }[] = [];
-    const accepted = await this.db.transaction().execute(async (tx) => {
-      // A newer user prompt revokes chat consent before any tasks or work commit.
-      await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
-        tx,
-      );
-      if (consent !== undefined) {
-        const running = await tx
-          .selectFrom('running_turns')
-          .select(['turn_id', 'prompt_seq'])
-          .where('session_id', '=', input.sessionId)
-          .forUpdate()
-          .executeTakeFirst();
-        const queuedPrompt = await tx
-          .selectFrom('queued_turns')
-          .select('id')
-          .where('session_id', '=', input.sessionId)
-          .limit(1)
-          .executeTakeFirst();
-        if (queuedPrompt !== undefined) return false;
-        const latest = await tx
-          .selectFrom('events')
-          .select('id')
-          .where('session_id', '=', input.sessionId)
-          .where('type', '=', 'prompt')
-          .orderBy('id', 'desc')
-          .limit(1)
-          .executeTakeFirst();
-        if (
-          running?.turn_id !== consent.turnId ||
-          Number(running.prompt_seq) !== consent.runningPromptSeq ||
-          Number(latest?.id) !== consent.promptSeq
-        )
-          return false;
-      }
-
-      const result = await tx
-        .updateTable('sessions')
-        .set({ planning: 'implemented' })
-        .where('session_id', '=', input.sessionId)
-        .where('planning', '=', 'active')
-        .where('planning_revision', '=', revision)
-        .where('planning_plan', 'is not', null)
-        .executeTakeFirst();
-      if (result.numUpdatedRows === 0n) return false;
-      const session = await tx
-        .selectFrom('sessions')
-        .select(['project_id', 'planning_plan'])
-        .where('session_id', '=', input.sessionId)
-        .executeTakeFirstOrThrow();
-      const tasks = new TaskStore(tx, this.cipher);
-      const ownerUserId = await tasks.agentTaskOwner(input.sessionId, session.project_id);
-      if (ownerUserId !== undefined) {
-        const steps = parsePlanningProposal(session.planning_plan!).steps;
-        const taskIds: string[] = [];
-        for (const [index, step] of steps.entries()) {
-          const id = randomUUID();
-          const title = step
-            .replace(/\*\*/g, '')
-            .split(/\s+[—–]\s+|\n/)[0]!
-            .slice(0, 2_000);
-          await tasks.upsert({
-            id,
-            ownerUserId,
-            projectId: session.project_id,
-            sessionId: input.sessionId,
-            sourceSessionId: input.sessionId,
-            origin: 'agent',
-            title,
-            detail: step.slice(0, 20_000),
-            sort: index,
-          });
-          taskIds.push(id);
-        }
-        // The event and tasks commit with acceptance: recovery never loses the link
-        // to the accepted steps, and concurrent decisions cannot duplicate them.
-        for (let offset = 0; offset < taskIds.length; offset += 100) {
-          const event: AgentEvent = {
-            t: 'tasks_updated',
-            origin: 'agent',
-            change: 'added',
-            taskIds: taskIds.slice(offset, offset + 100),
-          };
-          const eventRow = await this.prepareEventRow(event);
-          await sql`select pg_advisory_xact_lock(hashtext(${this.sessionEventAppendLockKey(input.sessionId)}))`.execute(
-            tx,
-          );
-          const row = await tx
-            .insertInto('events')
-            .values({ session_id: input.sessionId, type: eventRow.type, payload: eventRow.payload })
-            .returning(['id', 'created_at'])
-            .executeTakeFirstOrThrow();
-          persisted.push({ seq: Number(row.id), createdAt: row.created_at, event });
-        }
-      }
-      await tx
-        .insertInto('queued_turns')
-        .values({
-          id: input.id,
-          session_id: input.sessionId,
-          prompt: input.prompt,
-          opts: JSON.stringify(input.opts),
-        })
-        .execute();
-      return true;
-    });
-    for (const row of persisted) {
-      this.enqueuePersistedMessageEvent(input.sessionId, row.seq, row.createdAt, row.event);
-      onPersisted?.({ seq: row.seq, ts: row.createdAt.getTime(), event: row.event });
-    }
-    return accepted;
+    return this.planImplementation.enqueuePlanImplementation(input, revision, onPersisted, consent);
   }
 
   /**
@@ -6035,20 +1819,14 @@ export class EventStore implements EventSink {
    * harmless no-op: e.g. a retract racing the drain that just dispatched it).
    */
   async deleteQueuedTurn(id: string): Promise<boolean> {
-    const result = await this.db.deleteFrom('queued_turns').where('id', '=', id).executeTakeFirst();
-    return result.numDeletedRows > 0n;
+    return this.turnRecords.deleteQueuedTurn(id);
   }
 
   /** Remove a backlog snapshot atomically: either every queued row is deleted or
    * none is. Stop uses this so a storage failure cannot leave a partially deleted
    * backlog split between live memory and durable recovery. */
   async deleteQueuedTurns(ids: readonly string[]): Promise<void> {
-    if (ids.length === 0) return;
-    await this.db.transaction().execute(async (tx) => {
-      for (const id of ids) {
-        await tx.deleteFrom('queued_turns').where('id', '=', id).execute();
-      }
-    });
+    return this.turnRecords.deleteQueuedTurns(ids);
   }
 
   /**
@@ -6057,18 +1835,7 @@ export class EventStore implements EventSink {
    * `seq` so each session's turns recover in the order they were enqueued.
    */
   async listQueuedTurns(): Promise<QueuedTurnRecord[]> {
-    const rows = await this.db
-      .selectFrom('queued_turns')
-      .select(['id', 'seq', 'session_id', 'prompt', 'opts'])
-      .orderBy('seq', 'asc')
-      .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      seq: Number(row.seq),
-      sessionId: row.session_id,
-      prompt: row.prompt,
-      opts: row.opts,
-    }));
+    return this.turnRecords.listQueuedTurns();
   }
 
   /** Mark a turn in flight for `sessionId` (upsert — only one turn runs at a time).
@@ -6079,31 +1846,7 @@ export class EventStore implements EventSink {
     promptSeq: number;
     markerId?: string;
   }): Promise<void> {
-    if (await this.isSessionDeleting(input.sessionId)) throw new Error('Session is being deleted');
-    const markerId = input.markerId ?? randomUUID();
-    await this.db
-      .insertInto('running_turns')
-      .values({
-        session_id: input.sessionId,
-        prompt_seq: input.promptSeq,
-        marker_id: markerId,
-        settled: false,
-      })
-      .onConflict((oc) =>
-        oc.column('session_id').doUpdateSet({
-          prompt_seq: input.promptSeq,
-          marker_id: markerId,
-          settled: false,
-          started_at: sql`now()`,
-          // Re-anchoring the marker (a resume-retry starts a FRESH attempt) drops the
-          // previous attempt's bound identity — the new attempt rebinds via
-          // {@link bindTurnIdentity} before its Runner launches (ADR 0006 D2). Leaving
-          // the stale turn_id would let recovery discover the wrong (superseded) turn.
-          turn_id: null,
-          start_command_id: null,
-        }),
-      )
-      .execute();
+    return this.turnRecords.markTurnRunning(input);
   }
 
   /** Record backend-confirmed completion, independently of best-effort cleanup.
@@ -6116,14 +1859,7 @@ export class EventStore implements EventSink {
     markerId: string,
     turnId: string | null = null,
   ): Promise<void> {
-    await this.db
-      .updateTable('running_turns')
-      .set({ settled: true })
-      .where('session_id', '=', sessionId)
-      .where('prompt_seq', '=', promptSeq)
-      .where('marker_id', '=', markerId)
-      .where('turn_id', turnId === null ? 'is' : '=', turnId)
-      .execute();
+    return this.turnRecords.confirmTurnSettled(sessionId, promptSeq, markerId, turnId);
   }
 
   /** ADR 0006 Stage 4: bind the Server-allocated turn identity onto the in-flight
@@ -6135,11 +1871,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     identity: { turnId: string; startCommandId: string },
   ): Promise<void> {
-    await this.db
-      .updateTable('running_turns')
-      .set({ turn_id: identity.turnId, start_command_id: identity.startCommandId, settled: false })
-      .where('session_id', '=', sessionId)
-      .execute();
+    return this.turnRecords.bindTurnIdentity(sessionId, identity);
   }
 
   /** Clear the in-flight marker for `sessionId` once its turn reaches a terminal
@@ -6154,16 +1886,7 @@ export class EventStore implements EventSink {
     promptSeq?: number,
     markerId?: string | null,
   ): Promise<void> {
-    let query = this.db.deleteFrom('running_turns').where('session_id', '=', sessionId);
-    if (promptSeq !== undefined) {
-      query = query.where('prompt_seq', '=', promptSeq);
-    }
-    if (markerId !== undefined)
-      query =
-        markerId === null
-          ? query.where('marker_id', 'is', null)
-          : query.where('marker_id', '=', markerId);
-    await query.execute();
+    return this.turnRecords.clearRunningTurn(sessionId, promptSeq, markerId);
   }
 
   /** Resolve a bounded maintenance page against Server-owned execution records.
@@ -6174,99 +1897,13 @@ export class EventStore implements EventSink {
     sessionIds: string[];
     turns: RunnerTurnOwnershipRequest[];
   }): Promise<RunnerTurnOwnership[]> {
-    const safeId = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
-    if (
-      input.sessionIds.length > 512 ||
-      input.turns.length > 512 ||
-      input.sessionIds.some((id) => !safeId.test(id)) ||
-      new Set(input.sessionIds).size !== input.sessionIds.length ||
-      new Set(input.turns.map((turn) => turn.turnId)).size !== input.turns.length ||
-      input.turns.some(
-        (turn) =>
-          !safeId.test(turn.turnId) ||
-          (turn.startCommandId !== undefined && !safeId.test(turn.startCommandId)) ||
-          (turn.runnerInstanceId !== undefined && !safeId.test(turn.runnerInstanceId)),
-      )
-    )
-      throw new Error('Invalid runner ownership inventory');
-    if (input.turns.length === 0) return [];
-    const turnIds = input.turns.map((turn) => turn.turnId);
-    const allowed = new Set(input.sessionIds);
-    return this.db
-      .transaction()
-      .setIsolationLevel('repeatable read')
-      .execute(async (tx) => {
-        // Bound distinct identities, not frames: a long valid turn can have many frames.
-        const frames = await tx
-          .selectFrom('runner_frames')
-          .select(['turn_id', 'session_id', 'runner_instance_id'])
-          .where('turn_id', 'in', turnIds)
-          .where('payload_hash', '!=', ABANDONED_TURN_FENCE_HASH)
-          .distinct()
-          .limit(1025)
-          .execute();
-        const running = await tx
-          .selectFrom('running_turns')
-          .select(['turn_id', 'session_id', 'start_command_id'])
-          .where('turn_id', 'in', turnIds)
-          .limit(1025)
-          .execute();
-        if (frames.length > 1024 || running.length > 1024)
-          throw new Error('Runner ownership inventory limit');
-        return input.turns.map((turn) => {
-          const boundFrames = frames.filter((row) => row.turn_id === turn.turnId);
-          const boundRunning = running.filter((row) => row.turn_id === turn.turnId);
-          const owners = new Set([
-            ...boundFrames.map((row) => row.session_id),
-            ...boundRunning.map((row) => row.session_id),
-          ]);
-          const conflict =
-            owners.size > 1 ||
-            [...owners].some((owner) => !safeId.test(owner)) ||
-            new Set(boundFrames.map((row) => row.runner_instance_id)).size > 1 ||
-            boundFrames.some(
-              (row) =>
-                turn.runnerInstanceId !== undefined &&
-                row.runner_instance_id !== turn.runnerInstanceId,
-            ) ||
-            boundRunning.some(
-              (row) =>
-                row.start_command_id === null ||
-                !safeId.test(row.start_command_id) ||
-                (turn.startCommandId !== undefined && row.start_command_id !== turn.startCommandId),
-            );
-          const owner = owners.size === 1 ? [...owners][0] : undefined;
-          return {
-            turnId: turn.turnId,
-            ...(owner !== undefined && allowed.has(owner) && !conflict ? { sessionId: owner } : {}),
-            conflict: conflict || (owner !== undefined && !allowed.has(owner)),
-          };
-        });
-      });
+    return this.turnRecords.resolveRunnerTurnOwnership(input);
   }
 
   /** All in-flight markers. At startup a non-empty result flags sessions whose
    * turn was abandoned by a crash/restart. */
   async listRunningTurns(): Promise<RunningTurnRecord[]> {
-    const rows = await this.db
-      .selectFrom('running_turns')
-      .select([
-        'session_id',
-        'prompt_seq',
-        'started_at',
-        'turn_id',
-        'start_command_id',
-        'marker_id',
-      ])
-      .execute();
-    return rows.map((row) => ({
-      sessionId: row.session_id,
-      promptSeq: Number(row.prompt_seq),
-      startedAt: new Date(row.started_at),
-      turnId: row.turn_id,
-      startCommandId: row.start_command_id,
-      markerId: row.marker_id,
-    }));
+    return this.turnRecords.listRunningTurns();
   }
 
   /**
@@ -6286,154 +1923,8 @@ export class EventStore implements EventSink {
     sessionId: string,
     event: AgentEvent,
   ): Promise<{ seq: number; ts: number } | undefined> {
-    const parsed = parseAgentEvent(event);
-    if (!parsed.success) {
-      throw new Error(`refusing to persist invalid event: ${parsed.error.message}`);
-    }
-    const payload = scrubNulEscapes(redactSecrets(JSON.stringify(event)));
-    const persisted = await this.withSessionEventAppend(sessionId, () =>
-      this.db.transaction().execute(async (tx) => {
-        await this.sessionEventAppendLock(tx, sessionId);
-        const del = await tx.deleteFrom('queued_turns').where('id', '=', id).executeTakeFirst();
-        if (del.numDeletedRows === 0n) return undefined;
-        const row = await tx
-          .insertInto('events')
-          .values({
-            session_id: sessionId,
-            type: event.t,
-            payload,
-          })
-          .returning(['id', 'created_at'])
-          .executeTakeFirstOrThrow();
-        return { seq: Number(row.id), ts: row.created_at.getTime() };
-      }),
-    );
-    // Enqueue only AFTER the transaction commits. Doing this inside the callback
-    // could project a prompt from a transaction that subsequently rolled back;
-    // omitting it entirely left successfully drained prompts absent from search
-    // until an unrelated backfill happened to run.
-    if (persisted !== undefined) {
-      this.enqueuePersistedMessageEvent(
-        sessionId,
-        persisted.seq,
-        new Date(persisted.ts),
-        JSON.parse(payload) as AgentEvent,
-      );
-    }
-    return persisted;
+    return this.eventWrites.drainQueuedTurn(id, sessionId, event);
   }
-
-  // ─── Multi-repo fleet registry (concept §19, #174) ─────────────────────────
-
-  private projectRowToRecord(row: {
-    id: string;
-    name?: string | null;
-    owner: string;
-    repo: string;
-    container_name: string;
-    kind?: string | null;
-    forge_connection_id?: string | null;
-    repository_instance?: number | null;
-    clone_dir?: string | null;
-    image_ref: string | null;
-    image_override_ref?: string | null;
-    toolkit_identity?: string | null;
-    state: string;
-    sleep_compatibility_fingerprint?: string | null;
-    sleeping_since?: Date | null;
-    wake_started_at?: Date | null;
-    archived?: boolean | null;
-    provision_error: string | null;
-    provision_warning: string | null;
-    hidden_at: Date | null;
-    sort_order: number | null;
-    collapsed?: boolean | null;
-    overview_visible?: boolean | null;
-    setup_status: string;
-    latest_release_tag: string | null;
-    latest_release_name: string | null;
-    latest_release_url: string | null;
-    latest_release_published_at: string | null;
-    created_at: Date;
-    updated_at: Date;
-    state_changed_at?: Date | null;
-  }): ProjectRecord {
-    return {
-      id: row.id,
-      name: row.name ?? defaultProjectName(row),
-      owner: row.owner,
-      repo: row.repo,
-      containerName: row.container_name,
-      kind: (row.kind ?? 'github') as ProjectKind,
-      forgeConnectionId: row.forge_connection_id ?? null,
-      repositoryInstance: row.repository_instance ?? 1,
-      cloneDir: row.clone_dir ?? null,
-      imageRef: row.image_ref,
-      imageOverrideRef: row.image_override_ref ?? null,
-      toolkitIdentity: row.toolkit_identity ?? null,
-      // Trusting the column to only ever hold one of the five state values; the
-      // app layer writes through {@link upsertProject}/{@link updateProjectState}
-      // which take a {@link ProjectState}. A drift here means a stray writer ATK-
-      // bypassed those — assertable by a future CHECK constraint, not in v1.
-      state: row.state as ProjectState,
-      sleepCompatibilityFingerprint: row.sleep_compatibility_fingerprint ?? null,
-      sleepingSince: row.sleeping_since ?? null,
-      wakeStartedAt: row.wake_started_at ?? null,
-      archived: row.archived ?? false,
-      provisionError: row.provision_error,
-      provisionWarning: row.provision_warning,
-      hiddenAt: row.hidden_at,
-      sortOrder: row.sort_order,
-      collapsed: row.collapsed ?? false,
-      overviewVisible: row.overview_visible ?? false,
-      setupStatus: row.setup_status as ProjectSetupState,
-      latestReleaseTag: row.latest_release_tag,
-      latestReleaseName: row.latest_release_name,
-      latestReleaseUrl: row.latest_release_url,
-      latestReleasePublishedAt: row.latest_release_published_at,
-      createdAt: row.created_at,
-      // Falls back to `updated_at` only for a row read through a projection that
-      // predates the column (test doubles); the migration backfills the same
-      // value, so the two agree for every real row.
-      stateChangedAt: row.state_changed_at ?? row.updated_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  private readonly projectColumns = [
-    'forge_connection_id',
-    'id',
-    'name',
-    'kind',
-    'owner',
-    'repo',
-    'container_name',
-    'kind',
-    'repository_instance',
-    'clone_dir',
-    'image_ref',
-    'image_override_ref',
-    'toolkit_identity',
-    'state',
-    'sleep_compatibility_fingerprint',
-    'sleeping_since',
-    'wake_started_at',
-    'archived',
-    'provision_error',
-    'provision_warning',
-    'hidden_at',
-    'sort_order',
-    'collapsed',
-    'overview_visible',
-    'setup_status',
-    'latest_release_tag',
-    'latest_release_name',
-    'latest_release_url',
-    'latest_release_published_at',
-    'created_at',
-    'updated_at',
-    'state_changed_at',
-  ] as const;
 
   /**
    * Idempotent upsert on `(owner, repo)`. Re-running the GitHub-installation sync
@@ -6458,201 +1949,7 @@ export class EventStore implements EventSink {
    *          `deleteProject` (slice 3) between insert and lookup.
    */
   async upsertProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
-    const row = await this.db.transaction().execute(async (tx) => {
-      // Knowledge lifecycle mutations take this lock before touching a project
-      // row. Match that order here so sync cannot deadlock with hide/delete.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      return this.upsertPrimaryProject(tx, input);
-    });
-    if (!row) {
-      // The only way `RETURNING *` returns undefined here is if the ORM/dialect
-      // drops the returning clause — a contract bug, not a runtime path.
-      throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
-    }
-    return this.projectRowToRecord(row);
-  }
-
-  /** The body of {@link upsertProject}: always targets the repository's first
-   *  project (instance 1). The caller holds the project lifecycle lock. */
-  private async upsertPrimaryProject(tx: Transaction<Database>, input: ProjectUpsertInput) {
-    // Lowercase the canonical (owner, repo) and the derived container_name so
-    // the persisted form honours §19.0/§19.2's lowercase-persist contract
-    // (without forcing every caller — including GitHub-sync — to remember).
-    const owner = input.owner.toLowerCase();
-    const repo = input.repo.toLowerCase();
-    const containerName = input.containerName.toLowerCase();
-    const legacyContainerNames = [`dev-${owner}--${repo}`, `dev-${owner}-${repo}`];
-    const shouldMigrateLegacyContainerName = containerName.startsWith('verity-');
-
-    // A sync may omit the connection, but must never change the provider of
-    // an existing project identified by its durable ID.
-    const byId = await tx
-      .selectFrom('projects')
-      .select(['kind', 'forge_connection_id', 'repository_instance'])
-      .where('id', '=', input.id)
-      .executeTakeFirst();
-    // The upsert resolves by the repository's first project. A further project
-    // of the same repository must never be rewritten into, or confused with, it.
-    if (byId && byId.repository_instance !== 1) {
-      throw new ProjectIdentityClaimConflict(
-        'Project is a further project of its repository and cannot be upserted',
-      );
-    }
-    if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
-      throw new ProjectIdentityClaimConflict(
-        'Project identity belongs to another forge connection',
-      );
-    }
-    if (input.forgeConnectionId === undefined && byId?.forge_connection_id) {
-      input = { ...input, forgeConnectionId: byId.forge_connection_id };
-    }
-    const existingBinding = await tx
-      .selectFrom('projects')
-      .select(['kind', 'forge_connection_id'])
-      .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
-      .where('owner', '=', owner)
-      .where('repo', '=', repo)
-      .where('repository_instance', '=', 1)
-      .executeTakeFirst();
-    if (
-      existingBinding !== undefined &&
-      ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
-        (input.forgeConnectionId !== undefined &&
-          existingBinding.forge_connection_id !== null &&
-          existingBinding.forge_connection_id !== input.forgeConnectionId))
-    ) {
-      throw new ProjectIdentityClaimConflict(
-        'Project identity belongs to another forge connection',
-      );
-    }
-    const claimed = await tx
-      .insertInto('project_identity_claims')
-      .values({
-        owner,
-        repo,
-        project_id: input.id,
-        forge_connection_id: input.forgeConnectionId ?? null,
-      })
-      .onConflict((conflict) =>
-        conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
-      )
-      .returning('project_id')
-      .executeTakeFirst();
-    if (claimed === undefined) {
-      const [claim, existing] = await Promise.all([
-        tx
-          .selectFrom('project_identity_claims')
-          .select('project_id')
-          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
-          .where('owner', '=', owner)
-          .where('repo', '=', repo)
-          .where('repository_instance', '=', 1)
-          .executeTakeFirstOrThrow(),
-        tx
-          .selectFrom('projects')
-          .select('id')
-          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
-          .where('owner', '=', owner)
-          .where('repo', '=', repo)
-          .where('repository_instance', '=', 1)
-          .executeTakeFirst(),
-      ]);
-      if (existing === undefined || claim.project_id !== existing.id) {
-        throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
-      }
-    }
-    const project = await tx
-      .insertInto('projects')
-      .values({
-        id: input.id,
-        name: input.name ?? defaultProjectName({ repo }),
-        owner,
-        repo,
-        container_name: containerName,
-        kind: input.kind ?? 'github',
-        forge_connection_id: input.forgeConnectionId ?? null,
-        clone_dir: input.cloneDir ?? null,
-        image_ref: input.imageRef ?? null,
-        image_override_ref: input.imageRef ?? null,
-        state: input.state,
-        archived: input.archived ?? false,
-        overview_visible: input.overviewVisible ?? false,
-        provision_error: null,
-        provision_warning: null,
-      })
-      .onConflict((oc) =>
-        oc.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doUpdateSet({
-          // Preserve custom adopted container names, but migrate old deterministic
-          // `dev-<owner>--<repo>` / `dev-<owner>-<repo>` rows to the current
-          // canonical `verity-<owner>--<repo>` name. Without this, fresh servers
-          // can keep pointing at a legacy Dogfood container and miss current
-          // runtime mounts and gateway routing configuration.
-          container_name: shouldMigrateLegacyContainerName
-            ? sql`case when projects.container_name in (${sql.join(legacyContainerNames)}) then ${containerName} else projects.container_name end`
-            : sql`projects.container_name`,
-          // Provisioning-owned state stays untouched (the worker's
-          // `cloning/container_starting/active/failed` survives a sync pass).
-          // The image fields are only touched when the caller EXPLICITLY sets an
-          // override: `input.imageRef === undefined` means
-          // "I have no opinion, leave what's pinned" (preserves a slice-3 pin
-          // across slice-2 list refreshes), while `null` means "explicitly
-          // clear the pin" (operator-driven unpin). Slice 2's sync passes
-          // undefined → no-op.
-          // `toolkit_identity` travels with `image_ref` because it is a
-          // statement ABOUT that image: an operator pinning a NEW one has
-          // pinned something nothing has attested, and carrying the old
-          // verdict forward would let the new image inherit an all-clear it
-          // never earned. The next provisioning writes the real answer.
-          //
-          // Which is why the clear is conditional on the image actually
-          // moving. Re-saving the same pin — an idempotent settings write, a
-          // re-add of a project that never changed — leaves the effective
-          // image exactly as attested, so discarding the verdict there would
-          // manufacture an "unknown toolkit" warning about an image that was
-          // checked and passed, and it would stay wrong until the next
-          // provisioning. `is distinct from` compares against the PRE-update
-          // row (`projects.` in an ON CONFLICT update), and treats a null on
-          // either side as a difference rather than as unknown.
-          ...(input.imageRef !== undefined
-            ? {
-                image_ref: input.imageRef,
-                image_override_ref: input.imageRef,
-                toolkit_identity: sql<
-                  string | null
-                >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
-              }
-            : {}),
-          ...(input.forgeConnectionId !== undefined
-            ? { forge_connection_id: input.forgeConnectionId }
-            : {}),
-          ...(input.kind !== undefined ? { kind: input.kind } : {}),
-          ...(input.archived !== undefined ? { archived: input.archived } : {}),
-          ...(input.overviewVisible !== undefined
-            ? { overview_visible: input.overviewVisible }
-            : {}),
-          // `restore` (the POST /projects re-add path) un-hides an existing
-          // row. Omitted by the installation sync, so a re-sync of a repo the
-          // operator deleted keeps it hidden rather than resurrecting it.
-          ...(input.restore === true ? { hidden_at: null } : {}),
-          updated_at: sql`now()`,
-        }),
-      )
-      .returningAll()
-      .executeTakeFirst();
-    if (project && input.archived !== undefined) {
-      // Every project of the repository shares its archive state.
-      await tx
-        .updateTable('projects')
-        .set({ archived: input.archived, updated_at: sql`now()` })
-        .where('forge_scope', '=', project.forge_scope)
-        .where('owner', '=', owner)
-        .where('repo', '=', repo)
-        .where('repository_instance', '>', 1)
-        .where('archived', '!=', input.archived)
-        .execute();
-    }
-    if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
-    return project;
+    return this.projectLifecycle.upsertProject(input);
   }
 
   /**
@@ -6665,121 +1962,7 @@ export class EventStore implements EventSink {
    * project is never returned or reset for another project's request.
    */
   async createRepositoryProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
-    const owner = input.owner.toLowerCase();
-    const repo = input.repo.toLowerCase();
-    const scope = input.forgeConnectionId ?? 'legacy-github';
-    const row = await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const [primary, claim] = await Promise.all([
-        tx
-          .selectFrom('projects')
-          .select(['id', 'kind', 'state', 'overview_visible', 'hidden_at', 'archived'])
-          .where('forge_scope', '=', scope)
-          .where('owner', '=', owner)
-          .where('repo', '=', repo)
-          .where('repository_instance', '=', 1)
-          .executeTakeFirst(),
-        tx
-          .selectFrom('project_identity_claims')
-          .select('project_id')
-          .where('forge_scope', '=', scope)
-          .where('owner', '=', owner)
-          .where('repo', '=', repo)
-          .where('repository_instance', '=', 1)
-          .executeTakeFirst(),
-      ]);
-      const adoptable =
-        primary === undefined
-          ? claim === undefined
-          : claim?.project_id === primary.id &&
-            (primary.hidden_at !== null ||
-              isInstallationPlaceholder({
-                kind: primary.kind as ProjectKind,
-                state: primary.state as ProjectState,
-                overviewVisible: primary.overview_visible,
-              }));
-      const repositoryArchive =
-        primary ??
-        (await tx
-          .selectFrom('projects')
-          .select('archived')
-          .where('forge_scope', '=', scope)
-          .where('owner', '=', owner)
-          .where('repo', '=', repo)
-          .orderBy('repository_instance', 'asc')
-          .executeTakeFirst());
-      if (adoptable)
-        return this.upsertPrimaryProject(tx, {
-          ...input,
-          archived: input.archived ?? repositoryArchive?.archived ?? false,
-        });
-      const instance = await this.claimNextRepositoryInstance(
-        tx,
-        { owner, repo, forgeConnectionId: input.forgeConnectionId },
-        input.id,
-      );
-      // The project ID keeps the directory and container apart from every other
-      // project of this repository, whatever the repository is called.
-      const project = await tx
-        .insertInto('projects')
-        .values({
-          id: input.id,
-          name: input.name ?? defaultProjectName({ repo }),
-          owner,
-          repo,
-          repository_instance: instance,
-          container_name: `${input.containerName}--${input.id}`.toLowerCase(),
-          kind: input.kind ?? 'github',
-          forge_connection_id: input.forgeConnectionId ?? null,
-          clone_dir: `${input.cloneDir ?? `${owner}-${repo}`}-${input.id}`,
-          image_ref: input.imageRef ?? null,
-          image_override_ref: input.imageRef ?? null,
-          state: input.state,
-          // Archival is a property of the repository, recorded by the
-          // installation sync on its first project.
-          archived: input.archived ?? repositoryArchive?.archived ?? false,
-          overview_visible: input.overviewVisible ?? true,
-          provision_error: null,
-          provision_warning: null,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
-      return project;
-    });
-    if (!row) throw new Error('verity: createRepositoryProject RETURNING yielded no row');
-    return this.projectRowToRecord(row);
-  }
-
-  /** Reserve the next free instance of a repository for `projectId`. The
-   *  caller holds the project lifecycle lock, which serializes allocation. */
-  private async claimNextRepositoryInstance(
-    tx: Transaction<Database>,
-    target: { owner: string; repo: string; forgeConnectionId?: string | null | undefined },
-    projectId: string,
-  ): Promise<number> {
-    const scope = target.forgeConnectionId ?? 'legacy-github';
-    const next = await sql<{ instance: number }>`
-      select coalesce(max(repository_instance), 0) + 1 as instance from (
-        select repository_instance from projects
-          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
-        union all
-        select repository_instance from project_identity_claims
-          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
-      ) taken
-    `.execute(tx);
-    const instance = Number(next.rows[0]?.instance ?? 2);
-    await tx
-      .insertInto('project_identity_claims')
-      .values({
-        owner: target.owner,
-        repo: target.repo,
-        repository_instance: instance,
-        project_id: projectId,
-        forge_connection_id: target.forgeConnectionId ?? null,
-      })
-      .execute();
-    return instance;
+    return this.projectLifecycle.createRepositoryProject(input);
   }
 
   /** Insert a project without adopting an existing `(owner, repo)` row. Used for
@@ -6787,51 +1970,7 @@ export class EventStore implements EventSink {
    * clone would cross an ownership boundary. A conflict is surfaced atomically
    * as the database's unique violation. */
   async createProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
-    const owner = input.owner.toLowerCase();
-    const repo = input.repo.toLowerCase();
-    const row = await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const claimed = await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner,
-          repo,
-          project_id: input.id,
-          forge_connection_id: input.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) =>
-          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
-        )
-        .returning('project_id')
-        .executeTakeFirst();
-      if (claimed === undefined) {
-        throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
-      }
-      const project = await tx
-        .insertInto('projects')
-        .values({
-          id: input.id,
-          name: input.name ?? defaultProjectName({ repo }),
-          owner,
-          repo,
-          container_name: input.containerName.toLowerCase(),
-          kind: input.kind ?? 'github',
-          forge_connection_id: input.forgeConnectionId ?? null,
-          clone_dir: input.cloneDir ?? null,
-          image_ref: input.imageRef ?? null,
-          image_override_ref: input.imageRef ?? null,
-          state: input.state,
-          archived: input.archived ?? false,
-          overview_visible: input.overviewVisible ?? false,
-          provision_error: null,
-          provision_warning: null,
-        })
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
-      return project;
-    });
-    return this.projectRowToRecord(row);
+    return this.projectLifecycle.createProject(input);
   }
 
   /**
@@ -6844,142 +1983,49 @@ export class EventStore implements EventSink {
    * @returns the renamed project, or `undefined` when it does not exist.
    */
   async renameProject(id: string, name: string): Promise<ProjectRecord | undefined> {
-    const trimmed = name.trim();
-    if (trimmed.length === 0) throw new InvalidProjectNameError('project name is required');
-    if (trimmed.length > PROJECT_NAME_MAX_CHARS)
-      throw new InvalidProjectNameError(
-        `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
-      );
-    const row = await this.db
-      .updateTable('projects')
-      .set({ name: trimmed, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .returningAll()
-      .executeTakeFirst();
-    return row ? this.projectRowToRecord(row) : undefined;
+    return this.projectLifecycle.renameProject(id, name);
   }
 
   async getProject(id: string): Promise<ProjectRecord | undefined> {
-    const row = await this.db
-      .selectFrom('projects')
-      .select(this.projectColumns)
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row ? this.projectRowToRecord(row) : undefined;
+    return this.projectLifecycle.getProject(id);
   }
 
-  /** Local project authority comes from an active user's membership, never
-   * from their instance role alone. Route handlers will use this once team
-   * access is enabled. */
   /** Whether `userId` created the project (ADR 0023). */
   async isProjectCreator(userId: string, projectId: string): Promise<boolean> {
-    const row = await this.db
-      .selectFrom('projects')
-      .select('created_by_user_id')
-      .where('id', '=', projectId)
-      .executeTakeFirst();
-    return row?.created_by_user_id === userId;
+    return this.projectAccess.isProjectCreator(userId, projectId);
   }
 
   async hasProjectPermission(
     userId: string,
     projectId: string,
-    permission: 'read' | 'execute' | 'manage',
+    permission: ProjectPermission,
   ): Promise<boolean> {
-    const membership = await this.db
-      .selectFrom('project_memberships as m')
-      .innerJoin('users as u', 'u.id', 'm.user_id')
-      .innerJoin('projects as p', 'p.id', 'm.project_id')
-      .select([
-        'm.can_read',
-        'm.can_execute',
-        'm.can_manage',
-        'u.status',
-        'u.role',
-        'p.kind',
-        'p.created_by_user_id',
-      ])
-      .where('m.user_id', '=', userId)
-      .where('m.project_id', '=', projectId)
-      .executeTakeFirst();
-    if (membership === undefined || membership.status !== 'active') return false;
-    if (
-      membership.kind === 'control_plane' &&
-      (membership.role !== 'administrator' || membership.created_by_user_id !== userId)
-    ) {
-      return false;
-    }
-    return membership[`can_${permission}`];
+    return this.projectAccess.hasProjectPermission(userId, projectId, permission);
   }
 
   async isActiveAdministrator(userId: string): Promise<boolean> {
-    const user = await this.db
-      .selectFrom('users')
-      .select(['role', 'status'])
-      .where('id', '=', userId)
-      .executeTakeFirst();
-    return user?.role === 'administrator' && user.status === 'active';
+    return this.projectAccess.isActiveAdministrator(userId);
   }
 
   async isActiveLocalUser(userId: string): Promise<boolean> {
-    const user = await this.db
-      .selectFrom('users')
-      .select('status')
-      .where('id', '=', userId)
-      .executeTakeFirst();
-    return user?.status === 'active';
+    return this.projectAccess.isActiveLocalUser(userId);
   }
 
   /** Keep collection reads consistent with hasProjectPermission's control-plane rule. */
   async listReadableProjectIds(userId: string): Promise<string[]> {
-    const memberships = await this.db
-      .selectFrom('project_memberships as m')
-      .innerJoin('users as u', 'u.id', 'm.user_id')
-      .innerJoin('projects as p', 'p.id', 'm.project_id')
-      .select([
-        'm.project_id',
-        'm.can_read',
-        'u.status',
-        'u.role',
-        'p.kind',
-        'p.created_by_user_id',
-      ])
-      .where('m.user_id', '=', userId)
-      .execute();
-    return memberships
-      .filter(
-        (membership) =>
-          membership.status === 'active' &&
-          membership.can_read &&
-          (membership.kind !== 'control_plane' ||
-            (membership.role === 'administrator' && membership.created_by_user_id === userId)),
-      )
-      .map((membership) => membership.project_id);
+    return this.projectAccess.listReadableProjectIds(userId);
   }
 
   /** Delete every standing grant a person gave in a project (ADR 0023 §6). */
   async deleteUserProjectGrants(projectId: string, userId: string): Promise<number> {
-    const result = await this.db
-      .deleteFrom('secret_provider_permissions')
-      .where('project_id', '=', projectId)
-      .where('user_id', '=', userId)
-      .executeTakeFirst();
-    return Number(result.numDeletedRows);
+    return this.projectAccess.deleteUserProjectGrants(projectId, userId);
   }
 
   /** The names people chose to be shown under in shared projects (ADR 0023). */
+  private readonly currentUserProfiles = new UserProfileStore(() => this.db);
+
   async userDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
-    if (userIds.length === 0) return new Map();
-    const rows = await this.db
-      .selectFrom('users')
-      .select(['id', 'display_name'])
-      .where('id', 'in', [...userIds])
-      .execute();
-    return new Map(
-      rows
-        .filter((row) => row.display_name !== null && row.display_name.trim() !== '')
-        .map((row) => [row.id, row.display_name!.trim()]),
-    );
+    return this.currentUserProfiles.nonBlankDisplayNames(userIds);
   }
 
   /** Active users holding a project permission — the notification audience
@@ -6989,41 +2035,11 @@ export class EventStore implements EventSink {
     projectId: string,
     permission: 'read' | 'execute' | 'manage',
   ): Promise<string[]> {
-    const rows = await this.db
-      .selectFrom('project_memberships as m')
-      .innerJoin('users as u', 'u.id', 'm.user_id')
-      .innerJoin('projects as p', 'p.id', 'm.project_id')
-      .select([
-        'm.user_id',
-        'm.can_read',
-        'm.can_execute',
-        'm.can_manage',
-        'u.status',
-        'u.role',
-        'p.kind',
-        'p.created_by_user_id',
-      ])
-      .where('m.project_id', '=', projectId)
-      .execute();
-    return rows
-      .filter(
-        (row) =>
-          row.status === 'active' &&
-          row[`can_${permission}`] &&
-          (row.kind !== 'control_plane' ||
-            (row.role === 'administrator' && row.created_by_user_id === row.user_id)),
-      )
-      .map((row) => row.user_id);
+    return this.projectAccess.listProjectUserIds(projectId, permission);
   }
 
   async listActiveAdministratorIds(): Promise<string[]> {
-    const rows = await this.db
-      .selectFrom('users')
-      .select('id')
-      .where('role', '=', 'administrator')
-      .where('status', '=', 'active')
-      .execute();
-    return rows.map((row) => row.id);
+    return this.projectAccess.listActiveAdministratorIds();
   }
 
   async getProjectByOwnerRepo(
@@ -7046,15 +2062,7 @@ export class EventStore implements EventSink {
     repo: string,
     forgeConnectionId?: string | null,
   ): Promise<ProjectRecord[]> {
-    const rows = await this.db
-      .selectFrom('projects')
-      .select(this.projectColumns)
-      .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
-      .where('owner', '=', owner.toLowerCase())
-      .where('repo', '=', repo.toLowerCase())
-      .orderBy('repository_instance')
-      .execute();
-    return rows.map((row) => this.projectRowToRecord(row));
+    return this.projectLifecycle.listProjectsByOwnerRepo(owner, repo, forgeConnectionId);
   }
 
   /**
@@ -7063,11 +2071,9 @@ export class EventStore implements EventSink {
    * (whose ON CONFLICT branch would target the WRONG row — the GitHub-side
    * identity we are moving TO).
    *
-   * `container_name` is left alone: the container already exists under its
-   * local-project name and renaming it would mean recreating it for nothing.
-   * `clone_dir` is pinned to whatever directory the clone occupies right now, so
-   * the derived `<owner>-<repo>` path change does NOT relocate it — sessions
-   * persist absolute worktree paths under that directory.
+   * `container_name` stays (renaming would recreate the container); `clone_dir` is
+   * pinned to the clone's current directory, as sessions persist absolute worktree
+   * paths under it. Any GitHub repository ID is cleared; the new one is learned.
    *
    * Returns `undefined` when the project no longer exists. Throws the driver's
    * unique-violation when `(owner, repo)` is already registered — the caller maps
@@ -7077,432 +2083,26 @@ export class EventStore implements EventSink {
     id: string,
     target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<ProjectRecord | undefined> {
-    const row = await this.db.transaction().execute(async (tx) => {
-      // Serialize archive inheritance with installation sync and identity allocation.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const existing = await tx
-        .selectFrom('projects')
-        .select(this.projectColumns)
-        .forUpdate()
-        .where('id', '=', id)
-        .where('kind', '=', 'local')
-        .executeTakeFirst();
-      if (existing === undefined) return undefined;
-      const targetOwner = target.owner.toLowerCase();
-      const targetRepo = target.repo.toLowerCase();
-      const targetProject = await tx
-        .selectFrom('projects')
-        .select('archived')
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-        .where('owner', '=', targetOwner)
-        .where('repo', '=', targetRepo)
-        .orderBy('repository_instance', 'asc')
-        .executeTakeFirst();
-      const findClaim = () =>
-        tx
-          .selectFrom('project_identity_claims')
-          .select('repository_instance')
-          .where('project_id', '=', id)
-          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-          .where('owner', '=', targetOwner)
-          .where('repo', '=', targetRepo)
-          .executeTakeFirst();
-      let claim = await findClaim();
-      if (claim === undefined || claim.repository_instance === 1) {
-        // The placeholder stays intact while publication runs. Retire it only in
-        // this final transaction, alongside the local project's identity rewrite,
-        // so a pre-publication failure can restore its claim without losing any of
-        // its dependent configuration.
-        await this.retireInstallationPlaceholder(
-          tx,
-          targetOwner,
-          targetRepo,
-          id,
-          target.forgeConnectionId,
-        );
-      }
-      if (claim === undefined) {
-        await tx
-          .insertInto('project_identity_claims')
-          .values({
-            owner: targetOwner,
-            repo: targetRepo,
-            project_id: id,
-            forge_connection_id: target.forgeConnectionId ?? null,
-          })
-          .onConflict((conflict) =>
-            conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
-          )
-          .execute();
-        claim = await findClaim();
-      }
-      if (claim === undefined) {
-        throw new ProjectIdentityClaimConflict(
-          `project identity ${targetOwner}/${targetRepo} is not reserved`,
-        );
-      }
-      const updated = await tx
-        .updateTable('projects')
-        .set({
-          owner: targetOwner,
-          repo: targetRepo,
-          repository_instance: claim.repository_instance,
-          archived: targetProject?.archived ?? false,
-          kind: target.kind ?? 'github',
-          forge_connection_id: target.forgeConnectionId ?? null,
-          clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .where('kind', '=', 'local')
-        .returningAll()
-        .executeTakeFirst();
-      if (updated !== undefined) {
-        await tx
-          .deleteFrom('project_identity_claims')
-          .where('forge_scope', '=', existing.forge_connection_id ?? 'legacy-github')
-          .where('owner', '=', existing.owner)
-          .where('repo', '=', existing.repo)
-          .where('project_id', '=', id)
-          .execute();
-      }
-      return updated;
-    });
-    return row ? this.projectRowToRecord(row) : undefined;
+    return this.projectLifecycle.linkProjectToGitHub(id, target);
   }
 
   /** Disconnect by stable ID; pin the existing clone and preserve all dependent records. */
   async disconnectProjectFromGitHub(id: string): Promise<ProjectRecord | undefined> {
-    const row = await this.db.transaction().execute(async (tx) => {
-      // Match project creation and lifecycle lock order before allocating a local identity.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const existing = await tx
-        .selectFrom('projects')
-        .select(this.projectColumns)
-        .where('id', '=', id)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!existing || existing.hidden_at !== null || !['github', 'local'].includes(existing.kind))
-        return undefined;
-      if (existing.kind === 'local') return existing;
-      let localRepo = existing.repo;
-      for (let attempt = 1; ; attempt++) {
-        const collision = await tx
-          .selectFrom('projects')
-          .select('id')
-          .where('owner', '=', LOCAL_PROJECT_OWNER)
-          .where('repo', '=', localRepo)
-          .executeTakeFirst();
-        const claim = await tx
-          .selectFrom('project_identity_claims')
-          .select('project_id')
-          .where('owner', '=', LOCAL_PROJECT_OWNER)
-          .where('repo', '=', localRepo)
-          .executeTakeFirst();
-        if (!collision && (!claim || claim.project_id === id)) break;
-        localRepo = `${existing.repo}-${id}${attempt === 1 ? '' : `-${attempt}`}`;
-      }
-      const updated = await tx
-        .updateTable('projects')
-        .set({
-          kind: 'local',
-          owner: LOCAL_PROJECT_OWNER,
-          repo: localRepo,
-          repository_instance: 1,
-          forge_connection_id: null,
-          clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
-          latest_release_tag: null,
-          latest_release_name: null,
-          latest_release_url: null,
-          latest_release_published_at: null,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .returningAll()
-        .executeTakeFirst();
-      await tx.deleteFrom('project_identity_claims').where('project_id', '=', id).execute();
-      return updated;
-    });
-    return row ? this.projectRowToRecord(row) : undefined;
-  }
-
-  /**
-   * Drop the installation sync's placeholder row for `(owner, repo)` so a link
-   * can take the identity over, and report whether it did.
-   *
-   * Adoption is deliberately narrow. The row must be a picker-only GitHub
-   * project (`overview_visible=false`) that is `absent` AND carry no sessions —
-   * `sessions.project_id` is `ON DELETE SET NULL`, so
-   * deleting a project that was ever worked in would silently orphan its
-   * transcripts rather than fail loudly. Everything else about the row IS
-   * discarded with it via `ON DELETE CASCADE` (project settings, secret
-   * bindings, dev-server config). That is acceptable precisely here: the caller
-   * only reaches this path for a repository the provisioner has verified to be
-   * EMPTY on GitHub, so a placeholder pointing at it holds configuration for a
-   * project that never had any code, and the operator is in the act of saying
-   * which project that repository should belong to.
-   *
-   * Runs inside the caller's transaction so the delete, the claim, and the
-   * project rewrite commit as one unit — a concurrent installation sync can
-   * neither observe a half-adopted identity nor recreate the placeholder
-   * between the steps.
-   */
-  private async retireInstallationPlaceholder(
-    tx: Transaction<Database>,
-    owner: string,
-    repo: string,
-    forProjectId: string,
-    forgeConnectionId?: string | null,
-  ): Promise<boolean> {
-    const holder = await tx
-      .selectFrom('projects')
-      .select(['id', 'kind', 'state', 'overview_visible'])
-      .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
-      .where('owner', '=', owner)
-      .where('repo', '=', repo)
-      .where('repository_instance', '=', 1)
-      .where('id', '!=', forProjectId)
-      .executeTakeFirst();
-    if (holder === undefined) return false;
-    if (
-      !isInstallationPlaceholder({
-        kind: holder.kind as ProjectKind,
-        state: holder.state as ProjectState,
-        overviewVisible: holder.overview_visible,
-      })
-    ) {
-      return false;
-    }
-    if (await this.installationPlaceholderHasDependents(tx, holder.id)) return false;
-    await tx.deleteFrom('project_identity_claims').where('project_id', '=', holder.id).execute();
-    await tx.deleteFrom('projects').where('id', '=', holder.id).execute();
-    return true;
-  }
-
-  /** A sync placeholder is disposable only while no project-scoped durable
-   * state has attached to it. Keep this list aligned with direct `projects.id`
-   * foreign keys in migrations; identity claims are excluded because adoption
-   * deliberately transfers/deletes that bookkeeping row. */
-  private async installationPlaceholderHasDependents(
-    tx: Transaction<Database>,
-    projectId: string,
-  ): Promise<boolean> {
-    const result = await sql<{ has_dependents: boolean }>`
-      select exists (
-        select 1 from sessions where project_id = ${projectId}
-        union all select 1 from project_settings where project_id = ${projectId}
-        union all select 1 from project_google_connections where project_id = ${projectId}
-        union all select 1 from dev_servers where project_id = ${projectId}
-        union all select 1 from dev_server_detection_state where project_id = ${projectId}
-        union all select 1 from claude_egress_client_certs where project_id = ${projectId}
-        union all select 1 from signing_capabilities where project_id = ${projectId}
-        union all select 1 from secret_provider_credentials where project_id = ${projectId}
-        union all select 1 from secret_provider_bindings where project_id = ${projectId}
-        union all select 1 from secret_aliases where project_id = ${projectId}
-        union all select 1 from secret_provider_permissions where project_id = ${projectId}
-        union all select 1 from secret_execution_profiles where project_id = ${projectId}
-        union all select 1 from brokered_http_consumptions where project_id = ${projectId}
-        union all select 1 from public_preview_shares where project_id = ${projectId}
-        union all select 1 from local_preview_shares where project_id = ${projectId}
-      ) as has_dependents
-    `.execute(tx);
-    return result.rows[0]?.has_dependents === true;
+    return this.projectLifecycle.disconnectProjectFromGitHub(id);
   }
 
   async reserveProjectIdentity(
     id: string,
     target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<boolean> {
-    const owner = target.owner.toLowerCase();
-    const repo = target.repo.toLowerCase();
-    const scope = target.forgeConnectionId ?? 'legacy-github';
-    return this.db.transaction().execute(async (tx) => {
-      // Serializes instance allocation with project creation and other links.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const project = await tx
-        .selectFrom('projects')
-        .select(['id', 'owner', 'repo', 'forge_scope'])
-        .where('id', '=', id)
-        .executeTakeFirst();
-      if (project === undefined) return false;
-      const claims = await tx
-        .selectFrom('project_identity_claims')
-        .select(['owner', 'repo', 'forge_scope'])
-        .where('project_id', '=', id)
-        .execute();
-      // A local project normally owns its current local identity plus at most
-      // one pending GitHub target. If a prior push was ambiguous, only that
-      // exact target may be retried; reserving a second target would strand the
-      // first claim and could publish the same project to multiple repositories.
-      const hasDifferentPendingTarget = claims.some(
-        (claim) =>
-          (claim.forge_scope !== project.forge_scope ||
-            claim.owner !== project.owner ||
-            claim.repo !== project.repo) &&
-          (claim.forge_scope !== (target.forgeConnectionId ?? 'legacy-github') ||
-            claim.owner !== owner ||
-            claim.repo !== repo),
-      );
-      if (hasDifferentPendingTarget) return false;
-      // A retry of this project's own pending link keeps the instance it holds.
-      if (
-        claims.some(
-          (claim) => claim.forge_scope === scope && claim.owner === owner && claim.repo === repo,
-        )
-      ) {
-        return true;
-      }
-      // Keep a sync placeholder (and all of its dependent configuration) intact
-      // while publication runs; only transfer its claim temporarily. The final
-      // link transaction retires it atomically with the identity rewrite, while
-      // releaseProjectIdentity restores the claim after a known failed push.
-      const holder = await tx
-        .selectFrom('projects')
-        .select(['id', 'kind', 'state', 'overview_visible'])
-        .forUpdate()
-        .where('forge_scope', '=', scope)
-        .where('owner', '=', owner)
-        .where('repo', '=', repo)
-        .where('repository_instance', '=', 1)
-        .where('id', '!=', id)
-        .executeTakeFirst();
-      if (holder !== undefined) {
-        // The repository already backs a project: this one becomes another,
-        // independent project of the same repository.
-        if (
-          !isInstallationPlaceholder({
-            kind: holder.kind as ProjectKind,
-            state: holder.state as ProjectState,
-            overviewVisible: holder.overview_visible,
-          }) ||
-          (await this.installationPlaceholderHasDependents(tx, holder.id))
-        ) {
-          await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
-          return true;
-        }
-        // Hide the placeholder before releasing its row lock. createSession
-        // takes a SHARE lock and rejects hidden projects, so this closes the
-        // check-vs-spawn race for the entire external push window. `infinity`
-        // marks a row that was visible before reservation; an already-hidden
-        // placeholder keeps its original timestamp.
-        await tx
-          .updateTable('projects')
-          .set({
-            hidden_at: sql`case when hidden_at is null then 'infinity'::timestamptz else hidden_at end`,
-            updated_at: sql`now()`,
-          })
-          .where('id', '=', holder.id)
-          .execute();
-        await tx
-          .updateTable('project_identity_claims')
-          .set({ project_id: id })
-          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-          .where('owner', '=', owner)
-          .where('repo', '=', repo)
-          .where('project_id', '=', holder.id)
-          .execute();
-      }
-      await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner,
-          repo,
-          project_id: id,
-          forge_connection_id: target.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) =>
-          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
-        )
-        .execute();
-      const claim = await tx
-        .selectFrom('project_identity_claims')
-        .select('project_id')
-        .where('forge_scope', '=', scope)
-        .where('owner', '=', owner)
-        .where('repo', '=', repo)
-        .where('repository_instance', '=', 1)
-        .executeTakeFirst();
-      if (claim?.project_id === id) return true;
-      // Another link is reserving the first instance; take the next one.
-      await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
-      return true;
-    });
+    return this.projectLifecycle.reserveProjectIdentity(id, target);
   }
 
   async releaseProjectIdentity(
     id: string,
     target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<void> {
-    const owner = target.owner.toLowerCase();
-    const repo = target.repo.toLowerCase();
-    await this.db.transaction().execute(async (tx) => {
-      // Serialize with finalization on the source project. If another request
-      // already completed the link, a failed older attempt must not release the
-      // now-canonical GitHub identity claim.
-      const local = await tx
-        .selectFrom('projects')
-        .select('id')
-        .forUpdate()
-        .where('id', '=', id)
-        .where('kind', '=', 'local')
-        .executeTakeFirst();
-      if (local === undefined) return;
-      const claim = await tx
-        .selectFrom('project_identity_claims')
-        .select('repository_instance')
-        .where('project_id', '=', id)
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-        .where('owner', '=', owner)
-        .where('repo', '=', repo)
-        .executeTakeFirst();
-      // Only the first instance can have been taken over from a placeholder.
-      const placeholder =
-        claim?.repository_instance === 1
-          ? await tx
-              .selectFrom('projects')
-              .select(['id', 'kind', 'state', 'overview_visible'])
-              .forUpdate()
-              .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-              .where('owner', '=', owner)
-              .where('repo', '=', repo)
-              .where('repository_instance', '=', 1)
-              .where('id', '!=', id)
-              .executeTakeFirst()
-          : undefined;
-      if (
-        placeholder !== undefined &&
-        isInstallationPlaceholder({
-          kind: placeholder.kind as ProjectKind,
-          state: placeholder.state as ProjectState,
-          overviewVisible: placeholder.overview_visible,
-        })
-      ) {
-        // Only reservations of formerly-visible placeholders use the infinity
-        // marker. Preserve a placeholder that was already soft-deleted.
-        await tx
-          .updateTable('projects')
-          .set({ hidden_at: null, updated_at: sql`now()` })
-          .where('id', '=', placeholder.id)
-          .where('hidden_at', '=', sql<Date>`'infinity'::timestamptz`)
-          .execute();
-        await tx
-          .updateTable('project_identity_claims')
-          .set({ project_id: placeholder.id })
-          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-          .where('owner', '=', owner)
-          .where('repo', '=', repo)
-          .where('project_id', '=', id)
-          .execute();
-        return;
-      }
-      await tx
-        .deleteFrom('project_identity_claims')
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
-        .where('owner', '=', owner)
-        .where('repo', '=', repo)
-        .where('project_id', '=', id)
-        .execute();
-    });
+    return this.projectLifecycle.releaseProjectIdentity(id, target);
   }
 
   /**
@@ -7517,49 +2117,11 @@ export class EventStore implements EventSink {
    * not, before it seeds the config file.
    */
   async listProjects(opts?: { includeHidden?: boolean }): Promise<ProjectRecord[]> {
-    let query = this.db
-      .selectFrom('projects')
-      .select(this.projectColumns)
-      .orderBy(sql`sort_order is null`)
-      .orderBy('sort_order', 'asc')
-      .orderBy('created_at', 'asc')
-      .orderBy('id', 'asc');
-    if (opts?.includeHidden !== true) {
-      query = query.where('hidden_at', 'is', null);
-    }
-    const rows = await query.execute();
-    return rows.map((r) => this.projectRowToRecord(r));
+    return this.projectLifecycle.listProjects(opts);
   }
 
   async reorderProjects(ids: string[]): Promise<ProjectRecord[]> {
-    if (new Set(ids).size !== ids.length) {
-      throw new Error('duplicate project id in reorderProjects');
-    }
-    await this.db.transaction().execute(async (tx) => {
-      const visibleRows = await tx
-        .selectFrom('projects')
-        .select('id')
-        .where('hidden_at', 'is', null)
-        .where('kind', '!=', 'control_plane')
-        .where((eb) => eb.or([eb('state', '!=', 'absent'), eb('setup_status', '=', 'pending')]))
-        .execute();
-      const visibleIds = new Set(visibleRows.map((row) => row.id));
-      if (visibleIds.size !== ids.length || ids.some((id) => !visibleIds.has(id))) {
-        throw new Error('project order must include every visible project exactly once');
-      }
-      const sortOrderCase = sql<number>`(case ${sql.ref('id')} ${sql.join(
-        ids.map((id, index) => sql`when ${id} then ${index}`),
-        sql.raw(' '),
-      )} end)::integer`;
-      await tx
-        .updateTable('projects')
-        .set({ sort_order: sortOrderCase, updated_at: sql`now()` })
-        .where('hidden_at', 'is', null)
-        .where('kind', '!=', 'control_plane')
-        .where((eb) => eb.or([eb('state', '!=', 'absent'), eb('setup_status', '=', 'pending')]))
-        .execute();
-    });
-    return this.listProjects();
+    return this.projectLifecycle.reorderProjects(ids, () => this.listProjects());
   }
 
   /**
@@ -7570,62 +2132,11 @@ export class EventStore implements EventSink {
    * second hide just refreshes the timestamp. Returns whether a row matched.
    */
   async hideProject(id: string): Promise<boolean> {
-    return this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const result = await tx
-        .updateTable('projects')
-        .set({ hidden_at: sql`now()`, updated_at: sql`now()` })
-        .where('id', '=', id)
-        .executeTakeFirst();
-      const projectSessions = tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('project_id', '=', id);
-      await tx
-        .deleteFrom('session_links')
-        .where((eb) =>
-          eb.or([eb('session_a', 'in', projectSessions), eb('session_b', 'in', projectSessions)]),
-        )
-        .execute();
-      await tx
-        .updateTable('knowledge_folders')
-        .set({ archived: true, project_id: null })
-        .where('project_id', '=', id)
-        .execute();
-      await tx.deleteFrom('project_knowledge_spaces').where('project_id', '=', id).execute();
-      return result.numUpdatedRows > 0n;
-    });
+    return this.projectLifecycle.hideProject(id);
   }
 
   async deleteProject(id: string): Promise<boolean> {
-    const result = await this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      await tx
-        .selectFrom('projects')
-        .select('id')
-        .where('id', '=', id)
-        .forUpdate()
-        .executeTakeFirst();
-      const projectSessions = tx
-        .selectFrom('sessions')
-        .select('session_id')
-        .where('project_id', '=', id);
-      await tx
-        .deleteFrom('session_links')
-        .where((eb) =>
-          eb.or([eb('session_a', 'in', projectSessions), eb('session_b', 'in', projectSessions)]),
-        )
-        .execute();
-      await tx
-        .updateTable('knowledge_folders')
-        .set({ archived: true, project_id: null })
-        .where('project_id', '=', id)
-        .execute();
-      await tx.deleteFrom('project_identity_claims').where('project_id', '=', id).execute();
-      await tx.deleteFrom('integration_sources').where('project_id', '=', id).execute();
-      return tx.deleteFrom('projects').where('id', '=', id).executeTakeFirst();
-    });
-    return result.numDeletedRows > 0n;
+    return this.projectLifecycle.deleteProject(id);
   }
 
   /**
@@ -7658,32 +2169,7 @@ export class EventStore implements EventSink {
     provisionError: string | null = null,
     provisionWarning: string | null = null,
   ): Promise<ProjectRecord | undefined> {
-    const leavesSleepLifecycle =
-      state !== 'sleeping_starting' && state !== 'sleeping' && state !== 'waking';
-    await this.db.transaction().execute(async (trx) => {
-      await trx
-        .updateTable('projects')
-        .set({
-          state,
-          ...(leavesSleepLifecycle
-            ? {
-                sleep_compatibility_fingerprint: null,
-                sleeping_since: null,
-                wake_started_at: null,
-              }
-            : {}),
-          provision_error: provisionError,
-          provision_warning: provisionWarning,
-          state_changed_at: sql`now()`,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .execute();
-      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
-        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
-      }
-    });
-    return this.getProject(id);
+    return this.projectLifecycle.updateProjectState(id, state, provisionError, provisionWarning);
   }
 
   /** Persist a sleep/wake lifecycle transition and its recovery metadata in one
@@ -7699,26 +2185,7 @@ export class EventStore implements EventSink {
       wakeStartedAt: Date | null;
     },
   ): Promise<ProjectRecord | undefined> {
-    await this.db.transaction().execute(async (trx) => {
-      await trx
-        .updateTable('projects')
-        .set({
-          state,
-          sleep_compatibility_fingerprint: metadata.sleepCompatibilityFingerprint,
-          sleeping_since: metadata.sleepingSince,
-          wake_started_at: metadata.wakeStartedAt,
-          provision_error: null,
-          provision_warning: null,
-          state_changed_at: sql`now()`,
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .execute();
-      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
-        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
-      }
-    });
-    return this.getProject(id);
+    return this.projectLifecycle.updateProjectSleepState(id, state, metadata);
   }
 
   /** Record the effective image selected by provisioning without changing the
@@ -7736,27 +2203,14 @@ export class EventStore implements EventSink {
     imageRef: string,
     toolkitIdentity: string | null,
   ): Promise<void> {
-    await this.db
-      .updateTable('projects')
-      .set({
-        image_ref: imageRef,
-        toolkit_identity: toolkitIdentity,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    return this.projectLifecycle.recordProjectImageRef(id, imageRef, toolkitIdentity);
   }
 
   async setProjectSetupStatus(
     id: string,
     status: ProjectSetupState,
   ): Promise<ProjectRecord | undefined> {
-    await this.db
-      .updateTable('projects')
-      .set({ setup_status: status, updated_at: sql`now()` })
-      .where('id', '=', id)
-      .execute();
-    return this.getProject(id);
+    return this.projectLifecycle.setProjectSetupStatus(id, status);
   }
 
   /**
@@ -7768,513 +2222,60 @@ export class EventStore implements EventSink {
    * GitHub's ISO string (display-only, never queried).
    */
   async updateProjectReleaseStatus(id: string, status: ProjectReleaseStatus): Promise<void> {
-    await this.db
-      .updateTable('projects')
-      .set({
-        latest_release_tag: status.tag,
-        latest_release_name: status.name,
-        latest_release_url: status.url,
-        latest_release_published_at: status.publishedAt,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    return this.projectLifecycle.updateProjectReleaseStatus(id, status);
   }
 
-  // ─── Session automations: recurring prompts bound to one session ──────────
-
-  private sessionAutomationRowToRecord(row: {
-    id: string;
-    session_id: string;
-    name: string;
-    status: string;
-    schedule: ScheduleConfig;
-    prompt: string;
-    script: string | null;
-    model: string | null;
-    consecutive_error_count: number;
-    last_run_at: Date | null;
-    last_outcome: string | null;
-    last_detail: string | null;
-    next_run_at: Date | null;
-    sponsor_user_id: string | null;
-    created_at: Date;
-    updated_at: Date;
-  }): SessionAutomationRecord {
-    return {
-      id: row.id,
-      sessionId: row.session_id,
-      name: row.name,
-      status: row.status as SessionAutomationStatus,
-      schedule: row.schedule,
-      prompt: row.prompt,
-      script: row.script,
-      model: row.model,
-      consecutiveErrorCount: row.consecutive_error_count,
-      lastRunAt: row.last_run_at,
-      lastOutcome: row.last_outcome as SessionAutomationOutcome | null,
-      lastDetail: row.last_detail,
-      nextRunAt: row.next_run_at,
-      sponsorUserId: row.sponsor_user_id,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  /**
-   * Create or replace the automation of one session. A session owns at most one
-   * automation, so confirming a new proposal replaces the previous one in place.
-   * The result is enabled immediately and armed for its next slot: the operator's
-   * confirmation is the gate, not a separate enable step.
-   */
   async setSessionAutomation(
     input: SessionAutomationInput,
     now: Date = new Date(),
     checkedWorkspace?: Pick<SessionRecord, 'projectId' | 'worktree'>,
   ): Promise<SessionAutomationRecord> {
-    const values = {
-      name: input.name,
-      status: 'enabled',
-      schedule: JSON.stringify(input.schedule),
-      prompt: input.prompt,
-      script: input.script ?? null,
-      model: input.model ?? null,
-      consecutive_error_count: 0,
-      last_run_at: null,
-      last_outcome: null,
-      last_detail: null,
-      next_run_at: computeNextRun(input.schedule, now).toISOString(),
-      // A replacement is confirmed by whoever confirmed it, so it re-sponsors.
-      sponsor_user_id: input.sponsorUserId ?? null,
-    };
-    return this.db.transaction().execute(async (tx) => {
-      // Serialize with commitSessionMove: a script checked in the old workspace
-      // must not overwrite the move's pause or become enabled in the new one.
-      const session = await tx
-        .selectFrom('sessions')
-        .select(['project_id', 'worktree'])
-        .where('session_id', '=', input.sessionId)
-        .forUpdate()
-        .executeTakeFirstOrThrow();
-      if (
-        checkedWorkspace !== undefined &&
-        (session.project_id !== checkedWorkspace.projectId ||
-          session.worktree !== checkedWorkspace.worktree)
-      ) {
-        throw new SessionAutomationWorkspaceChangedError();
-      }
-      const row = await tx
-        .insertInto('session_automations')
-        .values({ id: randomUUID(), session_id: input.sessionId, ...values })
-        // A replacement gets a fresh id. Claims and outcomes are keyed by id, so a
-        // run of the previous configuration still in flight cannot record its result
-        // (or its errors) against the one the operator just confirmed.
-        .onConflict((oc) =>
-          oc
-            .column('session_id')
-            .doUpdateSet({ ...values, id: randomUUID(), updated_at: sql`now()` }),
-        )
-        .returningAll()
-        .executeTakeFirst();
-      if (!row)
-        throw new Error('verity: setSessionAutomation RETURNING yielded no row — dialect bug');
-      return this.sessionAutomationRowToRecord(row);
-    });
+    return this.sessionAutomations.setSessionAutomation(input, now, checkedWorkspace);
   }
 
   async getSessionAutomation(sessionId: string): Promise<SessionAutomationRecord | undefined> {
-    const row = await this.db
-      .selectFrom('session_automations')
-      .selectAll()
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return row ? this.sessionAutomationRowToRecord(row) : undefined;
+    return this.sessionAutomations.getSessionAutomation(sessionId);
   }
 
-  /**
-   * Pause or resume a session's automation. Resuming re-arms it from `now` and
-   * closes the error circuit, so an automation paused after repeated failures
-   * gets a fresh run of attempts once the operator turns it back on.
-   */
   async setSessionAutomationStatus(
     sessionId: string,
     status: SessionAutomationStatus,
     now: Date = new Date(),
   ): Promise<SessionAutomationRecord | undefined> {
-    return this.db.transaction().execute(async (tx) => {
-      const row = await tx
-        .selectFrom('session_automations')
-        .selectAll()
-        .where('session_id', '=', sessionId)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!row) return undefined;
-      // Re-sending the current status must neither reset the error budget nor
-      // push an already armed slot further out.
-      if (row.status === status) return this.sessionAutomationRowToRecord(row);
-      const updated = await tx
-        .updateTable('session_automations')
-        .set({
-          status,
-          next_run_at:
-            status === 'enabled' ? computeNextRun(row.schedule, now).toISOString() : null,
-          ...(status === 'enabled' ? { consecutive_error_count: 0 } : {}),
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', row.id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      return this.sessionAutomationRowToRecord(updated);
-    });
+    return this.sessionAutomations.setSessionAutomationStatus(sessionId, status, now);
   }
 
   async deleteSessionAutomation(sessionId: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('session_automations')
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numDeletedRows > 0n;
+    return this.sessionAutomations.deleteSessionAutomation(sessionId);
   }
 
-  /** Automation status per session, for the session list's automation marker.
-   *  Sessions without an automation are absent from the map. */
   async listSessionAutomationStatuses(
     sessionIds: readonly string[],
   ): Promise<Map<string, SessionAutomationStatus>> {
-    const statuses = new Map<string, SessionAutomationStatus>();
-    if (sessionIds.length === 0) return statuses;
-    const rows = await this.db
-      .selectFrom('session_automations')
-      .select(['session_id', 'status'])
-      .where('session_id', 'in', sessionIds)
-      .execute();
-    for (const row of rows) statuses.set(row.session_id, row.status as SessionAutomationStatus);
-    return statuses;
+    return this.sessionAutomations.listSessionAutomationStatuses(sessionIds);
   }
 
-  /** Enabled automations due at or before `now`, earliest-overdue first. */
   async listDueSessionAutomations(now: Date): Promise<SessionAutomationRecord[]> {
-    const rows = await this.db
-      .selectFrom('session_automations')
-      .selectAll()
-      .where('status', '=', 'enabled')
-      .where('next_run_at', 'is not', null)
-      .where('next_run_at', '<=', now)
-      .orderBy('next_run_at', 'asc')
-      .execute();
-    return rows.map((r) => this.sessionAutomationRowToRecord(r));
+    return this.sessionAutomations.listDueSessionAutomations(now);
   }
 
-  /** The earliest armed due time, or `null` — the scheduler sleeps until then. */
   async nextSessionAutomationDueAt(): Promise<Date | null> {
-    const row = await this.db
-      .selectFrom('session_automations')
-      .select((eb) => eb.fn.min('next_run_at').as('next'))
-      .where('status', '=', 'enabled')
-      .where('next_run_at', 'is not', null)
-      .executeTakeFirst();
-    return row?.next ?? null;
+    return this.sessionAutomations.nextSessionAutomationDueAt();
   }
 
-  /**
-   * Claim one due tick: advance `next_run_at` before any work starts, so a crash
-   * mid-run cannot re-fire the same slot after a restart, and two server
-   * generations cannot both run it. Returns false when another claimer won or the
-   * automation was paused, replaced, or deleted in the meantime.
-   */
   async claimSessionAutomationRun(id: string, ranAt: Date, nextRunAt: Date): Promise<boolean> {
-    const result = await this.db
-      .updateTable('session_automations')
-      .set({
-        last_run_at: ranAt.toISOString(),
-        next_run_at: nextRunAt.toISOString(),
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .where('status', '=', 'enabled')
-      .where('next_run_at', 'is not', null)
-      .where('next_run_at', '<=', ranAt)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionAutomations.claimSessionAutomationRun(id, ranAt, nextRunAt);
   }
 
-  /**
-   * Record how a claimed run settled. Five consecutive errors pause the
-   * automation so a broken one stops spending turns until the operator resumes it.
-   */
   async recordSessionAutomationOutcome(
     id: string,
     result: { outcome: SessionAutomationOutcome; detail: string | null },
   ): Promise<void> {
-    await this.db.transaction().execute(async (tx) => {
-      const automation = await tx
-        .selectFrom('session_automations')
-        .select('consecutive_error_count')
-        .where('id', '=', id)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!automation) return;
-      const errorCount =
-        result.outcome === 'error'
-          ? automation.consecutive_error_count + 1
-          : result.outcome === 'skipped'
-            ? automation.consecutive_error_count
-            : 0;
-      const circuitOpen = errorCount >= SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS;
-      await tx
-        .updateTable('session_automations')
-        .set({
-          last_outcome: result.outcome,
-          last_detail: result.detail,
-          consecutive_error_count: errorCount,
-          ...(circuitOpen ? { status: 'paused', next_run_at: null } : {}),
-          updated_at: sql`now()`,
-        })
-        .where('id', '=', id)
-        .execute();
-    });
+    return this.sessionAutomations.recordSessionAutomationOutcome(id, result);
   }
-
-  private projectSettingsRowToRecord(
-    row: {
-      project_id: string;
-      devcontainer_enabled: boolean;
-      doppler_token_ref: string | null;
-      doppler_token: string | null;
-      doppler_project: string | null;
-      doppler_config: string | null;
-      doppler_minted_token: string | null;
-      doppler_minted_token_slug: string | null;
-      default_branch: string | null;
-      default_model: string | null;
-      memory: string | null;
-      google_drive_folder_id: string | null;
-      google_drive_folder_name: string | null;
-      google_drive_access_mode: 'read-only' | 'read-write';
-      design_level: ProjectDesignLevel;
-      description: string | null;
-      allowed_agents: ProjectAgent[] | null;
-      created_at: Date;
-      updated_at: Date;
-      // See veritySettingsRowToRecord: false → no decrypt (sealed-safe public read).
-    },
-    decrypt = true,
-  ): ProjectSettingsRecord {
-    return {
-      projectId: row.project_id,
-      devcontainerEnabled: row.devcontainer_enabled,
-      dopplerTokenRef: row.doppler_token_ref,
-      dopplerToken: decrypt ? this.decryptSecret(row.doppler_token) : row.doppler_token,
-      dopplerProject: row.doppler_project,
-      dopplerConfig: row.doppler_config,
-      dopplerMintedToken: decrypt
-        ? this.decryptSecret(row.doppler_minted_token)
-        : row.doppler_minted_token,
-      dopplerMintedTokenSlug: row.doppler_minted_token_slug,
-      defaultBranch: row.default_branch,
-      defaultModel: row.default_model,
-      memory: row.memory,
-      googleDriveFolderId: row.google_drive_folder_id,
-      googleDriveFolderName: row.google_drive_folder_name,
-      googleDriveAccessMode: row.google_drive_access_mode,
-      designLevel: row.design_level,
-      description: row.description,
-      allowedAgents: row.allowed_agents,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  private readonly projectSettingsColumns = [
-    'devcontainer_enabled',
-    'project_id',
-    'doppler_token_ref',
-    'doppler_token',
-    'doppler_project',
-    'doppler_config',
-    'doppler_minted_token',
-    'doppler_minted_token_slug',
-    'default_branch',
-    'default_model',
-    'memory',
-    'google_drive_folder_id',
-    'google_drive_folder_name',
-    'google_drive_access_mode',
-    'design_level',
-    'description',
-    'allowed_agents',
-    'created_at',
-    'updated_at',
-  ] as const;
-
-  private veritySettingsRowToRecord(
-    row: {
-      git_user_name: string | null;
-      git_user_email: string | null;
-      git_ssh_private_key_path: string | null;
-      git_ssh_private_key: string | null;
-      git_ssh_public_key_path: string | null;
-      git_ssh_public_key: string | null;
-      git_known_hosts_path: string | null;
-      git_known_hosts: string | null;
-      git_allowed_signers_path: string | null;
-      git_allowed_signers: string | null;
-      github_app_id: string | null;
-      github_app_installation_id: string | null;
-      github_app_private_key: string | null;
-      github_app_client_id: string | null;
-      github_app_client_secret: string | null;
-      doppler_service_token: string | null;
-      transcribe_base_url: string | null;
-      transcribe_api_key: string | null;
-      transcribe_model: string | null;
-      transcribe_backend_mode: string | null;
-      claude_code_oauth_credentials_json: string | null;
-      codex_auth_json: string | null;
-      opencode_base_url: string | null;
-      opencode_api_key: string | null;
-      opencode_models: string | null;
-      opencode_disabled_models: string | null;
-      google_drive_client_id: string | null;
-      google_drive_account_email: string | null;
-      google_drive_refresh_token: string | null;
-      gmail_authorized: boolean;
-      calendar_authorized: boolean;
-      contacts_authorized: boolean;
-      google_granted_scopes: string[];
-      uplink_subscription_key: string | null;
-      uplink_installation_id: string | null;
-      premium_sharing_enabled: boolean;
-      premium_remote_access_enabled: boolean;
-      project_egress_enabled: boolean;
-      advanced_mode_enabled: boolean;
-      unassigned_meeting_retention_days: number | null;
-      created_at: Date;
-      updated_at: Date;
-      // When false, secret columns are returned in their STORED (possibly
-      // encrypted) form without decrypting — for public read paths that only
-      // strip/`configured`-check them, so they work while the store is sealed.
-    },
-    decrypt = true,
-  ): VeritySettingsRecord {
-    return {
-      advancedModeEnabled: row.advanced_mode_enabled,
-      unassignedMeetingRetentionDays: row.unassigned_meeting_retention_days,
-      gitUserName: row.git_user_name,
-      gitUserEmail: row.git_user_email,
-      gitSshPrivateKeyPath: row.git_ssh_private_key_path,
-      gitSshPrivateKey: decrypt
-        ? this.decryptSecret(row.git_ssh_private_key)
-        : row.git_ssh_private_key,
-      gitSshPublicKeyPath: row.git_ssh_public_key_path,
-      gitSshPublicKey: row.git_ssh_public_key,
-      gitKnownHostsPath: row.git_known_hosts_path,
-      gitKnownHosts: row.git_known_hosts,
-      gitAllowedSignersPath: row.git_allowed_signers_path,
-      gitAllowedSigners: row.git_allowed_signers,
-      githubAppId: row.github_app_id,
-      githubAppInstallationId: row.github_app_installation_id,
-      githubAppPrivateKey: decrypt
-        ? this.decryptSecret(row.github_app_private_key)
-        : row.github_app_private_key,
-      githubAppClientId: row.github_app_client_id,
-      githubAppClientSecret: decrypt
-        ? this.decryptSecret(row.github_app_client_secret)
-        : row.github_app_client_secret,
-      dopplerServiceToken: decrypt
-        ? this.decryptSecret(row.doppler_service_token)
-        : row.doppler_service_token,
-      transcribeBaseUrl: row.transcribe_base_url,
-      transcribeApiKey: decrypt
-        ? this.decryptSecret(row.transcribe_api_key)
-        : row.transcribe_api_key,
-      transcribeModel: row.transcribe_model,
-      transcribeBackendMode:
-        row.transcribe_backend_mode === 'local' || row.transcribe_backend_mode === 'external'
-          ? row.transcribe_backend_mode
-          : null,
-      claudeCodeOauthCredentialsJson: decrypt
-        ? this.decryptSecret(row.claude_code_oauth_credentials_json)
-        : row.claude_code_oauth_credentials_json,
-      codexAuthJson: decrypt ? this.decryptSecret(row.codex_auth_json) : row.codex_auth_json,
-      opencodeBaseUrl: row.opencode_base_url,
-      opencodeApiKey: decrypt ? this.decryptSecret(row.opencode_api_key) : row.opencode_api_key,
-      opencodeModels: row.opencode_models,
-      opencodeDisabledModels: row.opencode_disabled_models,
-      googleDriveClientId: row.google_drive_client_id,
-      googleDriveAccountEmail: row.google_drive_account_email,
-      googleDriveRefreshToken: decrypt
-        ? this.decryptSecret(row.google_drive_refresh_token)
-        : row.google_drive_refresh_token,
-      gmailAuthorized: row.gmail_authorized,
-      calendarAuthorized: row.calendar_authorized,
-      contactsAuthorized: row.contacts_authorized,
-      googleGrantedScopes: row.google_granted_scopes,
-      uplinkSubscriptionKey: decrypt
-        ? this.decryptSecret(row.uplink_subscription_key)
-        : row.uplink_subscription_key,
-      uplinkInstallationId: row.uplink_installation_id,
-      premiumSharingEnabled: row.premium_sharing_enabled,
-      premiumRemoteAccessEnabled: row.premium_remote_access_enabled,
-      projectEgressEnabled: row.project_egress_enabled,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  private readonly veritySettingsColumns = [
-    'advanced_mode_enabled',
-    'git_user_name',
-    'git_user_email',
-    'git_ssh_private_key_path',
-    'git_ssh_private_key',
-    'git_ssh_public_key_path',
-    'git_ssh_public_key',
-    'git_known_hosts_path',
-    'git_known_hosts',
-    'git_allowed_signers_path',
-    'git_allowed_signers',
-    'github_app_id',
-    'github_app_installation_id',
-    'github_app_private_key',
-    'github_app_client_id',
-    'github_app_client_secret',
-    'doppler_service_token',
-    'transcribe_base_url',
-    'transcribe_api_key',
-    'transcribe_model',
-    'transcribe_backend_mode',
-    'claude_code_oauth_credentials_json',
-    'codex_auth_json',
-    'opencode_base_url',
-    'opencode_api_key',
-    'opencode_models',
-    'opencode_disabled_models',
-    'google_drive_client_id',
-    'google_drive_account_email',
-    'google_drive_refresh_token',
-    'gmail_authorized',
-    'calendar_authorized',
-    'contacts_authorized',
-    'google_granted_scopes',
-    'uplink_subscription_key',
-    'uplink_installation_id',
-    'premium_sharing_enabled',
-    'premium_remote_access_enabled',
-    'project_egress_enabled',
-    'advanced_mode_enabled',
-    'unassigned_meeting_retention_days',
-    'created_at',
-    'updated_at',
-  ] as const;
 
   async getVeritySettings(): Promise<VeritySettingsRecord | undefined> {
-    const row = await this.db
-      .selectFrom('verity_settings')
-      .select(this.veritySettingsColumns)
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    return row ? this.veritySettingsRowToRecord(row) : undefined;
+    return this.veritySettings.getVeritySettings();
   }
 
   /**
@@ -8285,445 +2286,45 @@ export class EventStore implements EventSink {
    * as plaintext.
    */
   async getVeritySettingsRaw(): Promise<VeritySettingsRecord | undefined> {
-    const row = await this.db
-      .selectFrom('verity_settings')
-      .select(this.veritySettingsColumns)
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    return row ? this.veritySettingsRowToRecord(row, false) : undefined;
+    return this.veritySettings.getVeritySettingsRaw();
   }
 
   async updateVeritySettings(patch: VeritySettingsPatch): Promise<VeritySettingsRecord> {
-    if (patch.opencodeBaseUrl !== undefined || patch.transcribeBaseUrl !== undefined)
-      return this.egressDestinationMutation(() =>
-        this.updateVeritySettingsWithoutInventoryBarrier(patch),
-      );
-    return this.updateVeritySettingsWithoutInventoryBarrier(patch);
+    return this.veritySettings.updateVeritySettings(patch);
   }
 
-  private async updateVeritySettingsWithoutInventoryBarrier(
-    patch: VeritySettingsPatch,
-  ): Promise<VeritySettingsRecord> {
-    const values = {
-      id: 'global',
-      advanced_mode_enabled: patch.advancedModeEnabled ?? false,
-      unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays ?? null,
-      git_user_name: normalizeSetting(patch.gitUserName),
-      git_user_email: normalizeSetting(patch.gitUserEmail),
-      git_ssh_private_key_path: normalizeSetting(patch.gitSshPrivateKeyPath),
-      git_ssh_private_key: this.encryptSecret(normalizeSetting(patch.gitSshPrivateKey)),
-      git_ssh_public_key_path: normalizeSetting(patch.gitSshPublicKeyPath),
-      git_ssh_public_key: normalizeSetting(patch.gitSshPublicKey),
-      git_known_hosts_path: normalizeSetting(patch.gitKnownHostsPath),
-      git_known_hosts: normalizeSetting(patch.gitKnownHosts),
-      git_allowed_signers_path: normalizeSetting(patch.gitAllowedSignersPath),
-      git_allowed_signers: normalizeSetting(patch.gitAllowedSigners),
-      github_app_id: normalizeSetting(patch.githubAppId),
-      github_app_installation_id: normalizeSetting(patch.githubAppInstallationId),
-      github_app_private_key: this.encryptSecret(normalizeSetting(patch.githubAppPrivateKey)),
-      github_app_client_id: normalizeSetting(patch.githubAppClientId),
-      github_app_client_secret: this.encryptSecret(normalizeSetting(patch.githubAppClientSecret)),
-      doppler_service_token: this.encryptSecret(normalizeSetting(patch.dopplerServiceToken)),
-      transcribe_base_url: normalizeSetting(patch.transcribeBaseUrl),
-      transcribe_api_key: this.encryptSecret(normalizeSetting(patch.transcribeApiKey)),
-      transcribe_model: normalizeSetting(patch.transcribeModel),
-      transcribe_backend_mode: normalizeSetting(patch.transcribeBackendMode),
-      claude_code_oauth_credentials_json: this.encryptSecret(
-        normalizeSetting(patch.claudeCodeOauthCredentialsJson),
-      ),
-      codex_auth_json: this.encryptSecret(normalizeSetting(patch.codexAuthJson)),
-      opencode_base_url: normalizeSetting(patch.opencodeBaseUrl),
-      opencode_api_key: this.encryptSecret(normalizeSetting(patch.opencodeApiKey)),
-      opencode_models: normalizeSetting(patch.opencodeModels),
-      opencode_disabled_models: normalizeSetting(patch.opencodeDisabledModels),
-      google_drive_client_id: normalizeSetting(patch.googleDriveClientId),
-      google_drive_account_email: normalizeSetting(patch.googleDriveAccountEmail),
-      google_drive_refresh_token: this.encryptSecret(
-        normalizeSetting(patch.googleDriveRefreshToken),
-      ),
-      gmail_authorized: patch.gmailAuthorized ?? false,
-      calendar_authorized: patch.calendarAuthorized ?? false,
-      contacts_authorized: patch.contactsAuthorized ?? false,
-      google_granted_scopes: JSON.stringify(patch.googleGrantedScopes ?? []),
-      uplink_subscription_key: this.encryptSecret(normalizeSetting(patch.uplinkSubscriptionKey)),
-      uplink_installation_id: normalizeSetting(patch.uplinkInstallationId),
-      premium_sharing_enabled: patch.premiumSharingEnabled ?? true,
-      premium_remote_access_enabled: patch.premiumRemoteAccessEnabled ?? true,
-      project_egress_enabled: patch.projectEgressEnabled ?? false,
-    };
-    const row = await this.db
-      .insertInto('verity_settings')
-      .values(values)
-      .onConflict((oc) =>
-        oc.column('id').doUpdateSet({
-          ...(patch.advancedModeEnabled !== undefined
-            ? { advanced_mode_enabled: patch.advancedModeEnabled }
-            : {}),
-          ...(patch.gitUserName !== undefined
-            ? { git_user_name: normalizeSetting(patch.gitUserName) }
-            : {}),
-          ...(patch.gitUserEmail !== undefined
-            ? { git_user_email: normalizeSetting(patch.gitUserEmail) }
-            : {}),
-          ...(patch.gitSshPrivateKeyPath !== undefined
-            ? { git_ssh_private_key_path: normalizeSetting(patch.gitSshPrivateKeyPath) }
-            : {}),
-          ...(patch.gitSshPrivateKey !== undefined
-            ? { git_ssh_private_key: this.encryptSecret(normalizeSetting(patch.gitSshPrivateKey)) }
-            : {}),
-          ...(patch.gitSshPublicKeyPath !== undefined
-            ? { git_ssh_public_key_path: normalizeSetting(patch.gitSshPublicKeyPath) }
-            : {}),
-          ...(patch.gitSshPublicKey !== undefined
-            ? { git_ssh_public_key: normalizeSetting(patch.gitSshPublicKey) }
-            : {}),
-          ...(patch.gitKnownHostsPath !== undefined
-            ? { git_known_hosts_path: normalizeSetting(patch.gitKnownHostsPath) }
-            : {}),
-          ...(patch.gitKnownHosts !== undefined
-            ? { git_known_hosts: normalizeSetting(patch.gitKnownHosts) }
-            : {}),
-          ...(patch.gitAllowedSignersPath !== undefined
-            ? { git_allowed_signers_path: normalizeSetting(patch.gitAllowedSignersPath) }
-            : {}),
-          ...(patch.gitAllowedSigners !== undefined
-            ? { git_allowed_signers: normalizeSetting(patch.gitAllowedSigners) }
-            : {}),
-          ...(patch.githubAppId !== undefined
-            ? { github_app_id: normalizeSetting(patch.githubAppId) }
-            : {}),
-          ...(patch.githubAppInstallationId !== undefined
-            ? { github_app_installation_id: normalizeSetting(patch.githubAppInstallationId) }
-            : {}),
-          ...(patch.githubAppPrivateKey !== undefined
-            ? {
-                github_app_private_key: this.encryptSecret(
-                  normalizeSetting(patch.githubAppPrivateKey),
-                ),
-              }
-            : {}),
-          ...(patch.githubAppClientId !== undefined
-            ? { github_app_client_id: normalizeSetting(patch.githubAppClientId) }
-            : {}),
-          ...(patch.githubAppClientSecret !== undefined
-            ? {
-                github_app_client_secret: this.encryptSecret(
-                  normalizeSetting(patch.githubAppClientSecret),
-                ),
-              }
-            : {}),
-          ...(patch.dopplerServiceToken !== undefined
-            ? {
-                doppler_service_token: this.encryptSecret(
-                  normalizeSetting(patch.dopplerServiceToken),
-                ),
-              }
-            : {}),
-          ...(patch.transcribeBaseUrl !== undefined
-            ? { transcribe_base_url: normalizeSetting(patch.transcribeBaseUrl) }
-            : {}),
-          ...(patch.transcribeApiKey !== undefined
-            ? {
-                transcribe_api_key: this.encryptSecret(normalizeSetting(patch.transcribeApiKey)),
-              }
-            : {}),
-          ...(patch.transcribeModel !== undefined
-            ? { transcribe_model: normalizeSetting(patch.transcribeModel) }
-            : {}),
-          ...(patch.transcribeBackendMode !== undefined
-            ? { transcribe_backend_mode: normalizeSetting(patch.transcribeBackendMode) }
-            : {}),
-          ...(patch.claudeCodeOauthCredentialsJson !== undefined
-            ? {
-                claude_code_oauth_credentials_json: this.encryptSecret(
-                  normalizeSetting(patch.claudeCodeOauthCredentialsJson),
-                ),
-              }
-            : {}),
-          ...(patch.codexAuthJson !== undefined
-            ? { codex_auth_json: this.encryptSecret(normalizeSetting(patch.codexAuthJson)) }
-            : {}),
-          ...(patch.opencodeBaseUrl !== undefined
-            ? { opencode_base_url: normalizeSetting(patch.opencodeBaseUrl) }
-            : {}),
-          ...(patch.opencodeApiKey !== undefined
-            ? { opencode_api_key: this.encryptSecret(normalizeSetting(patch.opencodeApiKey)) }
-            : {}),
-          ...(patch.opencodeModels !== undefined
-            ? { opencode_models: normalizeSetting(patch.opencodeModels) }
-            : {}),
-          ...(patch.opencodeDisabledModels !== undefined
-            ? { opencode_disabled_models: normalizeSetting(patch.opencodeDisabledModels) }
-            : {}),
-          ...(patch.googleDriveClientId !== undefined
-            ? { google_drive_client_id: normalizeSetting(patch.googleDriveClientId) }
-            : {}),
-          ...(patch.googleDriveAccountEmail !== undefined
-            ? { google_drive_account_email: normalizeSetting(patch.googleDriveAccountEmail) }
-            : {}),
-          ...(patch.googleDriveRefreshToken !== undefined
-            ? {
-                google_drive_refresh_token: this.encryptSecret(
-                  normalizeSetting(patch.googleDriveRefreshToken),
-                ),
-              }
-            : {}),
-          ...(patch.gmailAuthorized !== undefined
-            ? { gmail_authorized: patch.gmailAuthorized }
-            : {}),
-          ...(patch.calendarAuthorized !== undefined
-            ? { calendar_authorized: patch.calendarAuthorized }
-            : {}),
-          ...(patch.contactsAuthorized !== undefined
-            ? { contacts_authorized: patch.contactsAuthorized }
-            : {}),
-          ...(patch.googleGrantedScopes !== undefined
-            ? { google_granted_scopes: JSON.stringify(patch.googleGrantedScopes) }
-            : {}),
-          ...(patch.uplinkSubscriptionKey !== undefined
-            ? {
-                uplink_subscription_key: this.encryptSecret(
-                  normalizeSetting(patch.uplinkSubscriptionKey),
-                ),
-              }
-            : {}),
-          ...(patch.uplinkInstallationId !== undefined
-            ? { uplink_installation_id: normalizeSetting(patch.uplinkInstallationId) }
-            : {}),
-          ...(patch.premiumSharingEnabled !== undefined
-            ? { premium_sharing_enabled: patch.premiumSharingEnabled }
-            : {}),
-          ...(patch.premiumRemoteAccessEnabled !== undefined
-            ? { premium_remote_access_enabled: patch.premiumRemoteAccessEnabled }
-            : {}),
-          ...(patch.projectEgressEnabled !== undefined
-            ? { project_egress_enabled: patch.projectEgressEnabled }
-            : {}),
-          ...(patch.advancedModeEnabled !== undefined
-            ? { advanced_mode_enabled: patch.advancedModeEnabled }
-            : {}),
-          ...(patch.unassignedMeetingRetentionDays !== undefined
-            ? { unassigned_meeting_retention_days: patch.unassignedMeetingRetentionDays }
-            : {}),
-          updated_at: sql`now()`,
-        }),
-      )
-      .returning(this.veritySettingsColumns)
-      .executeTakeFirst();
-    if (!row) {
-      throw new Error('verity: updateVeritySettings RETURNING yielded no row — dialect bug');
-    }
-    return this.veritySettingsRowToRecord(row);
-  }
-
-  /** Persist the non-secret first-use transcription choice without decrypting
-   * unrelated settings. This remains available while the secret store is sealed. */
   async updateTranscribeBackendMode(mode: 'local' | 'external'): Promise<void> {
-    await this.db
-      .insertInto('verity_settings')
-      .values({ id: 'global', transcribe_backend_mode: mode })
-      .onConflict((oc) =>
-        oc.column('id').doUpdateSet({ transcribe_backend_mode: mode, updated_at: sql`now()` }),
-      )
-      .execute();
+    return this.veritySettings.updateTranscribeBackendMode(mode);
   }
-
-  // ── Dev servers (multi-dev-server data model, slice 1) ───────────────────────
-  private devServerRowToRecord(row: {
-    id: string;
-    project_id: string;
-    source_key: string | null;
-    name: string;
-    command: string | null;
-    url: string | null;
-    workdir: string | null;
-    host_port: string | null;
-    container_port: string | null;
-    preview_session_id: string | null;
-    auto_start: boolean;
-    sort_order: number;
-    created_at: Date;
-    updated_at: Date;
-  }): DevServerRecord {
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      sourceKey: row.source_key,
-      name: row.name,
-      command: row.command,
-      url: row.url,
-      workdir: row.workdir,
-      hostPort: row.host_port,
-      containerPort: row.container_port,
-      previewSessionId: row.preview_session_id,
-      autoStart: row.auto_start,
-      sortOrder: row.sort_order,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  private readonly devServerColumns = [
-    'id',
-    'project_id',
-    'source_key',
-    'name',
-    'command',
-    'url',
-    'workdir',
-    'host_port',
-    'container_port',
-    'preview_session_id',
-    'auto_start',
-    'sort_order',
-    'created_at',
-    'updated_at',
-  ] as const;
 
   /** Dev servers for one project, in their configured display order. */
   async listDevServers(projectId: string): Promise<DevServerRecord[]> {
-    const rows = await this.db
-      .selectFrom('dev_servers')
-      .select(this.devServerColumns)
-      .where('project_id', '=', projectId)
-      .orderBy('sort_order', 'asc')
-      .orderBy('created_at', 'asc')
-      .orderBy('id', 'asc')
-      .execute();
-    return rows.map((r) => this.devServerRowToRecord(r));
+    return this.devServerConfigs.listDevServers(projectId);
   }
 
   async getDevServer(id: string): Promise<DevServerRecord | undefined> {
-    const row = await this.db
-      .selectFrom('dev_servers')
-      .select(this.devServerColumns)
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row ? this.devServerRowToRecord(row) : undefined;
-  }
-
-  private devServerPortMutation<T>(operation: () => Promise<T>): Promise<T> {
-    const mutation = this.devServerPortMutationTail.then(operation);
-    this.devServerPortMutationTail = mutation.then(
-      () => undefined,
-      () => undefined,
-    );
-    return mutation;
-  }
-
-  private async allocateDevServerHostPort(tx: Transaction<Database>): Promise<string> {
-    const rows = await tx
-      .selectFrom('dev_servers')
-      .select('host_port')
-      .where('host_port', 'is not', null)
-      .execute();
-    return nextFreeDevServerHostPort(
-      new Set(rows.flatMap((row) => (row.host_port === null ? [] : [row.host_port]))),
-    );
+    return this.devServerConfigs.getDevServer(id);
   }
 
   async createDevServer(input: DevServerCreateInput): Promise<DevServerRecord> {
-    return this.devServerPortMutation(() =>
-      this.db.transaction().execute(async (tx) => {
-        await sql`lock table dev_servers in share row exclusive mode`.execute(tx);
-        await tx
-          .insertInto('project_settings')
-          .values({ project_id: input.projectId })
-          .onConflict((oc) => oc.column('project_id').doNothing())
-          .execute();
-        await tx
-          .selectFrom('project_settings')
-          .select('project_id')
-          .where('project_id', '=', input.projectId)
-          .forUpdate()
-          .executeTakeFirstOrThrow();
-        const row = await tx
-          .insertInto('dev_servers')
-          .values({
-            id: randomUUID(),
-            project_id: input.projectId,
-            source_key: normalizeSetting(input.sourceKey),
-            name: input.name ?? 'Dev server',
-            command: normalizeSetting(input.command),
-            url: normalizeSetting(input.url),
-            workdir: normalizeSetting(input.workdir),
-            host_port: await this.allocateDevServerHostPort(tx),
-            container_port: normalizeSetting(input.containerPort),
-            auto_start: input.autoStart ?? false,
-            ...(input.sortOrder !== undefined ? { sort_order: input.sortOrder } : {}),
-          })
-          .returning(this.devServerColumns)
-          .executeTakeFirst();
-        if (!row) {
-          throw new Error('verity: createDevServer RETURNING yielded no row — dialect bug');
-        }
-        return this.devServerRowToRecord(row);
-      }),
-    );
+    return this.devServerConfigs.createDevServer(input);
   }
 
   async updateDevServer(id: string, patch: DevServerPatch): Promise<DevServerRecord | undefined> {
-    const set: Record<string, unknown> = { updated_at: sql`now()` };
-    if (patch.name !== undefined) set.name = patch.name;
-    if (patch.command !== undefined) set.command = normalizeSetting(patch.command);
-    if (patch.url !== undefined) set.url = normalizeSetting(patch.url);
-    if (patch.workdir !== undefined) set.workdir = normalizeSetting(patch.workdir);
-    // host_port is a global registry lease and cannot be changed by CRUD PATCH.
-    if (patch.containerPort !== undefined)
-      set.container_port = normalizeSetting(patch.containerPort);
-    if (patch.previewSessionId !== undefined) set.preview_session_id = patch.previewSessionId;
-    if (patch.autoStart !== undefined) set.auto_start = patch.autoStart;
-    if (patch.sortOrder !== undefined) set.sort_order = patch.sortOrder;
-    const row = await this.db
-      .updateTable('dev_servers')
-      .set(set)
-      .where('id', '=', id)
-      .returning(this.devServerColumns)
-      .executeTakeFirst();
-    return row ? this.devServerRowToRecord(row) : undefined;
+    return this.devServerConfigs.updateDevServer(id, patch);
   }
 
   async recordDevServerDetection(
     projectId: string,
     fingerprint: string,
   ): Promise<DevServerDetectionStateRecord> {
-    const row = await this.db
-      .insertInto('dev_server_detection_state')
-      .values({ project_id: projectId, fingerprint })
-      .onConflict((conflict) =>
-        conflict.column('project_id').doUpdateSet({
-          fingerprint,
-          detected_at: sql`now()`,
-        }),
-      )
-      .returningAll()
-      .executeTakeFirstOrThrow();
-    return {
-      projectId: row.project_id,
-      fingerprint: row.fingerprint,
-      detectedAt: row.detected_at,
-      reviewedFingerprint: row.reviewed_fingerprint,
-      reviewedAt: row.reviewed_at,
-    };
+    return this.devServerConfigs.recordDevServerDetection(projectId, fingerprint);
   }
 
   async getDevServerDetectionState(
     projectId: string,
   ): Promise<DevServerDetectionStateRecord | undefined> {
-    const row = await this.db
-      .selectFrom('dev_server_detection_state')
-      .selectAll()
-      .where('project_id', '=', projectId)
-      .executeTakeFirst();
-    return row
-      ? {
-          projectId: row.project_id,
-          fingerprint: row.fingerprint,
-          detectedAt: row.detected_at,
-          reviewedFingerprint: row.reviewed_fingerprint,
-          reviewedAt: row.reviewed_at,
-        }
-      : undefined;
+    return this.devServerConfigs.getDevServerDetectionState(projectId);
   }
 
   /** Mark exactly the current detector result as reviewed. A stale client cannot
@@ -8732,228 +2333,71 @@ export class EventStore implements EventSink {
     projectId: string,
     fingerprint: string,
   ): Promise<DevServerDetectionStateRecord | undefined> {
-    const row = await this.db
-      .updateTable('dev_server_detection_state')
-      .set({ reviewed_fingerprint: fingerprint, reviewed_at: sql`now()` })
-      .where('project_id', '=', projectId)
-      .where('fingerprint', '=', fingerprint)
-      .returningAll()
-      .executeTakeFirst();
-    return row
-      ? {
-          projectId: row.project_id,
-          fingerprint: row.fingerprint,
-          detectedAt: row.detected_at,
-          reviewedFingerprint: row.reviewed_fingerprint,
-          reviewedAt: row.reviewed_at,
-        }
-      : undefined;
+    return this.devServerConfigs.reviewDevServerDetection(projectId, fingerprint);
   }
 
   /** Release a review claim when the corresponding setup mutation failed. */
   async unreviewDevServerDetection(projectId: string, fingerprint: string): Promise<void> {
-    await this.db
-      .updateTable('dev_server_detection_state')
-      .set({ reviewed_fingerprint: null, reviewed_at: null })
-      .where('project_id', '=', projectId)
-      .where('fingerprint', '=', fingerprint)
-      .where('reviewed_fingerprint', '=', fingerprint)
-      .execute();
+    return this.devServerConfigs.unreviewDevServerDetection(projectId, fingerprint);
   }
 
   async deleteDevServer(id: string): Promise<boolean> {
-    const result = await this.db.deleteFrom('dev_servers').where('id', '=', id).executeTakeFirst();
-    return result.numDeletedRows > 0n;
+    return this.devServerConfigs.deleteDevServer(id);
   }
 
   async createLocalPreviewShare(input: Omit<LocalPreviewShareRecord, 'state'>): Promise<void> {
-    await this.db
-      .insertInto('local_preview_shares')
-      .values({
-        id: input.id,
-        project_id: input.projectId,
-        session_id: input.sessionId,
-        managed_instance_id: input.managedInstanceId,
-        network_port: input.networkPort,
-        url: input.url,
-        target_port: input.targetPort,
-        static_path: input.staticPath,
-        connector_secret: this.encryptSecret(input.connectorSecret)!,
-        state: 'active',
-        expires_at: input.expiresAt.toISOString(),
-      })
-      .execute();
+    return this.previewShares.createLocalPreviewShare(input);
   }
 
   async listLocalPreviewShares(): Promise<LocalPreviewShareRecord[]> {
-    const rows = await this.db.selectFrom('local_preview_shares').selectAll().execute();
-    return rows.map((row) => ({
-      id: row.id,
-      projectId: row.project_id,
-      sessionId: row.session_id,
-      managedInstanceId: row.managed_instance_id,
-      networkPort: row.network_port,
-      url: row.url,
-      targetPort: row.target_port,
-      staticPath: row.static_path,
-      connectorSecret: this.decryptSecret(row.connector_secret)!,
-      state: row.state,
-      expiresAt: row.expires_at,
-    }));
+    return this.previewShares.listLocalPreviewShares();
   }
 
   /** Follow a managed listener without changing its public binding. */
   async updateLocalPreviewShareTarget(id: string, targetPort: number): Promise<void> {
-    await this.db
-      .updateTable('local_preview_shares')
-      .set({ target_port: targetPort })
-      .where('id', '=', id)
-      .where('state', '=', 'active')
-      .where('static_path', 'is', null)
-      .execute();
+    return this.previewShares.updateLocalPreviewShareTarget(id, targetPort);
   }
 
   /** Persist stop intent before removing sockets or containers. */
   async revokeLocalPreviewShare(id: string): Promise<void> {
-    await this.db
-      .updateTable('local_preview_shares')
-      .set({ state: 'revoking' })
-      .where('id', '=', id)
-      .execute();
+    return this.previewShares.revokeLocalPreviewShare(id);
   }
 
   async deleteLocalPreviewShare(id: string): Promise<void> {
-    await this.db.deleteFrom('local_preview_shares').where('id', '=', id).execute();
-  }
-
-  private publicPreviewShare(row: Selectable<PublicPreviewSharesTable>): PublicPreviewShareRecord {
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      devServerId: row.dev_server_id,
-      managedInstanceId: row.managed_instance_id,
-      containerGeneration: row.container_generation,
-      targetPort: row.target_port,
-      targetKind: row.target_kind,
-      staticPath: row.static_path,
-      sessionId: row.session_id,
-      state: row.state as PublicPreviewShareState,
-      publicOrigin: row.public_origin,
-      edgeUrl: row.edge_url,
-      pinHash: this.decryptSecret(row.pin_hash_secret) ?? '',
-      pin: this.decryptSecret(row.pin_secret)!,
-      pinLocked: row.pin_locked,
-      connectorToken: this.decryptSecret(row.connector_token_secret) ?? '',
-      sessionSecret: this.decryptSecret(row.session_secret) ?? '',
-      connectorContainerName: row.connector_container_name,
-      connectorContainerId: row.connector_container_id,
-      expiresAt: row.expires_at,
-      revokedAt: row.revoked_at,
-      failure: row.failure,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+    return this.previewShares.deleteLocalPreviewShare(id);
   }
 
   async createPublicPreviewShare(
     input: PublicPreviewShareCreateInput,
   ): Promise<PublicPreviewShareRecord> {
-    const row = await this.db
-      .insertInto('public_preview_shares')
-      .values({
-        id: input.id,
-        project_id: input.projectId,
-        dev_server_id: input.devServerId,
-        managed_instance_id: input.managedInstanceId ?? null,
-        container_generation: input.containerGeneration,
-        target_port: input.targetPort,
-        target_kind: input.targetKind ?? 'dev-server',
-        static_path: input.staticPath ?? null,
-        session_id: input.sessionId ?? null,
-        state: 'creating',
-        public_origin: input.publicOrigin,
-        edge_url: input.edgeUrl,
-        pin_hash_secret: this.encryptSecret(input.pinHash) ?? '',
-        pin_secret: this.encryptSecret(input.pin),
-        connector_token_secret: this.encryptSecret(input.connectorToken) ?? '',
-        session_secret: this.encryptSecret(input.sessionSecret) ?? '',
-        connector_container_name: input.connectorContainerName,
-        expires_at: input.expiresAt.toISOString(),
-      })
-      .returningAll()
-      .executeTakeFirstOrThrow();
-    // The control event may precede this insert; consume the durable snapshot.
-    await this.db
-      .updateTable('public_preview_shares')
-      .set({ pin_locked: true })
-      .where('id', '=', row.id)
-      .where('id', 'in', this.db.selectFrom('public_preview_pin_locks').select('share_id'))
-      .execute();
-    await this.db.deleteFrom('public_preview_pin_locks').where('share_id', '=', row.id).execute();
-    return (await this.getPublicPreviewShare(row.id))!;
+    return this.previewShares.createPublicPreviewShare(input, (id) =>
+      this.getPublicPreviewShare(id),
+    );
   }
 
   /** PIN lockout blocks new authentication, never the active connector or cookies. */
   async lockPublicPreviewSharePin(id: string): Promise<void> {
-    await this.db
-      .insertInto('public_preview_pin_locks')
-      .values({ share_id: id })
-      .onConflict((conflict) => conflict.column('share_id').doNothing())
-      .execute();
-    const updated = await this.db
-      .updateTable('public_preview_shares')
-      .set({ pin_locked: true, updated_at: new Date().toISOString() })
-      .where('id', '=', id)
-      .returning('id')
-      .executeTakeFirst();
-    if (updated) {
-      await this.db.deleteFrom('public_preview_pin_locks').where('share_id', '=', id).execute();
-    }
-    // Unknown snapshots cannot belong to a live share after the maximum 30-day TTL.
-    await this.db
-      .deleteFrom('public_preview_pin_locks')
-      .where('created_at', '<', new Date(Date.now() - 31 * 86400_000))
-      .execute();
+    return this.previewShares.lockPublicPreviewSharePin(id);
   }
 
   async addPendingUplinkShareRemoval(shareId: string): Promise<void> {
-    await this.db
-      .insertInto('uplink_pending_share_removals')
-      .values({ share_id: shareId })
-      .onConflict((conflict) => conflict.column('share_id').doNothing())
-      .execute();
+    return this.previewShares.addPendingUplinkShareRemoval(shareId);
   }
 
   async listPendingUplinkShareRemovals(): Promise<string[]> {
-    const rows = await this.db
-      .selectFrom('uplink_pending_share_removals')
-      .select('share_id')
-      .orderBy('created_at', 'asc')
-      .execute();
-    return rows.map((row) => row.share_id);
+    return this.previewShares.listPendingUplinkShareRemovals();
   }
 
   async deletePendingUplinkShareRemoval(shareId: string): Promise<void> {
-    await this.db
-      .deleteFrom('uplink_pending_share_removals')
-      .where('share_id', '=', shareId)
-      .execute();
+    return this.previewShares.deletePendingUplinkShareRemoval(shareId);
   }
 
   async getPublicPreviewShare(id: string): Promise<PublicPreviewShareRecord | undefined> {
-    const row = await this.db
-      .selectFrom('public_preview_shares')
-      .selectAll()
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return row === undefined ? undefined : this.publicPreviewShare(row);
+    return this.previewShares.getPublicPreviewShare(id);
   }
 
   async listPublicPreviewShares(projectId?: string): Promise<PublicPreviewShareRecord[]> {
-    let query = this.db.selectFrom('public_preview_shares').selectAll();
-    if (projectId !== undefined) query = query.where('project_id', '=', projectId);
-    const rows = await query.orderBy('created_at', 'desc').execute();
-    return rows.map((row) => this.publicPreviewShare(row));
+    return this.previewShares.listPublicPreviewShares(projectId);
   }
 
   /** Compare-and-set is the lifecycle fence shared by create, stop, expiry and
@@ -8970,72 +2414,23 @@ export class EventStore implements EventSink {
       revokedAt?: Date | null;
     } = {},
   ): Promise<PublicPreviewShareRecord | undefined> {
-    if (from.length === 0) return undefined;
-    const row = await this.db
-      .updateTable('public_preview_shares')
-      .set({
-        state: to,
-        updated_at: sql`now()`,
-        ...(patch.connectorContainerId === undefined
-          ? {}
-          : { connector_container_id: patch.connectorContainerId }),
-        ...(patch.targetPort === undefined ? {} : { target_port: patch.targetPort }),
-        ...(patch.containerGeneration === undefined
-          ? {}
-          : { container_generation: patch.containerGeneration }),
-        ...(patch.failure === undefined ? {} : { failure: patch.failure }),
-        ...(patch.revokedAt === undefined
-          ? {}
-          : { revoked_at: patch.revokedAt?.toISOString() ?? null }),
-      })
-      .where('id', '=', id)
-      .where('state', 'in', [...from])
-      .returningAll()
-      .executeTakeFirst();
-    return row === undefined ? undefined : this.publicPreviewShare(row);
+    return this.previewShares.transitionPublicPreviewShare(id, from, to, patch);
   }
 
   async listPublicPreviewSharesDue(now = new Date()): Promise<PublicPreviewShareRecord[]> {
-    const rows = await this.db
-      .selectFrom('public_preview_shares')
-      .selectAll()
-      .where('state', 'in', ['creating', 'active', 'revoking'])
-      .where('expires_at', '<=', now)
-      .execute();
-    return rows.map((row) => this.publicPreviewShare(row));
+    return this.previewShares.listPublicPreviewSharesDue(now);
   }
 
   /** Read the singleton Claude-egress CA + gateway identity, decrypting the CA +
    *  gateway private keys. Returns undefined before the first issuance. */
   async getClaudeEgressCa(): Promise<ClaudeEgressCaRecord | undefined> {
-    const row = await this.db
-      .selectFrom('claude_egress_ca')
-      .selectAll()
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    if (row === undefined) return undefined;
-    return {
-      caCertPem: row.ca_cert_pem,
-      // A non-null secret column always decrypts; `?? ''` only satisfies the
-      // `string | null` return of decryptSecret for a value we know is present.
-      caKeyPem: this.decryptSecret(row.ca_key_pem) ?? '',
-      gatewayServerName: row.gateway_server_name,
-      gatewayCertPem: row.gateway_cert_pem,
-      gatewayKeyPem: this.decryptSecret(row.gateway_key_pem) ?? '',
-      caExpiresAt: new Date(row.ca_expires_at),
-      gatewayExpiresAt: new Date(row.gateway_expires_at),
-    };
+    return this.claudeEgressIdentity.getClaudeEgressCa();
   }
 
   /** Insert or replace the singleton CA + gateway identity, encrypting both
    *  private keys at rest. A re-issue (rotation) overwrites the single row. */
   async upsertClaudeEgressCa(record: ClaudeEgressCaRecord): Promise<void> {
-    const values = this.claudeEgressCaValues(record);
-    await this.db
-      .insertInto('claude_egress_ca')
-      .values({ id: 'global', ...values })
-      .onConflict((oc) => oc.column('id').doUpdateSet({ ...values, updated_at: sql`now()` }))
-      .execute();
+    return this.claudeEgressIdentity.upsertClaudeEgressCa(record);
   }
 
   /**
@@ -9047,478 +2442,93 @@ export class EventStore implements EventSink {
    * world or the new one, never a fresh CA alongside orphaned old-CA client certs.
    */
   async replaceClaudeEgressCa(record: ClaudeEgressCaRecord): Promise<void> {
-    const values = this.claudeEgressCaValues(record);
-    await this.db.transaction().execute(async (tx) => {
-      await tx
-        .insertInto('claude_egress_ca')
-        .values({ id: 'global', ...values })
-        .onConflict((oc) => oc.column('id').doUpdateSet({ ...values, updated_at: sql`now()` }))
-        .execute();
-      await tx.deleteFrom('claude_egress_client_certs').execute();
-    });
-  }
-
-  /** Encrypt the two private-key columns at rest. Uses {@link cipher}.encrypt
-   *  directly (not the null-aware {@link encryptSecret}) because every egress CA
-   *  column is NOT NULL — a CA row without its keys is meaningless. */
-  private claudeEgressCaValues(record: ClaudeEgressCaRecord): {
-    ca_cert_pem: string;
-    ca_key_pem: string;
-    gateway_server_name: string;
-    gateway_cert_pem: string;
-    gateway_key_pem: string;
-    ca_expires_at: string;
-    gateway_expires_at: string;
-  } {
-    return {
-      ca_cert_pem: record.caCertPem,
-      ca_key_pem: this.cipher.encrypt(record.caKeyPem),
-      gateway_server_name: record.gatewayServerName,
-      gateway_cert_pem: record.gatewayCertPem,
-      gateway_key_pem: this.cipher.encrypt(record.gatewayKeyPem),
-      ca_expires_at: record.caExpiresAt.toISOString(),
-      gateway_expires_at: record.gatewayExpiresAt.toISOString(),
-    };
+    return this.claudeEgressIdentity.replaceClaudeEgressCa(record);
   }
 
   async getClaudeEgressClientCert(
     projectId: string,
     userId: string,
   ): Promise<ClaudeEgressClientCertRecord | undefined> {
-    const row = await this.db
-      .selectFrom('claude_egress_client_certs')
-      .selectAll()
-      .where('project_id', '=', projectId)
-      .where('user_id', '=', userId)
-      .executeTakeFirst();
-    return row ? this.claudeEgressClientCertRowToRecord(row) : undefined;
+    return this.claudeEgressIdentity.getClaudeEgressClientCert(projectId, userId);
   }
 
   /** Every stored client certificate — the source of the gateway's
    *  fingerprint→sandbox peer bindings. */
   async listClaudeEgressClientCerts(): Promise<ClaudeEgressClientCertRecord[]> {
-    const rows = await this.db
-      .selectFrom('claude_egress_client_certs')
-      .selectAll()
-      .orderBy('project_id', 'asc')
-      .orderBy('user_id', 'asc')
-      .execute();
-    return rows.map((row) => this.claudeEgressClientCertRowToRecord(row));
+    return this.claudeEgressIdentity.listClaudeEgressClientCerts();
   }
 
   /** Insert or replace a sandbox's client certificate, encrypting the key. A
    *  rotation upserts on the (project, person) key, dropping the superseded fingerprint. */
   async upsertClaudeEgressClientCert(record: ClaudeEgressClientCertRecord): Promise<void> {
-    const values = {
-      cert_pem: record.certPem,
-      key_pem: this.cipher.encrypt(record.keyPem),
-      fingerprint256: record.fingerprint256,
-      expires_at: record.expiresAt.toISOString(),
-    };
-    await this.db
-      .insertInto('claude_egress_client_certs')
-      .values({ project_id: record.projectId, user_id: record.userId, ...values })
-      .onConflict((oc) =>
-        oc.columns(['project_id', 'user_id']).doUpdateSet({ ...values, updated_at: sql`now()` }),
-      )
-      .execute();
+    return this.claudeEgressIdentity.upsertClaudeEgressClientCert(record);
   }
 
   /** Drop one sandbox's client certificate, or every one of the project when no
    *  person is named (deprovision / revocation). */
   async deleteClaudeEgressClientCert(projectId: string, userId?: string): Promise<void> {
-    let query = this.db
-      .deleteFrom('claude_egress_client_certs')
-      .where('project_id', '=', projectId);
-    if (userId !== undefined) query = query.where('user_id', '=', userId);
-    await query.execute();
-  }
-
-  private claudeEgressClientCertRowToRecord(row: {
-    project_id: string;
-    user_id: string;
-    cert_pem: string;
-    key_pem: string;
-    fingerprint256: string;
-    expires_at: Date | string;
-  }): ClaudeEgressClientCertRecord {
-    return {
-      projectId: row.project_id,
-      userId: row.user_id,
-      certPem: row.cert_pem,
-      keyPem: this.decryptSecret(row.key_pem) ?? '',
-      fingerprint256: row.fingerprint256,
-      expiresAt: new Date(row.expires_at),
-    };
+    return this.claudeEgressIdentity.deleteClaudeEgressClientCert(projectId, userId);
   }
 
   async reconcileDevServerHostPorts(projectId?: string): Promise<void> {
-    await this.devServerPortMutation(() =>
-      this.db.transaction().execute(async (tx) => {
-        await sql`lock table dev_servers in share row exclusive mode`.execute(tx);
-        const rows = await tx
-          .selectFrom('dev_servers')
-          .innerJoin('projects', 'projects.id', 'dev_servers.project_id')
-          .select([
-            'dev_servers.id',
-            'dev_servers.project_id',
-            'dev_servers.host_port',
-            'projects.state',
-            'projects.hidden_at',
-          ])
-          .orderBy('dev_servers.created_at', 'asc')
-          .orderBy('dev_servers.id', 'asc')
-          .execute();
-        const used = new Set<string>();
-        const needsLease: string[] = [];
-        for (const row of rows) {
-          const target = projectId === undefined || row.project_id === projectId;
-          // Visible paused projects keep their reservation: `absent` is the only
-          // safe state in which callers may add or change published ports. Only
-          // a soft delete releases every lease for the project.
-          const eligible = row.hidden_at === null;
-          if (!eligible) {
-            if (target && row.host_port !== null) {
-              await tx
-                .updateTable('dev_servers')
-                .set({ host_port: null, updated_at: sql`now()` })
-                .where('id', '=', row.id)
-                .execute();
-            }
-            continue;
-          }
-          if (isManagedDevServerHostPort(row.host_port) && !used.has(row.host_port)) {
-            used.add(row.host_port);
-          } else if (target) {
-            needsLease.push(row.id);
-          }
-        }
-        for (const id of needsLease) {
-          const port = nextFreeDevServerHostPort(used);
-          used.add(port);
-          await tx
-            .updateTable('dev_servers')
-            .set({ host_port: port, updated_at: sql`now()` })
-            .where('id', '=', id)
-            .execute();
-        }
-      }),
-    );
+    return this.devServerConfigs.reconcileDevServerHostPorts(projectId);
   }
 
   async releaseProjectDevServerHostPorts(projectId: string): Promise<void> {
-    await this.devServerPortMutation(() =>
-      this.db.transaction().execute(async (tx) => {
-        await sql`lock table dev_servers in share row exclusive mode`.execute(tx);
-        await tx
-          .updateTable('dev_servers')
-          .set({ host_port: null, updated_at: sql`now()` })
-          .where('project_id', '=', projectId)
-          .execute();
-      }),
-    );
+    return this.devServerConfigs.releaseProjectDevServerHostPorts(projectId);
   }
 
   async getProjectSettings(projectId: string): Promise<ProjectSettingsRecord | undefined> {
-    const row = await this.db
-      .selectFrom('project_settings')
-      .select(this.projectSettingsColumns)
-      .where('project_id', '=', projectId)
-      .executeTakeFirst();
-    return row ? this.projectSettingsRowToRecord(row) : undefined;
+    return this.projectSettings.getProjectSettings(projectId);
   }
+
+  private readonly packageProtection = new PackageProtectionStore(() => this.db);
 
   /** Missing rows keep existing projects undecided until their first installation. */
   async getPackageProtectionDecision(
     projectId: string,
   ): Promise<'protected' | 'skipped' | 'undecided'> {
-    const row = await this.db
-      .selectFrom('project_package_protection')
-      .select('decision')
-      .where('project_id', '=', projectId)
-      .executeTakeFirst();
-    return row?.decision ?? 'undecided';
+    return this.packageProtection.getPackageProtectionDecision(projectId);
   }
 
   async setPackageProtectionDecision(
     projectId: string,
     decision: 'protected' | 'skipped',
   ): Promise<void> {
-    await this.db
-      .insertInto('project_package_protection')
-      .values({ project_id: projectId, decision })
-      .onConflict((conflict) => conflict.column('project_id').doUpdateSet({ decision }))
-      .execute();
+    return this.packageProtection.setPackageProtectionDecision(projectId, decision);
   }
 
-  /** Like {@link getProjectSettings} but WITHOUT decrypting `doppler_token` —
-   *  sealed-safe, for public read paths that strip it. See getVeritySettingsRaw. */
   async getProjectSettingsRaw(projectId: string): Promise<ProjectSettingsRecord | undefined> {
-    const row = await this.db
-      .selectFrom('project_settings')
-      .select(this.projectSettingsColumns)
-      .where('project_id', '=', projectId)
-      .executeTakeFirst();
-    return row ? this.projectSettingsRowToRecord(row, false) : undefined;
+    return this.projectSettings.getProjectSettingsRaw(projectId);
   }
 
   async updateProjectSettings(
     projectId: string,
     patch: ProjectSettingsPatch,
   ): Promise<ProjectSettingsRecord | undefined> {
-    const project = await this.getProject(projectId);
-    if (project === undefined) return undefined;
-
-    // Cap the operator UI full-replace write here (the shared store layer) so it is
-    // bounded exactly like the broker append path (ADR 0008). Reject rather than
-    // truncate operator-authored text.
-    const memory = normalizeSetting(patch.memory);
-    if (memory !== null && memory.length > PROJECT_MEMORY_MAX_CHARS) {
-      throw new ProjectMemoryTooLargeError(memory.length, PROJECT_MEMORY_MAX_CHARS);
-    }
-
-    const values = {
-      project_id: projectId,
-      devcontainer_enabled: patch.devcontainerEnabled ?? true,
-      doppler_token_ref: normalizeSetting(patch.dopplerTokenRef),
-      doppler_token: this.encryptSecret(normalizeSetting(patch.dopplerToken)),
-      doppler_project: normalizeSetting(patch.dopplerProject),
-      doppler_config: normalizeSetting(patch.dopplerConfig),
-      doppler_minted_token: this.encryptSecret(normalizeSetting(patch.dopplerMintedToken)),
-      doppler_minted_token_slug: normalizeSetting(patch.dopplerMintedTokenSlug),
-      default_branch: normalizeSetting(patch.defaultBranch),
-      default_model: normalizeSetting(patch.defaultModel),
-      memory,
-      google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId),
-      google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
-      google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
-      design_level: patch.designLevel ?? 'on_request',
-      description: normalizeSetting(patch.description),
-      allowed_agents: allowedAgentsColumn(patch.allowedAgents),
-    };
-    return this.db.transaction().execute(async (tx) => {
-      // Ensure and lock the per-project settings row before applying the patch.
-      await tx
-        .insertInto('project_settings')
-        .values({ project_id: projectId })
-        .onConflict((oc) => oc.column('project_id').doNothing())
-        .execute();
-      const current = await tx
-        .selectFrom('project_settings')
-        .select(['project_id', 'default_model', 'allowed_agents'])
-        .where('project_id', '=', projectId)
-        .forUpdate()
-        .executeTakeFirstOrThrow();
-
-      const allowedAgents =
-        patch.allowedAgents === undefined
-          ? current.allowed_agents
-          : values.allowed_agents === null
-            ? null
-            : patch.allowedAgents;
-      let defaultModel =
-        patch.defaultModel === undefined ? current.default_model : values.default_model;
-      if (defaultModel !== null && allowedAgents !== null) {
-        const agent: ProjectAgent = defaultModel.startsWith('codex/')
-          ? 'codex'
-          : defaultModel.includes('/')
-            ? 'opencode'
-            : 'claude';
-        if (!allowedAgents.includes(agent)) {
-          if (patch.defaultModel !== undefined)
-            throw new ProjectDefaultModelNotAllowedError(defaultModel);
-          // The locked row prevents concurrent default and agent patches from leaving a dead default.
-          defaultModel = null;
-        }
-      }
-
-      const row = await tx
-        .insertInto('project_settings')
-        .values(values)
-        .onConflict((oc) =>
-          oc.column('project_id').doUpdateSet({
-            ...(patch.devcontainerEnabled !== undefined
-              ? { devcontainer_enabled: patch.devcontainerEnabled }
-              : {}),
-            ...(patch.dopplerTokenRef !== undefined
-              ? { doppler_token_ref: normalizeSetting(patch.dopplerTokenRef) }
-              : {}),
-            ...(patch.dopplerToken !== undefined
-              ? { doppler_token: this.encryptSecret(normalizeSetting(patch.dopplerToken)) }
-              : {}),
-            ...(patch.dopplerProject !== undefined
-              ? { doppler_project: normalizeSetting(patch.dopplerProject) }
-              : {}),
-            ...(patch.dopplerConfig !== undefined
-              ? { doppler_config: normalizeSetting(patch.dopplerConfig) }
-              : {}),
-            ...(patch.dopplerMintedToken !== undefined
-              ? {
-                  doppler_minted_token: this.encryptSecret(
-                    normalizeSetting(patch.dopplerMintedToken),
-                  ),
-                }
-              : {}),
-            ...(patch.dopplerMintedTokenSlug !== undefined
-              ? { doppler_minted_token_slug: normalizeSetting(patch.dopplerMintedTokenSlug) }
-              : {}),
-            ...(patch.defaultBranch !== undefined
-              ? { default_branch: normalizeSetting(patch.defaultBranch) }
-              : {}),
-            ...(patch.defaultModel !== undefined || defaultModel !== current.default_model
-              ? { default_model: defaultModel }
-              : {}),
-            ...(patch.memory !== undefined ? { memory } : {}),
-            ...(patch.googleDriveFolderId !== undefined
-              ? { google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId) }
-              : {}),
-            ...(patch.googleDriveAccessMode !== undefined
-              ? { google_drive_access_mode: patch.googleDriveAccessMode }
-              : {}),
-            ...(patch.designLevel !== undefined ? { design_level: patch.designLevel } : {}),
-            ...(patch.description !== undefined
-              ? { description: normalizeSetting(patch.description) }
-              : {}),
-            ...(patch.googleDriveFolderName !== undefined
-              ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
-              : {}),
-            ...(patch.allowedAgents !== undefined
-              ? { allowed_agents: allowedAgentsColumn(patch.allowedAgents) }
-              : {}),
-            updated_at: sql`now()`,
-          }),
-        )
-        .returning(this.projectSettingsColumns)
-        .executeTakeFirst();
-      if (!row) {
-        throw new Error('verity: updateProjectSettings RETURNING yielded no row — dialect bug');
-      }
-      return this.projectSettingsRowToRecord(row);
-    });
+    return this.projectSettings.updateProjectSettings(projectId, patch);
   }
 
-  /**
-   * Append a note to a project's agent memory (ADR 0008), atomically. Used by the
-   * memory broker when a session calls `verity-memory append`. Serializes concurrent
-   * appends from sibling sessions of the same project (they share one per-project
-   * capability) by locking the settings row FOR UPDATE inside a transaction, so a
-   * naive read-modify-write cannot lose an append for a project that already has a
-   * settings row. Returns the updated settings (sealed-safe, no decrypt), or
-   * `undefined` when the project does not exist. Throws {@link ProjectMemoryTooLargeError}
-   * when the append would exceed {@link PROJECT_MEMORY_MAX_CHARS} — the note is
-   * rejected, not truncated.
-   */
   async appendProjectMemory(
     projectId: string,
     text: string,
   ): Promise<ProjectSettingsRecord | undefined> {
-    const project = await this.getProject(projectId);
-    if (project === undefined) return undefined;
-    const delta = text.trim();
-    // A single note larger than the cap can be rejected before touching the DB.
-    if (delta.length > PROJECT_MEMORY_MAX_CHARS) {
-      throw new ProjectMemoryTooLargeError(delta.length, PROJECT_MEMORY_MAX_CHARS);
-    }
-    return this.db.transaction().execute(async (tx) => {
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      const overview = await tx
-        .selectFrom('project_knowledge_spaces')
-        .select('overview_revision_id')
-        .where('project_id', '=', projectId)
-        .executeTakeFirst();
-      if (overview?.overview_revision_id) {
-        throw new KnowledgeError(
-          'conflict',
-          'This project uses an approved Knowledge overview. Update its Wiki page and approve the new revision in Project Settings; legacy memory was not changed.',
-        );
-      }
-
-      // Ensure the settings row exists FIRST, in this transaction, so the
-      // `FOR UPDATE` below always locks a committed row. `project_settings` rows
-      // are created lazily, so without this two sibling sessions of a settings-less
-      // project (they share one per-project capability) would both `SELECT … FOR
-      // UPDATE` zero rows, lock nothing, and the second `INSERT … ON CONFLICT DO
-      // UPDATE` would clobber the first append instead of concatenating. The
-      // placeholder INSERT serializes them: the second blocks on the first's row
-      // and then locks it. Also makes an empty-note no-op return the row (not
-      // undefined) for an existing project.
-      await tx
-        .insertInto('project_settings')
-        .values({ project_id: projectId })
-        .onConflict((oc) => oc.column('project_id').doNothing())
-        .execute();
-      const existing = await tx
-        .selectFrom('project_settings')
-        .select(['memory'])
-        .where('project_id', '=', projectId)
-        .forUpdate()
-        .executeTakeFirst();
-      const current = existing?.memory ?? null;
-      // Empty note → leave memory untouched (no-op append); otherwise concatenate.
-      const next =
-        delta.length === 0
-          ? current
-          : current !== null && current.length > 0
-            ? `${current}\n${delta}`
-            : delta;
-      if (next !== null && next.length > PROJECT_MEMORY_MAX_CHARS) {
-        throw new ProjectMemoryTooLargeError(next.length, PROJECT_MEMORY_MAX_CHARS);
-      }
-      const row = await tx
-        .updateTable('project_settings')
-        .set({ memory: next, updated_at: sql`now()` })
-        .where('project_id', '=', projectId)
-        .returning(this.projectSettingsColumns)
-        .executeTakeFirst();
-      if (!row) {
-        throw new Error('verity: appendProjectMemory RETURNING yielded no row — dialect bug');
-      }
-      return this.projectSettingsRowToRecord(row, false);
-    });
+    return this.projectSettings.appendProjectMemory(projectId, text);
   }
 
-  /**
-   * Read the master-password key-derivation metadata (salt + verifier). Reads
-   * NO encrypted column, so it works while the store is sealed — that's the
-   * whole point: the unlock flow reads this to derive + verify the key.
-   */
+  /** Read the master-password key-derivation metadata. */
   async getSecretKeyMeta(): Promise<SecretKeyMetaRecord | undefined> {
-    const row = await this.db
-      .selectFrom('secret_key_meta')
-      .select(['salt', 'verifier'])
-      .where('id', '=', 'global')
-      .executeTakeFirst();
-    return row ? { salt: row.salt, verifier: row.verifier } : undefined;
+    return this.secretKeyMetadata.getSecretKeyMeta();
   }
 
-  /** Persist the salt + verifier when a master password is set (or changed). */
+  /** Persist the salt and verifier when a master password is set or changed. */
   async setSecretKeyMeta(meta: SecretKeyMetaRecord): Promise<void> {
-    await this.db
-      .insertInto('secret_key_meta')
-      .values({ id: 'global', salt: meta.salt, verifier: meta.verifier })
-      .onConflict((oc) =>
-        oc.column('id').doUpdateSet({
-          salt: meta.salt,
-          verifier: meta.verifier,
-          updated_at: sql`now()`,
-        }),
-      )
-      .execute();
+    return this.secretKeyMetadata.setSecretKeyMeta(meta);
   }
 
-  /**
-   * Atomically persist the meta ONLY if none exists yet. Returns true when this
-   * call inserted (won the first-run race), false when a row was already present.
-   * Closes the TOCTOU in first-run `/secret/init`: concurrent inits derive under
-   * different salts, but only the winner's meta lands and only it should unlock.
-   */
+  /** Return true only when this call initializes the key metadata. */
   async insertSecretKeyMetaIfAbsent(meta: SecretKeyMetaRecord): Promise<boolean> {
-    const res = await this.db
-      .insertInto('secret_key_meta')
-      .values({ id: 'global', salt: meta.salt, verifier: meta.verifier })
-      .onConflict((oc) => oc.column('id').doNothing())
-      .executeTakeFirst();
-    return (res?.numInsertedOrUpdatedRows ?? 0n) > 0n;
+    return this.secretKeyMetadata.insertSecretKeyMetaIfAbsent(meta);
   }
 
   // ── Per-device API auth tokens (C1 auth gate) ─────────────────────────────
@@ -9535,186 +2545,62 @@ export class EventStore implements EventSink {
     /** The person the device belongs to; absent → the column default (the administrator). */
     userId?: string;
   }): Promise<string> {
-    const row = await this.db
-      .insertInto('auth_tokens')
-      .values({
-        id: record.id,
-        token_hash: record.tokenHash,
-        ...(record.userId === undefined ? {} : { user_id: record.userId }),
-        label: record.label ?? null,
-        expires_at: record.expiresAt == null ? null : new Date(record.expiresAt).toISOString(),
-      })
-      .returning('user_id')
-      .executeTakeFirstOrThrow();
-    return row.user_id;
+    return this.authTokens.insertAuthToken(record);
   }
 
   /** Every token hash currently valid — loaded once to seed the gate's in-memory
    *  set (avoids a DB round-trip on the per-request hot path). */
   async listAuthTokenHashes(): Promise<string[]> {
-    const rows = await this.db.selectFrom('auth_tokens').select('token_hash').execute();
-    return rows.map((r) => r.token_hash);
+    return this.authTokens.listAuthTokenHashes();
   }
 
   /** Tokens as records (id + label + createdAt + lastSeenAt), newest first — the
    *  device-management view. Never exposes the token or its hash's usefulness. */
   async listAuthTokens(): Promise<AuthTokenRecord[]> {
-    const rows = await this.db
-      .selectFrom('auth_tokens')
-      .select(['id', 'user_id', 'token_hash', 'label', 'created_at', 'last_seen_at', 'expires_at'])
-      .orderBy('created_at', 'desc')
-      .execute();
-    return rows.map((r) => ({
-      id: r.id,
-      userId: r.user_id,
-      tokenHash: r.token_hash,
-      expiresAt: r.expires_at === null ? null : new Date(r.expires_at).getTime(),
-      label: r.label,
-      createdAt: new Date(r.created_at).getTime(),
-      lastSeenAt: r.last_seen_at === null ? null : new Date(r.last_seen_at).getTime(),
-    }));
+    return this.authTokens.listAuthTokens();
   }
 
   /** Rename a paired device. Returns false when the id matches no row — a device
    *  revoked from another phone while this one had the rename field open. */
   async renameAuthToken(id: string, label: string): Promise<boolean> {
-    const res = await this.db
-      .updateTable('auth_tokens')
-      .set({ label })
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return (res?.numUpdatedRows ?? 0n) > 0n;
+    return this.authTokens.renameAuthToken(id, label);
   }
 
   /** Stamp a device's last authenticated request. Called off the request's
    *  critical path and throttled by the registry, never per request. */
   async touchAuthToken(id: string, expiresAt?: number): Promise<void> {
-    await this.db
-      .updateTable('auth_tokens')
-      .set({
-        last_seen_at: new Date().toISOString(),
-        ...(expiresAt === undefined ? {} : { expires_at: new Date(expiresAt).toISOString() }),
-      })
-      .where('id', '=', id)
-      .execute();
+    return this.authTokens.touchAuthToken(id, expiresAt);
   }
 
   /** Revoke a single device token by its public id. Returns true if a row went. */
   async deleteAuthToken(id: string): Promise<boolean> {
-    const deleted = await this.db.transaction().execute(async (trx) => {
-      const policy = await trx
-        .selectFrom('backup_policy')
-        .select('journal_enabled')
-        .where('id', '=', 1)
-        .forShare()
-        .executeTakeFirst();
-      await sql`lock table auth_tokens in row exclusive mode`.execute(trx);
-      const record = await trx
-        .selectFrom('auth_tokens')
-        .select('id')
-        .where('id', '=', id)
-        .forUpdate()
-        .executeTakeFirst();
-      if (!record) return false;
-      if (policy?.journal_enabled)
-        await trx
-          .insertInto('backup_revocation_outbox')
-          .values({ id: randomUUID(), device_id: id })
-          .execute();
-      const res = await trx.deleteFrom('auth_tokens').where('id', '=', id).executeTakeFirst();
-      return (res?.numDeletedRows ?? 0n) > 0n;
-    });
-    if (deleted) await this.notifyBackupRevocations();
-    return deleted;
+    return this.authTokens.deleteAuthToken(id);
   }
 
   /** Revoke every device token (e.g. on GitHub disconnect / master-password
    *  change) — forces all devices to re-authenticate. */
   async deleteAllAuthTokens(): Promise<void> {
-    await this.db.transaction().execute(async (trx) => {
-      const policy = await trx
-        .selectFrom('backup_policy')
-        .select('journal_enabled')
-        .where('id', '=', 1)
-        .forShare()
-        .executeTakeFirst();
-      await sql`lock table auth_tokens in share row exclusive mode`.execute(trx);
-      if (policy?.journal_enabled) {
-        const devices = await trx.selectFrom('auth_tokens').select('id').forUpdate().execute();
-        for (const device of devices)
-          await trx
-            .insertInto('backup_revocation_outbox')
-            .values({ id: randomUUID(), device_id: device.id })
-            .execute();
-      }
-      await trx.deleteFrom('auth_tokens').execute();
-    });
-    await this.notifyBackupRevocations();
+    return this.authTokens.deleteAllAuthTokens();
   }
 
   /** Runtime backup policy is disabled explicitly by restore before any token cleanup. */
   async setBackupJournaling(enabled: boolean): Promise<void> {
-    await this.db
-      .updateTable('backup_policy')
-      .set({ journal_enabled: enabled })
-      .where('id', '=', 1)
-      .execute();
+    return this.authTokens.setBackupJournaling(enabled);
   }
 
   async listBackupRevocations(): Promise<{ id: string; deviceId: string; revokedAt: string }[]> {
-    const rows = await this.db
-      .selectFrom('backup_revocation_outbox')
-      .selectAll()
-      .orderBy('created_at')
-      .limit(1000)
-      .execute();
-    return rows.map((row) => ({
-      id: row.id,
-      deviceId: row.device_id,
-      revokedAt: row.created_at.toISOString(),
-    }));
+    return this.authTokens.listBackupRevocations();
   }
 
   async acknowledgeBackupRevocation(id: string): Promise<void> {
-    await this.db.deleteFrom('backup_revocation_outbox').where('id', '=', id).execute();
+    return this.authTokens.acknowledgeBackupRevocation(id);
   }
+
+  private readonly backupRepositories = new BackupRepositoryStore(() => this.db);
 
   /** Stable server-owned bookkeeping; identities never come from sandbox-written markers. */
   async backupGitRepositoryKey(projectId: string | null, path: string): Promise<string> {
-    if (
-      !path ||
-      path.startsWith('/') ||
-      path.includes('\\') ||
-      path.split('/').some((part) => !part || part === '.' || part === '..')
-    )
-      throw new Error('Invalid backup Git bookkeeping path');
-    const key = randomUUID();
-    if (projectId === null) {
-      await this.db
-        .insertInto('backup_unassigned_git_repositories')
-        .values({ path, repo_key: key })
-        .onConflict((conflict) => conflict.column('path').doNothing())
-        .execute();
-      return (
-        await this.db
-          .selectFrom('backup_unassigned_git_repositories')
-          .select('repo_key')
-          .where('path', '=', path)
-          .executeTakeFirstOrThrow()
-      ).repo_key;
-    }
-    await this.db
-      .insertInto('backup_git_repositories')
-      .values({ project_id: projectId, path, repo_key: key })
-      .onConflict((conflict) => conflict.columns(['project_id', 'path']).doNothing())
-      .execute();
-    const row = await this.db
-      .selectFrom('backup_git_repositories')
-      .select('repo_key')
-      .where('project_id', '=', projectId)
-      .where('path', '=', path)
-      .executeTakeFirstOrThrow();
-    return row.repo_key;
+    return this.backupRepositories.backupGitRepositoryKey(projectId, path);
   }
 
   // ── Per-device Expo push tokens (ADR 0008, token registry) ────────────────
@@ -9726,110 +2612,27 @@ export class EventStore implements EventSink {
     expoToken: string;
     platform: 'ios';
   }): Promise<void> {
-    const mutation = this.pushTokenMutationTail.then(() =>
-      this.db.transaction().execute(async (trx) => {
-        // Registration is rare and this tiny table has two uniqueness axes
-        // (device + Expo token). Serialize cross-process writers so two pairings
-        // cannot both pass the DELETE then collide at INSERT. Reads/sends remain
-        // unaffected by this lock mode.
-        await sql`lock table device_push_tokens in share row exclusive mode`.execute(trx);
-        await trx
-          .deleteFrom('device_push_tokens')
-          .where('expo_token', '=', record.expoToken)
-          .where('auth_token_id', '!=', record.authTokenId)
-          .execute();
-        await trx
-          .insertInto('device_push_tokens')
-          .values({
-            auth_token_id: record.authTokenId,
-            expo_token: record.expoToken,
-            platform: record.platform,
-          })
-          .onConflict((oc) =>
-            oc.column('auth_token_id').doUpdateSet({
-              expo_token: record.expoToken,
-              platform: record.platform,
-              updated_at: sql`now()`,
-            }),
-          )
-          .execute();
-      }),
-    );
-    // A failed write must not poison the queue for later registrations.
-    this.pushTokenMutationTail = mutation.catch(() => undefined);
-    await mutation;
+    return this.devicePushTokens.upsertDevicePushToken(record);
   }
 
   async getDevicePushToken(authTokenId: string): Promise<DevicePushTokenRecord | undefined> {
-    const row = await this.db
-      .selectFrom('device_push_tokens')
-      .selectAll()
-      .where('auth_token_id', '=', authTokenId)
-      .executeTakeFirst();
-    return row === undefined
-      ? undefined
-      : {
-          authTokenId: row.auth_token_id,
-          expoToken: row.expo_token,
-          platform: row.platform,
-          createdAt: new Date(row.created_at).getTime(),
-          updatedAt: new Date(row.updated_at).getTime(),
-        };
+    return this.devicePushTokens.getDevicePushToken(authTokenId);
   }
 
   /** The push tokens of the given users' devices, with the user each belongs to. */
   async listDevicePushTokensForUsers(
     userIds: readonly string[],
   ): Promise<(DevicePushTokenRecord & { userId: string })[]> {
-    if (userIds.length === 0) return [];
-    const rows = await this.db
-      .selectFrom('device_push_tokens as t')
-      .innerJoin('auth_tokens as a', 'a.id', 't.auth_token_id')
-      .innerJoin('users as u', 'u.id', 'a.user_id')
-      .select([
-        't.auth_token_id',
-        't.expo_token',
-        't.platform',
-        't.created_at',
-        't.updated_at',
-        'a.user_id',
-      ])
-      .where('a.user_id', 'in', [...userIds])
-      .where('u.status', '=', 'active')
-      .orderBy('t.created_at', 'asc')
-      .execute();
-    return rows.map((row) => ({
-      authTokenId: row.auth_token_id,
-      expoToken: row.expo_token,
-      platform: row.platform,
-      createdAt: new Date(row.created_at).getTime(),
-      updatedAt: new Date(row.updated_at).getTime(),
-      userId: row.user_id,
-    }));
+    return this.devicePushTokens.listDevicePushTokensForUsers(userIds);
   }
 
   async listDevicePushTokens(): Promise<DevicePushTokenRecord[]> {
-    const rows = await this.db
-      .selectFrom('device_push_tokens')
-      .selectAll()
-      .orderBy('created_at', 'asc')
-      .execute();
-    return rows.map((row) => ({
-      authTokenId: row.auth_token_id,
-      expoToken: row.expo_token,
-      platform: row.platform,
-      createdAt: new Date(row.created_at).getTime(),
-      updatedAt: new Date(row.updated_at).getTime(),
-    }));
+    return this.devicePushTokens.listDevicePushTokens();
   }
 
   /** Remove a dead Expo token. Its pending receipt work cascades in the DB. */
   async deleteDevicePushToken(expoToken: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('device_push_tokens')
-      .where('expo_token', '=', expoToken)
-      .executeTakeFirst();
-    return (result.numDeletedRows ?? 0n) > 0n;
+    return this.devicePushTokens.deleteDevicePushToken(expoToken);
   }
 
   /** Persist a successful Expo ticket only while its token is still current.
@@ -9840,42 +2643,11 @@ export class EventStore implements EventSink {
     expoToken: string;
     availableAt: number;
   }): Promise<boolean> {
-    return this.db.transaction().execute(async (trx) => {
-      const token = await trx
-        .selectFrom('device_push_tokens')
-        .select('expo_token')
-        .where('expo_token', '=', record.expoToken)
-        .forShare()
-        .executeTakeFirst();
-      if (token === undefined) return false;
-      const result = await trx
-        .insertInto('push_receipts')
-        .values({
-          receipt_id: record.receiptId,
-          expo_token: record.expoToken,
-          available_at: new Date(record.availableAt).toISOString(),
-        })
-        .onConflict((conflict) => conflict.column('receipt_id').doNothing())
-        .executeTakeFirst();
-      return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
-    });
+    return this.devicePushTokens.enqueuePushReceipt(record);
   }
 
   async listDuePushReceipts(now: number, limit = 1_000): Promise<PushReceiptRecord[]> {
-    const rows = await this.db
-      .selectFrom('push_receipts')
-      .selectAll()
-      .where('available_at', '<=', new Date(now))
-      .orderBy('available_at', 'asc')
-      .limit(limit)
-      .execute();
-    return rows.map((row) => ({
-      receiptId: row.receipt_id,
-      expoToken: row.expo_token,
-      availableAt: new Date(row.available_at).getTime(),
-      attempts: row.attempts,
-      createdAt: new Date(row.created_at).getTime(),
-    }));
+    return this.devicePushTokens.listDuePushReceipts(now, limit);
   }
 
   async reschedulePushReceipt(
@@ -9883,94 +2655,19 @@ export class EventStore implements EventSink {
     availableAt: number,
     attempts: number,
   ): Promise<boolean> {
-    const result = await this.db
-      .updateTable('push_receipts')
-      .set({ available_at: new Date(availableAt).toISOString(), attempts })
-      .where('receipt_id', '=', receiptId)
-      .executeTakeFirst();
-    return (result.numUpdatedRows ?? 0n) > 0n;
+    return this.devicePushTokens.reschedulePushReceipt(receiptId, availableAt, attempts);
   }
 
   async deletePushReceipt(receiptId: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('push_receipts')
-      .where('receipt_id', '=', receiptId)
-      .executeTakeFirst();
-    return (result.numDeletedRows ?? 0n) > 0n;
+    return this.devicePushTokens.deletePushReceipt(receiptId);
   }
 
   async upsertHttpMcpConnection(record: HttpMcpConnectionRecord): Promise<void> {
-    return this.egressDestinationMutation(async () => {
-      await this.db
-        .insertInto('http_mcp_connections')
-        .values({
-          id: record.id,
-          ...(record.ownerUserId === undefined ? {} : { owner_user_id: record.ownerUserId }),
-          name: record.name,
-          url: record.url,
-          authorization: this.encryptSecret(record.authorization),
-          auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
-          oauth_client_id: record.oauthClientId ?? null,
-          oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
-          oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
-          oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
-          oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
-          oauth_scopes: record.oauthScopes ?? null,
-          oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
-          oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
-          oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
-          enabled: record.enabled,
-        })
-        .onConflict((conflict) =>
-          conflict.column('id').doUpdateSet({
-            name: record.name,
-            url: record.url,
-            authorization: this.encryptSecret(record.authorization),
-            auth_type: record.authType ?? (record.authorization === null ? 'none' : 'static'),
-            oauth_client_id: record.oauthClientId ?? null,
-            oauth_token_auth_method: record.oauthTokenAuthMethod ?? 'client_secret_post',
-            oauth_client_secret: this.encryptSecret(record.oauthClientSecret ?? null),
-            oauth_authorization_endpoint: record.oauthAuthorizationEndpoint ?? null,
-            oauth_token_endpoint: record.oauthTokenEndpoint ?? null,
-            oauth_scopes: record.oauthScopes ?? null,
-            oauth_access_token: this.encryptSecret(record.oauthAccessToken ?? null),
-            oauth_refresh_token: this.encryptSecret(record.oauthRefreshToken ?? null),
-            oauth_expires_at: record.oauthExpiresAt?.toISOString() ?? null,
-            enabled: record.enabled,
-          }),
-        )
-        .execute();
-    });
+    return this.httpMcpConnections.upsertHttpMcpConnection(record);
   }
 
   async listHttpMcpConnections(ownerUserId?: string): Promise<HttpMcpConnectionRecord[]> {
-    let query = this.db
-      .selectFrom('http_mcp_connections')
-      .selectAll()
-      .orderBy('name', 'asc')
-      .orderBy('id', 'asc');
-    if (ownerUserId !== undefined) query = query.where('owner_user_id', '=', ownerUserId);
-    const rows = await query.execute();
-    return rows.map((row) => ({
-      id: row.id,
-      ownerUserId: row.owner_user_id,
-      name: row.name,
-      url: row.url,
-      authorization: this.decryptSecret(row.authorization),
-      authType: row.auth_type as NonNullable<HttpMcpConnectionRecord['authType']>,
-      oauthClientId: row.oauth_client_id,
-      oauthTokenAuthMethod: row.oauth_token_auth_method as NonNullable<
-        HttpMcpConnectionRecord['oauthTokenAuthMethod']
-      >,
-      oauthClientSecret: this.decryptSecret(row.oauth_client_secret),
-      oauthAuthorizationEndpoint: row.oauth_authorization_endpoint,
-      oauthTokenEndpoint: row.oauth_token_endpoint,
-      oauthScopes: row.oauth_scopes,
-      oauthAccessToken: this.decryptSecret(row.oauth_access_token),
-      oauthRefreshToken: this.decryptSecret(row.oauth_refresh_token),
-      oauthExpiresAt: row.oauth_expires_at,
-      enabled: row.enabled,
-    }));
+    return this.httpMcpConnections.listHttpMcpConnections(ownerUserId);
   }
 
   /** Persist freshly issued OAuth tokens without resurrecting a connection that
@@ -9979,99 +2676,22 @@ export class EventStore implements EventSink {
     id: string,
     tokens: { accessToken: string; refreshToken: string | null; expiresAt: Date | null },
   ): Promise<boolean> {
-    const result = await this.db
-      .updateTable('http_mcp_connections')
-      .set({
-        oauth_access_token: this.encryptSecret(tokens.accessToken),
-        oauth_refresh_token: this.encryptSecret(tokens.refreshToken),
-        oauth_expires_at: tokens.expiresAt?.toISOString() ?? null,
-      })
-      .where('id', '=', id)
-      .executeTakeFirst();
-    return (result.numUpdatedRows ?? 0n) > 0n;
+    return this.httpMcpConnections.updateHttpMcpOAuthTokens(id, tokens);
   }
 
   async deleteHttpMcpConnection(id: string): Promise<boolean> {
-    return this.egressDestinationMutation(async () => {
-      const result = await this.db
-        .deleteFrom('http_mcp_connections')
-        .where('id', '=', id)
-        .executeTakeFirst();
-      return (result.numDeletedRows ?? 0n) > 0n;
-    });
+    return this.httpMcpConnections.deleteHttpMcpConnection(id);
   }
 
   async upsertProjectMcpBinding(binding: ProjectMcpBindingRecord): Promise<void> {
-    await this.db.transaction().execute(async (transaction) => {
-      await transaction
-        .selectFrom('projects')
-        .select('id')
-        .where('id', '=', binding.projectId)
-        .forUpdate()
-        .executeTakeFirstOrThrow();
-      if (binding.enabled) {
-        const existing = await transaction
-          .selectFrom('project_mcp_bindings')
-          .select(['connection_id', 'enabled'])
-          .where('project_id', '=', binding.projectId)
-          .execute();
-        const alreadyEnabled = existing.some(
-          (row) => row.connection_id === binding.connectionId && row.enabled,
-        );
-        if (!alreadyEnabled && existing.filter((row) => row.enabled).length >= 16) {
-          throw new Error('project MCP connection limit exceeded');
-        }
-      }
-      await transaction
-        .insertInto('project_mcp_bindings')
-        .values({
-          project_id: binding.projectId,
-          connection_id: binding.connectionId,
-          enabled: binding.enabled,
-        })
-        .onConflict((conflict) =>
-          conflict.columns(['project_id', 'connection_id']).doUpdateSet({
-            enabled: binding.enabled,
-          }),
-        )
-        .execute();
-    });
+    return this.httpMcpConnections.upsertProjectMcpBinding(binding);
   }
 
   async listProjectMcpBindings(projectId: string): Promise<ProjectMcpBindingRecord[]> {
-    const rows = await this.db
-      .selectFrom('project_mcp_bindings')
-      .selectAll()
-      .where('project_id', '=', projectId)
-      .orderBy('connection_id', 'asc')
-      .execute();
-    return rows.map((row) => ({
-      projectId: row.project_id,
-      connectionId: row.connection_id,
-      enabled: row.enabled,
-    }));
+    return this.httpMcpConnections.listProjectMcpBindings(projectId);
   }
 
   async deleteProjectMcpBinding(projectId: string, connectionId: string): Promise<boolean> {
-    const result = await this.db
-      .deleteFrom('project_mcp_bindings')
-      .where('project_id', '=', projectId)
-      .where('connection_id', '=', connectionId)
-      .executeTakeFirst();
-    return (result.numDeletedRows ?? 0n) > 0n;
+    return this.httpMcpConnections.deleteProjectMcpBinding(projectId, connectionId);
   }
-}
-
-/** Stores the allowed agents in canonical order; an empty or full list is unrestricted. */
-function allowedAgentsColumn(value: readonly ProjectAgent[] | null | undefined): string | null {
-  if (value === undefined || value === null) return null;
-  const agents = PROJECT_AGENTS.filter((agent) => value.includes(agent));
-  if (agents.length === 0 || agents.length === PROJECT_AGENTS.length) return null;
-  return JSON.stringify(agents);
-}
-
-function normalizeSetting(value: string | null | undefined): string | null {
-  if (value === undefined || value === null) return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }

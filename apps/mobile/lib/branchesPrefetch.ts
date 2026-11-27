@@ -79,6 +79,18 @@ export function seedSessionBranches(client: VerityClient, session: SessionSummar
     current: session.branch ?? cached?.current ?? '',
     currentPr: pullRequest?.number ?? null,
     pullRequest,
+    pullRequests:
+      cached?.pullRequests?.flatMap((row) => {
+        if (!row.repository.isDefault || row.url !== (known?.url ?? cached?.pullRequest?.url))
+          return [row];
+        if (!pullRequest) return [];
+        const updated = { ...row, ...pullRequest };
+        return [
+          row.observationFailed && updated.phase === 'open'
+            ? { ...updated, mergeable: null, pipeline: 'unknown', observationFailed: true }
+            : updated,
+        ];
+      }) ?? cached?.pullRequests,
   });
 }
 
@@ -95,7 +107,17 @@ export function branchesSnapshotWriter(
     cache.versions.delete(cache.versions.keys().next().value!);
   }
   return (value) => {
-    if (cache.versions.get(sessionId) === version) remember(cache, sessionId, value);
+    if (cache.versions.get(sessionId) !== version) return;
+    const previous = cache.snapshots.get(sessionId);
+    const pullRequests =
+      value.pullRequests === null
+        ? (previous?.pullRequests?.map((row) =>
+            row.phase === 'open'
+              ? { ...row, mergeable: null, pipeline: 'unknown' as const, observationFailed: true }
+              : row,
+          ) ?? null)
+        : value.pullRequests;
+    remember(cache, sessionId, value.pullRequests === null ? { ...value, pullRequests } : value);
   };
 }
 
@@ -133,7 +155,8 @@ export function prefetchBranches(client: VerityClient, sessionId: string): void 
   const controller = new AbortController();
   const entry: PendingBranches = {
     controller,
-    promise: client.getBranches(sessionId, controller.signal).then((value) => {
+    // Opening the session: its pull request is read from the forge now.
+    promise: client.getBranches(sessionId, controller.signal, true).then((value) => {
       entry.settledAt = Date.now();
       if (!controller.signal.aborted) publish(value);
       return value;
@@ -167,7 +190,7 @@ export function takePrefetchedBranches(
   return entry.promise
     .catch((error: unknown) => {
       if (signal?.aborted || entry.controller.signal.aborted) throw error;
-      return client.getBranches(sessionId, signal);
+      return client.getBranches(sessionId, signal, true);
     })
     .finally(() => signal?.removeEventListener('abort', abort));
 }

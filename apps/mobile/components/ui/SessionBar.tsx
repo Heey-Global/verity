@@ -8,17 +8,56 @@ export function SessionBar({
   children,
   trailing,
   pressed = false,
+  inset = false,
+  first = false,
+  progress,
 }: {
   children: ReactNode;
   trailing?: ReactNode;
   pressed?: boolean;
+  inset?: boolean;
+  first?: boolean;
+  progress?: number;
+}) {
+  const bar = (
+    <View
+      style={[
+        styles.bar,
+        inset && (first ? styles.first : styles.inset),
+        pressed && styles.pressed,
+      ]}
+    >
+      {children}
+      {trailing ? <View style={styles.trailing}>{trailing}</View> : null}
+      {progress !== undefined ? (
+        <View
+          pointerEvents="none"
+          style={[styles.progress, { width: `${Math.max(0, Math.min(1, progress)) * 100}%` }]}
+        />
+      ) : null}
+    </View>
+  );
+  return inset ? bar : <View style={styles.wrap}>{bar}</View>;
+}
+
+export function SessionBarStack({
+  children,
+  collapsed,
+  grouped,
+}: {
+  children: ReactNode;
+  collapsed: boolean;
+  grouped: boolean;
 }) {
   return (
-    <View style={styles.wrap}>
-      <View style={[styles.bar, pressed && styles.pressed]}>
-        {children}
-        {trailing ? <View style={styles.trailing}>{trailing}</View> : null}
-      </View>
+    <View style={grouped ? styles.wrap : undefined}>
+      <View style={grouped ? styles.stack : undefined}>{children}</View>
+      {collapsed ? (
+        <>
+          <View style={[styles.edge, styles.firstEdge]} />
+          <View style={[styles.edge, styles.lastEdge]} />
+        </>
+      ) : null}
     </View>
   );
 }
@@ -31,6 +70,7 @@ export function SessionBarTarget({
   accessibilityLabel,
   accessibilityHint,
   accessibilityRole = 'button',
+  expanded,
 }: {
   children: ReactNode;
   /** Omitted for a bar that only reports a state: it then is not a button. */
@@ -40,6 +80,7 @@ export function SessionBarTarget({
   accessibilityLabel: string;
   accessibilityHint?: string;
   accessibilityRole?: 'button' | 'link';
+  expanded?: boolean;
 }) {
   if (onPress === undefined)
     return (
@@ -54,6 +95,7 @@ export function SessionBarTarget({
       onPressIn={onPressIn}
       onPressOut={onPressOut}
       accessibilityRole={accessibilityRole}
+      accessibilityState={expanded === undefined ? undefined : { expanded }}
       accessibilityLabel={accessibilityLabel}
       accessibilityHint={accessibilityHint}
     >
@@ -73,7 +115,7 @@ export function SessionBarContent({
   /** In motion (§ 5.4 `transient`): a muted spinner takes the dot's place. */
   busy?: boolean;
   title: string;
-  subtitle: string;
+  subtitle: ReactNode;
   children?: ReactNode;
 }) {
   const { theme } = useUnistyles();
@@ -112,6 +154,32 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     borderRadius: theme.radius.md,
     overflow: 'hidden',
+  },
+  stack: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    overflow: 'hidden',
+  },
+  edge: {
+    height: 5,
+    borderWidth: 1,
+    borderTopWidth: 0,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surfaceAlt,
+    borderBottomLeftRadius: theme.radius.md,
+    borderBottomRightRadius: theme.radius.md,
+  },
+  firstEdge: { marginHorizontal: theme.spacing.sm, opacity: 0.8 },
+  lastEdge: { marginHorizontal: theme.spacing.lg, opacity: 0.55 },
+  first: { borderWidth: 0, borderRadius: 0 },
+  inset: { borderWidth: 0, borderTopWidth: 1, borderRadius: 0 },
+  progress: {
+    position: 'absolute',
+    left: 0,
+    bottom: 0,
+    height: 2,
+    backgroundColor: theme.colors.textFaint,
   },
   pressed: { backgroundColor: theme.colors.border },
   target: {

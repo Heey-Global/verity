@@ -121,6 +121,25 @@ export interface SandboxUpdateChecker {
    * there is no batch to share a target with and the answer must be fresh.
    */
   statusAll(projects: readonly ProjectRecord[]): Promise<Map<string, SandboxUpdateStatus>>;
+  /**
+   * Hear every status this checker computes, whichever read or tick asked for
+   * it, so a change can be announced to live views (ADR 0033) without a
+   * checker of its own. Returns the function that stops listening.
+   */
+  observe?(listener: (projectId: string, status: SandboxUpdateStatus) => void): () => void;
+  /**
+   * Reuse each project's last container inspection while `source` follows
+   * Docker's event stream, until an event names the project or the stream may
+   * have missed one. Reads then cost no inspect per running sandbox. Returns
+   * the function that stops trusting `source`.
+   */
+  trustInspections?(source: InspectionTrust): () => void;
+}
+
+/** What the checker needs to know whether a held inspection is current. */
+export interface InspectionTrust {
+  following(): boolean;
+  onContainerChange(listener: (projectId: string | undefined) => void): () => void;
 }
 
 export type SandboxRefSource = string | (() => Promise<string | undefined>);
@@ -233,8 +252,41 @@ export function createSandboxUpdateChecker(args: {
     return cached.target;
   };
 
+  // Inspections held while the event stream vouches for them. `generation`
+  // moves with every change the stream reports, so an inspection that was on
+  // its way when the container changed is not kept.
+  let trust: InspectionTrust | undefined;
+  let generation = 0;
+  const generations = new Map<string, number>();
+  const held = new Map<string, { key: string; inspection: Inspection }>();
+  // Which container an inspection describes, as far as the store knows: a
+  // recreate or rebuild moves the state or the image before its Docker event
+  // may have arrived, and a recreated container usually keeps its name.
+  const heldKey = (project: ProjectRecord): string =>
+    JSON.stringify([
+      project.containerName,
+      project.stateChangedAt?.getTime() ?? null,
+      project.imageRef ?? null,
+    ]);
   const inspectProject = async (project: ProjectRecord): Promise<Inspection> => {
     if (project.state !== 'active') return { ok: false, status: unknown('project is not active') };
+    const trusted = trust?.following() === true;
+    const kept = trusted ? held.get(project.id) : undefined;
+    if (kept !== undefined && kept.key === heldKey(project)) return kept.inspection;
+    const asked = { all: generation, project: generations.get(project.id) ?? 0 };
+    const inspection = await inspectContainerOf(project);
+    const unchanged =
+      asked.all === generation && asked.project === (generations.get(project.id) ?? 0);
+    // A failed inspect says nothing the next read should repeat.
+    const failed = !inspection.ok && inspection.transient === true;
+    if (trusted && unchanged && !failed && trust?.following() === true) {
+      held.delete(project.id);
+      held.set(project.id, { key: heldKey(project), inspection });
+      if (held.size > 4_096) held.delete(held.keys().next().value!);
+    }
+    return inspection;
+  };
+  const inspectContainerOf = async (project: ProjectRecord): Promise<Inspection> => {
     let inspected: ContainerInspect;
     try {
       inspected = await args.docker.inspectContainer(project.containerName);
@@ -242,7 +294,7 @@ export function createSandboxUpdateChecker(args: {
       if (error instanceof DockerError && error.kind === 'container_not_found') {
         return { ok: false, status: unknown('container is not running') };
       }
-      return { ok: false, status: unknown('container inspect failed') };
+      return { ok: false, status: unknown('container inspect failed'), transient: true };
     }
     if (!inspected.running) return { ok: false, status: unknown('container is not running') };
     return { ok: true, inspected };
@@ -258,13 +310,28 @@ export function createSandboxUpdateChecker(args: {
         ? unknown('default project image is unavailable')
         : statusForInspect(inspection.inspected, target);
 
+  const listeners = new Set<(projectId: string, status: SandboxUpdateStatus) => void>();
+  const report = (projectId: string, status: SandboxUpdateStatus): SandboxUpdateStatus => {
+    for (const listener of [...listeners]) {
+      try {
+        listener(projectId, status);
+      } catch {
+        // A listener must not fail the read that computed the status.
+      }
+    }
+    return status;
+  };
+
   return {
     async status(project) {
       const inspection = await inspectProject(project);
       // Only a project that can use the target pays for resolving it: an
       // inactive or stopped container costs no image inspect and no registry
       // round trip, as before.
-      return statusFrom(inspection, inspection.ok ? await resolveTarget() : undefined);
+      return report(
+        project.id,
+        statusFrom(inspection, inspection.ok ? await resolveTarget() : undefined),
+      );
     },
     async statusAll(projects) {
       const inspections = await Promise.all(
@@ -274,14 +341,53 @@ export function createSandboxUpdateChecker(args: {
         ? await resolveTarget()
         : undefined;
       return new Map(
-        inspections.map(([project, inspection]) => [project.id, statusFrom(inspection, target)]),
+        inspections.map(([project, inspection]) => [
+          project.id,
+          report(project.id, statusFrom(inspection, target)),
+        ]),
       );
+    },
+    observe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    trustInspections(source) {
+      trust = source;
+      held.clear();
+      const stopListening = source.onContainerChange((projectId) => {
+        if (projectId === undefined) {
+          generation += 1;
+          held.clear();
+          generations.clear();
+          return;
+        }
+        generations.set(projectId, (generations.get(projectId) ?? 0) + 1);
+        if (generations.size > 4_096) {
+          // A forgotten project restarts at 0; moving every generation keeps
+          // an answer under way for it from passing as current.
+          generations.delete(generations.keys().next().value!);
+          generation += 1;
+        }
+        held.delete(projectId);
+      });
+      return () => {
+        stopListening();
+        if (trust === source) trust = undefined;
+        generation += 1;
+        held.clear();
+      };
     },
   };
 }
 
+/** What a container showed: only facts about the container, never the
+ * comparison with the target, which every read makes afresh. `transient`
+ * marks a failure that says nothing the next read should repeat. */
 type Inspection =
-  { ok: true; inspected: ContainerInspect } | { ok: false; status: SandboxUpdateStatus };
+  | { ok: true; inspected: ContainerInspect }
+  | { ok: false; status: SandboxUpdateStatus; transient?: true };
 
 async function resolveSigningBrokerTokenHash(
   source: (() => Promise<string | null | undefined>) | undefined,

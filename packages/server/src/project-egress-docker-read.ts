@@ -5,6 +5,37 @@ const objectId = /^[a-f0-9]{64}$/u;
 const objectName = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,255}$/u;
 const imageName = /^(?:[a-zA-Z0-9./:_-]+@)?sha256:[a-f0-9]{64}$/u;
 const API = '/v1.47';
+
+/** Carries only the HTTP status, so callers can tell a removed object from a refusal. */
+export class EgressDockerReadError extends Error {
+  constructor(readonly status: number) {
+    super(
+      status === 404
+        ? 'Host Docker object not found (HTTP 404)'
+        : status === 403
+          ? 'Host Docker inspection refused (HTTP 403)'
+          : status === 400
+            ? 'Host Docker rejected the inspection request (HTTP 400); API 1.47 may be unsupported'
+            : `Host Docker inspection failed (HTTP ${status})`,
+    );
+    this.name = 'EgressDockerReadError';
+  }
+}
+
+/** True only when Docker answers that this exact container or network does not exist. */
+export async function egressDockerObjectAbsent(
+  kind: 'container' | 'network',
+  id: string,
+): Promise<boolean> {
+  try {
+    await readEgressDockerObject(kind, id);
+    return false;
+  } catch (error) {
+    if (error instanceof EgressDockerReadError && error.status === 404) return true;
+    throw error;
+  }
+}
+
 /** No caller-selected method, socket, query, redirect or arbitrary API path. */
 export async function readEgressDockerObject(
   kind: 'container' | 'network' | 'image' | 'volume' | 'info' | 'networks',
@@ -33,7 +64,7 @@ export async function readEgressDockerObject(
       { socketPath: '/var/run/docker.sock', method: 'GET', path: API + path, agent: false },
       (response) => {
         if (response.statusCode !== 200) {
-          reject(new Error('Host Docker inspection refused or API 1.47 unsupported'));
+          reject(new EgressDockerReadError(response.statusCode ?? 0));
           response.destroy();
           req.destroy();
           return;

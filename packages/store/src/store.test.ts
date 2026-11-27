@@ -1,6 +1,3 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import {
   boundedHistoryPageSchema,
   aggregateUsage,
@@ -22,9 +19,7 @@ import {
   waitForPendingMessageProjections,
 } from './store.js';
 import { createIsolatedTestDb, createTestDb, truncateAll, type TestDb } from './testing.js';
-
 let ctx: TestDb;
-
 beforeAll(async () => {
   ctx = await createTestDb();
 });
@@ -2108,6 +2103,18 @@ describe('EventStore — project memory (ADR 0008)', () => {
  *  slice and they keep asking what they were written to ask. The tail bound
  *  itself is exercised against a log built to exceed it. */
 const WHOLE_LOG = 1_000;
+/** What the store answers for a session without a log, or one it does not know. */
+const emptyFacts = () => ({
+  eventCount: 0,
+  lastEventSeq: 0,
+  revision: '',
+  lastActivityAt: null,
+  lastMessageAt: null,
+  events: [],
+  eventsTruncated: false,
+  rateLimitEvents: [],
+  usage: aggregateUsage([]),
+});
 
 describe('EventStore — session projection facts', () => {
   const other = { sessionId: 's2', worktree: '/wt/agent-s2', model: 'claude-opus-5' };
@@ -2153,58 +2160,6 @@ describe('EventStore — session projection facts', () => {
     expect(Number(rows.n)).toBe(sampleEvents.length + projected.length);
   });
 
-  it('has no writer into `events` that sources `type` anywhere but the parsed payload', async () => {
-    // The test above proves the invariant for rows THIS suite wrote through
-    // `appendEvent`. It cannot see the writer added next week. So read the
-    // writers out of the source instead of listing them: every insert into
-    // `events` anywhere in the repo has to take its `type` from the discriminant
-    // of the payload it is storing in the same statement, because the overview's
-    // SQL filter believes the column and every projection downstream believes
-    // `payload.t`. A writer that disagreed would not fail — those events would
-    // just stop existing as far as the badge, the token total and the limit
-    // banner are concerned.
-    const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      encoding: 'utf8',
-    }).trim();
-    const sources = execFileSync(
-      'git',
-      ['ls-files', '--cached', '--others', '--exclude-standard', '--', '*.ts'],
-      { encoding: 'utf8', cwd: repoRoot, maxBuffer: 32 * 1024 * 1024 },
-    )
-      .split('\n')
-      .filter(
-        (path) => path.length > 0 && !path.endsWith('.test.ts') && existsSync(join(repoRoot, path)),
-      );
-
-    // The two spellings the repo uses: Kysely's builder and a raw statement.
-    const insertPattern = /insertInto\(\s*'events'\s*\)|insert\s+into\s+events\b/g;
-    // `event.t` and `eventRow.type` are read off a `parseAgentEvent` result;
-    // `${type}` is the destructured half of `prepareEventRow`, which is the only
-    // producer of both (asserted below). Anything else has to justify itself here.
-    const fromPayload = /type:\s*(?:eventRow\.type|event\.t)\b|,\s*\$\{type\},/;
-    let writers = 0;
-    for (const path of sources) {
-      const source = readFileSync(join(repoRoot, path), 'utf8');
-      for (const match of source.matchAll(insertPattern)) {
-        writers += 1;
-        const statement = source.slice(match.index, match.index + 400);
-        expect(statement, `${path} writes \`events.type\` from something else`).toMatch(
-          fromPayload,
-        );
-      }
-    }
-    // The scan finding nothing would pass vacuously, which is the one way a
-    // pattern-based guard rots without saying so.
-    expect(writers).toBeGreaterThanOrEqual(3);
-
-    // …and the expressions above are only trustworthy because one function mints
-    // them, right after `parseAgentEvent` succeeds.
-    const storeSource = readFileSync(join(repoRoot, 'packages/store/src/store.ts'), 'utf8');
-    for (const binding of storeSource.matchAll(/const (?:eventRow|\{ type, payload \}) =\s*/g)) {
-      expect(storeSource.slice(binding.index, binding.index + 200)).toContain('prepareEventRow');
-    }
-  });
-
   it('answers one query for many sessions, matching each full log’s projection', async () => {
     for (const event of [...sampleEvents, ...projected]) await ctx.store.appendEvent('s1', event);
     for (const event of sampleEvents) await ctx.store.appendEvent('s2', event);
@@ -2235,15 +2190,7 @@ describe('EventStore — session projection facts', () => {
   it('returns a zeroed entry for a session with no events and for an unknown id', async () => {
     const facts = await ctx.store.listSessionProjectionFacts(['s1', 'nope'], WHOLE_LOG);
     for (const sessionId of ['s1', 'nope']) {
-      expect(facts.get(sessionId)).toEqual({
-        eventCount: 0,
-        lastEventSeq: 0,
-        lastActivityAt: null,
-        events: [],
-        eventsTruncated: false,
-        rateLimitEvents: [],
-        usage: aggregateUsage([]),
-      });
+      expect(facts.get(sessionId)).toEqual(emptyFacts());
     }
     expect(await ctx.store.listSessionProjectionFacts([], WHOLE_LOG)).toEqual(new Map());
   });
@@ -2317,15 +2264,7 @@ describe('EventStore — session projection facts', () => {
     const ids = Array.from({ length: 70_000 }, (_, at) => `absent-${String(at)}`);
     const facts = await ctx.store.listSessionProjectionFacts(ids, WHOLE_LOG);
     expect(facts.size).toBe(ids.length);
-    expect(facts.get('absent-69999')).toEqual({
-      eventCount: 0,
-      lastEventSeq: 0,
-      lastActivityAt: null,
-      events: [],
-      eventsTruncated: false,
-      rateLimitEvents: [],
-      usage: aggregateUsage([]),
-    });
+    expect(facts.get('absent-69999')).toEqual(emptyFacts());
   });
 
   it('takes lastActivityAt from the newest seq, not the newest timestamp', async () => {

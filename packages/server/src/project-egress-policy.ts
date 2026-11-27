@@ -57,7 +57,7 @@ export function evaluateProjectEgress(
     decision:
       request &&
       (request.status !== 'pending' ||
-        request.expiresAt <= now ||
+        (request.expiresAt !== null && request.expiresAt <= now) ||
         request.revision !== policy.revision)
         ? 'deny'
         : 'ask',

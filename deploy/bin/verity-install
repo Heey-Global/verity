@@ -1142,7 +1142,7 @@ if [ -f "$repo_root/egress-release/manifest.json" ]; then
       || die 'could not provision Python for the host component'
   fi
   python3 "$repo_root/scripts/project-egress-managed.py" provision "$repo_root/egress-release" \
-    --prepare-only --control-gid 65531 >/dev/null \
+    --prepare-only --control-gid 65531 --installer-lock "$LOCK_PATH" >/dev/null \
     || die 'could not prepare Network Protection host control paths'
   egress_control_gid=65531
 fi
@@ -1221,7 +1221,7 @@ if [ -n "$egress_control_gid" ]; then
     die 'could not prepare Network Protection host configuration'
   fi
   python3 "$repo_root/scripts/project-egress-managed.py" provision "$repo_root/egress-release" \
-    --control-gid "$egress_control_gid" --relay-config "$egress_config/generated/relay.json" \
+    --installer-lock "$LOCK_PATH" --control-gid "$egress_control_gid" --relay-config "$egress_config/generated/relay.json" \
     --authority-config "$egress_config/generated/authority.json" --database-config "$egress_config/generated/database.json" \
     || { rm -rf -- "$egress_config"; die 'could not provision Network Protection host service'; }
   rm -rf -- "$egress_config"

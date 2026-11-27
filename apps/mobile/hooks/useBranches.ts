@@ -3,12 +3,16 @@ import {
   VerityApiError,
   type VerityClient,
   type BranchList,
+  type OverviewStore,
   type BranchSwitchRequest,
+  type SessionPullRequestStatus,
   publishPullRequestStatusMutation,
+  sameSnapshotValue,
+  withPullRequest,
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { AppState } from 'react-native';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   branchesSnapshotWriter,
@@ -17,7 +21,13 @@ import {
   rememberBranches,
   takePrefetchedBranches,
 } from '../lib/branchesPrefetch';
+import { getVerityBaseUrl } from '../lib/client';
 import { hasLocalSaveChanges } from '../lib/localSaveVisibility';
+import { useOverviewSelection, useOverviewTopics } from '../lib/overviewTopics';
+
+export type BranchPullRequest = NonNullable<BranchList['pullRequest']> & {
+  repository?: SessionPullRequestStatus['repository'];
+};
 
 export interface UseBranches {
   /** The branch currently checked out in the session's worktree (undefined until loaded). */
@@ -32,6 +42,7 @@ export interface UseBranches {
    * when this is a number — independent of the branch-derived issue chip. */
   currentPr: number | null;
   pullRequest: NonNullable<BranchList['pullRequest']> | null;
+  pullRequests: BranchPullRequest[];
   /** The project repo's GitHub `owner`/`repo` (#161), from the server's `origin`-remote
    * parse — used to build tappable Issue/PR chip URLs. Both undefined when the server
    * is older OR there's no GitHub remote, in which case the chips stay non-tappable. */
@@ -58,6 +69,8 @@ export interface UseBranches {
   ) => Promise<{ ok: true } | { ok: false; dirty: boolean; message: string }>;
   mergePullRequest: (
     number: number,
+    repositoryId?: string,
+    expectedHeadSha?: string,
   ) => Promise<
     { ok: true } | { ok: false; message: string; permissionDenied?: boolean; retryable?: boolean }
   >;
@@ -70,6 +83,46 @@ export interface UseBranches {
   saveToProject: () => Promise<{ ok: true } | { ok: false; message: string }>;
 }
 
+type PullRequestStatus = Pick<
+  NonNullable<BranchList['pullRequest']>,
+  | 'phase'
+  | 'pipeline'
+  | 'checks'
+  | 'mergeable'
+  | 'viewerCanMerge'
+  | 'mergeState'
+  | 'headSha'
+  | 'updatedAt'
+>;
+
+/** The row with `status` in place of its own: an optional field the status
+ * leaves out is unknown now, not the row's older value. */
+function withStatus<Row extends PullRequestStatus>(row: Row, status: PullRequestStatus): Row {
+  const {
+    viewerCanMerge: _viewerCanMerge,
+    mergeState: _mergeState,
+    headSha: _headSha,
+    updatedAt: _updatedAt,
+    ...rest
+  } = row;
+  return { ...rest, ...status } as Row;
+}
+
+/** The status fields of a pull request a repository row takes over; what
+ * names the pull request or its repository stays the row's. */
+function pullRequestStatus(pr: NonNullable<BranchList['pullRequest']>): PullRequestStatus {
+  return {
+    phase: pr.phase,
+    pipeline: pr.pipeline,
+    checks: pr.checks,
+    mergeable: pr.mergeable,
+    ...(pr.viewerCanMerge === undefined ? {} : { viewerCanMerge: pr.viewerCanMerge }),
+    ...(pr.mergeState === undefined ? {} : { mergeState: pr.mergeState }),
+    ...(pr.headSha === undefined ? {} : { headSha: pr.headSha }),
+    ...(pr.updatedAt === undefined ? {} : { updatedAt: pr.updatedAt }),
+  };
+}
+
 /**
  * Branch switcher binding (#91): fetches a session worktree's current +
  * switchable branches on mount and exposes a `switchTo` that maps the server's
@@ -79,6 +132,24 @@ export interface UseBranches {
  */
 export function useBranches(client: VerityClient, sessionId: string, enabled = true): UseBranches {
   const cached = cachedBranches(client, sessionId);
+  // The overview's copy of the session (ADR 0033): its pull request status
+  // follows events from the server's sweep, other devices and other views.
+  const baseUrl = getVerityBaseUrl();
+  // Only the fields this hook shows render the session screen again.
+  const [store, heldPullRequest] = useOverviewSelection(
+    baseUrl,
+    (overview) => overview.session(sessionId)?.pullRequest,
+  );
+  const [, heldProjectId] = useOverviewSelection(
+    baseUrl,
+    (overview) => overview.session(sessionId)?.projectId,
+  );
+  const storeRef = useRef(store);
+  storeRef.current = store;
+  /** The store that took this hook's last read; its status is at least as new. */
+  const [readStore, setReadStore] = useState<OverviewStore | undefined>(undefined);
+  /** The store a catch-up read was asked for (see `unheard` below). */
+  const caughtUp = useRef<OverviewStore | undefined>(undefined);
   const [identity, setIdentity] = useState({ client, sessionId });
   const [current, setCurrent] = useState<string | undefined>(cached?.current);
   const [switchable, setSwitchable] = useState<string[]>(cached?.switchable ?? []);
@@ -87,6 +158,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   const [pullRequest, setPullRequest] = useState<NonNullable<BranchList['pullRequest']> | null>(
     cached?.pullRequest ?? null,
   );
+  const [repositoryPullRequests, setRepositoryPullRequests] = useState(cached?.pullRequests);
   const [owner, setOwner] = useState<string | undefined>(cached?.owner);
   const [repo, setRepo] = useState<string | undefined>(cached?.repo);
   const [codeHost, setCodeHost] = useState<BranchList['codeHost']>(cached?.codeHost);
@@ -120,6 +192,8 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     promise: Promise<void>;
     followup: boolean;
     silent: boolean;
+    /** The next read asks for a fresh pull request status. */
+    fresh: boolean;
     controller: AbortController;
   } | null>(null);
 
@@ -127,6 +201,8 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   // one frame before focus effects run.
   if (identity.client !== client || identity.sessionId !== sessionId) {
     setIdentity({ client, sessionId });
+    setReadStore(undefined);
+    caughtUp.current = undefined;
     reqId.current += 1;
     if (pending.current) {
       pending.current.followup = false;
@@ -138,6 +214,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     setPreviewable(cached?.previewable ?? []);
     setCurrentPr(cached?.currentPr ?? null);
     setPullRequest(cached?.pullRequest ?? null);
+    setRepositoryPullRequests(cached?.pullRequests);
     setOwner(cached?.owner);
     setRepo(cached?.repo);
     setCodeHost(cached?.codeHost);
@@ -149,12 +226,16 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   }
 
   const load = useCallback(
-    (opts: { silent?: boolean; force?: boolean } = {}) => {
+    // `fresh`: the operator opened, returned to or acted on the session, so
+    // the server reads its pull request from the forge now rather than from
+    // its cache. Hints and catch-up reads take the cached status.
+    (opts: { silent?: boolean; force?: boolean; fresh?: boolean } = {}) => {
       const existing = pending.current;
       if (existing?.client === client && existing.sessionId === sessionId) {
         if (opts.force !== false) {
           existing.followup = true;
           existing.silent = existing.silent && opts.silent === true;
+          existing.fresh = existing.fresh || opts.fresh === true;
         }
         return existing.promise;
       }
@@ -164,6 +245,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         promise: Promise.resolve(),
         followup: false,
         silent: opts.silent === true,
+        fresh: opts.fresh === true,
         controller: new AbortController(),
       };
       pending.current = request;
@@ -174,18 +256,53 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
           const fresh = (): boolean =>
             mounted.current && id === reqId.current && !request.controller.signal.aborted;
           if (!request.silent) setLoading(true);
+          // Events that arrive while the read is out are applied again on top.
+          const target = storeRef.current;
+          const storeRead = target.beginRead();
           try {
             const publishSnapshot = branchesSnapshotWriter(client, sessionId);
             const prefetched = takePrefetchedBranches(client, sessionId, request.controller.signal);
+            const readFresh = request.fresh;
+            request.fresh = false;
             const res = await (prefetched ??
-              client.getBranches(sessionId, request.controller.signal));
+              client.getBranches(sessionId, request.controller.signal, readFresh));
             if (fresh()) {
+              const pullRequests =
+                res.pullRequests === null
+                  ? (cachedBranches(client, sessionId)?.pullRequests ?? null)
+                  : res.pullRequests;
               publishSnapshot(res);
+              const listed = target.session(sessionId);
+              let applied = false;
+              if (listed !== undefined && res.pullRequest !== undefined) {
+                if (prefetched === undefined) {
+                  applied = target.applySessions(
+                    storeRead,
+                    [withPullRequest(listed, res.pullRequest)],
+                    { covers: (session) => session.sessionId === sessionId },
+                  );
+                } else {
+                  // A prefetch was asked before this read began: an event
+                  // since may be newer, or the store may have missed one.
+                  // Where both agree the store speaks; otherwise a read of
+                  // its own decides, and until then the prefetch is shown.
+                  applied = sameSnapshotValue(listed.pullRequest ?? null, res.pullRequest);
+                  if (!applied) request.followup = true;
+                }
+              }
+              setReadStore(applied ? target : undefined);
               setCurrent(res.current);
               setSwitchable(res.switchable);
               setPreviewable(res.previewable ?? []);
               setCurrentPr(res.currentPr ?? null);
               setPullRequest(res.pullRequest ?? null);
+              setRepositoryPullRequests(
+                res.pullRequests === null
+                  ? (pullRequests?.map((row) =>
+                      row.phase === 'open' ? { ...row, mergeable: null, pipeline: 'unknown' } : row,
+                    ) ?? null)
+                  : pullRequests,
+              );
               setOwner(res.owner);
               setRepo(res.repo);
               setCodeHost(res.codeHost);
@@ -197,6 +314,9 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
           } catch (err) {
             if (fresh()) setError(err instanceof Error ? err.message : String(err));
           } finally {
+            // Ends a read that failed or was superseded; after `applySessions`
+            // it changes nothing.
+            target.endRead(storeRead);
             if (fresh()) setLoading(false);
           }
         } while (request.followup && mounted.current && pending.current === request);
@@ -227,7 +347,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     useCallback(() => {
       setFocused(true);
       visible.current = appActive;
-      if (appActive && enabled) void load({ silent: true });
+      if (appActive && enabled) void load({ silent: true, fresh: true });
       return () => {
         setFocused(false);
         visible.current = false;
@@ -260,8 +380,9 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     return () => subscription.remove();
   }, []);
 
+  const observeBranchUpdates = !workspaceMissing || repositoryPullRequests !== undefined;
   useEffect(() => {
-    if (!focused || !appActive || !enabled || workspaceMissing) return undefined;
+    if (!focused || !appActive || !enabled || !observeBranchUpdates) return undefined;
     const path = `/sessions/${encodeURIComponent(sessionId)}/branches`;
     // A prefetch from another client does not register this client's read observation.
     // Live hints queue a fresh read behind any request already in flight.
@@ -271,11 +392,11 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       (resourcePath) => resourcePath.split('?')[0] === path,
       [{ path }],
     );
-  }, [client, sessionId, load, focused, appActive, workspaceMissing, enabled]);
+  }, [client, sessionId, load, focused, appActive, observeBranchUpdates, enabled]);
 
   const refresh = useCallback(() => {
     // Focus always revalidates, so hidden refresh requests need no network work.
-    if (enabled && visible.current) void load();
+    if (enabled && visible.current) void load({ fresh: true });
   }, [load, enabled]);
 
   const switchTo = useCallback<UseBranches['switchTo']>(
@@ -284,7 +405,7 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         await client.switchBranch(sessionId, opts);
         invalidateBranches(client, sessionId);
         reqId.current += 1;
-        await load();
+        await load({ fresh: true });
         return { ok: true };
       } catch (err) {
         if (err instanceof VerityApiError) {
@@ -304,34 +425,62 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   );
 
   const mergePullRequest = useCallback<UseBranches['mergePullRequest']>(
-    async (number) => {
+    async (number, repositoryId, expectedHeadSha) => {
       try {
-        await client.mergePullRequest(sessionId, number);
+        await (repositoryId === undefined && expectedHeadSha === undefined
+          ? client.mergePullRequest(sessionId, number)
+          : client.mergePullRequest(sessionId, number, expectedHeadSha, repositoryId));
         const snapshot = cachedBranches(client, sessionId);
+        const isDefault =
+          repositoryId === undefined ||
+          snapshot?.pullRequests?.some(
+            (pr) => pr.repository.id === repositoryId && pr.repository.isDefault,
+          );
+        const merged = { phase: 'merged', mergeable: false, mergeState: undefined } as const;
+        const updateList = (list: SessionPullRequestStatus[] | null | undefined) =>
+          list?.map((pr) =>
+            pr.number === number &&
+            (repositoryId === undefined
+              ? pr.repository.isDefault
+              : pr.repository.id === repositoryId)
+              ? { ...pr, ...merged }
+              : pr,
+          );
         invalidateBranches(client, sessionId);
         reqId.current += 1;
-        if (snapshot?.pullRequest?.number === number) {
+        if (snapshot !== undefined) {
           rememberBranches(client, sessionId, {
             ...snapshot,
-            pullRequest: {
-              ...snapshot.pullRequest,
-              phase: 'merged',
-              mergeable: false,
-              mergeState: undefined,
-            },
+            pullRequest:
+              isDefault && snapshot.pullRequest?.number === number
+                ? { ...snapshot.pullRequest, ...merged }
+                : snapshot.pullRequest,
+            pullRequests: updateList(snapshot.pullRequests),
           });
         }
-        setPullRequest((current) =>
-          current?.number === number
-            ? { ...current, phase: 'merged', mergeable: false, mergeState: undefined }
-            : current,
-        );
-        publishPullRequestStatusMutation({
-          sessionId,
-          number,
-          pr: { phase: 'merged', pipeline: 'success', mergeable: false },
-        });
-        await load();
+        setRepositoryPullRequests(updateList);
+        if (isDefault) {
+          setPullRequest((current) =>
+            current?.number === number ? { ...current, ...merged } : current,
+          );
+          // The chip shows the store's copy; it is merged for every view now.
+          const target = storeRef.current;
+          const listed = target.session(sessionId);
+          if (listed?.pullRequest?.number === number)
+            target.applySessions(
+              target.beginRead(),
+              [withPullRequest(listed, { ...listed.pullRequest, ...merged })],
+              { covers: (session) => session.sessionId === sessionId },
+            );
+          publishPullRequestStatusMutation({
+            sessionId,
+            number,
+            pr: { phase: 'merged', pipeline: 'success', mergeable: false },
+          });
+        } else {
+          publishPullRequestStatusMutation({ sessionId });
+        }
+        await load({ fresh: true });
         return { ok: true };
       } catch (err) {
         const retryable =
@@ -364,12 +513,67 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     }
   }, [client, sessionId]);
 
+  // The project topic carries the session's pull request status. A view that
+  // already follows it (Home) shares the subscription.
+  useOverviewTopics(
+    baseUrl,
+    focused && enabled && heldProjectId ? [heldProjectId] : [],
+    () => undefined,
+    () => {
+      if (visible.current) void load({ silent: true });
+    },
+  );
+  // The store's status of the same pull request is at least as new as this
+  // hook's read. Another pull request there (one opened or replaced since)
+  // needs the branch read, which carries its number and repository rows.
+  // Another store (an account change) never took this read.
+  const heldPr = readStore === store ? heldPullRequest : undefined;
+  // A session the store lists only after this hook's read (opened by a link
+  // before Home loaded, or another account's store): one more read puts the
+  // status there, and the store's events then show.
+  const unheard = heldPullRequest !== undefined && readStore !== store;
+  useEffect(() => {
+    if (!unheard || !visible.current || !enabled || caughtUp.current === store) return;
+    caughtUp.current = store;
+    // A read already out takes care of it.
+    void load({ silent: true, force: false });
+  }, [unheard, store, load, enabled]);
+  const otherPr =
+    heldPr !== undefined && (heldPr?.number ?? null) !== (pullRequest?.number ?? null);
+  // Once per pull request the store names, however often its status changes.
+  const heldNumber = heldPr === undefined ? undefined : (heldPr?.number ?? null);
+  useEffect(() => {
+    if (otherPr && visible.current && enabled) void load({ silent: true });
+  }, [otherPr, heldNumber, load, enabled]);
+  const shownPr = heldPr !== undefined && !otherPr ? heldPr : pullRequest;
+  // `null` rows (the server could not observe them) keep their masking below.
+  const shownRows = useMemo(
+    () =>
+      shownPr === pullRequest || shownPr === null || repositoryPullRequests == null
+        ? repositoryPullRequests
+        : repositoryPullRequests.map((row) =>
+            row.repository.isDefault && row.number === shownPr.number
+              ? withStatus(row, pullRequestStatus(shownPr))
+              : row,
+          ),
+    [shownPr, pullRequest, repositoryPullRequests],
+  );
+
   return {
     current,
     switchable,
     previewable,
     currentPr,
-    pullRequest,
+    pullRequest: shownPr,
+    pullRequests:
+      shownRows ??
+      (shownPr === null
+        ? []
+        : [
+            shownRows === null && shownPr.phase === 'open'
+              ? { ...shownPr, mergeable: null, pipeline: 'unknown' }
+              : shownPr,
+          ]),
     owner,
     repo,
     codeHost,
