@@ -39,7 +39,7 @@ export function sessionStorageAccess(deps: {
   dockerBaseUrl: string;
   dataVolume: string | undefined;
   dataVolumeRoot: string | undefined;
-}): Pick<StorageDeps, 'mutate' | 'withGit'> {
+}): Pick<StorageDeps, 'mutate' | 'mutateSession' | 'withGit'> {
   const {
     store: eventStore,
     docker: projectDocker,
@@ -57,6 +57,25 @@ export function sessionStorageAccess(deps: {
     dataVolume: deps.dataVolume,
   };
   return {
+    // One session's dependency steps: that session's dev servers and previews
+    // hold them, other sessions' turns do not. A sleeping project has no sandbox
+    // for Git here and goes through `mutate` and its maintenance image instead.
+    mutateSession: async (projectId, sessionId, operation, signal) => {
+      if ((await eventStore.getProject(projectId))?.state !== 'active')
+        throw new Error('Project sandbox is not running');
+      await withStorageProjectMutation(projectId, async () => {
+        const hold = storageHold({
+          projectId,
+          sessionId,
+          devServers: deps.devServers(),
+          localPreviews: deps.localPreviews,
+          publicShares: await eventStore.listPublicPreviewShares(projectId),
+        });
+        if (hold) throw new Error(hold);
+        signal?.throwIfAborted();
+        await operation();
+      });
+    },
     mutate: async (projectId, sessionId, operation, signal) => {
       const run = (imageId?: string, recheck?: () => Promise<void>) =>
         // Wait for the project owner before taking preview locks: that owner

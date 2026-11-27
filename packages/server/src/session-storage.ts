@@ -231,6 +231,28 @@ function rotateAfter<T>(items: readonly T[], key: (item: T) => string, cursor?: 
   return at < 0 ? ordered : [...ordered.slice(at + 1), ...ordered.slice(0, at + 1)];
 }
 
+/** Ignored paths a build or install recreates from tracked sources. Anything
+ *  else ignored (an `.env`, local notes, data) still keeps a worktree. */
+const REGENERABLE_DIRECTORIES = new Set([
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  '.turbo',
+  '.next',
+  '.nuxt',
+  '.vite',
+  '.cache',
+  '.expo',
+]);
+export function regenerableOutput(path: string): boolean {
+  if (path.endsWith('.tsbuildinfo')) return true;
+  return path
+    .split('/')
+    .slice(0, -1)
+    .some((part) => REGENERABLE_DIRECTORIES.has(part));
+}
+
 /** Whether a `node_modules` holds nothing but package links, as
  *  `linkWorkspacePackages` creates them (scoped ones one level down). */
 async function linksOnly(modules: string): Promise<boolean> {
@@ -375,6 +397,18 @@ export class SessionStorage {
       mutate: (
         projectId: string,
         sessionId: string | undefined,
+        operation: () => Promise<void>,
+        signal?: AbortSignal,
+      ) => Promise<void>;
+      /**
+       * Holds what collecting one session touches (that session's dev servers
+       * and previews) without the project-wide barrier of {@link mutate}, which
+       * waits for every other session to be idle. Used for running projects;
+       * throws when the project's sandbox is not running.
+       */
+      mutateSession?: (
+        projectId: string,
+        sessionId: string,
         operation: () => Promise<void>,
         signal?: AbortSignal,
       ) => Promise<void>;
@@ -682,8 +716,16 @@ export class SessionStorage {
           continue;
         }
         const claimed = await this.claim(session.sessionId, async () => {
+          // A running project's session is collected under its own hold only.
+          // The project-wide barrier needs every other session idle, which a busy
+          // project never is: behind it, a project whose sessions always work
+          // somewhere never gave up an installation or retired a worktree.
+          const mutate =
+            this.deps.mutateSession && project.state === 'active'
+              ? this.deps.mutateSession
+              : this.deps.mutate;
           try {
-            await this.deps.mutate(
+            await mutate(
               project.id,
               session.sessionId,
               async () => {
@@ -816,6 +858,39 @@ export class SessionStorage {
     report.worktreeSampledBytes = total;
     report.dependencySampledBytes = dependencies;
   }
+  /** The dependency steps of {@link reclaim}: preserved copies, then either
+   *  removal of an idle session's installation or sharing of an active one's. */
+  private async reclaimDependencies(
+    root: string,
+    path: string,
+    git: GitOutput,
+    report: SessionStorageReport,
+    signal: AbortSignal,
+    idleDependencies: boolean,
+  ): Promise<void> {
+    // Separate steps: a preserved copy that fails must not keep the private
+    // installation of an idle session in place, nor the other way round.
+    for (const step of [
+      () => this.reclaimPreservedDependencies(root, path, git, report, signal),
+      // An idle session gives its installation up; an active one shares it.
+      async () => {
+        if (idleDependencies) await this.removeIdleDependencies(root, path, git, report, signal);
+        else
+          report.sharedDependencyBytes += (
+            await shareDependencyFiles(root, path, signal, this.deps.dryRun)
+          ).bytes;
+      },
+    ])
+      try {
+        await step();
+      } catch (error) {
+        report.blockers.push({
+          path,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        if (signal.aborted) break;
+      }
+  }
   private async reclaim(
     project: ProjectRecord,
     path: string,
@@ -830,28 +905,7 @@ export class SessionStorage {
     const firstRemoval = report.dependenciesRemoved.length;
     const firstBlocker = report.blockers.length;
     try {
-      // Separate steps: a preserved copy that fails must not keep the private
-      // installation of an idle session in place, nor the other way round.
-      for (const step of [
-        () => this.reclaimPreservedDependencies(root, path, git, report, signal),
-        // An idle session gives its installation up; an active one shares it.
-        async () => {
-          if (idleDependencies) await this.removeIdleDependencies(root, path, git, report, signal);
-          else
-            report.sharedDependencyBytes += (
-              await shareDependencyFiles(root, path, signal, this.deps.dryRun)
-            ).bytes;
-        },
-      ])
-        try {
-          await step();
-        } catch (error) {
-          report.blockers.push({
-            path,
-            reason: error instanceof Error ? error.message : String(error),
-          });
-          if (signal.aborted) break;
-        }
+      await this.reclaimDependencies(root, path, git, report, signal, idleDependencies);
       if (!(await exists(path))) return;
       const holds = report.blockers.slice(firstBlocker).map((hold) => ({
         ...hold,
@@ -1070,6 +1124,16 @@ export class SessionStorage {
     const root = await this.safeRoot(project, path);
     if (!(await exists(path))) return;
     const files = (await git(['-C', path, 'ls-files', '-z'])).split('\0').filter(Boolean);
+    // Comparing with the base checkout only decides whether a private
+    // installation may go. Without one (removed while idle, or only restored
+    // workspace links) differing manifests must not stop retirement below.
+    const installation = join(path, 'node_modules');
+    if (
+      !(await exists(installation)) ||
+      !(await lstat(installation)).isDirectory() ||
+      (await linksOnly(installation))
+    )
+      return this.retireIfSettled(project, root, path, sessionId, git, report, retireWorktree);
     const dependencyInputs = files.filter((f) => inputs.test(f));
     const baseFiles = (await git(['-C', root, 'ls-files', '-z']))
       .split('\0')
@@ -1147,6 +1211,17 @@ export class SessionStorage {
       if (!(await removeVerified(local, join(root, modules)))) dependencyMismatch = true;
     }
     if (dependencyMismatch) throw new Error('Private dependency differences remain');
+    return this.retireIfSettled(project, root, path, sessionId, git, report, retireWorktree);
+  }
+  private async retireIfSettled(
+    project: ProjectRecord,
+    root: string,
+    path: string,
+    sessionId: string | null,
+    git: GitOutput,
+    report: SessionStorageReport,
+    retireWorktree: boolean,
+  ): Promise<void> {
     // Dependency slimming needs no idle-age grace; retiring source still does.
     if (!retireWorktree) return;
     const sha = (await git(['-C', path, 'rev-parse', 'HEAD'])).trim();
@@ -1189,8 +1264,8 @@ export class SessionStorage {
     )
       .split('\0')
       .filter(Boolean);
-    if (ignored.some((f) => f !== WORKTREE_SIDECAR))
-      throw new Error('Unknown ignored files remain');
+    const unknown = ignored.filter((f) => f !== WORKTREE_SIDECAR && !regenerableOutput(f));
+    if (unknown.length) throw new Error('Unknown ignored files remain');
     const registrations = await this.registrations(root, git);
     if (!registrations.has(path)) throw new Error('Worktree registration is unknown');
     const reason = registrations.get(path);
