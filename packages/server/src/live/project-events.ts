@@ -84,6 +84,67 @@ export function installProjectEvents(
   const serverToolkitIdentity = (): Promise<string | undefined | typeof UNREADABLE> =>
     (deps.toolkitIdentity ?? cachedTrustedToolkitIdentity)().catch(() => UNREADABLE);
 
+  // One change of a person's access at a time, in the order they committed:
+  // an earlier change read before a later one must not publish after it.
+  const accessQueues = new Map<string, Promise<void>>();
+  /**
+   * What one person may read changed. Their open topics are checked again at
+   * once, so a project they lost ends its stream now; and the projects whose
+   * place on their overview changed are announced to them alone.
+   */
+  const accessChanged = (userId: string, projectId?: string): Promise<void> => {
+    // Before waiting for anything: a project they lost ends its stream now,
+    // even behind an earlier change still being checked.
+    try {
+      ctx.liveHub.authorizationChanged({
+        userId,
+        ...(projectId === undefined ? {} : { projectId }),
+      });
+    } catch (error) {
+      // The announcement below still tells their devices what changed.
+      app.log.warn({ err: error, userId, projectId }, 'verity: live topics not rechecked');
+    }
+    const next = (accessQueues.get(userId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => publishAccess(userId, projectId));
+    // Held for the next change, never rejecting: the caller handles `next`.
+    const settled = next
+      .catch(() => undefined)
+      .finally(() => {
+        if (accessQueues.get(userId) === settled) accessQueues.delete(userId);
+      });
+    accessQueues.set(userId, settled);
+    return next;
+  };
+  const publishAccess = async (userId: string, projectId?: string): Promise<void> => {
+    // The change cleared their cached scope; reading it now, before anything
+    // is announced, lets the hub know they hold a project they just joined, so
+    // its hiding or deletion reaches them too.
+    await ctx.liveHub.overviewScope(userId);
+    const store = deps.eventStore;
+    const projectIds =
+      projectId === undefined ? await store.listReadableProjectIds(userId) : [projectId];
+    for (const id of projectIds) {
+      const readable = await store.hasProjectPermission(userId, id, 'read');
+      // Read last, with nothing awaited after it: a hide or deletion during
+      // the permission check must not be announced over.
+      const project = await store.getProject(id);
+      const listed = readable && project !== undefined && listedInProjectCollection(project);
+      domainEvents.publish(
+        PROJECTS_COLLECTION_TOPIC,
+        listed
+          ? { t: 'project.listed', projectId: id, rev: revisions.next(), userId }
+          : {
+              t: 'project.unlisted',
+              projectId: id,
+              rev: revisions.next(),
+              userId,
+              ...(project === undefined ? { gone: true } : {}),
+            },
+      );
+    }
+  };
+
   const publish = (projectId: string, event: DomainEvent): void => {
     domainEvents.publish(domainTopic('project', projectId), event);
   };
@@ -272,6 +333,15 @@ export function installProjectEvents(
 
   if (changes !== undefined) {
     lifecycle.onClose(changes.observe(announce));
+    if (typeof changes.observeAccess === 'function') {
+      lifecycle.onClose(
+        changes.observeAccess((userId, projectId) => {
+          void accessChanged(userId, projectId).catch((error: unknown) => {
+            app.log.warn({ err: error, userId, projectId }, 'verity: access change not published');
+          });
+        }),
+      );
+    }
     // Releases reach the store through it; without a feed nothing would carry
     // them on to views.
     installReleaseChecker(app, ctx);

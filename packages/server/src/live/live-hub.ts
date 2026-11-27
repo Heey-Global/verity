@@ -231,6 +231,9 @@ class LiveConnection {
     const { event } = record;
     if (event.t !== 'project.listed' && event.t !== 'project.unlisted') return false;
     const { userId } = this.identity;
+    // A change of one person's access: the server decided it for them, and
+    // nobody else hears of it.
+    if (event.userId !== undefined) return event.userId === userId;
     if (event.t === 'project.unlisted') {
       // Only to those who held the project: its readers may already have lost
       // the right to read it (a deleted project takes its memberships along),
