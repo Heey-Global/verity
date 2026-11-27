@@ -356,6 +356,9 @@ export function useProjects(client: VerityClient) {
       target.endRead(read);
     }
     setListed((current) => current.filter((p) => p.id !== projectId));
+    // Before the next render: a `listed` right behind this one (a hide, then
+    // a restore) must not find the project still shown and skip it.
+    shownRef.current = shownRef.current.filter((p) => p.id !== projectId);
   }, []);
   useProjectCollection(getVerityBaseUrl(), {
     listed: (projectId) => void listOne(projectId),

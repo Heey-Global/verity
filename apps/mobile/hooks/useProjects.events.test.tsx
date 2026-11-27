@@ -288,4 +288,25 @@ describe('useProjects project collection', () => {
     await waitFor(() => expect(client.listProjects.mock.calls.length).toBe(reads + 1));
     unmount();
   });
+
+  // A hide and a restore can both arrive before the list renders again; the
+  // restore must not find the project still shown and skip it.
+  it('lists a project restored right after it was hidden', async () => {
+    const active = { ...starting, state: 'active' as const };
+    const client = {
+      listProjects: jest.fn().mockResolvedValue([active]),
+      getProject: jest.fn().mockResolvedValue({ project: active, settings: null, sessions: [] }),
+    };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await waitFor(() => expect(result.current.projects).toHaveLength(1));
+    await waitFor(() => expect(mockSinks.has('collection:projects')).toBe(true));
+    const collection = mockSinks.get('collection:projects')!;
+    await act(async () => {
+      collection.event({ t: 'project.unlisted', projectId: 'p1', rev: 1 });
+      collection.event({ t: 'project.listed', projectId: 'p1', rev: 2 });
+    });
+    await waitFor(() => expect(result.current.projects.map((p) => p.id)).toEqual(['p1']));
+    expect(client.getProject).toHaveBeenCalledWith('p1');
+    unmount();
+  });
 });
