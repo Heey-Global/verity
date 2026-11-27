@@ -69,7 +69,7 @@ const MESSAGES: Record<NetworkShareErrorCode, string> = {
   not_empty: 'The folder is not empty. Only empty folders can be deleted.',
   timeout: 'The NAS did not answer in time.',
   restore_failed:
-    'Someone else changed the file at the same moment, so it could not be put back automatically. The previous version is kept next to it under a hidden .verity-….old name.',
+    'The file could not be put back automatically. The previous version is kept next to it under a hidden .verity-….old name.',
   interrupted:
     'The connection to the NAS dropped during the change. The file may be missing from its name; its previous version is then kept next to it under a hidden .verity-….old name. Check the folder before changing it again.',
   failed: 'The network share operation failed.',
@@ -598,7 +598,10 @@ export class SmbClient {
         // restore would find nothing and report a delete that happened as failed.
         const left = await run(target, [`allinfo ${remote(previous)}`]).catch(() => undefined);
         if (left === undefined) throw new NetworkShareError('interrupted');
-        if (statusOf(left[0])?.code === 'not_found') return;
+        const status = statusOf(left[0]);
+        if (status?.code === 'not_found') return;
+        // Any other answer leaves open whether the copy is still there.
+        if (status !== undefined) throw new NetworkShareError('interrupted');
         return recover(error, true);
       }
       const removeError = statusOf(removed[0]);
