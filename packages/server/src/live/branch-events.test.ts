@@ -19,13 +19,20 @@ function setup(sessions: SessionRecord[] = [record('s1'), record('s2')]) {
     getSession: async (id: string): Promise<SessionRecord | undefined> => byId.get(id),
     getSessionByWorktree: async (worktree: string) => sessions.find((s) => s.worktree === worktree),
   };
+  const invalidationListeners = new Set<(path: string) => void>();
   const changed = installBranchEvents(
     { log: { warn } },
     {
       domainEvents,
+      resources: {
+        onInvalidate: (listener: (path: string) => void) => {
+          invalidationListeners.add(listener);
+          return () => invalidationListeners.delete(listener);
+        },
+      },
       lifecycle: { onClose: (fn: () => void) => closers.push(fn) },
       deps: { eventStore: store },
-    } as unknown as Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle'>,
+    } as unknown as Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle' | 'resources'>,
     refresh,
     announce,
     {
@@ -39,6 +46,9 @@ function setup(sessions: SessionRecord[] = [record('s1'), record('s2')]) {
   );
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   return {
+    invalidate: (path: string) => {
+      for (const listener of invalidationListeners) listener(path);
+    },
     store,
     domainEvents,
     refresh,
@@ -133,5 +143,33 @@ describe('branch change announcements', () => {
     await b.changed('/wt/unknown');
     expect(b.announce).toHaveBeenCalledTimes(2);
     b.close();
+  });
+});
+
+describe('branch list changes', () => {
+  // Local commits and other repositories' pull requests reach the open
+  // session only as invalidations of its branch list. A client that no longer
+  // watches the list must hear of them on the session topic.
+  it('announces an invalidated branch list on the session topic, once per burst', async () => {
+    const b = setup();
+    const events: string[] = [];
+    b.domainEvents.subscribe('session:s1', undefined, ({ event }) => events.push(event.t));
+    b.invalidate('/sessions/s1/branches');
+    b.invalidate('/sessions/s1/merge');
+    b.invalidate('/sessions/s1/seen');
+    b.invalidate('/sessions/s2/permissions/t1');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(events).toEqual(['branches.changed']);
+    b.close();
+  });
+
+  it('announces nothing after the server closed', async () => {
+    const b = setup();
+    const events: string[] = [];
+    b.domainEvents.subscribe('session:s1', undefined, ({ event }) => events.push(event.t));
+    b.invalidate('/sessions/s1/branches');
+    b.close();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(events).toEqual([]);
   });
 });

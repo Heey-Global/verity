@@ -77,6 +77,8 @@ describe('conditionalJsonRoute', () => {
       ['session-list-route.ts', "'/sessions'"],
       ['project-collection-routes.ts', "'/projects'"],
       ['project-detail-routes.ts', "'/projects/:id'"],
+      // Read again on every `branches.changed` while a session is open.
+      ['session-branch-read-route.ts', "'/sessions/:id/branches'"],
     ] as const) {
       const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
       const registration = new RegExp(`app\\.get\\(\\s*${route},\\s*conditionalJsonRoute,`, 'u');

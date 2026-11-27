@@ -109,4 +109,57 @@ describe('GET /sessions/:id/branches?fresh=1', () => {
       await server.close();
     }
   });
+
+  // A read that outlasts the response announces its answer to the open
+  // session (ADR 0033). The announcement must not discard that answer, or the
+  // read it prompts asks the forge again, and every open session would read
+  // its repositories twice.
+  it('keeps a repository pull request read that finished after the response', async () => {
+    await createExistingSession('s1');
+    await ctx.store.upsertProject({
+      id: 'p1',
+      owner: 'team',
+      repo: 'app',
+      containerName: 'app',
+      state: 'active',
+    });
+    await ctx.store.setSessionProject('s1', 'p1');
+    branchSvc.current.mockResolvedValue('feat/slow');
+    branchSvc.switchable.mockResolvedValue([]);
+    branchSvc.previewable.mockResolvedValue([]);
+    const listRepositories = ctx.store.listProjectRepositories.bind(ctx.store);
+    let finish: () => void = () => undefined;
+    const repositories = vi.spyOn(ctx.store, 'listProjectRepositories').mockImplementationOnce(
+      (...args) =>
+        new Promise((resolve) => {
+          finish = () => resolve(listRepositories(...args));
+        }),
+    );
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi.fn(async () => null),
+      projectPullRequests: {
+        list: vi.fn().mockResolvedValue({ webUrl: '', pulls: [] }),
+        status: vi.fn().mockResolvedValue(null),
+        merge: vi.fn().mockResolvedValue(false),
+      },
+    });
+    try {
+      const read = () => server.inject({ method: 'GET', url: '/sessions/s1/branches' });
+      // Answered within its budget, without the repositories.
+      expect((await read()).statusCode).toBe(200);
+      const reads = repositories.mock.calls.length;
+      expect(reads).toBeGreaterThan(0);
+      finish();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await read();
+      expect(repositories.mock.calls.length).toBe(reads);
+    } finally {
+      repositories.mockRestore();
+      await server.close();
+    }
+  });
 });

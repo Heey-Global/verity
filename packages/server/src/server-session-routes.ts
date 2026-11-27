@@ -160,6 +160,8 @@ export function installSessionRoutes(
   const stopRepositoryPRInvalidation = ctx.resources.onInvalidate((path, source) => {
     const [, collection, id, resource] = path.split('/');
     if (collection !== 'sessions' || !id || resource !== 'branches') return;
+    // The read that finished is the news; forgetting it would read the forge again.
+    if (source === 'pr-read') return;
     if (source === 'pr-status') invalidateRepositoryPRRead(id);
     else repositoryPRReads.delete(id);
   });
@@ -502,7 +504,7 @@ export function installSessionRoutes(
                 if (repositoryPRReads.get(key) !== started) return;
                 if (started.invalidated) repositoryPRReads.delete(key);
                 if (started.invalidated || started.waitingForResult)
-                  ctx.resources.refresh(`/sessions/${key}/branches`);
+                  ctx.resources.invalidate(`/sessions/${key}/branches`, 'pr-read');
               });
             entry = started;
           }
@@ -623,7 +625,7 @@ export function installSessionRoutes(
         invalidateRepositoryPRRead(key);
         void prRead.then(() => {
           invalidateRepositoryPRRead(key);
-          ctx.resources.refresh(`/sessions/${key}/branches`);
+          ctx.resources.invalidate(`/sessions/${key}/branches`, 'pr-read');
         });
       }
       const cachedStatus = sessionPrCache.peek(session.worktree);
