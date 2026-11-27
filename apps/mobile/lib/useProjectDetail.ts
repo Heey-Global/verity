@@ -234,6 +234,9 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
           if (focusedRef.current && detailLoaded) return load(true);
         },
         (path) => path.split('?')[0] === `/projects/${encodeURIComponent(projectId)}`,
+        [],
+        // The project topic announces every change of the page (ADR 0033).
+        { covered: (_path, connection) => connection.followsTopic(`project:${projectId}`) },
       ),
     [client, projectId, detailLoaded, load],
   );

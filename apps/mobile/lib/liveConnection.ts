@@ -66,7 +66,22 @@ export function subscribeLiveRefresh(
   refresh: () => void | Promise<unknown>,
   filter: (path: string) => boolean = () => true,
   resources: readonly LiveResource[] = [],
-  options: { initial?: boolean } = {},
+  options: {
+    initial?: boolean;
+    /**
+     * Whether the view follows the resource live on domain-event topics (ADR
+     * 0033), asked again with every read. A covered resource is not watched:
+     * the server stops sampling it, and the topics announce every change. A
+     * view that loses coverage — a topic ended, failed or was dropped — is
+     * asked again when the connection reports that change, and watches the
+     * resource it last read again.
+     */
+    covered?: (path: string, connection: LiveConnection) => boolean;
+    /** Registers the check to run when what the view shows changed, which
+     * the coverage depends on as well: a listed session without a project
+     * changes no topic. Returns the unregistration. */
+    coverageChanged?: (recheck: () => void) => () => void;
+  } = {},
 ): () => void {
   // Lightweight test/demo clients may implement only the API calls they use.
   if (typeof client.observeReads !== 'function') {
@@ -111,17 +126,34 @@ export function subscribeLiveRefresh(
       if (!disposed) void run();
     }, 50);
   };
+  /** The resource last read per path, so a change of coverage can watch it. */
+  const observed = new Map<string, LiveResource>();
   const observe = (resource: LiveResource): void => {
     if (!filter(resource.path)) return;
     const path = resource.path.split('?')[0]!;
+    if (options.covered !== undefined) observed.set(path, resource);
     const key = JSON.stringify(resource);
     const previous = subscriptions.get(path);
+    if (options.covered?.(path, connection) === true) {
+      previous?.detach();
+      subscriptions.delete(path);
+      return;
+    }
     if (previous?.key === key) return;
     previous?.detach();
     subscriptions.set(path, { key, detach: connection.watchResource(resource, invalidate) });
   };
   for (const resource of resources) observe(resource);
   const detachReads = client.observeReads(observe);
+  // Coverage can end without a read: a topic past the limit, one that fails
+  // or that its last view released.
+  const recheck = (): void => {
+    if (disposed) return;
+    for (const resource of [...observed.values()]) observe(resource);
+  };
+  const detachCoverage =
+    options.covered === undefined ? undefined : connection.onTopicsChanged(recheck);
+  const detachShown = options.coverageChanged?.(recheck);
   const detachHints = connection.onHints((hints) => {
     if (
       hints.some(({ sessionId, topics }) => {
@@ -166,6 +198,8 @@ export function subscribeLiveRefresh(
     clearTimeout(timer);
     clearInterval(fallback);
     detachReads();
+    detachCoverage?.();
+    detachShown?.();
     detachHints();
     detachState();
     for (const subscription of subscriptions.values()) subscription.detach();

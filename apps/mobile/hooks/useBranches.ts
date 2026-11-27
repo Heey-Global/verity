@@ -394,6 +394,8 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       () => load({ silent: true }),
       (resourcePath) => resourcePath.split('?')[0] === path,
       [{ path }],
+      // The session topic announces the branch and every change of the list.
+      { covered: (_path, connection) => connection.followsTopic(`session:${sessionId}`) },
     );
   }, [client, sessionId, load, focused, appActive, observeBranchUpdates, enabled]);
 
