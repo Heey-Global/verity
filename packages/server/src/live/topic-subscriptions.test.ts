@@ -38,4 +38,34 @@ describe('TopicSubscriptions filter', () => {
     ]);
     subscriptions.dispose();
   });
+
+  // A filter that hangs would otherwise hold every later record in memory.
+  it('drops records beyond its bound and has the client read its snapshot', async () => {
+    const bus = new DomainEventBus();
+    const frames: LiveServerFrame[] = [];
+    let release!: () => void;
+    const hung = new Promise<boolean>((resolve) => (release = () => resolve(true)));
+    const subscriptions = new TopicSubscriptions({
+      bus,
+      canRead: async () => true,
+      filter: () => hung,
+      send: (frame) => {
+        frames.push(frame);
+        return true;
+      },
+      overBudget: () => false,
+    });
+    await subscriptions.subscribe([{ topic: 'collection:projects' }]);
+    frames.length = 0;
+    for (let rev = 1; rev <= 300; rev += 1) {
+      bus.publish('collection:projects', listed(`p${rev}`, rev));
+    }
+    expect(frames.filter((frame) => frame.k === 'resync')).toHaveLength(1);
+    release();
+    await vi.waitFor(() =>
+      expect(frames.filter((frame) => frame.k === 'domain')).toHaveLength(256),
+    );
+    await vi.waitFor(() => expect(frames.filter((frame) => frame.k === 'resync')).toHaveLength(2));
+    subscriptions.dispose();
+  });
 });

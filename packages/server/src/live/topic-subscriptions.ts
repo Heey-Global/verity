@@ -8,6 +8,9 @@ import {
 import type { DomainEventBus, DomainRecord } from './domain-events.js';
 
 const DRAIN_CHECK_MS = 250;
+/** Records one topic may hold waiting for its filter. Beyond it the client
+ * reads its snapshot instead: a filter that hangs must not grow server memory. */
+const MAX_PENDING_RECORDS = 256;
 
 interface Subscription {
   cancelled: boolean;
@@ -18,6 +21,8 @@ interface Subscription {
   /** Records waiting for an asynchronous `filter`, in order. */
   queue: Promise<void> | undefined;
   pending: number;
+  /** Records were dropped because the queue was full. */
+  overflowed: boolean;
 }
 
 export interface TopicSubscriptionsOptions {
@@ -63,6 +68,7 @@ export class TopicSubscriptions {
       unsubscribe: () => undefined,
       queue: undefined,
       pending: 0,
+      overflowed: false,
     };
     // Registered before the first await so a quick `topics.unsub` finds it.
     this.subscriptions.set(topic, sub);
@@ -126,6 +132,13 @@ export class TopicSubscriptions {
     record: DomainRecord,
     decide: () => boolean | Promise<boolean>,
   ): void {
+    if (sub.pending >= MAX_PENDING_RECORDS) {
+      if (!sub.overflowed) {
+        sub.overflowed = true;
+        this.opts.send({ k: 'resync', topic: record.topic, cursor: record.cursor });
+      }
+      return;
+    }
     sub.pending += 1;
     sub.queue = (sub.queue ?? Promise.resolve())
       .then(async () => {
@@ -148,7 +161,15 @@ export class TopicSubscriptions {
       })
       .finally(() => {
         sub.pending -= 1;
-        if (sub.pending === 0) sub.queue = undefined;
+        if (sub.pending === 0) {
+          sub.queue = undefined;
+          // Records dropped meanwhile may be newer than the snapshot the client
+          // read: once more, now that the queue drained.
+          if (sub.overflowed && !sub.cancelled) {
+            sub.overflowed = false;
+            this.opts.send({ k: 'resync', topic: record.topic, cursor: this.opts.bus.head });
+          }
+        }
       });
   }
 
