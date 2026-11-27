@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 import type { EventStore } from '@verity/store';
 import { ObservedSet } from './observed-set.js';
@@ -19,4 +20,15 @@ it('keeps the disconnected sandboxes in a set the server can observe', () => {
     isDirectory: () => false,
   });
   expect(provisioner.disconnectedSandboxProjects()).toBeInstanceOf(ObservedSet);
+});
+
+// Every change of the set makes the server read the project's sessions and
+// publish their rows. A pass that cleared and refilled it would do so on every
+// reconcile tick for every cut-off sandbox, though nothing changed.
+it('changes the disconnected sandboxes one project at a time', () => {
+  const source = readFileSync(new URL('./provisioner.ts', import.meta.url), 'utf8');
+  const writes = [...source.matchAll(/this\.disconnectedSandboxes\.(\w+)\(/gu)].map((m) => m[1]);
+  expect(writes.length).toBeGreaterThan(0);
+  expect(new Set(writes)).toEqual(new Set(['add', 'delete']));
+  expect(source).not.toMatch(/this\.disconnectedSandboxes\s*=(?!\s*new ObservedSet)/u);
 });
