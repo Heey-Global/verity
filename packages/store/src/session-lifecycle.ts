@@ -440,4 +440,41 @@ export class SessionLifecycleStore {
       return result.numDeletedRows > 0n;
     });
   }
+
+  async renameSession(sessionId: string, name: string | null): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({ name })
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  async setSessionFavorite(sessionId: string, favorite: boolean): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({ favorite })
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  async renameSessionIfUnnamed(sessionId: string, name: string): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({ name })
+      .where('session_id', '=', sessionId)
+      .where('name', 'is', null)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
+
+  async setSessionModel(sessionId: string, model: string): Promise<boolean> {
+    const result = await this.db
+      .updateTable('sessions')
+      .set({ model })
+      .where('session_id', '=', sessionId)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n;
+  }
 }

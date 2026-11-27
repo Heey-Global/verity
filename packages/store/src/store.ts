@@ -1166,22 +1166,12 @@ export class EventStore implements EventSink {
    * metadata: never touches the durable event log.
    */
   async renameSession(sessionId: string, name: string | null): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({ name })
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionLifecycle.renameSession(sessionId, name);
   }
 
   /** Mark a session as a favorite; returns false when the session is unknown. */
   async setSessionFavorite(sessionId: string, favorite: boolean): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({ favorite })
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionLifecycle.setSessionFavorite(sessionId, favorite);
   }
 
   /**
@@ -1192,13 +1182,7 @@ export class EventStore implements EventSink {
    * clobber an operator's manual rename (the TOCTOU the unguarded rename had).
    */
   async renameSessionIfUnnamed(sessionId: string, name: string): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({ name })
-      .where('session_id', '=', sessionId)
-      .where('name', 'is', null)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionLifecycle.renameSessionIfUnnamed(sessionId, name);
   }
 
   /**
@@ -1212,12 +1196,7 @@ export class EventStore implements EventSink {
    * `false` to a 404). Pure metadata: never touches the durable event log.
    */
   async setSessionModel(sessionId: string, model: string): Promise<boolean> {
-    const result = await this.db
-      .updateTable('sessions')
-      .set({ model })
-      .where('session_id', '=', sessionId)
-      .executeTakeFirst();
-    return result.numUpdatedRows > 0n;
+    return this.sessionLifecycle.setSessionModel(sessionId, model);
   }
 
   /** Move a session into or out of planning mode. `from` makes the write
