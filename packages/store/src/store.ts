@@ -766,7 +766,7 @@ export class EventStore implements EventSink {
   }
 
   get projectTeam(): ProjectTeamStore {
-    return new ProjectTeamStore(this.db, this.cipher);
+    return new ProjectTeamStore(this.db, this.cipher, this.projectChanges);
   }
 
   get projectSandboxes(): ProjectSandboxStore {

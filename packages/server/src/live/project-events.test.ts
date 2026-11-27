@@ -68,11 +68,20 @@ function setup() {
   const closers: (() => unknown)[] = [];
   const ticks: (() => void)[] = [];
   const getProject = vi.fn(async (id: string) => rows.get(id));
+  const readers = new Map<string, Set<string>>([['p1', new Set(['bob'])]]);
+  const authorizationChanged = vi.fn();
   const failures = new Map<string, { at: number; message: string }>();
   const turnBlocked = new Set<string>();
   const ctx = {
     deps: {
-      eventStore: { projectChanges, getProject },
+      eventStore: {
+        projectChanges,
+        getProject,
+        hasProjectPermission: async (userId: string, projectId: string) =>
+          readers.get(projectId)?.has(userId) === true,
+        listReadableProjectIds: async (userId: string) =>
+          [...readers].filter(([, users]) => users.has(userId)).map(([id]) => id),
+      },
       sandboxUpdates,
       provisioner: {
         sandboxRepairLastFailures: vi.fn(() => failures),
@@ -84,6 +93,7 @@ function setup() {
       },
     },
     domainEvents,
+    liveHub: { authorizationChanged },
     lifecycle: {
       onClose: (stop: () => unknown) => closers.push(stop),
       every: (_ms: number, tick: () => void) => ticks.push(tick),
@@ -102,6 +112,9 @@ function setup() {
   const events = () => published.map((record) => record.event);
   return {
     listing: () => listing.map((record) => record.event),
+    projectChanges,
+    readers,
+    authorizationChanged,
     remove: () => {
       rows.delete('p1');
       projectChanges.announce('p1');
@@ -239,6 +252,42 @@ describe('installProjectEvents', () => {
         expect.objectContaining({ t: 'project.unlisted', projectId: 'p1' }),
       ]),
     );
+  });
+
+  // A member added on one device must see the project on theirs at once, and
+  // one removed must lose it, and its stream, without waiting for a read.
+  it('announces a change of access to the person alone, and rechecks their topics', async () => {
+    const w = setup();
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.listing()).toHaveLength(1));
+    w.projectChanges.announceAccess('bob', 'p1');
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual({
+        t: 'project.listed',
+        projectId: 'p1',
+        rev: expect.any(Number),
+        userId: 'bob',
+      }),
+    );
+    expect(w.authorizationChanged).toHaveBeenCalledWith({ userId: 'bob', projectId: 'p1' });
+
+    w.readers.get('p1')!.delete('bob');
+    w.projectChanges.announceAccess('bob', 'p1');
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toMatchObject({ t: 'project.unlisted', userId: 'bob' }),
+    );
+
+    // An account that became active: every project it may read.
+    w.readers.get('p1')!.add('carol');
+    w.projectChanges.announceAccess('carol');
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toMatchObject({
+        t: 'project.listed',
+        projectId: 'p1',
+        userId: 'carol',
+      }),
+    );
+    expect(w.authorizationChanged).toHaveBeenLastCalledWith({ userId: 'carol' });
   });
 
   it('publishes renames and setup status as project changes', async () => {
@@ -644,6 +693,32 @@ describe('project state writers', () => {
 
   // The overview drops a hidden or deleted project only through the change
   // feed; a silent writer would leave it on every other device's Home.
+  // Who may read a project changes in these writers; a silent one leaves the
+  // person's other devices with the old overview, and a removed member's
+  // stream open, until something unrelated reads again.
+  it('announces every team store method that grants or removes access', () => {
+    const team = sources.find(({ file }) => file.endsWith('store/src/project-team.ts'))!;
+    // Pending joins: the person is not active yet and reads nothing either way.
+    const pending = new Set([
+      'revokeInvitation',
+      'failJoin',
+      'clearExpiredJoinCredentials',
+      'redeemInvitation',
+    ]);
+    const silent: string[] = [];
+    let writers = 0;
+    for (const method of methodsOf(team.text)) {
+      const grants =
+        /(?:updateTable|deleteFrom)\('project_memberships'\)/u.test(method.body) ||
+        /updateTable\('users'\)\s*\.set\(\{\s*status:\s*'active'/u.test(method.body);
+      if (!grants || pending.has(method.name)) continue;
+      writers += 1;
+      if (!/\bchanges\??\.announceAccess\(/u.test(method.body)) silent.push(method.name);
+    }
+    expect(writers).toBeGreaterThanOrEqual(3);
+    expect(silent).toEqual([]);
+  });
+
   it('announces every store method that hides or deletes a project', () => {
     const silent: string[] = [];
     let writers = 0;

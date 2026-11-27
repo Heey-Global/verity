@@ -467,6 +467,26 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  // The server decided the change for that person; nobody else may learn of
+  // it, and a scope cached before the change must not hold it back.
+  it("delivers a change of one person's access to that person alone", async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    const bob = w.connect('bob');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await bob.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.bus!.publish('collection:projects', {
+      t: 'project.listed',
+      projectId: 'p2',
+      rev: 1,
+      userId: 'alice',
+    });
+    await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(bob.of('domain')).toEqual([]);
+    w.hub.close();
+  });
+
   it('refuses a collection it does not know', async () => {
     const w = world();
     const alice = w.connect('alice');

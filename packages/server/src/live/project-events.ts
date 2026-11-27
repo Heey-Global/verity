@@ -84,6 +84,31 @@ export function installProjectEvents(
   const serverToolkitIdentity = (): Promise<string | undefined | typeof UNREADABLE> =>
     (deps.toolkitIdentity ?? cachedTrustedToolkitIdentity)().catch(() => UNREADABLE);
 
+  /**
+   * What one person may read changed. Their open topics are checked again at
+   * once, so a project they lost ends its stream now; and the projects whose
+   * place on their overview changed are announced to them alone.
+   */
+  const accessChanged = async (userId: string, projectId?: string): Promise<void> => {
+    ctx.liveHub.authorizationChanged({ userId, ...(projectId === undefined ? {} : { projectId }) });
+    const store = deps.eventStore;
+    const projectIds =
+      projectId === undefined ? await store.listReadableProjectIds(userId) : [projectId];
+    for (const id of projectIds) {
+      const project = await store.getProject(id);
+      const listed =
+        project !== undefined &&
+        listedInProjectCollection(project) &&
+        (await store.hasProjectPermission(userId, id, 'read'));
+      domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
+        t: listed ? 'project.listed' : 'project.unlisted',
+        projectId: id,
+        rev: revisions.next(),
+        userId,
+      });
+    }
+  };
+
   const publish = (projectId: string, event: DomainEvent): void => {
     domainEvents.publish(domainTopic('project', projectId), event);
   };
@@ -272,6 +297,15 @@ export function installProjectEvents(
 
   if (changes !== undefined) {
     lifecycle.onClose(changes.observe(announce));
+    if (typeof changes.observeAccess === 'function') {
+      lifecycle.onClose(
+        changes.observeAccess((userId, projectId) => {
+          void accessChanged(userId, projectId).catch((error: unknown) => {
+            app.log.warn({ err: error, projectId }, 'verity: access change not published');
+          });
+        }),
+      );
+    }
     // Releases reach the store through it; without a feed nothing would carry
     // them on to views.
     installReleaseChecker(app, ctx);
