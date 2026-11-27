@@ -89,7 +89,14 @@ export function createContainerLiveness(options: {
           provisionError,
           provisionWarning,
         );
-        if (unreadable === undefined) return row;
+        if (unreadable === undefined) {
+          // A read's comparison is not serialized with the follower's: its
+          // write may land after a catch-up that did not see it. The rows are
+          // no longer known to be current until a full pass after it.
+          lose();
+          if (open) void sweep();
+          return row;
+        }
         for (const listener of written) {
           try {
             listener();

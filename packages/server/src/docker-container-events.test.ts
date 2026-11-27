@@ -148,4 +148,23 @@ describe('createContainerEventSource', () => {
     await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
     await stop();
   });
+
+  it('closes a response that arrives after the stop won', async () => {
+    const late = streamingResponse();
+    const cancel = vi.spyOn(late.response.body, 'cancel');
+    let respond!: () => void;
+    const fetch = vi
+      .fn<HttpFetch>()
+      .mockImplementation(() => new Promise((resolve) => (respond = () => resolve(late.response))));
+    const source = createContainerEventSource({ baseUrl: 'http://docker.test', fetch });
+    const stop = source.followContainerEvents({
+      onEvent: () => undefined,
+      onConnected: () => undefined,
+      onDisconnected: () => undefined,
+    });
+    await vi.waitFor(() => expect(respond).toBeDefined());
+    await stop();
+    respond();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalled());
+  });
 });

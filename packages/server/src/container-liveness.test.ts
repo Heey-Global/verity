@@ -331,6 +331,26 @@ describe('createContainerLiveness', () => {
     await stop();
   });
 
+  // A read compares outside the follower's queue; its write may land after a
+  // catch-up that never saw it.
+  it('stops relying on the rows when a read writes a state', async () => {
+    const l = setup([project('p1')]);
+    const stop = l.liveness.start();
+    l.handlers().onConnected();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    let release!: () => void;
+    const rows = await l.listProjects();
+    l.listProjects.mockImplementationOnce(
+      () => new Promise((resolve) => (release = () => resolve(rows))),
+    );
+    l.stopContainer('p1');
+    await l.liveness.reconcile([project('p1')]);
+    expect(l.liveness.following()).toBe(false);
+    release();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    await stop();
+  });
+
   it('never follows without an event stream, so reads keep comparing', () => {
     const l = setup([project('p1')], { stream: false });
     const stop = l.liveness.start();

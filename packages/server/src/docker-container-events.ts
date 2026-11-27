@@ -90,12 +90,18 @@ export function createContainerEventSource(options: {
           else controller.signal.addEventListener('abort', onAbort, { once: true });
         });
         stopped.catch(() => undefined);
+        const request = doFetch(url, { method: 'GET', signal: controller.signal, stream: true });
         let res: Awaited<ReturnType<HttpFetch>>;
         try {
-          res = await Promise.race([
-            doFetch(url, { method: 'GET', signal: controller.signal, stream: true }),
-            stopped,
-          ]);
+          res = await Promise.race([request, stopped]);
+        } catch (error) {
+          // The stop won: a response that still arrives is closed, not left
+          // holding a connection to the daemon.
+          void request.then(
+            (late) => late.body?.cancel().catch(() => undefined),
+            () => undefined,
+          );
+          throw error;
         } finally {
           if (onAbort !== undefined) controller.signal.removeEventListener('abort', onAbort);
         }
