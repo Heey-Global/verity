@@ -102,6 +102,23 @@ it('allows the project repository store to forward project lookup', () => {
   }
 });
 
+it('allows the event history store to forward backward page reads in order', () => {
+  const source = (read: string) =>
+    'class EventStore { history = new EventHistoryStore(() => this.db, ' + read + '); }';
+  expect(
+    facadeImplementations(
+      source('(id, limit, before) => this.getEventsBeforeSeq(id, limit, before)'),
+    ),
+  ).toEqual({});
+  expect(
+    Object.keys(
+      facadeImplementations(
+        source('(id, limit, before) => this.getEventsBeforeSeq(id, before, limit)'),
+      ),
+    ),
+  ).toEqual(['history']);
+});
+
 it('allows plan implementation to use the existing append and projection stores', () => {
   const source = (store: string, projection: string) =>
     'class EventStore { plan = new ' +

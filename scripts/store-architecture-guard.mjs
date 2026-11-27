@@ -122,24 +122,11 @@ function isStoreWiring(initializer) {
     initializer.expression.text.endsWith('Store') &&
     (initializer.arguments ?? []).every((argument, index) => {
       if (!ts.isArrowFunction(argument)) return false;
-      if (initializer.expression.text === 'ProjectRepositoryStore' && index === 1) {
-        const [parameter] = argument.parameters;
-        const body = argument.body;
-        return (
-          argument.parameters.length === 1 &&
-          parameter &&
-          ts.isIdentifier(parameter.name) &&
-          !parameter.initializer &&
-          !parameter.dotDotDotToken &&
-          ts.isCallExpression(body) &&
-          !ts.isOptionalChain(body) &&
-          ts.isPropertyAccessExpression(body.expression) &&
-          body.expression.expression.kind === ts.SyntaxKind.ThisKeyword &&
-          body.expression.name.text === 'getProject' &&
-          body.arguments.length === 1 &&
-          ts.isIdentifier(body.arguments[0]) &&
-          body.arguments[0].text === parameter.name.text
-        );
+      if (index === 1 && initializer.expression.text === 'ProjectRepositoryStore') {
+        return isForwardingCallback(argument, 'getProject', 1);
+      }
+      if (index === 1 && initializer.expression.text === 'EventHistoryStore') {
+        return isForwardingCallback(argument, 'getEventsBeforeSeq', 3);
       }
       return (
         argument.parameters.length === 0 &&
@@ -152,6 +139,31 @@ function isStoreWiring(initializer) {
             argument.body.name.text === 'cipher') ||
           (initializer.expression.text === 'PlanImplementationStore' &&
             ['cipher', 'eventWrites', 'messageProjection'].includes(argument.body.name.text)))
+      );
+    })
+  );
+}
+
+/** @param {ts.ArrowFunction} callback @param {string} method @param {number} arity */
+function isForwardingCallback(callback, method, arity) {
+  const { body, parameters } = callback;
+  return (
+    parameters.length === arity &&
+    ts.isCallExpression(body) &&
+    !ts.isOptionalChain(body) &&
+    ts.isPropertyAccessExpression(body.expression) &&
+    body.expression.expression.kind === ts.SyntaxKind.ThisKeyword &&
+    body.expression.name.text === method &&
+    body.arguments.length === arity &&
+    parameters.every((parameter, index) => {
+      const argument = body.arguments[index];
+      return (
+        ts.isIdentifier(parameter.name) &&
+        !parameter.initializer &&
+        !parameter.dotDotDotToken &&
+        argument &&
+        ts.isIdentifier(argument) &&
+        argument.text === parameter.name.text
       );
     })
   );
