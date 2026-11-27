@@ -222,14 +222,16 @@ export function createNetworkShareTool(deps: {
             : 'A folder cannot be moved into itself.',
         );
     }
-    if (request.action === 'rename' || request.action === 'move' || request.action === 'delete') {
+    if (networkShareIsMutation(request)) {
       // Grants are paths. Changing a folder that is or holds one would leave a
-      // project without its folder or, worse, point the grant at other files.
+      // project without its folder or, worse, point the grant at other files;
+      // creating one where a granted folder is missing would fill another
+      // project's grant with files this agent chose.
       const granted = await deps.store.networkShares.grantedPaths(folder.connectionId);
       const touched = [sharePath, ...(destination ? [destination.sharePath] : [])];
       if (granted.some((path) => touched.some((item) => networkSharePathWithin(item, path))))
         throw new ControlPlaneSessionAuthorityError(
-          'This folder is, or contains, a folder shared with a project, so it cannot be renamed, moved or deleted here.',
+          'This path is, or contains, a folder shared with a project, so it cannot be created, renamed, moved or deleted here.',
         );
     }
     return { request, folder, sharePath, ...(destination === undefined ? {} : { destination }) };

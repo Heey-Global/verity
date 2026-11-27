@@ -247,6 +247,8 @@ describe('network share changes', () => {
       { action: 'delete', folderId, path: 'briefs', kind: 'folder' },
       // Nor may something take a granted path that is missing for now.
       { action: 'move', folderId, path: 'Other', kind: 'folder', toPath: 'Briefs/Client A' },
+      { action: 'create_folder', folderId, path: 'Briefs/Client A' },
+      { action: 'create', folderId, path: 'Briefs/Client A', content: 'x' },
     ];
     for (const request of refused)
       await expect(tool.authorize(input(request))).rejects.toThrow('shared with a project');

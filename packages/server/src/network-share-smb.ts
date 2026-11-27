@@ -633,9 +633,16 @@ export function contentVersion(content: Buffer): string {
   return createHash('sha256').update(content).digest('base64url').slice(0, 32);
 }
 
-/** A hidden name next to `path` for a temporary upload or the replaced original. */
+/**
+ * A hidden name next to `path` for a temporary upload or the replaced or
+ * deleted original. It keeps the file's own name, so the copy can be told
+ * apart in a folder listing or a NAS recycle bin.
+ */
 function sibling(path: string, kind: 'tmp' | 'old'): string {
-  return [...path.split('/').slice(0, -1), `.verity-${randomUUID()}.${kind}`].join('/');
+  const segments = path.split('/');
+  // SMB names are limited to 255 characters; the prefix, random part and kind take 49.
+  const name = (segments.at(-1) ?? '').slice(0, 200);
+  return [...segments.slice(0, -1), `.verity-${randomUUID()}.${name}.${kind}`].join('/');
 }
 
 /** What the routes and agent tools need from an SMB client; tests substitute a fake. */

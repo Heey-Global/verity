@@ -103,12 +103,15 @@ fails if the name is taken.
 no copy. A deleted file can only be recovered if the NAS keeps a recycle bin for
 the share. On a Synology NAS, enable it in **Control Panel › Shared Folder ›
 Edit › Enable Recycle Bin**; other NAS systems and Samba (`vfs objects =
-recycle`) offer the same. Folders are only deleted when empty, and files larger
+recycle`) offer the same. Verity moves a file aside before deleting it, so in the
+recycle bin it appears under a hidden name that keeps the original one:
+`.verity-<random>.<name>.old`. Folders are only deleted when empty, and files larger
 than 10 MB cannot be deleted, because the version check reads them first.
 
 The granted folder itself cannot be renamed, moved or deleted. Neither can a
 folder that is granted to any project or contains one, nor can something be
-moved or renamed onto such a path: folder grants are paths, and the change would
+created, moved or renamed onto such a path, also when the granted folder is
+missing on the share at the moment: folder grants are paths, and the change would
 otherwise leave a project without its folder or point the grant at other files.
 
 If the NAS refuses the saved sign-in details, agents leave the share alone for
