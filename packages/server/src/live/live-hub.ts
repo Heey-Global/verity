@@ -692,9 +692,11 @@ export class LiveHub {
       return cached.scope;
     }
     // One read per user at a time: an event reaches all of a user's devices
-    // at once, and each would otherwise read the same scope again.
+    // at once, and each would otherwise read the same scope again. A fresh
+    // read never joins one already under way, which may predate what it is
+    // asked to see.
     const reading = this.scopeReads.get(key);
-    if (reading !== undefined) return reading;
+    if (reading !== undefined && !fresh) return reading;
     const read = this.deps.access
       .overviewScope(userId)
       .then((scope) => {

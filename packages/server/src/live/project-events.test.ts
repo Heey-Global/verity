@@ -222,11 +222,23 @@ describe('installProjectEvents', () => {
   // `unlisted` for it would take it off Home after every server restart.
   it('announces nothing for a project first seen off the overview', async () => {
     const w = setup();
-    w.write({ kind: 'control_plane', state: 'active' } as Partial<ProjectRecord>);
+    w.write({ kind: 'control_plane', state: 'active' });
     await vi.waitFor(() => expect(w.events().length).toBeGreaterThan(0));
     w.write({ name: 'Renamed' });
     await vi.waitFor(() => expect(w.events().at(-1)).toMatchObject({ patch: { name: 'Renamed' } }));
     expect(w.listing()).toEqual([]);
+  });
+
+  // After a restart nothing is remembered; hiding a project nobody touched
+  // since must still take it off every other device's Home.
+  it('announces the first hide of a project seen for the first time', async () => {
+    const w = setup();
+    w.write({ state: 'active', hiddenAt: new Date('2026-11-27T10:00:00Z') });
+    await vi.waitFor(() =>
+      expect(w.listing()).toEqual([
+        expect.objectContaining({ t: 'project.unlisted', projectId: 'p1' }),
+      ]),
+    );
   });
 
   it('publishes renames and setup status as project changes', async () => {

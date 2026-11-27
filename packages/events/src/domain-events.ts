@@ -107,8 +107,8 @@ export const domainEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('project.changed'), projectId: id, rev, patch }),
   /** The project entered the overview: views read it and list it. */
   z.object({ t: z.literal('project.listed'), projectId: id, rev }),
-  /** The project left the overview. `gone` marks one that no longer exists,
-   * which every subscriber receives: there is nothing left to read it by. */
+  /** The project left the overview. `gone` marks one that no longer exists.
+   * Delivered to the subscribers that held the project. */
   z.object({
     t: z.literal('project.unlisted'),
     projectId: id,

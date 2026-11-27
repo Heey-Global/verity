@@ -136,7 +136,16 @@ export class TopicSubscriptions {
           // Withheld, not sent: a record the connection may not read stays unsent.
           this.opts.logger?.warn({ err: error, topic: record.topic }, 'verity: live filter failed');
         }
-        if (allowed) this.send(sub, record);
+        // A failing send must not reject the queue: every later record of
+        // the topic waits on it.
+        try {
+          if (allowed) this.send(sub, record);
+        } catch (error) {
+          this.opts.logger?.warn(
+            { err: error, topic: record.topic },
+            'verity: live delivery failed',
+          );
+        }
       })
       .finally(() => {
         sub.pending -= 1;

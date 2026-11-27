@@ -183,7 +183,10 @@ export function installProjectEvents(
         projectId,
         rev: revisions.next(),
       });
-    } else if (!next.listed && previous?.listed === true) {
+    } else if (
+      !next.listed &&
+      (previous?.listed === true || (previous === undefined && hiddenFromOverview(project)))
+    ) {
       domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
         t: 'project.unlisted',
         projectId,
@@ -326,6 +329,12 @@ function publicLifecycle(project: ProjectRecord): { state: string; lifecycleStat
     project.state === 'sleeping' ||
     project.state === 'waking';
   return sleeping ? { state: 'active', lifecycleState: project.state } : { state: project.state };
+}
+
+/** A project the overview would list but for being hidden: first seen after
+ * a restart, its hiding may be what announced it. */
+function hiddenFromOverview(project: ProjectRecord): boolean {
+  return project.hiddenAt !== null && listedInProjectCollection({ ...project, hiddenAt: null });
 }
 
 function lifecycleOf(project: ProjectRecord): string {
