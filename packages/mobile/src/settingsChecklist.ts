@@ -11,7 +11,8 @@
 // The other rule this encodes: a checklist that could not be computed says so.
 // "0 to do" is a claim about the deployment, and while the fetch is in flight or
 // failed there is nothing to base it on.
-import type { SecretStatus, VeritySettings } from './api.js';
+import type { VeritySettings } from './api.js';
+import type { SecretStatus } from './secret-status.js';
 
 /** Steps that gate a working Verity. Optional integrations (Doppler, AI backend
  *  logins, transcription, MCP) are deliberately absent: they are opt-in, and

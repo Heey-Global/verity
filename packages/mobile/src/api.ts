@@ -34,6 +34,8 @@ import {
   type DopplerValidateResult,
 } from './doppler-api.js';
 export * from './doppler-api.js';
+import { secretStatusSchema, type SecretStatus } from './secret-status.js';
+import { hostResourcesClient } from './host-resources-api.js';
 export * from './people-api.js';
 export * from './project-qa-api.js';
 export * from './session-workspace-api.js';
@@ -1397,11 +1399,6 @@ export type VeritySettingsPatch = {
  *  = no password set yet (first-run onboarding); `sealed` = set but locked
  *  (needs /secret/unlock after a restart); `unlocked` = key loaded; `unmanaged`
  *  = the deployment does not manage a cipher. */
-export const secretStatusSchema = z.object({
-  status: z.enum(['unlocked', 'sealed', 'uninitialized', 'unmanaged']),
-});
-export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
-
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
  *  dev/PR/local builds). `version` is OPTIONAL for back-compat: an older server
@@ -2567,6 +2564,7 @@ export class VerityClient {
   readonly people = peopleClient((path, init) => this.request(path, init));
   readonly projectQA = projectQAClient((path, init) => this.request(path, init));
   readonly doppler = dopplerClient((path, init) => this.request(path, init));
+  readonly getHostResources = hostResourcesClient((path, init) => this.request(path, init));
   readonly monitoring = serverMonitoringClient((path, init) => this.request(path, init));
   readonly listDopplerConnections = this.doppler.listConnections;
   readonly getDopplerConnectionUsage = this.doppler.connectionUsage;

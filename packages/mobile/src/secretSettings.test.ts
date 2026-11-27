@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SecretStatus } from './api.js';
+import type { SecretStatus } from './secret-status.js';
 import {
   MIN_MASTER_PASSWORD_LENGTH,
   secretPatchFromDraft,
