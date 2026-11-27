@@ -6,6 +6,7 @@ import { registerBackupRoutes } from './backup/routes.js';
 import { registerHealthRoute } from './health-route.js';
 import { installRemoteControl } from './server-remote-control.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
+import { createHostResourcesSampler, registerHostResourcesRoute } from './host-resources.js';
 import { registerLogRoutes } from './log-routes.js';
 import { registerAuditRoutes } from './audit-routes.js';
 import { registerServerUpdateRoutes } from './server-update-routes.js';
@@ -37,6 +38,11 @@ export function installInfrastructureRoutes(app: FastifyInstance, ctx: ServerCon
   });
   installRemoteControl(app, ctx);
   registerDiagnosticsMemoryRoute(app);
+  registerHostResourcesRoute(app, {
+    isAdministrator: async (userId) =>
+      userId !== null && (await deps.eventStore.isActiveAdministrator(userId)),
+    sample: createHostResourcesSampler({ dataRoot: deps.dataRoot }),
+  });
   if (deps.audit !== undefined) {
     registerLogRoutes(app, { ...deps.audit, runtimeDiagnostics: deps.runtimeDiagnostics });
     registerAuditRoutes(app, {
