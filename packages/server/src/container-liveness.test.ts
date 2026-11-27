@@ -252,6 +252,64 @@ describe('createContainerLiveness', () => {
     await stop();
   });
 
+  // A stream that answers after the stop belongs to no running follower; a
+  // restart that inherited it would have reads trust rows nothing follows.
+  it('ignores a stream that answers after the stop', async () => {
+    vi.useFakeTimers();
+    const l = setup([project('p1')]);
+    await l.liveness.start()();
+    const late = l.handlers();
+    l.listProjects.mockClear();
+    late.onConnected();
+    expect(l.listProjects).not.toHaveBeenCalled();
+    const stop = l.liveness.start();
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(l.liveness.following()).toBe(false);
+    await stop();
+  });
+
+  // A sweep that read the projects before an event it then failed to compare
+  // has not caught up on it.
+  it('does not count a sweep under way when an event fails as the catch-up', async () => {
+    const l = setup([project('p1'), project('p2')]);
+    const rows = await l.listProjects();
+    const releases: (() => void)[] = [];
+    l.listProjects.mockImplementation(
+      () => new Promise((resolve) => releases.push(() => resolve(rows))),
+    );
+    const stop = l.liveness.start();
+    l.handlers().onConnected();
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    l.getProject.mockRejectedValueOnce(new Error('store busy'));
+    l.handlers().onEvent('p2', 'die');
+    await new Promise((resolve) => setImmediate(resolve));
+    releases[0]!();
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    expect(l.liveness.following()).toBe(false);
+    releases[1]!();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    await stop();
+  });
+
+  // An older inspect landing after a newer one would write a state the
+  // container has already left, and reads would trust it.
+  it('compares a project an event names after the sweep comparing it', async () => {
+    const l = setup([project('p1')]);
+    let release!: () => void;
+    l.inspectContainer.mockImplementationOnce(
+      (id: string) => new Promise((resolve) => (release = () => resolve({ id, running: false }))),
+    );
+    const stop = l.liveness.start();
+    l.handlers().onConnected();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    // The container came back while the sweep's inspect was out.
+    l.handlers().onEvent('p1', 'start');
+    release();
+    await vi.waitFor(() => expect(l.inspectContainer).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(l.state('p1')).toBe('active'));
+    await stop();
+  });
+
   it('never follows without an event stream, so reads keep comparing', () => {
     const l = setup([project('p1')], { stream: false });
     const stop = l.liveness.start();

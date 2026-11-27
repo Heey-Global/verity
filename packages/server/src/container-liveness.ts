@@ -66,58 +66,86 @@ export function createContainerLiveness(options: {
           provisionError,
           provisionWarning,
         );
-        for (const listener of written) listener();
+        for (const listener of written) {
+          try {
+            listener();
+          } catch (error) {
+            log.warn('verity: a project state listener failed', error);
+          }
+        }
         return row;
       },
       (id) => provisioner?.isProjectProvisioning?.(id) === true,
       provisioner?.recoverInterruptedSleep?.bind(provisioner),
       provisioner?.recoverInterruptedWake?.bind(provisioner),
     );
+
   /** The stream is open, though its catch-up comparison may still run. */
   let open = false;
   /** Open and caught up: reads may rely on the rows. */
   let connected = false;
-  let connections = 0;
-  let stopped = false;
-  const inFlight = new Set<Promise<void>>();
-  const track = (work: Promise<void>): void => {
+  /** Moves on whenever the rows may have missed something: a (re)connect, a
+   * disconnect, an event that could not be compared. Only a full pass that
+   * began in the current epoch and succeeded catches up. */
+  let epoch = 0;
+  let stopped = true;
+  const inFlight = new Set<Promise<unknown>>();
+  const track = <T>(work: Promise<T>): Promise<T> => {
     inFlight.add(work);
     void work.finally(() => inFlight.delete(work));
+    return work;
+  };
+  const lose = (): void => {
+    epoch += 1;
+    connected = false;
   };
 
-  // One comparison per project at a time, and one more if an event arrived
-  // meanwhile: a burst of events ends in the state the container ended in.
-  const pending = new Map<string, { again: boolean }>();
-  const reconcileProject = (projectId: string): void => {
-    if (stopped) return;
+  // One comparison per project at a time, whether an event or a sweep asked
+  // for it, and one more if asked meanwhile: an older inspect never lands
+  // after a newer one, and a burst ends in the state the container ended in.
+  const pending = new Map<string, { again: boolean; done: Promise<boolean> }>();
+  const compare = (projectId: string, row?: ProjectRecord): Promise<boolean> => {
     const running = pending.get(projectId);
     if (running !== undefined) {
       running.again = true;
-      return;
+      return running.done;
     }
-    const entry = { again: false };
+    const entry = { again: false, done: Promise.resolve(true) };
     pending.set(projectId, entry);
-    track(
+    entry.done = track(
       (async () => {
+        let held = row;
+        let ok = true;
         try {
           do {
             entry.again = false;
             try {
-              const project = await eventStore.getProject(projectId);
+              const project = held ?? (await eventStore.getProject(projectId));
+              held = undefined;
               if (project !== undefined && !stopped) await reconcile([project]);
+              ok = true;
             } catch (error) {
               log.warn(`verity: could not compare project ${projectId} with its sandbox`, error);
-              // The rows no longer hold everything the stream reported: reads
-              // compare again until a full pass has caught up.
-              connected = false;
-              void sweep();
+              ok = false;
             }
           } while (entry.again && !stopped);
         } finally {
           pending.delete(projectId);
         }
+        return ok;
       })(),
     );
+    return entry.done;
+  };
+  const onEvent = (projectId: string): void => {
+    if (stopped) return;
+    void compare(projectId).then((ok) => {
+      if (ok || stopped) return;
+      // The rows no longer hold everything the stream reported: reads compare
+      // again until a full pass has caught up.
+      lose();
+      void sweep();
+    });
   };
 
   // One sweep at a time. A full comparison asked for while another sweep runs
@@ -126,6 +154,7 @@ export function createContainerLiveness(options: {
   let sweeping: Promise<void> | undefined;
   let fullQueued = false;
   const sweep = (only?: (project: ProjectRecord) => boolean): Promise<void> => {
+    if (stopped) return Promise.resolve();
     if (sweeping !== undefined) {
       if (only === undefined) fullQueued = true;
       return sweeping;
@@ -135,15 +164,24 @@ export function createContainerLiveness(options: {
       try {
         do {
           fullQueued = false;
-          // A full pass that read the projects while the current stream was
-          // open has caught up on everything before it; only then may reads
-          // rely on the rows. A failed one leaves them comparing.
-          const catchesUp = filter === undefined && open ? connections : undefined;
+          // A full pass that began in the current epoch with the stream open
+          // has caught up on everything before it; only then may reads rely
+          // on the rows. A failed one leaves them comparing.
+          const catchesUp = filter === undefined && open ? epoch : undefined;
           try {
             const projects = await eventStore.listProjects();
             if (stopped) return;
-            await reconcile(filter === undefined ? projects : projects.filter(filter));
-            if (catchesUp !== undefined && catchesUp === connections && open && !stopped) {
+            const chosen = filter === undefined ? projects : projects.filter(filter);
+            const results = await Promise.all(
+              chosen.map((project) => compare(project.id, project)),
+            );
+            if (
+              results.every(Boolean) &&
+              catchesUp !== undefined &&
+              catchesUp === epoch &&
+              open &&
+              !stopped
+            ) {
               connected = true;
             }
           } catch (error) {
@@ -170,19 +208,24 @@ export function createContainerLiveness(options: {
       // afresh after the previous one stopped.
       if (started !== undefined) return started;
       stopped = false;
+      open = false;
+      connected = false;
+      epoch += 1;
       const stopStream = docker.followContainerEvents?.({
-        onEvent: reconcileProject,
+        onEvent,
         onConnected: () => {
+          if (stopped) return;
           open = true;
-          connections += 1;
+          lose();
           // Events from before the stream opened are not replayed: reads keep
           // comparing until a full pass after it has compared every project.
           void sweep();
         },
         onDisconnected: (error) => {
+          if (stopped) return;
           if (connected) log.warn('verity: Docker event stream ended; reads compare again', error);
           open = false;
-          connected = false;
+          lose();
         },
       });
       const full = setInterval(() => void sweep(), options.intervals?.full ?? FULL_RECONCILE_MS);
@@ -197,7 +240,7 @@ export function createContainerLiveness(options: {
         clearInterval(full);
         clearInterval(transitions);
         open = false;
-        connected = false;
+        lose();
         await stopStream?.();
         await Promise.all([sweeping, ...inFlight]);
         // Released only now: a start while this one winds down gets it, rather

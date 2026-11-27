@@ -81,6 +81,11 @@ export function createContainerEventSource(options: {
 
       const readOnce = async (): Promise<void> => {
         const res = await doFetch(url, { method: 'GET', signal: controller.signal, stream: true });
+        // A transport that ignores the signal can answer after the stop.
+        if (controller.signal.aborted) {
+          await res.body?.cancel().catch(() => undefined);
+          return;
+        }
         if (!res.ok || !res.body) {
           await res.body?.cancel().catch(() => undefined);
           throw new Error(`docker events responded ${String(res.status)}`);
