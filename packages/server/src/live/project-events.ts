@@ -93,6 +93,9 @@ export function installProjectEvents(
    * place on their overview changed are announced to them alone.
    */
   const accessChanged = (userId: string, projectId?: string): Promise<void> => {
+    // Before waiting for anything: a project they lost ends its stream now,
+    // even behind an earlier change still being checked.
+    ctx.liveHub.authorizationChanged({ userId, ...(projectId === undefined ? {} : { projectId }) });
     const next = (accessQueues.get(userId) ?? Promise.resolve())
       .catch(() => undefined)
       .then(() => publishAccess(userId, projectId));
@@ -106,7 +109,6 @@ export function installProjectEvents(
     return next;
   };
   const publishAccess = async (userId: string, projectId?: string): Promise<void> => {
-    ctx.liveHub.authorizationChanged({ userId, ...(projectId === undefined ? {} : { projectId }) });
     // The change cleared their cached scope; reading it now, before anything
     // is announced, lets the hub know they hold a project they just joined, so
     // its hiding or deletion reaches them too.
@@ -115,11 +117,11 @@ export function installProjectEvents(
     const projectIds =
       projectId === undefined ? await store.listReadableProjectIds(userId) : [projectId];
     for (const id of projectIds) {
+      const readable = await store.hasProjectPermission(userId, id, 'read');
+      // Read last, with nothing awaited after it: a hide or deletion during
+      // the permission check must not be announced over.
       const project = await store.getProject(id);
-      const listed =
-        project !== undefined &&
-        listedInProjectCollection(project) &&
-        (await store.hasProjectPermission(userId, id, 'read'));
+      const listed = readable && project !== undefined && listedInProjectCollection(project);
       domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
         t: listed ? 'project.listed' : 'project.unlisted',
         projectId: id,

@@ -310,6 +310,8 @@ describe('installProjectEvents', () => {
     w.projectChanges.announceAccess('bob', 'p1');
     // Long enough for the removal to publish, were it not waiting its turn.
     await new Promise((resolve) => setTimeout(resolve, 20));
+    // Its streams were rechecked at once, without waiting for the join.
+    expect(w.authorizationChanged).toHaveBeenCalledTimes(2);
     answer(true);
     await vi.waitFor(() =>
       expect(w.listing().filter((event) => 'userId' in event)).toHaveLength(2),
@@ -322,6 +324,30 @@ describe('installProjectEvents', () => {
     ).toEqual(['project.listed', 'project.unlisted']);
     // Their scope is read anew, so the hub knows what they hold now.
     expect(w.overviewScope).toHaveBeenCalledWith('bob');
+  });
+
+  // A project hidden while a join is being checked must not come back onto the
+  // new member's overview with the join's announcement.
+  it('announces a join by the project as it is once the check is done', async () => {
+    const w = setup();
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.listing()).toHaveLength(1));
+    let answer!: (readable: boolean) => void;
+    w.setPermission(() => new Promise((resolve) => (answer = resolve)));
+    w.projectChanges.announceAccess('bob', 'p1');
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    w.write({ hiddenAt: new Date('2026-11-27T10:00:00Z') });
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toMatchObject({ t: 'project.unlisted', projectId: 'p1' }),
+    );
+    answer(true);
+    await vi.waitFor(() =>
+      expect(w.listing().filter((event) => 'userId' in event)).toHaveLength(1),
+    );
+    expect(w.listing().find((event) => 'userId' in event)).toMatchObject({
+      t: 'project.unlisted',
+      userId: 'bob',
+    });
   });
 
   // A failing check must not take the server down: the queue it leaves for
@@ -754,6 +780,8 @@ describe('project state writers', () => {
   // person's other devices with the old overview, and a removed member's
   // stream open, until something unrelated reads again.
   it('announces every team store method that grants or removes access', () => {
+    // Only the team store writes memberships or account status; the profile
+    // store writes names, not who may read.
     const team = sources.find(({ file }) => file.endsWith('store/src/project-team.ts'))!;
     // Pending joins: the person is not active yet and reads nothing either way.
     const pending = new Set([
