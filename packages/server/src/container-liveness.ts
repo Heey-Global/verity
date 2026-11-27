@@ -72,6 +72,9 @@ export function createContainerLiveness(options: {
         }
       },
     });
+  /** `unreadable` marks the follower's own comparisons: they note containers
+   * Docker could not inspect, and their writes are announced. A read's
+   * comparison is its own business, and its caller already holds the rows. */
   const reconcile = (
     projects: ProjectRecord[],
     unreadable?: Set<string>,
@@ -86,6 +89,7 @@ export function createContainerLiveness(options: {
           provisionError,
           provisionWarning,
         );
+        if (unreadable === undefined) return row;
         for (const listener of written) {
           try {
             listener();

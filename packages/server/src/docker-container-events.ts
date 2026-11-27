@@ -126,7 +126,11 @@ export function createContainerEventSource(options: {
             if (controller.signal.aborted) return;
             if (openedAt !== undefined && Date.now() - openedAt >= stableMs) delay = minMs;
             openedAt = undefined;
-            handlers.onDisconnected(error);
+            try {
+              handlers.onDisconnected(error);
+            } catch {
+              // Following goes on whatever its listener made of the end.
+            }
           }
           // A request answered after the stop returns without an error; its
           // delay would hold the server's close for up to half a minute.

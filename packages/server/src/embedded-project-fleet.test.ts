@@ -138,10 +138,13 @@ describe('createEmbeddedProjectFleetBindings', () => {
     running = false;
     handlers!.onEvent('p1', 'die');
     await vi.waitFor(() => expect(projectList.invalidate).toHaveBeenCalledTimes(1));
-    await stop();
+    // A read's own comparison does not refresh the list: the list loader is
+    // one, and invalidating its own load would repeat the installation sync.
+    handlers!.onDisconnected(new Error('daemon restarting'));
     row = { ...row, state: 'active' };
     await bindings.reconcileProjectState!(row);
     expect(updateProjectState).toHaveBeenCalledTimes(2);
     expect(projectList.invalidate).toHaveBeenCalledTimes(1);
+    await stop();
   });
 });
