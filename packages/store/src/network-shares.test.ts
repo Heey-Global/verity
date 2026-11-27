@@ -245,6 +245,21 @@ describe('NetworkShareStore', () => {
     await grant('p2', 'Projects/Briefs');
     await grant('p2', 'Archive');
     await grant('p1', 'Elsewhere', other);
+    // A second connection to the same share, with another account, grants
+    // folders on the same files; they count no matter which connection asks.
+    const sameShare = await shares.createConnection({
+      ...studio,
+      host: studio.host.toUpperCase(),
+      share: 'TEAM',
+      username: 'backup',
+    });
+    await grant('p2', 'Clients/A', sameShare);
+    expect((await shares.grantedPaths(id)).sort()).toEqual([
+      'Archive',
+      'Clients/A',
+      'Projects/Briefs',
+    ]);
+    expect((await shares.grantedPaths(other)).sort()).toEqual(['Elsewhere']);
     await shares.updateConnection(id, { share: 'moved' });
     expect((await shares.grantedPaths(id)).sort()).toEqual(['Archive', 'Projects/Briefs']);
   });

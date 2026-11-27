@@ -394,16 +394,25 @@ export class NetworkShareStore {
   }
 
   /**
-   * Every folder path granted on a connection, for any project and including
-   * grants made for an earlier target: one granted again would point at the
-   * same path. Renaming, moving or deleting must leave these paths alone.
+   * Every folder path granted on the share a connection points to, through
+   * this or any other connection to the same server and share, for any project
+   * and including grants made for an earlier target: one granted again would
+   * point at the same path. Renaming, moving or deleting must leave these
+   * paths alone.
    */
   async grantedPaths(connectionId: string): Promise<string[]> {
     const rows = await this.db
-      .selectFrom('project_network_share_folders')
-      .select('path')
+      .selectFrom('network_share_connections as own')
+      .innerJoin('network_share_connections as c', (join) =>
+        join
+          .on(sql`lower(c.host)`, '=', sql`lower(own.host)`)
+          .on(sql`lower(c.share)`, '=', sql`lower(own.share)`)
+          .on(sql<boolean>`c.port is not distinct from own.port`),
+      )
+      .innerJoin('project_network_share_folders as f', 'f.connection_id', 'c.id')
+      .select('f.path')
       .distinct()
-      .where('connection_id', '=', connectionId)
+      .where('own.id', '=', connectionId)
       .execute();
     return rows.map((row) => row.path);
   }
