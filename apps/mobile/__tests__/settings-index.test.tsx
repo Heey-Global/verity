@@ -8,7 +8,7 @@ import { FEATURE_HINT_KEYS } from '../lib/featureHints';
 // on it — a row that explains a problem and goes nowhere is the failure this
 // suite is watching for.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { settingsChecklist, settingsChecklistHeadline } from '@verity/mobile';
+import { settingsChecklist, settingsChecklistHeadline, VerityApiError } from '@verity/mobile';
 import { Alert } from 'react-native';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
@@ -129,11 +129,28 @@ describe('settings index — destinations', () => {
       }),
     );
     render(<SettingsIndexScreen />);
-    fireEvent.press(screen.getByLabelText(/^Manage devices and web browsers(,|$)/));
-    expect(mockPush).toHaveBeenCalledWith('/devices');
-    expect(screen.getByLabelText(/^Verity Control(,|$)/)).toBeDisabled();
+    expect(screen.getByLabelText(rowLabel('Tasks'))).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText(/^Change server address/));
+    expect(mockPush).toHaveBeenCalledWith('/onboarding/server-url?reconfigure=1');
+    expect(screen.queryByLabelText(/^Manage devices and web browsers(,|$)/)).toBeNull();
+    expect(screen.queryByLabelText(/^Verity Control(,|$)/)).toBeNull();
     expect(screen.queryByText('Needs setup')).toBeNull();
     await act(async () => undefined);
+  });
+
+  it('keeps personal settings and app updates available when the server denies admin settings', async () => {
+    mockCreateVerityClient.mockReturnValue(
+      makeClient('unlocked', {
+        getVeritySettings: jest.fn().mockRejectedValue(new VerityApiError(403, 'Forbidden')),
+      }),
+    );
+    render(<SettingsIndexScreen />);
+    await act(async () => undefined);
+    expect(screen.queryByLabelText(rowLabel('Assistant'))).toBeNull();
+    expect(screen.queryByLabelText(rowLabel('Network protection'))).toBeNull();
+    expect(screen.getByLabelText(rowLabel('AI Account'))).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText(rowLabel('App updates')));
+    expect(mockPush).toHaveBeenCalledWith('/settings/server-update?appOnly=1');
   });
 
   // The count is the only thing on the row that says browsers are covered too.
@@ -341,9 +358,8 @@ describe('settings index — destinations', () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<SettingsIndexScreen />);
 
-    expect(await screen.findByText('App version 1.76.0 available')).toBeOnTheScreen();
     expect(
-      screen.getByLabelText(/^Updates, App version 1\.76\.0 available, Update$/),
+      await screen.findByLabelText(/^Updates, App version 1\.76\.0 available, Update$/),
     ).toBeOnTheScreen();
     mockAppStoreVersion.mockReturnValue(null);
   });

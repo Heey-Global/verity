@@ -408,7 +408,7 @@ export function SettingsSaveState({ dirty = false }: { dirty?: boolean }) {
   );
 }
 
-function SettingsBanner({ message, onRetry }: { message: string; onRetry?: () => void }) {
+export function SettingsBanner({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
     <View style={styles.banner}>
       <Text style={styles.bannerText} numberOfLines={2}>
