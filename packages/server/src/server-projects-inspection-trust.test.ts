@@ -16,6 +16,7 @@ describe('installProjects', () => {
     } as unknown as SandboxUpdateChecker;
     const stopFollowing = vi.fn(async () => undefined);
     let following = false;
+    const heard: ((projectId: string | undefined) => void)[] = [];
     const server = buildServer({
       eventStore: ctx.store,
       bus,
@@ -24,15 +25,28 @@ describe('installProjects', () => {
       containerLiveness: {
         start: () => stopFollowing,
         following: () => following,
-        onContainerChange: () => () => undefined,
+        onContainerChange: (listener) => {
+          heard.push(listener);
+          return () => undefined;
+        },
       },
     });
     await server.ready();
     expect(trustInspections).toHaveBeenCalledTimes(1);
-    const [source] = trustInspections.mock.calls[0] as unknown as [{ following(): boolean }];
+    const [source] = trustInspections.mock.calls[0] as unknown as [
+      {
+        following: () => boolean;
+        onContainerChange: (listener: (projectId: string | undefined) => void) => () => void;
+      },
+    ];
     expect(source.following()).toBe(false);
     following = true;
     expect(source.following()).toBe(true);
+    // A change the follower reports reaches what the checker listens with.
+    const checkerHeard = vi.fn();
+    source.onContainerChange(checkerHeard);
+    heard.forEach((listener) => listener('p1'));
+    expect(checkerHeard).toHaveBeenCalledWith('p1');
     await server.close();
     expect(stopTrusting).toHaveBeenCalled();
     expect(stopFollowing).toHaveBeenCalled();

@@ -258,12 +258,21 @@ export function createSandboxUpdateChecker(args: {
   let trust: InspectionTrust | undefined;
   let generation = 0;
   const generations = new Map<string, number>();
-  const held = new Map<string, { containerName: string; inspection: Inspection }>();
+  const held = new Map<string, { key: string; inspection: Inspection }>();
+  // Which container an inspection describes, as far as the store knows: a
+  // recreate or rebuild moves the state or the image before its Docker event
+  // may have arrived, and a recreated container usually keeps its name.
+  const heldKey = (project: ProjectRecord): string =>
+    JSON.stringify([
+      project.containerName,
+      project.stateChangedAt?.getTime() ?? null,
+      project.imageRef ?? null,
+    ]);
   const inspectProject = async (project: ProjectRecord): Promise<Inspection> => {
     if (project.state !== 'active') return { ok: false, status: unknown('project is not active') };
     const trusted = trust?.following() === true;
     const kept = trusted ? held.get(project.id) : undefined;
-    if (kept !== undefined && kept.containerName === project.containerName) return kept.inspection;
+    if (kept !== undefined && kept.key === heldKey(project)) return kept.inspection;
     const asked = { all: generation, project: generations.get(project.id) ?? 0 };
     const inspection = await inspectContainerOf(project);
     const unchanged =
@@ -272,7 +281,7 @@ export function createSandboxUpdateChecker(args: {
     const failed = !inspection.ok && inspection.status.reason === 'container inspect failed';
     if (trusted && unchanged && !failed && trust?.following() === true) {
       held.delete(project.id);
-      held.set(project.id, { containerName: project.containerName, inspection });
+      held.set(project.id, { key: heldKey(project), inspection });
       if (held.size > 4_096) held.delete(held.keys().next().value!);
     }
     return inspection;
@@ -355,7 +364,12 @@ export function createSandboxUpdateChecker(args: {
           return;
         }
         generations.set(projectId, (generations.get(projectId) ?? 0) + 1);
-        if (generations.size > 4_096) generations.delete(generations.keys().next().value!);
+        if (generations.size > 4_096) {
+          // A forgotten project restarts at 0; moving every generation keeps
+          // an answer under way for it from passing as current.
+          generations.delete(generations.keys().next().value!);
+          generation += 1;
+        }
         held.delete(projectId);
       });
       return () => {

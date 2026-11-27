@@ -1187,6 +1187,28 @@ describe('trustInspections', () => {
     expect(inspectContainer).toHaveBeenCalledTimes(2);
   });
 
+  // The Docker event of a recreate may arrive after the next read; the store
+  // already shows the new state or image by then.
+  it('asks again once the store shows a new state or image, before any event', async () => {
+    const inspectContainer = vi.fn(async () => inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: DEFAULT_IMAGE,
+      toolkitFeatureRef: TOOLKIT,
+    });
+    checker.trustInspections!(trustSource().source);
+    const before = project({ stateChangedAt: new Date('2026-11-27T08:00:00Z') });
+    await checker.statusAll([before]);
+    await checker.statusAll([before]);
+    expect(inspectContainer).toHaveBeenCalledTimes(1);
+    await checker.statusAll([{ ...before, stateChangedAt: new Date('2026-11-27T09:00:00Z') }]);
+    expect(inspectContainer).toHaveBeenCalledTimes(2);
+    await checker.statusAll([
+      { ...before, stateChangedAt: new Date('2026-11-27T09:00:00Z'), imageRef: 'img:2' },
+    ]);
+    expect(inspectContainer).toHaveBeenCalledTimes(3);
+  });
+
   it('asks again after an inspect that failed', async () => {
     const inspectContainer = vi
       .fn<DockerClient['inspectContainer']>()
