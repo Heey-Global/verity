@@ -302,13 +302,25 @@ export function useProjects(client: VerityClient) {
 
   // A project created, restored or removed on another device enters or leaves
   // the list without reading it whole: only the project that changed is read.
+  const shownRef = useRef(projects);
+  shownRef.current = projects;
+  // Moves on with every announcement for a project: a listing still reading
+  // when the project was unlisted again must not bring it back.
+  const collectionTurns = useRef(new Map<string, number>());
+  const turn = (projectId: string): number => {
+    const next = (collectionTurns.current.get(projectId) ?? 0) + 1;
+    collectionTurns.current.set(projectId, next);
+    return next;
+  };
   const listOne = useCallback(
     async (projectId: string) => {
+      const mine = turn(projectId);
+      if (shownRef.current.some((project) => project.id === projectId)) return;
       const target = storeRef.current;
-      if (target.project(projectId) !== undefined) return;
       const read = target.beginRead();
       try {
         const { project } = await client.getProject(projectId);
+        if (collectionTurns.current.get(projectId) !== mine) return;
         if (!listedInOverview(project)) return;
         target.applyProjects(read, [project], { covers: (p) => p.id === projectId });
         setListed((current) =>
@@ -323,6 +335,7 @@ export function useProjects(client: VerityClient) {
     [client],
   );
   const unlistOne = useCallback((projectId: string) => {
+    turn(projectId);
     const target = storeRef.current;
     const read = target.beginRead();
     try {

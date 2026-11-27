@@ -249,4 +249,25 @@ describe('useProjects project collection', () => {
     expect(client.listProjects.mock.calls.length).toBe(reads);
     unmount();
   });
+
+  // A listing still reading must not bring back a project unlisted meanwhile.
+  it('keeps a project off the list that was unlisted while its read was out', async () => {
+    const active = { ...starting, state: 'active' as const };
+    let answer!: (detail: object) => void;
+    const client = {
+      listProjects: jest.fn().mockResolvedValue([active]),
+      getProject: jest.fn(() => new Promise((resolve) => (answer = resolve))),
+    };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await waitFor(() => expect(mockSinks.has('collection:projects')).toBe(true));
+    const collection = mockSinks.get('collection:projects')!;
+    act(() => collection.event({ t: 'project.listed', projectId: 'p2', rev: 1 }));
+    await waitFor(() => expect(client.getProject).toHaveBeenCalled());
+    act(() => collection.event({ t: 'project.unlisted', projectId: 'p2', rev: 2 }));
+    await act(async () =>
+      answer({ project: { ...active, id: 'p2' }, settings: null, sessions: [] }),
+    );
+    expect(result.current.projects.map((project) => project.id)).toEqual(['p1']);
+    unmount();
+  });
 });

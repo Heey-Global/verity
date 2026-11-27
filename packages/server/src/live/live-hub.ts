@@ -219,8 +219,15 @@ class LiveConnection {
     if (record.topic !== PROJECTS_COLLECTION_TOPIC) return true;
     const { event } = record;
     if (event.t !== 'project.listed' && event.t !== 'project.unlisted') return false;
-    if (event.t === 'project.unlisted' && event.gone === true) return true;
     const { userId } = this.identity;
+    if (event.t === 'project.unlisted') {
+      // Only to those who held the project: its readers may already have lost
+      // the right to read it (a deleted project takes its memberships along),
+      // and anyone else would learn that it existed.
+      const held = this.hub.lastOverviewScope(userId);
+      if (held !== undefined && scopeAllows(held, event.projectId)) return true;
+      return this.hub.overviewScope(userId).then((scope) => scopeAllows(scope, event.projectId));
+    }
     return (async () => {
       if (scopeAllows(await this.hub.overviewScope(userId), event.projectId)) return true;
       // The cached scope may predate the project: a creator's other devices
@@ -549,6 +556,7 @@ export class LiveHub {
   >();
   private hintTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly scopes = new Map<string, { scope: LiveOverviewScope; at: number }>();
+  private readonly scopeReads = new Map<string, Promise<LiveOverviewScope>>();
   private readonly unsubscribeAll: () => void;
 
   constructor(readonly deps: LiveHubDeps) {
@@ -683,9 +691,25 @@ export class LiveHub {
     if (!fresh && cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) {
       return cached.scope;
     }
-    const scope = await this.deps.access.overviewScope(userId);
-    this.scopes.set(key, { scope, at: this.now() });
-    return scope;
+    // One read per user at a time: an event reaches all of a user's devices
+    // at once, and each would otherwise read the same scope again.
+    const reading = this.scopeReads.get(key);
+    if (reading !== undefined) return reading;
+    const read = this.deps.access
+      .overviewScope(userId)
+      .then((scope) => {
+        this.scopes.set(key, { scope, at: this.now() });
+        return scope;
+      })
+      .finally(() => this.scopeReads.delete(key));
+    this.scopeReads.set(key, read);
+    return read;
+  }
+
+  /** The scope last read for a user, however old: who held a project that
+   * has since left their reach. */
+  lastOverviewScope(userId: string | undefined): LiveOverviewScope | undefined {
+    return this.scopes.get(userId ?? '')?.scope;
   }
 
   /** A session moved to another project: forget the cached owner. */

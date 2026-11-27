@@ -55,7 +55,7 @@ const lifecycle = (projectId: string, rev: number): DomainEvent => ({
   state: 'active',
 });
 
-function world({ topics = true }: { topics?: boolean } = {}) {
+function world({ topics = true, now }: { topics?: boolean; now?: () => number } = {}) {
   const domainEvents = topics ? new DomainEventBus() : undefined;
   const sessions = new Map<string, LiveSessionRef>([
     ['s1', { sessionId: 's1', projectId: 'p1' }],
@@ -86,6 +86,7 @@ function world({ topics = true }: { topics?: boolean } = {}) {
           : { all: false, projectIds: new Set(readable.get(userId) ?? []), unassigned: false },
     },
     domainEvents,
+    ...(now === undefined ? {} : { now }),
   });
   const connect = (userId?: string): FakeSocket => {
     const socket = new FakeSocket();
@@ -169,13 +170,13 @@ describe('LiveHub domain-event topics', () => {
     w.bus!.publish('collection:projects', { t: 'project.unlisted', projectId: 'p2', rev: 3 });
     w.bus!.publish('collection:projects', {
       t: 'project.unlisted',
-      projectId: 'p9',
+      projectId: 'p1',
       rev: 4,
       gone: true,
     });
     await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(4));
     await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(2));
-    // In publication order, the deleted project to everyone.
+    // In publication order.
     expect(alice.of('domain').map(({ event }) => event.rev)).toEqual([2, 4]);
     expect(bob.of('domain').map(({ event }) => event.rev)).toEqual([1, 2, 3, 4]);
     w.hub.close();
@@ -192,6 +193,49 @@ describe('LiveHub domain-event topics', () => {
     w.readable.get('alice')!.add('p3');
     w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p3', rev: 2 });
     await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(2));
+    w.hub.close();
+  });
+
+  // A deleted project takes its memberships along: its former readers must
+  // still drop it, and nobody else may learn that it existed.
+  it('tells who held a project that it left, even after losing access to it', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    const alice = w.connect('alice');
+    const bob = w.connect('bob');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await bob.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p2', rev: 1 });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(1));
+    w.readable.get('bob')!.delete('p2');
+    // Long after the cached scope expired.
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 2,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(alice.of('domain')).toEqual([]);
+    w.hub.close();
+  });
+
+  // Every device of a user receives the same event at once; one scope read
+  // serves them all.
+  it('reads a scope once for all devices of a user', async () => {
+    const w = world();
+    const read = vi.spyOn(w.hub.deps.access, 'overviewScope');
+    const phone = w.connect('alice');
+    const tablet = w.connect('alice');
+    await phone.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await tablet.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    read.mockClear();
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 1 });
+    await vi.waitFor(() => expect(tablet.of('domain')).toHaveLength(1));
+    await vi.waitFor(() => expect(phone.of('domain')).toHaveLength(1));
+    expect(read).toHaveBeenCalledTimes(1);
     w.hub.close();
   });
 

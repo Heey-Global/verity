@@ -136,7 +136,8 @@ export function installProjectEvents(
       publishedUpdate.delete(projectId);
       // Gone from the store: every view that lists it drops it. Announced for
       // a project not seen before too, since only a deletion announces one
-      // that no longer exists.
+      // that no longer exists; the live hub delivers it only to those who
+      // held it.
       if (was?.listed !== false) {
         domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
           t: 'project.unlisted',
@@ -172,11 +173,19 @@ export function installProjectEvents(
       drift === undefined ? (previous?.drift ?? '') : JSON.stringify(drift),
     );
     remember(remembered, projectId, next);
-    // Entering or leaving the overview: created, restored, hidden. On first
-    // sight too; a view that already lists the project ignores it.
-    if (previous?.listed !== next.listed) {
+    // Entering the overview, on first sight too: a view that already lists
+    // the project ignores it. Leaving it only from a state that was listed: a
+    // project first seen unlisted (a synced repository, the control plane the
+    // overview adds by its own setting) was never on a view to leave.
+    if (next.listed && previous?.listed !== true) {
       domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
-        t: next.listed ? 'project.listed' : 'project.unlisted',
+        t: 'project.listed',
+        projectId,
+        rev: revisions.next(),
+      });
+    } else if (!next.listed && previous?.listed === true) {
+      domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
+        t: 'project.unlisted',
         projectId,
         rev: revisions.next(),
       });

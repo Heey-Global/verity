@@ -210,11 +210,23 @@ describe('installProjectEvents', () => {
     const w = setup();
     w.write({ state: 'absent' });
     await vi.waitFor(() => expect(w.events().length).toBeGreaterThan(0));
-    expect(w.listing()).toEqual([expect.objectContaining({ t: 'project.unlisted' })]);
+    // Never on a view, so nothing to leave.
+    expect(w.listing()).toEqual([]);
     w.write({ overviewVisible: true });
     await vi.waitFor(() =>
       expect(w.listing().at(-1)).toEqual(expect.objectContaining({ t: 'project.listed' })),
     );
+  });
+
+  // The overview adds the control plane by a setting of its own; an
+  // `unlisted` for it would take it off Home after every server restart.
+  it('announces nothing for a project first seen off the overview', async () => {
+    const w = setup();
+    w.write({ kind: 'control_plane', state: 'active' } as Partial<ProjectRecord>);
+    await vi.waitFor(() => expect(w.events().length).toBeGreaterThan(0));
+    w.write({ name: 'Renamed' });
+    await vi.waitFor(() => expect(w.events().at(-1)).toMatchObject({ patch: { name: 'Renamed' } }));
+    expect(w.listing()).toEqual([]);
   });
 
   it('publishes renames and setup status as project changes', async () => {
