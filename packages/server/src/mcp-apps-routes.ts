@@ -57,11 +57,15 @@ function createCallLanes() {
         current.size--;
         if (current.size === 0 && lanes.get(sessionId) === current) lanes.delete(sessionId);
       };
+      let onAbort: (() => void) | undefined;
       const aborted = new Promise<false>((resolve) => {
-        if (signal.aborted) resolve(false);
-        else signal.addEventListener('abort', () => resolve(false), { once: true });
+        onAbort = () => resolve(false);
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
       });
-      if (!(await Promise.race([previous.then(() => true as const), aborted]))) {
+      const ready = await Promise.race([previous.then(() => true as const), aborted]);
+      signal.removeEventListener('abort', onAbort!);
+      if (!ready) {
         release();
         return undefined;
       }
@@ -380,8 +384,12 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
       } catch {
         return reply.code(502).send({ error: 'MCP app action failed' });
       } finally {
-        release();
-        if (permissionId !== undefined) await deps.settled(id, permissionId);
+        // The lane covers the approval's settlement too: the next call asks only after it.
+        try {
+          if (permissionId !== undefined) await deps.settled(id, permissionId);
+        } finally {
+          release();
+        }
       }
     },
   );
