@@ -201,7 +201,7 @@ import {
   type BoundedHistoryPage,
   type BoundedHistoryResult,
 } from '@verity/events';
-import { randomUUID } from 'node:crypto';
+import { BackupRepositoryStore } from './backup-repositories.js';
 import type { AgentEvent } from '@verity/events';
 import type { Kysely } from 'kysely';
 import { type SecretCipher, createPassthroughCipher } from './crypto.js';
@@ -2678,42 +2678,11 @@ export class EventStore implements EventSink {
     return this.authTokens.acknowledgeBackupRevocation(id);
   }
 
+  private readonly backupRepositories = new BackupRepositoryStore(() => this.db);
+
   /** Stable server-owned bookkeeping; identities never come from sandbox-written markers. */
   async backupGitRepositoryKey(projectId: string | null, path: string): Promise<string> {
-    if (
-      !path ||
-      path.startsWith('/') ||
-      path.includes('\\') ||
-      path.split('/').some((part) => !part || part === '.' || part === '..')
-    )
-      throw new Error('Invalid backup Git bookkeeping path');
-    const key = randomUUID();
-    if (projectId === null) {
-      await this.db
-        .insertInto('backup_unassigned_git_repositories')
-        .values({ path, repo_key: key })
-        .onConflict((conflict) => conflict.column('path').doNothing())
-        .execute();
-      return (
-        await this.db
-          .selectFrom('backup_unassigned_git_repositories')
-          .select('repo_key')
-          .where('path', '=', path)
-          .executeTakeFirstOrThrow()
-      ).repo_key;
-    }
-    await this.db
-      .insertInto('backup_git_repositories')
-      .values({ project_id: projectId, path, repo_key: key })
-      .onConflict((conflict) => conflict.columns(['project_id', 'path']).doNothing())
-      .execute();
-    const row = await this.db
-      .selectFrom('backup_git_repositories')
-      .select('repo_key')
-      .where('project_id', '=', projectId)
-      .where('path', '=', path)
-      .executeTakeFirstOrThrow();
-    return row.repo_key;
+    return this.backupRepositories.backupGitRepositoryKey(projectId, path);
   }
 
   // ── Per-device Expo push tokens (ADR 0008, token registry) ────────────────
