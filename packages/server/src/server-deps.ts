@@ -123,6 +123,10 @@ export interface ServerDeps {
   serverUpdateResolver?: ReleaseChannelResolver | undefined;
   /** Privileged Updater control channel. Absent leaves the update action unavailable. */
   serverUpdateController?: ServerUpdateController | undefined;
+  /** Free and total bytes of the disk holding the Server's data, for the
+   *  low-disk warning. Defaults to measuring `dataRoot`; with neither, the
+   *  warning stays off. */
+  diskSpace?: (() => Promise<{ freeBytes: number; totalBytes: number }>) | undefined;
   /**
    * Where the release notifier remembers the version it last announced. Absent
    * disables the notification entirely — deliberately, because without somewhere
