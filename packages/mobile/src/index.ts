@@ -786,6 +786,7 @@ export {
   networkShareApprovalEffect,
   networkShareApprovalSummary,
   networkShareItemName,
+  networkSharePlace,
   type NetworkShareApprovalSummary,
 } from './ui/networkShareApprovalSummary.js';
 

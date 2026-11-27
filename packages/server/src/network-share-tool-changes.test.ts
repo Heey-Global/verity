@@ -325,7 +325,7 @@ describe('network share changes', () => {
         action: 'delete',
         kind: 'file',
         share: 'Studio NAS',
-        location: 'Studio NAS › Projects › Briefs › old › kickoff.md',
+        location: ['Studio NAS', 'Projects', 'Briefs', 'old', 'kickoff.md'],
       },
     });
     expect(
@@ -339,8 +339,8 @@ describe('network share changes', () => {
       }),
     ).toMatchObject({
       networkShare: {
-        location: 'Studio NAS › Projects › Briefs › Reviews',
-        destination: 'Studio NAS › Archive › Reviews 2025',
+        location: ['Studio NAS', 'Projects', 'Briefs', 'Reviews'],
+        destination: ['Studio NAS', 'Archive', 'Reviews 2025'],
       },
     });
     const long = `# Kickoff\n${'x'.repeat(2000)}`;

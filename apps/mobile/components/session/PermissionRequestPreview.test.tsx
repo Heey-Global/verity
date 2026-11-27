@@ -12,7 +12,7 @@ const deleteCard = {
     action: 'delete',
     kind: 'file',
     share: 'Studio NAS',
-    location: 'Studio NAS › Projects › Briefs › old-kickoff.md',
+    location: ['Studio NAS', 'Projects', 'Briefs', 'old-kickoff.md'],
   },
 };
 
@@ -36,8 +36,8 @@ it('shows the destination of a move and a replacement preview', () => {
           action: 'move',
           kind: 'folder',
           share: 'Studio NAS',
-          location: 'Studio NAS › Briefs › Reviews',
-          destination: 'Studio NAS › Archive › Reviews',
+          location: ['Studio NAS', 'Briefs', 'Reviews'],
+          destination: ['Studio NAS', 'Archive', 'Reviews'],
         },
       }}
     />,

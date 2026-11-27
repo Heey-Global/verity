@@ -561,8 +561,9 @@ export class SmbClient {
 
   /**
    * Renames or moves a file or folder within the share. `kind` is what the
-   * approval named; anything else at `from` is refused. SMB refuses a target
-   * name that exists, so nothing is replaced.
+   * approval named; the item is checked to be of that kind just before the
+   * rename, in a separate step. SMB refuses a target name that exists, so
+   * nothing is replaced.
    */
   async rename(
     target: SmbTarget,
@@ -592,6 +593,12 @@ export class SmbClient {
       try {
         removed = await run(target, [`del ${remote(previous)}`]);
       } catch (error) {
+        // The connection may have dropped after the delete took effect. Ask
+        // whether the hidden copy is still there before putting it back, or the
+        // restore would find nothing and report a delete that happened as failed.
+        const left = await run(target, [`allinfo ${remote(previous)}`]).catch(() => undefined);
+        if (left === undefined) throw new NetworkShareError('interrupted');
+        if (statusOf(left[0])?.code === 'not_found') return;
         return recover(error, true);
       }
       const removeError = statusOf(removed[0]);

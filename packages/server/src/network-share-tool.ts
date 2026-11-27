@@ -73,10 +73,14 @@ interface NetworkSharePresentation {
   kind: 'file' | 'folder';
   /** The share's name in Verity. */
   share: string;
-  /** Share name and folders down to the item, joined with ` › `. */
-  location: string;
+  /**
+   * The share's name, then each folder down to the item. Kept as separate
+   * names: a name may itself contain the separator a joined string would use,
+   * and the card must not show a different place than the one approved.
+   */
+  location: string[];
   /** Where a rename or move puts the item, in the same form. */
-  destination?: string;
+  destination?: string[];
   /** A replacement's size and, when it is text, its beginning. */
   content?: { bytes: number; preview?: string };
 }
@@ -186,6 +190,7 @@ export function createNetworkShareTool(deps: {
           'newName is a name only; use move to change folders.',
         );
       const name = relativePath(request.newName);
+      if (name === '') throw new ControlPlaneSessionToolError('newName names the item.');
       const parent = sharePath.split('/').slice(0, -1);
       destination = { folder, sharePath: [...parent, name].join('/') };
     } else if (request.action === 'move') {
@@ -326,8 +331,10 @@ export function createNetworkShareTool(deps: {
       const { request, folder, sharePath, destination } = await resolve(input);
       if (!networkShareNeedsApproval(request) || !folder || sharePath === undefined)
         return undefined;
-      const location = (grant: ProjectNetworkShareFolderRecord, path: string) =>
-        [grant.connectionLabel, ...path.split('/').filter(Boolean)].join(' › ');
+      const location = (grant: ProjectNetworkShareFolderRecord, path: string) => [
+        grant.connectionLabel,
+        ...path.split('/').filter(Boolean),
+      ];
       let content: NetworkSharePresentation['content'];
       if (request.action === 'update') {
         const bytes = decode(request);

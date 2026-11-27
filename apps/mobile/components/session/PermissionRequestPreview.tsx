@@ -3,6 +3,7 @@ import {
   networkShareApprovalEffect,
   networkShareApprovalSummary,
   networkShareItemName,
+  networkSharePlace,
   spellOutBidiControls,
 } from '@verity/mobile';
 import { useState } from 'react';
@@ -24,7 +25,7 @@ export function PermissionRequestPreview({ tool, input }: { tool: string; input:
   return (
     <View style={styles.content} testID="network-share-approval">
       <Text variant="label">{share.destination === null ? capitalized(share.kind) : 'From'}</Text>
-      <Text selectable>{spellOutBidiControls(share.location)}</Text>
+      <Text selectable>{spellOutBidiControls(networkSharePlace(share.location))}</Text>
       {share.destination === null ? null : (
         <>
           <Text variant="label">{destinationLabel}</Text>
@@ -32,7 +33,7 @@ export function PermissionRequestPreview({ tool, input }: { tool: string; input:
             {spellOutBidiControls(
               share.action === 'rename'
                 ? networkShareItemName(share.destination)
-                : share.destination,
+                : networkSharePlace(share.destination),
             )}
           </Text>
         </>

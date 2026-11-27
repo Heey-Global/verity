@@ -6,15 +6,20 @@ export interface NetworkShareApprovalSummary {
   action: 'update' | 'rename' | 'move' | 'delete';
   kind: 'file' | 'folder';
   share: string;
-  /** Share name and folders down to the item, joined with ` › `. */
-  location: string;
-  /** Where a rename or move puts the item. */
-  destination: string | null;
+  /** The share's name, then each folder down to the item. */
+  location: string[];
+  /** Where a rename or move puts the item, in the same form. */
+  destination: string[] | null;
   /** A replacement's size and, when it is text, its beginning. */
   content: { bytes: number; preview: string | null } | null;
 }
 
 const ACTIONS = new Set(['update', 'rename', 'move', 'delete']);
+
+const names = (value: unknown): value is string[] =>
+  Array.isArray(value) &&
+  value.length > 0 &&
+  value.every((name) => typeof name === 'string' && name.length > 0);
 
 export function networkShareApprovalSummary(input: unknown): NetworkShareApprovalSummary | null {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return null;
@@ -27,12 +32,12 @@ export function networkShareApprovalSummary(input: unknown): NetworkShareApprova
     !ACTIONS.has(action) ||
     (kind !== 'file' && kind !== 'folder') ||
     typeof share !== 'string' ||
-    typeof location !== 'string' ||
-    (destination !== undefined && typeof destination !== 'string')
+    !names(location) ||
+    (destination !== undefined && !names(destination))
   )
     return null;
   // A rename or move without a destination would hide where the item goes.
-  if ((action === 'rename' || action === 'move') !== (typeof destination === 'string')) return null;
+  if ((action === 'rename' || action === 'move') !== (destination !== undefined)) return null;
   let replacement: NetworkShareApprovalSummary['content'] = null;
   if (content !== undefined) {
     if (typeof content !== 'object' || content === null) return null;
@@ -46,7 +51,7 @@ export function networkShareApprovalSummary(input: unknown): NetworkShareApprova
     kind,
     share,
     location,
-    destination: typeof destination === 'string' ? destination : null,
+    destination: names(destination) ? destination : null,
     content: replacement,
   };
 }
@@ -64,10 +69,21 @@ export function networkShareApprovalTitle(summary: NetworkShareApprovalSummary):
   return `${verb} ${summary.kind} on ${summary.share}?`;
 }
 
-/** The last name in a ` › ` location: a rename's new name. */
-export function networkShareItemName(location: string): string {
-  return location.split(' › ').at(-1) ?? location;
+/** The last name of a location: a rename's new name. */
+export function networkShareItemName(location: readonly string[]): string {
+  return quoted(location.at(-1) ?? '');
 }
+
+/**
+ * A location as one line. A name that contains the separator is quoted, so an
+ * agent-chosen name cannot pass for another folder level.
+ */
+export function networkSharePlace(location: readonly string[]): string {
+  return location.map(quoted).join(' › ');
+}
+
+const quoted = (name: string) =>
+  name.includes('›') || name.includes('"') ? JSON.stringify(name) : name;
 
 /** What approving does, in one or two sentences. */
 export function networkShareApprovalEffect(summary: NetworkShareApprovalSummary): string {

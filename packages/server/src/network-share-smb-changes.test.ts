@@ -70,6 +70,20 @@ describe('deleting a file on a share', () => {
     expect(fake.entries()).toEqual(untouched);
   });
 
+  // A connection that drops after the delete took effect must not turn a done
+  // delete into an error the agent would retry.
+  it('reports a delete as done when only the answer to it was lost', async () => {
+    await remove([{ at: REMOVE, drop: 'after' }]);
+    expect(fake.entries()).toEqual(without('notes.md'));
+  });
+
+  it('says the original may be hidden when the share drops during the delete', async () => {
+    expect(await code(remove([{ at: REMOVE, drop: 'before', stayDown: true }]))).toBe(
+      'interrupted',
+    );
+    expect(fake.entries()).toEqual({ ...without('notes.md'), old: 'original text\n' });
+  });
+
   it('keeps a file created meanwhile and the original under a hidden name', async () => {
     const error = await code(
       remove(

@@ -19,6 +19,7 @@ import {
   networkShareApprovalSummary,
   networkShareApprovalTitle,
   networkShareItemName,
+  networkSharePlace,
 } from './networkShareApprovalSummary.js';
 import { packageInstallSummary } from './packageInstallSummary.js';
 import { schedulingApprovalSummary } from './schedulingSummary.js';
@@ -222,7 +223,7 @@ function summarize(
     return {
       title: spellOutBidiControls(networkShareApprovalTitle(share)),
       lines: [
-        { kind: 'text', text: spellOutBidiControls(share.location) },
+        { kind: 'text', text: spellOutBidiControls(networkSharePlace(share.location)) },
         ...(share.destination === null
           ? []
           : [
@@ -231,7 +232,7 @@ function summarize(
                 text: spellOutBidiControls(
                   share.action === 'rename'
                     ? `New name: ${networkShareItemName(share.destination)}`
-                    : `To ${share.destination}`,
+                    : `To ${networkSharePlace(share.destination)}`,
                 ),
               },
             ]),
