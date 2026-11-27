@@ -135,7 +135,11 @@ export function installSessionList(
   const readStorage = async () => {
     if (diskSpace === undefined || Date.now() - storageReadAt < 60_000) return storage;
     storageReadAt = Date.now();
-    storage = await diskSpace().catch(() => undefined);
+    // Inside the promise chain, so a probe that throws before returning its
+    // promise degrades like one that rejects instead of failing the list.
+    storage = await Promise.resolve()
+      .then(diskSpace)
+      .catch(() => undefined);
     return storage;
   };
   const collectAttention = async (): Promise<AttentionSignal[]> => {

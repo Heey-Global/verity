@@ -112,6 +112,22 @@ describe('GET /sessions?envelope=1', () => {
     }
   });
 
+  // `.catch()` on the probe's result misses a probe that throws before it
+  // returns a promise; that throw would take the whole session list down.
+  it('lists sessions without a storage warning when the disk probe throws', async () => {
+    const diskSpace = (): Promise<{ freeBytes: number; totalBytes: number }> => {
+      throw new Error('statfs unavailable');
+    };
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, diskSpace });
+    try {
+      const res = await server.inject({ method: 'GET', url: '/sessions?envelope=1' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().attention).toBeUndefined();
+    } finally {
+      await server.close();
+    }
+  });
+
   it('names a Codex quota probe that has been failing long enough to matter', async () => {
     const server = buildServer({
       eventStore: ctx.store,
