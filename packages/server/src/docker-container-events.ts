@@ -81,19 +81,24 @@ export function createContainerEventSource(options: {
 
       const readOnce = async (): Promise<void> => {
         // Raced against the stop: a daemon that took the connection and never
-        // answers must not hold the server's close.
+        // answers must not hold the server's close. The listener goes with the
+        // race, or every reconnect of a long outage would leave one behind.
+        let onAbort: (() => void) | undefined;
         const stopped = new Promise<never>((_, reject) => {
-          if (controller.signal.aborted) reject(new Error('stopped'));
-          else
-            controller.signal.addEventListener('abort', () => reject(new Error('stopped')), {
-              once: true,
-            });
+          onAbort = () => reject(new Error('stopped'));
+          if (controller.signal.aborted) onAbort();
+          else controller.signal.addEventListener('abort', onAbort, { once: true });
         });
         stopped.catch(() => undefined);
-        const res = await Promise.race([
-          doFetch(url, { method: 'GET', signal: controller.signal, stream: true }),
-          stopped,
-        ]);
+        let res: Awaited<ReturnType<HttpFetch>>;
+        try {
+          res = await Promise.race([
+            doFetch(url, { method: 'GET', signal: controller.signal, stream: true }),
+            stopped,
+          ]);
+        } finally {
+          if (onAbort !== undefined) controller.signal.removeEventListener('abort', onAbort);
+        }
         // A transport that ignores the signal can answer after the stop.
         if (controller.signal.aborted) {
           await res.body?.cancel().catch(() => undefined);

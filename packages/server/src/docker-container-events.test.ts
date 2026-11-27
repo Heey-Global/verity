@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { createContainerEventSource } from './docker-container-events.js';
 import type { HttpFetch } from './github.js';
@@ -79,6 +80,9 @@ describe('createContainerEventSource', () => {
     await vi.waitFor(() => expect(connected).toHaveBeenCalledTimes(2));
     expect(disconnected).toHaveBeenCalledTimes(2);
     expect(fetch).toHaveBeenCalledTimes(3);
+    // Each attempt raced the stop; none left its listener on the signal.
+    const signal = fetch.mock.calls[2]![1]!.signal!;
+    expect(getEventListeners(signal, 'abort').length).toBeLessThanOrEqual(2);
     await stop();
     expect(fetch.mock.calls[2]![1]?.signal?.aborted).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 10));
