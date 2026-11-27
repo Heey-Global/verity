@@ -342,6 +342,38 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  // A scope read that answers after the user left must not come back from
+  // the cache without telling who held what.
+  it('knows who held what after a reconnect that a late read raced', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    let answer!: () => void;
+    const access = w.hub.deps.access;
+    const readNow = access.overviewScope.bind(access);
+    vi.spyOn(access, 'overviewScope').mockImplementationOnce(
+      (userId) => new Promise((resolve) => (answer = () => void readNow(userId).then(resolve))),
+    );
+    const first = w.connect('bob');
+    void first.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    first.close();
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const again = w.connect('bob');
+    await again.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.readable.get('bob')!.delete('p2');
+    // The deletion comes after the cached scope expired.
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(again.of('domain')).toHaveLength(1));
+    w.hub.close();
+  });
+
   it('refuses a collection it does not know', async () => {
     const w = world();
     const alice = w.connect('alice');

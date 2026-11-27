@@ -169,7 +169,7 @@ export class TopicSubscriptions {
           // read: once more, now that the queue drained.
           if (sub.overflowed && !sub.cancelled) {
             sub.overflowed = false;
-            this.opts.send({ k: 'resync', topic: record.topic, cursor: this.opts.bus.head });
+            this.trySend({ k: 'resync', topic: record.topic, cursor: this.opts.bus.head });
           }
         }
       });
@@ -179,7 +179,17 @@ export class TopicSubscriptions {
    * The client may have needed it, so it reads its snapshot again. */
   private undecided(sub: Subscription, record: DomainRecord, error: unknown): void {
     this.opts.logger?.warn({ err: error, topic: record.topic }, 'verity: live filter failed');
-    if (!sub.cancelled) this.opts.send({ k: 'resync', topic: record.topic, cursor: record.cursor });
+    if (!sub.cancelled) this.trySend({ k: 'resync', topic: record.topic, cursor: record.cursor });
+  }
+
+  /** A send from the filter queue: one that throws must not reject the queue
+   * every later record of the topic waits on. */
+  private trySend(frame: LiveServerFrame): void {
+    try {
+      this.opts.send(frame);
+    } catch (error) {
+      this.opts.logger?.warn({ err: error }, 'verity: live delivery failed');
+    }
   }
 
   private send(sub: Subscription, record: DomainRecord): void {

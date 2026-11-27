@@ -714,10 +714,12 @@ export class LiveHub {
     const key = userId ?? '';
     const cached = this.scopes.get(key);
     if (freshAfter === undefined && cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) {
+      this.recordHeld(key, cached.scope);
       return cached.scope;
     }
     // Read after the record was published: it already shows what it brought.
     if (freshAfter !== undefined && cached !== undefined && cached.since >= freshAfter) {
+      this.recordHeld(key, cached.scope);
       return cached.scope;
     }
     // One read per user at a time: an event reaches all of a user's devices
@@ -734,19 +736,16 @@ export class LiveHub {
     entry.promise = this.deps.access
       .overviewScope(userId)
       .then((scope) => {
+        // A read that answers after the user left must not bring back what
+        // their leaving forgot: neither the scope nor who held what.
+        if (!this.isConnected(key)) return scope;
         // A read that began earlier and answered later must not replace one
         // that began after it.
-        const held = this.scopes.get(key);
-        if (held === undefined || held.at <= at) {
+        const cachedNow = this.scopes.get(key);
+        if (cachedNow === undefined || cachedNow.at <= at) {
           this.scopes.set(key, { scope, at, since: entry.since });
         }
-        // A read that answers after the user left must not bring back what
-        // their leaving forgot.
-        if (!scope.all && this.isConnected(key)) {
-          const held = this.held.get(key) ?? new Set<string>();
-          for (const projectId of scope.projectIds) held.add(projectId);
-          this.held.set(key, held);
-        }
+        this.recordHeld(key, scope);
         return scope;
       })
       .finally(() => {
@@ -754,6 +753,15 @@ export class LiveHub {
       });
     this.scopeReads.set(key, entry);
     return entry.promise;
+  }
+
+  /** Note the projects a scope holds for a connected user, whether it was
+   * read now or taken from the cache. */
+  private recordHeld(key: string, scope: LiveOverviewScope): void {
+    if (scope.all || !this.isConnected(key)) return;
+    const held = this.held.get(key) ?? new Set<string>();
+    for (const projectId of scope.projectIds) held.add(projectId);
+    this.held.set(key, held);
   }
 
   private isConnected(key: string): boolean {
