@@ -18,9 +18,22 @@ function projectRecord(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     setupStatus: null,
     imageRef: null,
     toolkitIdentity: null,
+    latestReleaseTag: null,
+    latestReleaseName: null,
+    latestReleaseUrl: null,
+    latestReleasePublishedAt: null,
     ...overrides,
   } as ProjectRecord;
 }
+
+/** What the first sight of the fixture project states besides its name. */
+const FIRST_SIGHT = {
+  latestReleaseTag: null,
+  latestReleaseName: null,
+  latestReleaseUrl: null,
+  latestReleasePublishedAt: null,
+  toolkitDrift: null,
+};
 
 function status(state: SandboxUpdateStatus['state']): SandboxUpdateStatus {
   return { state } as SandboxUpdateStatus;
@@ -43,12 +56,17 @@ function setup() {
       return () => observers.delete(listener);
     },
   };
+  let identity: string | Error | undefined = 'toolkit-a';
   const domainEvents = new DomainEventBus();
   const closers: (() => unknown)[] = [];
   const ctx = {
     deps: {
       eventStore: { projectChanges, getProject: async (id: string) => rows.get(id) },
       sandboxUpdates,
+      toolkitIdentity: async () => {
+        if (identity instanceof Error) throw identity;
+        return identity;
+      },
     },
     domainEvents,
     lifecycle: { onClose: (stop: () => unknown) => closers.push(stop) },
@@ -68,6 +86,7 @@ function setup() {
     observers,
     closers,
     setStatus: (next: SandboxUpdateStatus) => (nextStatus = next),
+    setIdentity: (next: string | Error | undefined) => (identity = next),
   };
 }
 
@@ -83,7 +102,7 @@ describe('installProjectEvents', () => {
     expect(w.events()).toEqual([
       expect.objectContaining({ t: 'sandbox.lifecycle', state: 'container_starting' }),
       // First sight of the project also states its overview fields.
-      expect.objectContaining({ t: 'project.changed', patch: { name: 'P1' } }),
+      expect.objectContaining({ t: 'project.changed', patch: { name: 'P1', ...FIRST_SIGHT } }),
       expect.objectContaining({
         t: 'sandbox.lifecycle',
         state: 'active',
@@ -110,6 +129,97 @@ describe('installProjectEvents', () => {
     await vi.waitFor(() => expect(w.events()).toHaveLength(3));
     expect(w.events()[2]).toEqual(
       expect.objectContaining({ t: 'project.changed', patch: { name: 'Renamed' } }),
+    );
+  });
+
+  it('publishes a new latest release as a project change', async () => {
+    const w = setup();
+    w.write({});
+    await vi.waitFor(() => expect(w.events()).toHaveLength(2));
+    w.write({
+      latestReleaseTag: 'v2.0.0',
+      latestReleaseName: 'Two',
+      latestReleaseUrl: 'https://github.com/o/r/releases/tag/v2.0.0',
+      latestReleasePublishedAt: '2026-11-26T10:00:00Z',
+    });
+    await vi.waitFor(() => expect(w.events()).toHaveLength(3));
+    expect(w.events()[2]).toEqual(
+      expect.objectContaining({
+        t: 'project.changed',
+        patch: {
+          latestReleaseTag: 'v2.0.0',
+          latestReleaseName: 'Two',
+          latestReleaseUrl: 'https://github.com/o/r/releases/tag/v2.0.0',
+          latestReleasePublishedAt: '2026-11-26T10:00:00Z',
+        },
+      }),
+    );
+  });
+
+  it('publishes toolkit drift when a new image changes the verdict', async () => {
+    const w = setup();
+    w.write({ state: 'active', imageRef: 'img:1', toolkitIdentity: 'toolkit-a' });
+    await vi.waitFor(() => expect(w.events()).toHaveLength(2));
+    expect(w.events()[1]).toEqual(
+      expect.objectContaining({
+        patch: expect.objectContaining({
+          toolkitDrift: expect.objectContaining({ verdict: 'matches' }),
+        }),
+      }),
+    );
+    w.write({ imageRef: 'img:2', toolkitIdentity: 'toolkit-old' });
+    await vi.waitFor(() =>
+      expect(w.events().at(-1)).toEqual(
+        expect.objectContaining({
+          t: 'project.changed',
+          patch: { toolkitDrift: expect.objectContaining({ verdict: 'drifted' }) },
+        }),
+      ),
+    );
+    const count = w.events().length;
+    // A sleeping sandbox is not judged; the verdict disappears with it.
+    w.write({ state: 'sleeping' });
+    await vi.waitFor(() =>
+      expect(w.events().slice(count)).toContainEqual(
+        expect.objectContaining({ t: 'project.changed', patch: { toolkitDrift: null } }),
+      ),
+    );
+  });
+
+  it('keeps the published drift while the server cannot read its own toolkit', async () => {
+    const w = setup();
+    w.write({ state: 'active', imageRef: 'img:1', toolkitIdentity: 'toolkit-old' });
+    await vi.waitFor(() => expect(w.events()).toHaveLength(2));
+    w.setIdentity(new Error('bundle unreadable'));
+    w.write({ name: 'Renamed' });
+    await vi.waitFor(() => expect(w.events()).toHaveLength(3));
+    w.setIdentity('toolkit-a');
+    w.write({ name: 'Renamed again' });
+    await vi.waitFor(() => expect(w.events()).toHaveLength(4));
+    // Neither the failure nor the recovery changed the verdict views hold.
+    expect(w.events().filter((event) => 'patch' in event && 'toolkitDrift' in event.patch)).toEqual(
+      [
+        expect.objectContaining({
+          patch: expect.objectContaining({
+            toolkitDrift: expect.objectContaining({ verdict: 'drifted' }),
+          }),
+        }),
+      ],
+    );
+  });
+
+  // After a restart nothing is remembered: the first change of a project a
+  // view already shows must still reach it.
+  it('publishes a release found before any other change of the project', async () => {
+    const w = setup();
+    w.write({ latestReleaseTag: 'v3.0.0' });
+    await vi.waitFor(() =>
+      expect(w.events()).toContainEqual(
+        expect.objectContaining({
+          t: 'project.changed',
+          patch: expect.objectContaining({ latestReleaseTag: 'v3.0.0' }),
+        }),
+      ),
     );
   });
 
@@ -205,6 +315,31 @@ describe('project state writers', () => {
         }
       }
     }
+    expect(silent).toEqual([]);
+  });
+
+  // The release and the toolkit identity reach views only as `project.changed`
+  // once the read path no longer runs for them; a silent writer would leave a
+  // badge or drift banner stale until the next unrelated change.
+  it('announces every store method that writes a release or toolkit identity', () => {
+    const silent: string[] = [];
+    let writers = 0;
+    for (const { file, text } of sources) {
+      for (const method of methodsOf(text)) {
+        if (
+          !/updateTable\('projects'\)\s*\.set\(\{(?:(?!\}\))[\s\S])*?\b(?:latest_release_tag|toolkit_identity)\s*:/u.test(
+            method.body,
+          )
+        ) {
+          continue;
+        }
+        writers += 1;
+        if (!/\b(?:changes|projectChanges)\??\.announce\(/u.test(method.body)) {
+          silent.push(`${file} ${method.name}`);
+        }
+      }
+    }
+    expect(writers).toBeGreaterThan(1);
     expect(silent).toEqual([]);
   });
 
