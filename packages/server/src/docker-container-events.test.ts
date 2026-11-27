@@ -132,4 +132,16 @@ describe('createContainerEventSource', () => {
     // Well below the one-second reconnect delay it must not wait out.
     expect(Date.now() - began).toBeLessThan(500);
   });
+
+  it('stops while a daemon that took the request never answers', async () => {
+    const fetch = vi.fn<HttpFetch>().mockImplementation(() => new Promise(() => undefined));
+    const source = createContainerEventSource({ baseUrl: 'http://docker.test', fetch });
+    const stop = source.followContainerEvents({
+      onEvent: () => undefined,
+      onConnected: () => undefined,
+      onDisconnected: () => undefined,
+    });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    await stop();
+  });
 });

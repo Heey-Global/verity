@@ -80,7 +80,20 @@ export function createContainerEventSource(options: {
       let openedAt: number | undefined;
 
       const readOnce = async (): Promise<void> => {
-        const res = await doFetch(url, { method: 'GET', signal: controller.signal, stream: true });
+        // Raced against the stop: a daemon that took the connection and never
+        // answers must not hold the server's close.
+        const stopped = new Promise<never>((_, reject) => {
+          if (controller.signal.aborted) reject(new Error('stopped'));
+          else
+            controller.signal.addEventListener('abort', () => reject(new Error('stopped')), {
+              once: true,
+            });
+        });
+        stopped.catch(() => undefined);
+        const res = await Promise.race([
+          doFetch(url, { method: 'GET', signal: controller.signal, stream: true }),
+          stopped,
+        ]);
         // A transport that ignores the signal can answer after the stop.
         if (controller.signal.aborted) {
           await res.body?.cancel().catch(() => undefined);
@@ -171,7 +184,11 @@ function dispatch(line: string, handlers: ContainerEventHandlers): void {
   const projectId = Actor?.Attributes?.[PROJECT_LABEL];
   const action = typeof Action === 'string' ? Action : status;
   if (typeof projectId !== 'string' || projectId === '' || typeof action !== 'string') return;
-  handlers.onEvent(projectId, action);
+  try {
+    handlers.onEvent(projectId, action);
+  } catch {
+    // One listener's failure is not the stream's: the next event still comes.
+  }
 }
 
 /** Give a Docker client the event stream of the API it talks to. */
