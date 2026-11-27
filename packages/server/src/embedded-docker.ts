@@ -1,4 +1,5 @@
 import type { ProjectRecord } from '@verity/store';
+import { withContainerEvents } from './docker-container-events.js';
 import { createDockerClient } from './docker.js';
 import type { EmbeddedServerConfig } from './embedded-types.js';
 import { removeRetiredSessionSandboxes } from './retired-session-sandboxes.js';
@@ -11,11 +12,14 @@ export function createEmbeddedDocker(
   };
   const projectDocker =
     config.dockerBaseUrl && config.hostCloneRoot
-      ? createDockerClient({
-          baseUrl: config.dockerBaseUrl,
-          ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
-          pullLog: logDockerPull,
-        })
+      ? withContainerEvents(
+          createDockerClient({
+            baseUrl: config.dockerBaseUrl,
+            ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
+            pullLog: logDockerPull,
+          }),
+          config.dockerBaseUrl,
+        )
       : undefined;
   if (projectDocker !== undefined) {
     // Per-session sandboxes from a Server that ran sessions in private containers
