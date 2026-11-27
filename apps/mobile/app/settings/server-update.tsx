@@ -1,7 +1,7 @@
 // Updates: Verity's server replacing itself, and the app's own updates. Reached
 // from the overview banner, the update push, and the Settings index.
 import { type VerityClient } from '@verity/mobile';
-import { router, type Href } from 'expo-router';
+import { router, useLocalSearchParams, type Href } from 'expo-router';
 import { useMemo } from 'react';
 
 import { ServerUpdateSection } from '../../components/settings/ServerUpdateSection';
@@ -13,7 +13,15 @@ import { createVerityClient } from '../../lib/client';
 import { retryFailedVeritySettings, useLoadVeritySettings } from '../../lib/settingsStore';
 
 export default function ServerUpdateScreen() {
+  const { appOnly } = useLocalSearchParams<{ appOnly?: string }>();
   const client = useMemo(() => createVerityClient(), []);
+  if (appOnly === '1') {
+    return (
+      <SettingsScaffold title="App updates" detail state={{ saving: false, error: undefined }}>
+        <AppGroup />
+      </SettingsScaffold>
+    );
+  }
   if (!client) {
     // The app's own updates do not depend on a server, so they stay reachable.
     return (

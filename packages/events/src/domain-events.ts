@@ -106,7 +106,16 @@ export const domainEventSchema = z.discriminatedUnion('t', [
     lifecycleState: z.string().min(1).max(64).optional(),
     warning: z.string().max(2_000).nullable().optional(),
   }),
-  z.object({ t: z.literal('sandbox.update'), projectId: id, rev, available: z.boolean() }),
+  z.object({
+    t: z.literal('sandbox.update'),
+    projectId: id,
+    rev,
+    available: z.boolean(),
+    /** The project's whole `sandboxUpdate` as the project routes show it:
+     * repairs, deferrals, recovery and the last repair failure included.
+     * Absent from servers that announce only availability. */
+    update: patch.optional(),
+  }),
 ]);
 export type DomainEvent = z.infer<typeof domainEventSchema>;
 

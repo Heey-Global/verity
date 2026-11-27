@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.96.2](https://github.com/Heey-Global/verity/compare/mobile-v1.96.1...mobile-v1.96.2) (2026-11-27)
+
+
+### Features
+
+* **assistant:** decide Verity's handoffs on their card in the panel ([#2976](https://github.com/Heey-Global/verity/issues/2976)) ([b80cef1](https://github.com/Heey-Global/verity/commit/b80cef198a7ffbe3d5511a1f4fbf258d9f217afb))
+* **live:** publish release and toolkit drift changes as project events ([#2985](https://github.com/Heey-Global/verity/issues/2985)) ([591b8da](https://github.com/Heey-Global/verity/commit/591b8da67707177a5c8843598bbdbd32c177ffc5))
+* **live:** read a pull request fresh when its session is opened ([#2978](https://github.com/Heey-Global/verity/issues/2978)) ([373f2b3](https://github.com/Heey-Global/verity/commit/373f2b323bac523e9cecffe1ce56cc8372750587))
+
 ## [1.96.1](https://github.com/Heey-Global/verity/compare/mobile-v1.96.0...mobile-v1.96.1) (2026-11-26)
 
 

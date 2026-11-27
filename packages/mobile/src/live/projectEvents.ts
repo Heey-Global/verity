@@ -7,8 +7,7 @@ import { projectRecordSchema, type ProjectRecord } from '../api.js';
  * - `patch` is applied at once, so Home, the project page and its settings
  *   show a sandbox that started, failed or went to sleep without waiting.
  * - `reload` asks the view to read the project again, because the routes add
- *   fields the event does not carry: the failure message, the update detail
- *   and repair verdicts.
+ *   fields the event does not carry, such as the failure message.
  *
  * Undefined for events that do not concern projects.
  */
@@ -22,6 +21,7 @@ const stateSchema = projectRecordSchema.shape.state;
 const lifecycleStateSchema = projectRecordSchema.shape.lifecycleState;
 const nameSchema = projectRecordSchema.shape.name;
 const setupStatusSchema = projectRecordSchema.shape.setupStatus;
+const sandboxUpdateSchema = projectRecordSchema.shape.sandboxUpdate;
 
 /** Fields `project.changed` may carry beyond the name and setup status. Each
  * is checked against the project schema; one this app cannot read is left to
@@ -65,8 +65,19 @@ export function projectEventUpdate(event: DomainEvent): ProjectEventUpdate | und
         reload: true,
       };
     }
-    case 'sandbox.update':
-      return { projectId: event.projectId, patch: (project) => project, reload: true };
+    case 'sandbox.update': {
+      // An older server sends only availability; a state this app cannot read
+      // is left to the read.
+      const parsed =
+        event.update === undefined ? undefined : sandboxUpdateSchema.safeParse(event.update);
+      const sandboxUpdate = parsed?.success === true ? parsed.data : undefined;
+      return {
+        projectId: event.projectId,
+        patch: (project) => (sandboxUpdate === undefined ? project : { ...project, sandboxUpdate }),
+        // The whole state needs no read; only availability does.
+        reload: sandboxUpdate === undefined,
+      };
+    }
     case 'project.changed': {
       const name = nameSchema.safeParse(event.patch['name']);
       const setupStatus = setupStatusSchema.safeParse(event.patch['setupStatus']);
