@@ -27,10 +27,6 @@
     "constructor": "83a90758 775a1855 03e0656c 3b9ae587 cffcb084 08faf722 6257e2e5 9a87168e",
     "encryptSecret": "7b3ec667 ba32420a a57b56a3 c8389f63 37a53e6f 90aff935 068e3fcb 26d2a9cb",
     "decryptSecret": "dea1214b 11d404f4 ae8aa4d7 8c632e98 99b39cbe 98aa0f46 8f3683f7 4f77d633",
-    "getLastCreatedSessionModel": "c171cf67 788cc815 267663aa 082f454a e0ced7c8 b4610d81 1cb03855 54a06f58",
-    "getSession": "2296a7ee 07f18b18 ec593091 97454b62 b9d9ded0 5a76bd87 85efa1e8 72f4f8ea",
-    "getSessionByWorktree": "ed70e3bb c12b1f58 eba3ce4a b61258c5 548ca5a3 e69032e8 8926d263 76cec082",
-    "findSession": "8c88e3e4 ffafba86 8b641146 5fabffdf dd4d8fed bcf509ba f27f97b1 429ccf13",
     "getSessionSlideDeck": "ef0a53ac 1730e0b8 1d894a09 234ba918 c10781be 5f3bbcd7 a3dff03c c70285ed",
     "setSessionSlideDeck": "9d679fa8 8f7e3d96 943e5a48 7d08d178 c09a5278 e944f65b 4d970e17 24bf7417",
     "forgeConnections": "c8c7328f 35ad260a b50d3722 b6ee89b9 0b23b56d e662ae3b f9c27922 fa82bc50",
@@ -53,7 +49,6 @@
     "updateSessionSlideDeckRevision": "2c3a9e66 17235e63 584e2650 42818f33 7f302bcf f135bad8 3d57a6fa 2191f238",
     "claimGoogleWorkspaceInvocation": "2b68e2e8 e5d8d21d 811c714e 1f4e2c34 aa12d729 c517ef1d 613fd724 db985f48",
     "completeGoogleWorkspaceInvocation": "7379571d b35cda8f d5b699dc 48439672 d120c24a 969e32e2 5d34746b efa2d118",
-    "listSessions": "a13024ed ad8df962 6cbb4e4b 0d7eedaf 20060d3f ec688728 7faff615 4048be58",
     "prepareSessionMove": "a1bf1a3f a5af37e4 5eeaed29 dc04b856 4502eec9 7da1c8a0 8a3adb68 ce8d6c3a",
     "commitSessionMove": "7bb04c0c 3ce86880 66fa3b17 c5793864 b6332d62 b7bb9143 66a31b7e 56f163f4",
     "sessionLifecycle": "f523b7d6 267756fb 2c043270 4deed3f4 c0d70ecd d8581455 dd5e3a28 62471bc9",
@@ -85,7 +80,6 @@
   "imports": [
     "packages/store/src/db.ts -> packages/store/src/migrations.ts",
     "packages/store/src/migrations.ts -> packages/store/src/store.ts",
-    "packages/store/src/pglite-template.ts -> packages/store/src/migrations.ts",
-    "packages/store/src/session-rows.ts -> packages/store/src/store.ts"
+    "packages/store/src/pglite-template.ts -> packages/store/src/migrations.ts"
   ]
 }

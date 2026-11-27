@@ -104,11 +104,11 @@ export {
   defaultProjectName,
   InvalidProjectNameError,
 } from './project-record.js';
-import type { SessionMockupReview, SessionMockups } from './session-mockups.js';
+import type { SessionMockups } from './session-mockups.js';
 import { PlanImplementationStore, type PlanningConsent } from './plan-implementation.js';
 export type { PlanningConsent } from './plan-implementation.js';
 import { SessionPlanningStore, type SessionPlanning } from './session-planning.js';
-import { SESSION_COLUMNS, sessionFromRow } from './session-rows.js';
+import type { SessionRecord } from './session-rows.js';
 import { CapacityLeaseStore } from './capacity-leases.js';
 import {
   SessionProjectionStore,
@@ -265,31 +265,7 @@ export {
   backfillToolResultText,
 } from './attachment-backfills.js';
 
-export interface SessionRecord {
-  sessionId: string;
-  worktree: string;
-  model: string;
-  /** Operator-assigned display name; `null` until set at spawn or via rename. */
-  name: string | null;
-  /** Project the session runs in (concept §19); `null` for project-less
-   *  (or pre-projects-slice) sessions. */
-  projectId: string | null;
-  /** "Last seen" mark for the overview unread dot (#387): the session's `eventCount`
-   *  at the last open. `null` = never opened → not unread. The store fills in the
-   *  legacy shared column; the server replaces it with the requesting person's mark
-   *  from {@link ViewStateStore} before it reaches a client. */
-  lastSeenEventCount: number | null;
-  /** Planning mode. Optional so records built outside the store need not state it;
-   *  absent and `null` both mean the session never planned. */
-  planning?: SessionPlanning | null;
-  planningRevision?: number;
-  planningPlan?: string | null;
-  /** Mockups the agent presented for review. Absent when it never presented any. */
-  mockupReview?: SessionMockupReview;
-  /** Operator-marked favorite, highlighted in the session list. Global like the
-   *  unread mark, so it syncs across devices. Absent means not a favorite. */
-  favorite?: boolean;
-}
+export type { SessionRecord } from './session-rows.js';
 
 export type {
   SessionLinkRecord,
@@ -739,42 +715,17 @@ export class EventStore implements EventSink {
     return this.sessionLifecycle.createSession(session);
   }
 
-  /** The immutable model choice of the newest ordinary session in a scope.
-   * Legacy rows written before `initial_model` existed fall back to their current
-   * model. Used only to seed a subsequent session; runtime model switches never
-   * rewrite the remembered creation choice. */
   async getLastCreatedSessionModel(projectId: string | null): Promise<string | undefined> {
-    let query = this.db.selectFrom('sessions').select(['initial_model', 'model']);
-    query =
-      projectId === null
-        ? query.where('project_id', 'is', null)
-        : query.where('project_id', '=', projectId);
-    const row = await query
-      .orderBy('created_at', 'desc')
-      .orderBy('session_id', 'desc')
-      .executeTakeFirst();
-    return row?.initial_model ?? row?.model;
+    return this.sessionLifecycle.getLastCreatedSessionModel(projectId);
   }
 
   getSession(sessionId: string): Promise<SessionRecord | undefined> {
-    return this.findSession('session_id', sessionId);
+    return this.sessionLifecycle.getSession(sessionId);
   }
 
   /** The session owning a primary worktree, without loading every session. */
   getSessionByWorktree(worktree: string): Promise<SessionRecord | undefined> {
-    return this.findSession('worktree', worktree);
-  }
-
-  private async findSession(
-    column: 'session_id' | 'worktree',
-    value: string,
-  ): Promise<SessionRecord | undefined> {
-    const row = await this.db
-      .selectFrom('sessions')
-      .select(SESSION_COLUMNS)
-      .where(column, '=', value)
-      .executeTakeFirst();
-    return row && sessionFromRow(row);
+    return this.sessionLifecycle.getSessionByWorktree(worktree);
   }
 
   async getSessionWorkspaceFile(
@@ -1102,15 +1053,7 @@ export class EventStore implements EventSink {
   }
 
   async listSessions(): Promise<SessionRecord[]> {
-    const rows = await this.db
-      .selectFrom('sessions')
-      .select(SESSION_COLUMNS)
-      // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
-      // inserts can share a timestamp — without this the order is unspecified.
-      .orderBy('created_at', 'asc')
-      .orderBy('session_id', 'asc')
-      .execute();
-    return rows.map(sessionFromRow);
+    return this.sessionLifecycle.listSessions();
   }
 
   /** Overview positions are separate from the chronological session registry. */
