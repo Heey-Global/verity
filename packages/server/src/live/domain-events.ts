@@ -111,6 +111,11 @@ export class DomainEventBus {
     return ids;
   }
 
+  /** Whether someone subscribes to `topic` right now. */
+  watching(topic: DomainTopic): boolean {
+    return (this.topics.get(topic)?.listeners.size ?? 0) > 0;
+  }
+
   /**
    * Subscribe to a topic, replaying from `cursor` when given. Replay and
    * subscription happen in one synchronous step, so no record published in
