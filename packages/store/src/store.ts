@@ -396,9 +396,11 @@ export class EventStore implements EventSink {
   );
   private readonly devServerConfigs = new DevServerConfigStore(() => this.db);
   private readonly sessionBackendState = new SessionBackendStateStore(() => this.db);
-  private readonly turnRecords = new TurnRecordStore(
+  private readonly turnRecords: TurnRecordStore = new TurnRecordStore(
     () => this.db,
     (id) => this.isSessionDeleting(id),
+    () => this.listRunningTurns(),
+    (sessionId, seq) => this.promptInitiatorAt(sessionId, seq),
   );
   private readonly messageProjection = new MessageProjectionStore(
     () => this.db,
@@ -1692,9 +1694,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     turnId: string,
   ): Promise<{ userId: string } | undefined> {
-    const running = (await this.listRunningTurns()).find((turn) => turn.sessionId === sessionId);
-    if (running === undefined || running.turnId !== turnId) return undefined;
-    return this.promptInitiatorAt(sessionId, running.promptSeq);
+    return this.turnRecords.runningTurnInitiator(sessionId, turnId);
   }
 
   /** The user a specific prompt event was sent by, or `undefined` when that
@@ -1822,7 +1822,7 @@ export class EventStore implements EventSink {
     sessionId: string,
     promptSeq: number,
     markerId: string,
-    turnId: string | null = null,
+    turnId?: string | null,
   ): Promise<void> {
     return this.turnRecords.confirmTurnSettled(sessionId, promptSeq, markerId, turnId);
   }

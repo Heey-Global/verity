@@ -7,7 +7,6 @@
     "withEgressDestinationTransaction": "a0ebe517 31b5d7bf 5b88b44f 8759019c 08ff961f 70fe58e2 b673e17e 2bd4b629",
     "projectChanges": "f37aa7d7 2663793c b6fe3740 badf7a4c f10613f7 1c9a7b64 06e44ada 06199e81",
     "httpMcpConnections": "33fc7ea2 ca31801a 8948a4b1 f7b898a0 38423e51 f5d23176 dd1c7002 a1fa39eb",
-    "turnRecords": "fd1af23a 6a08968b c2890940 d6737a6b c09bbd32 5a058dfc cd1dd319 2b70683b",
     "messageProjection": "1928225a 7584ec3a eccd1acb cfab89cd 44bb92d4 566d80a6 534a4fcd 459a209b",
     "attachments": "ebe3274d b333f9a8 37b350c5 4e0591bb 598ab59c 8dd65c45 7839af9c 19386ecd",
     "eventWrites": "bd000f81 451cadfe 98d4947d 15c90673 42d7e4e0 c64e6e18 b7347726 6b9e7bf4",
@@ -36,8 +35,6 @@
     "sessionMoves": "a316dca3 9f0d3804 db75340d 017e95cf c72922fb 31359f37 21407131 66d46e10",
     "finishSessionDeletionCleanup": "f6e98a4d adb2142a ec69ba7f 85562774 0dbfc9bc 7a63cd2a 7922dce3 0adb0cba",
     "externalizeToolResult": "d9c8e657 473da598 2cf8ba0f 24c1379b 78401a94 6a89369c c72549ff 43c90c01",
-    "runningTurnInitiator": "5f0caf0c 12e5a1d2 b0860e73 0c0a91a8 4456f22e c6226be5 47f305b7 cb23d9cf",
-    "confirmTurnSettled": "56e23096 f20324a8 03944213 ed1db3b0 b280a1c7 3a3c7387 7eaef8de d641c77f",
     "updateProjectState": "a757ca0b 4d2da1ca d6de5ceb 1e7f9b95 551a918f 7eb2e92e ccfac143 c7ea9961",
     "listDuePushReceipts": "ec5d9c81 b1d006bd 12e15d1a 87d59923 4431de40 e0498a68 b7d65056 eb6a0a52"
   },

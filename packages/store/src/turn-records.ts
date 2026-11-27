@@ -54,6 +54,11 @@ export class TurnRecordStore {
   constructor(
     private readonly getDb: () => Kysely<Database>,
     private readonly isSessionDeleting: (id: string) => Promise<boolean>,
+    private readonly readRunningTurns: TurnRecordStore['listRunningTurns'],
+    private readonly readPromptInitiator: (
+      sessionId: string,
+      seq: number,
+    ) => Promise<{ userId: string } | undefined>,
   ) {}
 
   private get db(): Kysely<Database> {
@@ -293,6 +298,15 @@ export class TurnRecordStore {
           };
         });
       });
+  }
+
+  async runningTurnInitiator(
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ userId: string } | undefined> {
+    const running = (await this.readRunningTurns()).find((turn) => turn.sessionId === sessionId);
+    if (running === undefined || running.turnId !== turnId) return undefined;
+    return this.readPromptInitiator(sessionId, running.promptSeq);
   }
 
   /** All in-flight markers. At startup a non-empty result flags sessions whose
