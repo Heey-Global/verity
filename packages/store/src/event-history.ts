@@ -48,7 +48,13 @@ export class EventHistoryStore {
   constructor(
     private readonly getDb: () => Kysely<Database>,
     private readonly readHistoryPage: EventHistoryStore['getEventsBeforeSeq'],
+    private readonly readEventsAfter: EventHistoryStore['getEventsAfter'],
   ) {}
+
+  async getEvents(sessionId: string): Promise<AgentEvent[]> {
+    const sequenced = await this.readEventsAfter(sessionId, 0);
+    return sequenced.map((row) => row.event);
+  }
 
   /**
    * Read a backward page of history: the newest `limit` events with `seq <

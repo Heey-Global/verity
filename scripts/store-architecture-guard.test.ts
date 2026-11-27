@@ -119,6 +119,20 @@ it('allows the event history store to forward backward page reads in order', () 
   ).toEqual(['history']);
 });
 
+it('allows the event history store to forward full-log reads without overriding the cursor', () => {
+  const source = (read: string) =>
+    'class EventStore { history = new EventHistoryStore(() => this.db, ' +
+    '(id, limit, before) => this.getEventsBeforeSeq(id, limit, before), ' +
+    read +
+    '); }';
+  expect(facadeImplementations(source('(id, after) => this.getEventsAfter(id, after)'))).toEqual(
+    {},
+  );
+  expect(
+    Object.keys(facadeImplementations(source('(id, after) => this.getEventsAfter(id, 0)'))),
+  ).toEqual(['history']);
+});
+
 it('allows plan implementation to use the existing append and projection stores', () => {
   const source = (store: string, projection: string) =>
     'class EventStore { plan = new ' +

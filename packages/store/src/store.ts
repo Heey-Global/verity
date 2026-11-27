@@ -809,6 +809,7 @@ export class EventStore implements EventSink {
   private readonly eventHistory = new EventHistoryStore(
     () => this.db,
     (sessionId, limit, beforeSeq) => this.getEventsBeforeSeq(sessionId, limit, beforeSeq),
+    (sessionId, afterSeq) => this.getEventsAfter(sessionId, afterSeq),
   );
   private readonly eventSnapshots = new EventSnapshotStore(() => this.db);
   private readonly starterProjects = new StarterProjectStore(() => this.db);
@@ -1698,8 +1699,7 @@ export class EventStore implements EventSink {
 
   /** Read a session's full event log in append order. Validates each payload. */
   async getEvents(sessionId: string): Promise<AgentEvent[]> {
-    const sequenced = await this.getEventsAfter(sessionId, 0);
-    return sequenced.map((s) => s.event);
+    return this.eventHistory.getEvents(sessionId);
   }
 
   /** Return a contiguous suffix of complete events within the negotiated wire

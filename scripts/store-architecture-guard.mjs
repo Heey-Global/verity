@@ -128,6 +128,9 @@ function isStoreWiring(initializer) {
       if (index === 1 && initializer.expression.text === 'EventHistoryStore') {
         return isForwardingCallback(argument, 'getEventsBeforeSeq', 3);
       }
+      if (index === 2 && initializer.expression.text === 'EventHistoryStore') {
+        return isForwardingCallback(argument, 'getEventsAfter', 2);
+      }
       return (
         argument.parameters.length === 0 &&
         ts.isPropertyAccessExpression(argument.body) &&
