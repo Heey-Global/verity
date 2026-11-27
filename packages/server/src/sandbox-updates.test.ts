@@ -1107,3 +1107,145 @@ describe('createSandboxUpdateChecker.statusAll', () => {
     });
   });
 });
+
+describe('trustInspections', () => {
+  // One record throughout: `project()` stamps a fresh `stateChangedAt`, which
+  // the held inspection's key rightly treats as a new container.
+  const fixed = project({ stateChangedAt: new Date('2026-11-27T07:00:00Z') });
+  function trustSource() {
+    let following = true;
+    const listeners = new Set<(projectId: string | undefined) => void>();
+    return {
+      source: {
+        following: () => following,
+        onContainerChange: (listener: (projectId: string | undefined) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      setFollowing: (next: boolean) => (following = next),
+      change: (projectId: string | undefined) => {
+        for (const listener of listeners) listener(projectId);
+      },
+    };
+  }
+
+  // Every overview read inspected each running sandbox to compare its image;
+  // while the event stream vouches for the container, the last answer stands.
+  it('reuses an inspection until the stream reports a change or stops vouching', async () => {
+    const inspectContainer = vi.fn(async () => inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: DEFAULT_IMAGE,
+      toolkitFeatureRef: TOOLKIT,
+    });
+    const t = trustSource();
+    const stop = checker.trustInspections!(t.source);
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
+    await checker.status(fixed);
+    expect(inspectContainer).toHaveBeenCalledTimes(1);
+
+    t.change('p1');
+    await checker.statusAll([fixed]);
+    expect(inspectContainer).toHaveBeenCalledTimes(2);
+    t.change(undefined);
+    await checker.statusAll([fixed]);
+    expect(inspectContainer).toHaveBeenCalledTimes(3);
+    t.setFollowing(false);
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
+    expect(inspectContainer).toHaveBeenCalledTimes(5);
+
+    t.setFollowing(true);
+    stop();
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
+    expect(inspectContainer).toHaveBeenCalledTimes(7);
+  });
+
+  // An answer that was on its way while the container changed describes the
+  // container before the change.
+  it('keeps no inspection that was under way when its project changed', async () => {
+    let release!: () => void;
+    const inspectContainer = vi
+      .fn<DockerClient['inspectContainer']>()
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (release = () => resolve(inspect({ image: 'old-image' })))),
+      )
+      .mockResolvedValue(inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: DEFAULT_IMAGE,
+      toolkitFeatureRef: TOOLKIT,
+    });
+    const t = trustSource();
+    checker.trustInspections!(t.source);
+    const first = checker.statusAll([fixed]);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    t.change('p1');
+    release();
+    await first;
+    await checker.statusAll([fixed]);
+    expect(inspectContainer).toHaveBeenCalledTimes(2);
+  });
+
+  // The Docker event of a recreate may arrive after the next read; the store
+  // already shows the new state or image by then.
+  it('asks again once the store shows a new state or image, before any event', async () => {
+    const inspectContainer = vi.fn(async () => inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: DEFAULT_IMAGE,
+      toolkitFeatureRef: TOOLKIT,
+    });
+    checker.trustInspections!(trustSource().source);
+    const before = project({ stateChangedAt: new Date('2026-11-27T08:00:00Z') });
+    await checker.statusAll([before]);
+    await checker.statusAll([before]);
+    expect(inspectContainer).toHaveBeenCalledTimes(1);
+    await checker.statusAll([{ ...before, stateChangedAt: new Date('2026-11-27T09:00:00Z') }]);
+    expect(inspectContainer).toHaveBeenCalledTimes(2);
+    await checker.statusAll([
+      { ...before, stateChangedAt: new Date('2026-11-27T09:00:00Z'), imageRef: 'img:2' },
+    ]);
+    expect(inspectContainer).toHaveBeenCalledTimes(3);
+  });
+
+  // Only the container's facts are held; a new image published as the target
+  // must still show as an update without any container event.
+  it('compares a held inspection with the current target on every read', async () => {
+    let target = DEFAULT_IMAGE;
+    const inspectContainer = vi.fn(async () => inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: async () => target,
+      toolkitFeatureRef: TOOLKIT,
+      targetTtlMs: 0,
+    });
+    checker.trustInspections!(trustSource().source);
+    await expect(checker.status(fixed)).resolves.toMatchObject({ state: 'current' });
+    target = 'ghcr.io/heey-global/verity/verity-sandbox:next';
+    // The held inspection now meets another target: the answer moves with it.
+    const after = await checker.status(fixed);
+    expect(after.state).not.toBe('current');
+    expect(inspectContainer).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks again after an inspect that failed', async () => {
+    const inspectContainer = vi
+      .fn<DockerClient['inspectContainer']>()
+      .mockRejectedValueOnce(new Error('daemon busy'))
+      .mockResolvedValue(inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: DEFAULT_IMAGE,
+      toolkitFeatureRef: TOOLKIT,
+    });
+    checker.trustInspections!(trustSource().source);
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
+    expect(inspectContainer).toHaveBeenCalledTimes(2);
+  });
+});
