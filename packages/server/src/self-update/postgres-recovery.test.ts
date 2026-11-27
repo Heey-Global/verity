@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
 import {
+  freeBytesBesideVolume,
   POSTGRES_RECOVERY_GRACE_MS,
   POSTGRES_RECOVERY_MIN_FREE_BYTES,
   recoverStoppedControlPlanePostgres,
@@ -17,9 +19,15 @@ interface Fake {
   finishedAt?: string;
   network?: string;
   service?: string;
+  mounts?: ReadonlyArray<{ type?: string; source?: string; destination?: string }>;
 }
 
-function harness(containers: Fake[], freeBytes = 10 * POSTGRES_RECOVERY_MIN_FREE_BYTES) {
+const DB_VOLUME = '/var/lib/docker/volumes/verity_verity-db/_data';
+
+function harness(
+  containers: Fake[],
+  freeBytes: number | 'unknown' = 10 * POSTGRES_RECOVERY_MIN_FREE_BYTES,
+) {
   const startContainer = vi.fn(async () => {});
   const docker = {
     listContainers: async () =>
@@ -37,6 +45,9 @@ function harness(containers: Fake[], freeBytes = 10 * POSTGRES_RECOVERY_MIN_FREE
         exitCode: c.exitCode,
         finishedAt: c.finishedAt ?? longAgo,
         networks: { [c.network ?? 'verity-net']: {} },
+        mounts: c.mounts ?? [
+          { type: 'volume', source: DB_VOLUME, destination: '/var/lib/postgresql' },
+        ],
       };
     },
     startContainer,
@@ -45,7 +56,8 @@ function harness(containers: Fake[], freeBytes = 10 * POSTGRES_RECOVERY_MIN_FREE
     recoverStoppedControlPlanePostgres({
       docker: docker as never,
       network: 'verity-net',
-      freeBytes: async () => freeBytes,
+      freeBytesFor: async (source: string) =>
+        source === DB_VOLUME && freeBytes !== 'unknown' ? freeBytes : undefined,
       now: () => NOW,
     });
   return { run, startContainer };
@@ -73,6 +85,25 @@ describe('control-plane PostgreSQL recovery', () => {
       'a predecessor kept for rollback',
       [{ id: 'old', name: 'verity-postgres-1-predecessor-0123456789ab', exitCode: 1 }],
       'absent',
+    ],
+    [
+      // A deliberate `docker stop` that ran out of time ends in SIGKILL.
+      'a stop that killed it with a signal',
+      [{ id: 'db', name: 'verity-postgres-1', exitCode: 137 }],
+      'stopped-deliberately',
+    ],
+    [
+      'a data directory bound from elsewhere',
+      [
+        {
+          id: 'db',
+          name: 'verity-postgres-1',
+          exitCode: 1,
+          // Same path as the volume: only the mount type tells them apart.
+          mounts: [{ type: 'bind', source: DB_VOLUME, destination: '/var/lib/postgresql' }],
+        },
+      ],
+      'unverified-space',
     ],
     [
       'a predecessor beside a running successor',
@@ -118,6 +149,19 @@ describe('control-plane PostgreSQL recovery', () => {
     expect(h.startContainer).not.toHaveBeenCalled();
   });
 
+  // A Compose project may itself be named with "predecessor"; only the suffix
+  // an image replacement adds marks a container kept for rollback.
+  it('recovers a database of a project whose name contains "predecessor"', async () => {
+    const h = harness([{ id: 'db', name: 'verity-predecessor-prod-postgres-1', exitCode: 1 }]);
+    expect(await h.run()).toBe('started');
+  });
+
+  it('does not start a crashed database whose free space cannot be verified', async () => {
+    const h = harness([{ id: 'db', name: 'verity-postgres-1', exitCode: 1 }], 'unknown');
+    expect(await h.run()).toBe('unverified-space');
+    expect(h.startContainer).not.toHaveBeenCalled();
+  });
+
   it('does not start a crashed database on a disk that is still full', async () => {
     const h = harness(
       [{ id: 'db', name: 'verity-postgres-1', exitCode: 1 }],
@@ -125,5 +169,20 @@ describe('control-plane PostgreSQL recovery', () => {
     );
     expect(await h.run()).toBe('insufficient-space');
     expect(h.startContainer).not.toHaveBeenCalled();
+  });
+});
+
+describe('free space beside the measured volume', () => {
+  const measured = tmpdir();
+  it('measures only for a named volume in the same Docker volume directory', async () => {
+    const beside = '/var/lib/docker/volumes/verity-managed-deployment/_data';
+    expect(await freeBytesBesideVolume(DB_VOLUME, measured, beside)).toBeGreaterThanOrEqual(0);
+    for (const other of [
+      undefined,
+      '/mnt/other/volumes/verity-managed-deployment/_data',
+      '/var/lib/docker/volumes/verity-managed-deployment',
+    ])
+      expect(await freeBytesBesideVolume(DB_VOLUME, measured, other)).toBeUndefined();
+    expect(await freeBytesBesideVolume('/srv/pg', measured, beside)).toBeUndefined();
   });
 });

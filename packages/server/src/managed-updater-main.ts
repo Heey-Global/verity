@@ -1,11 +1,12 @@
 import { reconcileInstalledProjectEgressHost } from './self-update/project-egress-provisioning.js';
 import {
-  freeBytesAt,
+  freeBytesBesideVolume,
   recoverStoppedControlPlanePostgres,
   type PostgresRecoveryOutcome,
 } from './self-update/postgres-recovery.js';
 import { hostRuntimePreparationReady } from './self-update/host-runtimes.js';
 import { lstat, readFile, stat } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { AGENT_SEED_MOUNT_PATH } from './self-update/agent-seed-stamp.js';
 import { createDockerClient } from './docker.js';
@@ -202,7 +203,15 @@ export async function startManagedUpdaterMain(): Promise<void> {
         const outcome = await recoverStoppedControlPlanePostgres({
           docker,
           network: state.spec.network,
-          freeBytes: () => freeBytesAt(MANAGED_DEPLOYMENT_ROOT),
+          freeBytesFor: async (dataSource) => {
+            // The Updater measures the deployment volume it mounts; its host
+            // source tells whether the database volume lives beside it.
+            const self = await docker.inspectContainer(hostname()).catch(() => undefined);
+            const measuredSource = self?.mounts?.find(
+              (mount) => mount.destination === MANAGED_DEPLOYMENT_ROOT,
+            )?.source;
+            return freeBytesBesideVolume(dataSource, MANAGED_DEPLOYMENT_ROOT, measuredSource);
+          },
         });
         if (outcome !== lastPostgresOutcome && outcome !== 'running')
           console.warn(`[self-update] control-plane PostgreSQL: ${outcome}`);
