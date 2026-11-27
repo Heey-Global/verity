@@ -327,9 +327,9 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
   app.delete('/network-shares/:connectionId', async (request, reply) => {
     const params = z.object({ connectionId: id }).strict().safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'invalid network share' });
-    const removed = await shares.deleteConnection(params.data.connectionId);
+    if (!(await shares.deleteConnection(params.data.connectionId)))
+      return reply.code(404).send({ error: 'network share not found' });
     changed(params.data.connectionId);
-    if (!removed) return reply.code(404).send({ error: 'network share not found' });
     return reply.code(204).send();
   });
 

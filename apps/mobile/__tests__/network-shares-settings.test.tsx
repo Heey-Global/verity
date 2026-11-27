@@ -230,6 +230,15 @@ describe('project network share folders', () => {
     expect(screen.queryByText('Add folder')).toBeNull();
   });
 
+  it('still reports a failed load on the combined screen', async () => {
+    const client = shareClient({
+      listConnections: jest.fn().mockRejectedValue(new Error('The server is not reachable.')),
+      listProjectFolders: jest.fn().mockResolvedValue([]),
+    });
+    render(<ProjectNetworkShares client={client} projectId="p" onlyWhenUsed />);
+    expect(await screen.findByText('The server is not reachable.')).toBeTruthy();
+  });
+
   it('shows on the combined screen once a share can be used', async () => {
     const client = shareClient({ listProjectFolders: jest.fn().mockResolvedValue([]) });
     render(<ProjectNetworkShares client={client} projectId="p" onlyWhenUsed />);

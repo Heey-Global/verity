@@ -363,7 +363,8 @@ export function ProjectNetworkShares({
 
   const canManage = connections !== null && connections !== undefined;
   const unused = folders !== undefined && folders.length === 0 && !connections?.length;
-  if (onlyWhenUsed && (unused || (folders === undefined && !error))) return null;
+  // A load error still shows: hiding it would read as “nothing is shared”.
+  if (onlyWhenUsed && !error && (unused || folders === undefined)) return null;
   return (
     <SettingsGroup
       title="Folders for this project"
