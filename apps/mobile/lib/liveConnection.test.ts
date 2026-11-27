@@ -88,6 +88,32 @@ it('refreshes on hints rather than a clock, filters resources and detaches on un
   expect(refresh).toHaveBeenCalledTimes(1);
 });
 
+// A view its topics cover live must not keep the server sampling its read
+// (ADR 0033): that sampling is the polling this coverage exists to end. One
+// that loses coverage must watch again, or it would hear of nothing.
+it('watches a read only while the topics do not cover it, asking with every read', async () => {
+  let covered = false;
+  const refresh = jest.fn();
+  const detach = subscribeLiveRefresh(client, refresh, (path) => path === '/projects', [], {
+    covered: (path) => path === '/projects' && covered,
+  });
+  const frames = () => sent.filter((frame) => frame.k === 'watch' || frame.k === 'unwatch');
+  read({ path: '/projects' });
+  expect(frames()).toEqual([{ k: 'watch', resource: { path: '/projects' } }]);
+  covered = true;
+  read({ path: '/projects' });
+  expect(frames()).toEqual([
+    { k: 'watch', resource: { path: '/projects' } },
+    { k: 'unwatch', resource: { path: '/projects' } },
+  ]);
+  read({ path: '/projects' });
+  expect(frames()).toHaveLength(2);
+  covered = false;
+  read({ path: '/projects' });
+  expect(frames().at(-1)).toEqual({ k: 'watch', resource: { path: '/projects' } });
+  detach();
+});
+
 it('keeps one refresh pending when changes arrive during a slow request', async () => {
   let resolve!: () => void;
   const refresh = jest.fn(

@@ -66,7 +66,17 @@ export function subscribeLiveRefresh(
   refresh: () => void | Promise<unknown>,
   filter: (path: string) => boolean = () => true,
   resources: readonly LiveResource[] = [],
-  options: { initial?: boolean } = {},
+  options: {
+    initial?: boolean;
+    /**
+     * Whether the view follows the resource live on domain-event topics (ADR
+     * 0033), asked again with every read. A covered resource is not watched:
+     * the server stops sampling it, and the topics announce every change. A
+     * view that loses coverage watches it again with its next read, which
+     * the topic's `resync` or a reconnect brings.
+     */
+    covered?: (path: string, connection: LiveConnection) => boolean;
+  } = {},
 ): () => void {
   // Lightweight test/demo clients may implement only the API calls they use.
   if (typeof client.observeReads !== 'function') {
@@ -116,6 +126,11 @@ export function subscribeLiveRefresh(
     const path = resource.path.split('?')[0]!;
     const key = JSON.stringify(resource);
     const previous = subscriptions.get(path);
+    if (options.covered?.(path, connection) === true) {
+      previous?.detach();
+      subscriptions.delete(path);
+      return;
+    }
     if (previous?.key === key) return;
     previous?.detach();
     subscriptions.set(path, { key, detach: connection.watchResource(resource, invalidate) });

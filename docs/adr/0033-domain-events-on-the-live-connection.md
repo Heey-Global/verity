@@ -175,11 +175,33 @@ Each burst of invalidations becomes one event per entity. With these, the
 resource watches of the overview routes carry nothing the topics do not, and
 version 2 clients can stop watching them.
 
+### Ending the watches
+
+A view asks with every read whether its topics cover it live, and watches
+the route only while they do not. The server samples a route only while
+someone watches it, so a covered view costs no sampling, no provisioning
+detection and no read after each change the topics already announced.
+
+- the session's branch list is covered by `session:<id>`;
+- the project page by `project:<id>`;
+- the project list by `collection:projects` and the topic of every project
+  it shows;
+- the session list by the topic of every project it shows; sessions without
+  a project and the list's membership follow hints.
+
+A topic counts as followed once the server answered its subscription and
+while it is not retrying after an error. A project past the topic limit is
+not followed, so a long list keeps watching for it; a view that loses
+coverage watches again with its next read, which the `resync` or reconnect
+that ended it brings. The routes stay observable for version 1 clients and
+for these fallbacks.
+
 ## Consequences
 
-- Resource watches remain for logs, meetings and updater progress. Migrated
-  routes leave `packages/events/src/live-resources.ts`, and the body-sniffing
-  provisioning cadence in the resource observer is removed with them.
+- Resource watches remain for logs, meetings and updater progress. The
+  overview routes stay in `packages/events/src/live-resources.ts` for version
+  1 clients and for views their topics do not cover; their sampling and the
+  body-sniffing provisioning cadence run only for those.
 - The 15-second client fallback applies only to servers without version 2.
 - The bus is process-local, like the session bus. A multi-process deployment
   would replace it behind the same interface.
