@@ -60,9 +60,11 @@ function decode(request: { content: string; encoding?: 'utf8' | 'base64' | undef
   return Buffer.from(request.content, 'base64');
 }
 
+// Keep a byte order mark: dropped here, an update built from the text would
+// silently remove it from the file while its version still matches.
 function text(content: Buffer): string | undefined {
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(content);
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(content);
   } catch {
     return undefined;
   }

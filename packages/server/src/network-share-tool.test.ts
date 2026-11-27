@@ -351,3 +351,21 @@ describe('network share sign-in pause', () => {
     }
   });
 });
+
+describe('network share text reads', () => {
+  it('keeps a byte order mark so a rewrite does not drop it', async () => {
+    const { client } = fakeClient();
+    vi.mocked(client.read).mockResolvedValueOnce({
+      content: Buffer.from([0xef, 0xbb, 0xbf, 0x68, 0x69]),
+      version: 'bom',
+    });
+    const tool = createNetworkShareTool({ store, client });
+    const folderId = await grant('read-only');
+    const file = (await tool.invoke(input({ action: 'read', folderId, path: 'kickoff.md' }))) as {
+      content: string;
+      encoding: string;
+    };
+    expect(file.encoding).toBe('utf8');
+    expect(Buffer.from(file.content, 'utf8')).toEqual(Buffer.from([0xef, 0xbb, 0xbf, 0x68, 0x69]));
+  });
+});
