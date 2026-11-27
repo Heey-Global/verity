@@ -598,7 +598,10 @@ export class LiveHub {
     // Who held what matters only to a user's open connections; subscribing
     // again reads the scope anew.
     const key = connection.userKey;
-    if (![...this.connections].some((open) => open.userKey === key)) this.held.delete(key);
+    if (!this.isConnected(key)) {
+      this.held.delete(key);
+      this.scopes.delete(key);
+    }
   }
 
   /** A device was revoked, logged out or expired: its sockets stop now. */
@@ -737,7 +740,9 @@ export class LiveHub {
         if (held === undefined || held.at <= at) {
           this.scopes.set(key, { scope, at, since: entry.since });
         }
-        if (!scope.all) {
+        // A read that answers after the user left must not bring back what
+        // their leaving forgot.
+        if (!scope.all && this.isConnected(key)) {
           const held = this.held.get(key) ?? new Set<string>();
           for (const projectId of scope.projectIds) held.add(projectId);
           this.held.set(key, held);
@@ -749,6 +754,10 @@ export class LiveHub {
       });
     this.scopeReads.set(key, entry);
     return entry.promise;
+  }
+
+  private isConnected(key: string): boolean {
+    return [...this.connections].some((connection) => connection.userKey === key);
   }
 
   /** Whether any scope read for a user held the project: who held a project

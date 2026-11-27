@@ -133,6 +133,8 @@ export class TopicSubscriptions {
     decide: () => boolean | Promise<boolean>,
   ): void {
     if (sub.pending >= MAX_PENDING_RECORDS) {
+      // At once, not only once drained: a filter that hangs for good would
+      // otherwise leave the client unaware that it is missing records.
       if (!sub.overflowed) {
         sub.overflowed = true;
         this.opts.send({ k: 'resync', topic: record.topic, cursor: record.cursor });

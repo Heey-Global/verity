@@ -327,7 +327,8 @@ describe('LiveHub domain-event topics', () => {
     await first.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
     first.close();
     w.readable.get('bob')!.delete('p2');
-    clock += 60_000;
+    // Well within the time a scope stays cached.
+    clock += 1_000;
     const again = w.connect('bob');
     await again.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
     w.bus!.publish('collection:projects', {
