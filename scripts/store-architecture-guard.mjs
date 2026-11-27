@@ -121,7 +121,19 @@ function isStoreWiring(initializer) {
     ts.isIdentifier(initializer.expression) &&
     initializer.expression.text.endsWith('Store') &&
     (initializer.arguments ?? []).every((argument, index) => {
+      if (initializer.expression.text === 'ProjectLifecycleStore' && index === 2) {
+        return (
+          ts.isPropertyAccessExpression(argument) &&
+          argument.expression.kind === ts.SyntaxKind.ThisKeyword &&
+          argument.name.text === 'projectChanges'
+        );
+      }
       if (!ts.isArrowFunction(argument)) return false;
+      if (initializer.expression.text === 'ProjectLifecycleStore') {
+        if (index === 1) return isForwardingCallback(argument, 'getProject', 1);
+        if (index === 3) return isForwardingCallback(argument, 'listProjects', 0);
+        if (index === 4) return isForwardingCallback(argument, 'listProjectsByOwnerRepo', 3);
+      }
       if (index === 1 && initializer.expression.text === 'ProjectRepositoryStore') {
         return isForwardingCallback(argument, 'getProject', 1);
       }

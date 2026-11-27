@@ -29,7 +29,9 @@ export class ProjectLifecycleStore {
     private readonly currentDb: () => Kysely<Database>,
     private readonly readProject: (id: string) => Promise<ProjectRecord | undefined>,
     /** Told after each write of a project's state, image or overview fields. */
-    private readonly changes?: ProjectChangeFeed,
+    private readonly changes: ProjectChangeFeed,
+    private readonly readProjects: ProjectLifecycleStore['listProjects'],
+    private readonly readProjectsByOwnerRepo: ProjectLifecycleStore['listProjectsByOwnerRepo'],
   ) {}
   private get db(): Kysely<Database> {
     return this.currentDb();
@@ -1041,6 +1043,20 @@ export class ProjectLifecycleStore {
     return row ? projectRowToRecord(row) : undefined;
   }
 
+  async getProjectByOwnerRepo(
+    owner: string,
+    repo: string,
+    forgeConnectionId?: string | null,
+  ): Promise<ProjectRecord | undefined> {
+    // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
+    // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
+    // caller can pass the raw GitHub-display form without having to know about
+    // our persistence normalisation.
+    // Several projects may share a repository; this answers its first one.
+    // Callers that must not guess use listProjectsByOwnerRepo.
+    return (await this.readProjectsByOwnerRepo(owner, repo, forgeConnectionId))[0];
+  }
+
   /** Every project of one repository, hidden ones included, first instance first. */
   async listProjectsByOwnerRepo(
     owner: string,
@@ -1084,10 +1100,7 @@ export class ProjectLifecycleStore {
     return rows.map((r) => projectRowToRecord(r));
   }
 
-  async reorderProjects(
-    ids: string[],
-    listProjects: () => Promise<ProjectRecord[]>,
-  ): Promise<ProjectRecord[]> {
+  async reorderProjects(ids: string[]): Promise<ProjectRecord[]> {
     if (new Set(ids).size !== ids.length) {
       throw new Error('duplicate project id in reorderProjects');
     }
@@ -1115,6 +1128,6 @@ export class ProjectLifecycleStore {
         .where((eb) => eb.or([eb('state', '!=', 'absent'), eb('setup_status', '=', 'pending')]))
         .execute();
     });
-    return listProjects();
+    return this.readProjects();
   }
 }
