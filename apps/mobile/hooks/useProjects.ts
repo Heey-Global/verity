@@ -310,11 +310,11 @@ export function useProjects(client: VerityClient) {
   // One counter for all projects: a number is never handed out twice, so a
   // forgotten entry cannot make an old listing look current.
   const turns = useRef(0);
-  const turn = (projectId: string): number => {
+  const turn = useCallback((projectId: string): number => {
     const next = ++turns.current;
     collectionTurns.current.set(projectId, next);
     return next;
-  };
+  }, []);
   const listOne = useCallback(
     async (projectId: string) => {
       if (shownRef.current.some((project) => project.id === projectId)) return;
@@ -342,24 +342,27 @@ export function useProjects(client: VerityClient) {
         }
       }
     },
-    [client, readWhenShown],
+    [client, readWhenShown, turn],
   );
-  const unlistOne = useCallback((projectId: string) => {
-    // Moves on any listing still reading; nothing of its own waits.
-    turn(projectId);
-    collectionTurns.current.delete(projectId);
-    const target = storeRef.current;
-    const read = target.beginRead();
-    try {
-      target.applyProjects(read, [], { covers: (p) => p.id === projectId });
-    } finally {
-      target.endRead(read);
-    }
-    setListed((current) => current.filter((p) => p.id !== projectId));
-    // Before the next render: a `listed` right behind this one (a hide, then
-    // a restore) must not find the project still shown and skip it.
-    shownRef.current = shownRef.current.filter((p) => p.id !== projectId);
-  }, []);
+  const unlistOne = useCallback(
+    (projectId: string) => {
+      // Moves on any listing still reading; nothing of its own waits.
+      turn(projectId);
+      collectionTurns.current.delete(projectId);
+      const target = storeRef.current;
+      const read = target.beginRead();
+      try {
+        target.applyProjects(read, [], { covers: (p) => p.id === projectId });
+      } finally {
+        target.endRead(read);
+      }
+      setListed((current) => current.filter((p) => p.id !== projectId));
+      // Before the next render: a `listed` right behind this one (a hide, then
+      // a restore) must not find the project still shown and skip it.
+      shownRef.current = shownRef.current.filter((p) => p.id !== projectId);
+    },
+    [turn],
+  );
   useProjectCollection(getVerityBaseUrl(), {
     listed: (projectId) => void listOne(projectId),
     unlisted: unlistOne,

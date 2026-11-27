@@ -570,7 +570,9 @@ export class LiveHub {
   private readonly held = new Map<string, Set<string>>();
   /** Open connections, and departures, by user. */
   private readonly userConnections = new Map<string, number>();
-  private readonly userEpochs = new Map<string, number>();
+  /** The stay of each connected user: a number never handed out twice. */
+  private readonly userStays = new Map<string, number>();
+  private stays = 0;
   private readonly scopeReads = new Map<
     string,
     { since: number; promise: Promise<LiveOverviewScope> }
@@ -595,6 +597,7 @@ export class LiveHub {
     this.connections.add(connection);
     const key = connection.userKey;
     this.userConnections.set(key, (this.userConnections.get(key) ?? 0) + 1);
+    if (!this.userStays.has(key)) this.userStays.set(key, ++this.stays);
     connection.start();
   }
 
@@ -613,8 +616,8 @@ export class LiveHub {
     this.scopes.delete(key);
     this.scopeReads.delete(key);
     // A read begun before the user left belongs to that stay, even if it
-    // answers once they are back.
-    this.userEpochs.set(key, (this.userEpochs.get(key) ?? 0) + 1);
+    // answers once they are back with a new one.
+    this.userStays.delete(key);
   }
 
   /** A device was revoked, logged out or expired: its sockets stop now. */
@@ -740,7 +743,7 @@ export class LiveHub {
       return reading.promise;
     }
     const at = this.now();
-    const epoch = this.userEpochs.get(key) ?? 0;
+    const stay = this.userStays.get(key);
     const entry = {
       since: this.deps.domainEvents?.head ?? 0,
       promise: Promise.resolve(undefined as unknown as LiveOverviewScope),
@@ -752,7 +755,7 @@ export class LiveHub {
         // left and came back, must not bring back what their leaving forgot:
         // neither the scope nor who held what. Only such a read fills the
         // cache, so a cache hit has been recorded already.
-        if (!this.isConnected(key) || (this.userEpochs.get(key) ?? 0) !== epoch) return scope;
+        if (stay === undefined || this.userStays.get(key) !== stay) return scope;
         // A read that began earlier and answered later must not replace one
         // that began after it.
         const cachedNow = this.scopes.get(key);
