@@ -18,6 +18,7 @@ import { fileExplorerSpec } from './file-explorer';
 import { instructionSourcesSpec } from './instruction-sources';
 import { mcpOAuthDetectionSpec } from './mcp-oauth-detection';
 import { mockupReviewSpec } from './mockup-review';
+import { networkSharesSpec } from './network-shares';
 import { meetingRecoverySpec } from './meeting-recovery';
 import { planCardSpec } from './plan-card';
 import { projectInquiryApprovalSpec } from './project-inquiry-approval';
@@ -47,6 +48,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   sessionGroupsSpec,
   factorySpec,
   dopplerConnectionsSpec,
+  networkSharesSpec,
   homeAnswersSpec,
   homeVerityEntrySpec,
   mockupReviewSpec,

@@ -22,6 +22,7 @@ import {
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import { ProjectGoogleServices } from '../../../../components/settings/ProjectGoogleServices';
 import { ProjectMatrixRooms } from '../../../../components/settings/ProjectMatrixRooms';
+import { ProjectNetworkShares } from '../../../../components/settings/ProjectNetworkShares';
 import { createVerityClient } from '../../../../lib/client';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
 import { Button, Group, HintBox, Text as UiText, ToggleRow } from '../../../../components/ui';
@@ -36,6 +37,7 @@ export default function ProjectServicesScreen() {
   const selectedSection =
     requestedSection === 'doppler' ||
     requestedSection === 'drive' ||
+    requestedSection === 'shares' ||
     requestedSection === 'mcp' ||
     requestedSection === 'matrix' ||
     requestedSection === 'google'
@@ -61,7 +63,7 @@ function ProjectServicesView({
 }: {
   client: VerityClient;
   projectId: string;
-  section?: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google';
+  section?: 'doppler' | 'drive' | 'shares' | 'mcp' | 'matrix' | 'google';
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load } = useProjectDetail(client, projectId);
@@ -70,11 +72,13 @@ function ProjectServicesView({
       ? 'Doppler'
       : section === 'drive'
         ? 'Google Drive'
-        : section === 'mcp'
-          ? 'MCP'
-          : section === 'matrix'
-            ? 'Matrix'
-            : 'Connectors';
+        : section === 'shares'
+          ? 'Network shares'
+          : section === 'mcp'
+            ? 'MCP'
+            : section === 'matrix'
+              ? 'Matrix'
+              : 'Connectors';
 
   if (loading && detail === undefined) {
     return (
@@ -108,6 +112,10 @@ function ProjectServicesView({
         <SettingsGroup title="Files">
           <ProjectGoogleDriveFolders client={client} projectId={projectId} />
         </SettingsGroup>
+      ) : null}
+
+      {section === undefined || section === 'shares' ? (
+        <ProjectNetworkShares key={projectId} client={client} projectId={projectId} />
       ) : null}
 
       {section === undefined || section === 'mcp' ? (

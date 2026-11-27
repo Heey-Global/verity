@@ -62,16 +62,17 @@ import { assertSafeGmailSendSnapshot, type GmailDraftSendSnapshot } from './gmai
 import { googleApprovalAccount } from './google-account-presentation.js';
 import { googleCalendarHasStandingAuthorization } from './google-calendar-tool.js';
 import { googleContactsHasStandingAuthorization } from './google-contacts-tool.js';
-import { resolveGoogleDriveAuthority } from './google-drive-authority.js';
+import { authorizeGoogleDriveCall, resolveGoogleDriveAuthority } from './google-drive-authority.js';
 import {
   googleDriveHasStandingAuthorization,
-  googleDriveIsMutation,
   googleDriveRequestSchema,
 } from './google-drive-request.js';
 import { hasGoogleWorkspaceScope } from './google-oauth-scopes.js';
 import { resolveGoogleServiceCredentialForTurn } from './google-service-credentials.js';
 import { assertWorkspaceWritePermission } from './google-workspace-tool-types.js';
 import { httpMcpAuthorization } from './http-mcp-oauth.js';
+import { createNetworkShareTool } from './network-share-tool.js';
+import { SmbClient } from './network-share-smb.js';
 import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
 import {
   createProjectSourceFolder,
@@ -846,6 +847,12 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
       isPlanningTurn: (id) => conductor.isPlanningTurn?.(id) === true,
       warn: (err) => app.log.warn({ err }, 'Agent vulnerability scan failed'),
     });
+    const networkShareTool = createNetworkShareTool({
+      store: deps.eventStore,
+      client: deps.networkShareClient ?? new SmbClient(),
+      isSealed: () => deps.secretCipher?.isSealed() === true,
+      logWrite: (entry) => app.log.info(entry, 'Agent wrote to a network share'),
+    });
     const gateway = createMcpGateway({
       ...gatewayDeps,
       capabilityVersionForCaller: async (caller) => {
@@ -1030,27 +1037,13 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
           }
           return;
         }
-        if (toolName === 'verity_google_drive') {
-          const session = await deps.eventStore.getSession(sessionId);
-          if (session?.projectId !== projectId)
-            throw new ControlPlaneSessionAuthorityError('session project changed');
-          const driveRequest = googleDriveRequestSchema.parse(input.request);
-          if (driveRequest.action === 'capabilities' && !driveRequest.folderLinkId) return;
-          const authority = await resolveGoogleDriveAuthority(
+        if (toolName === 'verity_google_drive')
+          return authorizeGoogleDriveCall(
             deps.eventStore,
-            projectId,
-            driveRequest,
-            (await runningTurnInitiator(sessionId, turnId))?.userId,
+            input,
+            async () => (await runningTurnInitiator(sessionId, turnId))?.userId,
           );
-          if (
-            googleDriveIsMutation(driveRequest) &&
-            authority.googleDriveAccessMode === 'read-only'
-          )
-            throw new ControlPlaneSessionAuthorityError(
-              'This project folder has read-only Google Drive access',
-            );
-          return;
-        }
+        if (toolName === 'verity_network_shares') return networkShareTool.authorize(input);
         if (
           toolName === 'verity_google_slides' ||
           toolName === 'verity_google_docs' ||
@@ -1250,6 +1243,8 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
               googleUser,
             ),
           );
+        if (toolName === 'verity_network_shares')
+          return networkShareTool.snapshot({ projectId, sessionId, turnId, request });
         if (toolName === 'verity_google_drive') {
           const parsed = googleDriveRequestSchema.parse(request);
           if (parsed.action === 'capabilities') return undefined;
@@ -1311,6 +1306,8 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
           await vulnerabilityTool.authorize({ projectId, sessionId, turnId, request });
           return true;
         }
+        if (toolName === 'verity_network_shares')
+          return networkShareTool.standing({ projectId, sessionId, turnId, request });
         if (toolName === 'verity_scheduling') {
           if (!schedulingHasStandingAuthorization(request)) return false;
           // A refused read must fail as such, not turn into a card showing raw arguments.
@@ -1510,6 +1507,7 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
             'Wiki maintenance allows only Wiki operations.',
           );
         if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
+        if (input.toolName === 'verity_network_shares') return networkShareTool.invoke(input);
         if (input.toolName === 'verity_scheduling') return schedulingTool.invoke(input);
         if (input.toolName === 'verity_secret_output') {
           const session = await deps.eventStore.getSession(input.sessionId);

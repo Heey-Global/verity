@@ -1041,7 +1041,7 @@ it.each([false, true])('groups services consistently when connected=%s', async (
 
   const categories = [
     ['Code', ['GitHub']],
-    ['Files & documents', ['Google']],
+    ['Files & documents', ['Google', 'Network shares']],
     ['Communication', ['Matrix', 'Attendee']],
     ['Secrets', ['Doppler']],
     ['Advanced', ['MCP servers']],

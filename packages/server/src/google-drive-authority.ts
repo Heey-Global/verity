@@ -1,5 +1,7 @@
 import type { EventStore } from '@verity/store';
+import { googleDriveIsMutation, googleDriveRequestSchema } from './google-drive-request.js';
 import { hasGoogleDriveScopes } from './google-oauth-scopes.js';
+import { ControlPlaneSessionAuthorityError } from './session-handoff-tool.js';
 
 export async function resolveGoogleDriveAuthority(
   store: Pick<EventStore, 'googleAccounts'>,
@@ -49,4 +51,31 @@ export async function resolveGoogleDriveAuthority(
     googleDriveFolderName: link?.name ?? null,
     googleDriveAccessMode: link?.accessMode ?? ('read-only' as const),
   };
+}
+
+/**
+ * The pre-card refusal for a Google Drive tool call: the session must still
+ * belong to the project, folder operations need a valid folder link, and a
+ * read-only link refuses mutations.
+ */
+export async function authorizeGoogleDriveCall(
+  store: EventStore,
+  input: { projectId: string; sessionId: string; request: unknown },
+  initiator: () => Promise<string | undefined>,
+): Promise<void> {
+  const session = await store.getSession(input.sessionId);
+  if (session?.projectId !== input.projectId)
+    throw new ControlPlaneSessionAuthorityError('session project changed');
+  const driveRequest = googleDriveRequestSchema.parse(input.request);
+  if (driveRequest.action === 'capabilities' && !driveRequest.folderLinkId) return;
+  const authority = await resolveGoogleDriveAuthority(
+    store,
+    input.projectId,
+    driveRequest,
+    await initiator(),
+  );
+  if (googleDriveIsMutation(driveRequest) && authority.googleDriveAccessMode === 'read-only')
+    throw new ControlPlaneSessionAuthorityError(
+      'This project folder has read-only Google Drive access',
+    );
 }

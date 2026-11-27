@@ -448,3 +448,13 @@ export {
   type ServerMonitoringSettings,
 } from './server-monitoring-settings.js';
 export { ProjectChangeFeed } from './project-changes.js';
+export {
+  InvalidNetworkSharePathError,
+  NetworkShareStore,
+  networkSharePathWithin,
+  normalizeNetworkSharePath,
+  type NetworkShareAccessMode,
+  type NetworkShareConnectionRecord,
+  type NetworkShareCredentials,
+  type ProjectNetworkShareFolderRecord,
+} from './network-shares.js';

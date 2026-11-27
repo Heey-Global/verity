@@ -61,6 +61,10 @@ export async function connectorToolAvailable(
       file.kind,
     );
   }
+  if (input.toolName === 'verity_network_shares')
+    return (await store.networkShares.projectFolders(input.projectId)).some(
+      (folder) => !folder.stale,
+    );
   if (input.toolName === 'verity_matrix') {
     const config = await store.integrations.matrixConfigSummary();
     if (!config) return false;

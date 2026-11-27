@@ -47,6 +47,7 @@ export async function resolveAgentContext(
     'verity_google_slides',
     'verity_matrix',
     'verity_scheduling',
+    'verity_network_shares',
   ];
   const catalog: boolean[] = [];
   if (session.projectId)

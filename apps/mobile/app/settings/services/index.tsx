@@ -28,7 +28,8 @@ import { useLoadVeritySettings, useVeritySettings } from '../../../lib/settingsS
 type Usage = Awaited<ReturnType<VerityClient['getConnectionUsage']>>;
 
 type Connection = {
-  usageKey: Exclude<keyof Usage, 'forgejo'>;
+  /** Absent for connectors that report their own status instead of a project count. */
+  usageKey?: Exclude<keyof Usage, 'forgejo'>;
   title: string;
   group: string;
   icon: ComponentProps<typeof SettingsNavRow>['icon'];
@@ -134,6 +135,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
   const [attendeeConnected, setAttendeeConnected] = useState(false);
   const [mcpCount, setMcpCount] = useState(0);
   const [dopplerCount, setDopplerCount] = useState(0);
+  const [shareCount, setShareCount] = useState(0);
   const [forge, setForge] = useState<ForgeConnectionList | null>(null);
   const [usage, setUsage] = useState<Awaited<
     ReturnType<VerityClient['getConnectionUsage']>
@@ -154,6 +156,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
         Promise.resolve().then(() => client.listConnections()),
         Promise.resolve().then(() => client.getAttendeeSettings()),
         Promise.resolve().then(() => client.doppler.listConnections()),
+        Promise.resolve().then(() => client.networkShares.listConnections()),
       ]).then(
         ([
           integrations,
@@ -163,8 +166,10 @@ function ConnectionsView({ client }: { client: VerityClient }) {
           forgeConnections,
           attendee,
           doppler,
+          shares,
         ]) => {
           if (!active) return;
+          if (shares.status === 'fulfilled') setShareCount(shares.value.length);
           if (doppler.status === 'fulfilled') setDopplerCount(doppler.value.length);
           if (forgeConnections.status === 'fulfilled') setForge(forgeConnections.value);
           setError(
@@ -202,6 +207,15 @@ function ConnectionsView({ client }: { client: VerityClient }) {
       route: '/settings/google' as Href,
       connected: google?.connected ?? settings?.googleDriveConnected === true,
       ...(google?.accountEmail ? { status: google.accountEmail } : {}),
+    },
+    {
+      title: 'Network shares',
+      group: 'Files & documents',
+      icon: 'hard-drive',
+      subtitle: 'Folders on a NAS or file server (SMB)',
+      route: '/settings/services/network-shares' as Href,
+      connected: shareCount > 0,
+      ...(shareCount > 0 ? { status: shareCount === 1 ? '1 share' : `${shareCount} shares` } : {}),
     },
     {
       title: 'Matrix',
@@ -244,7 +258,7 @@ function ConnectionsView({ client }: { client: VerityClient }) {
           icon={item.icon}
           title={item.title}
           subtitle={
-            usage && item.connected
+            usage && item.connected && item.usageKey
               ? `${item.subtitle} · Used in ${usage[item.usageKey]} ${usage[item.usageKey] === 1 ? 'project' : 'projects'}`
               : item.subtitle
           }

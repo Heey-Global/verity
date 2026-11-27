@@ -39,6 +39,7 @@ for (const capability of AGENT_CAPABILITIES) {
     slides: 'slides',
     matrix: 'matrix',
     scheduling: 'calendar',
+    share: 'network-shares',
   };
   const connector = connectors[domain] ?? null;
   const row = {

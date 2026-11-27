@@ -635,6 +635,15 @@ export {
   type PersonalDopplerTokens,
   type ProjectDopplerBinding,
 } from './doppler-api.js';
+export {
+  networkShareConnectionSchema,
+  projectNetworkShareFolderSchema,
+  type NetworkShareAccessMode,
+  type NetworkShareConnection,
+  type NetworkShareFolderListing,
+  type NetworkShareTestResult,
+  type ProjectNetworkShareFolder,
+} from './network-shares-api.js';
 export { signingKeyGenerateSchema, type SigningKeyGenerateResult } from './api.js';
 export {
   driveFileSchema,

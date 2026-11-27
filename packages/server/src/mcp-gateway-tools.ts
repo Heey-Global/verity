@@ -223,6 +223,7 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_tasks' ||
       toolName === 'verity_app_help' ||
       toolName === 'verity_vulnerabilities' ||
+      toolName === 'verity_network_shares' ||
       toolName === 'verity_scheduling'
     ) {
       // Not served from here. Most need the conductor and the route's session projection,
