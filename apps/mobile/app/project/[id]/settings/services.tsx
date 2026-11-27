@@ -115,7 +115,12 @@ function ProjectServicesView({
       ) : null}
 
       {section === undefined || section === 'shares' ? (
-        <ProjectNetworkShares key={projectId} client={client} projectId={projectId} />
+        <ProjectNetworkShares
+          key={projectId}
+          client={client}
+          projectId={projectId}
+          onlyWhenUsed={section === undefined}
+        />
       ) : null}
 
       {section === undefined || section === 'mcp' ? (

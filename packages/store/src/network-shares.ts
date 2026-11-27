@@ -173,8 +173,11 @@ export class NetworkShareStore {
   }
 
   /**
-   * Changes a connection. A new host, port or share starts a new target
-   * revision, which ends every folder grant made for the previous target.
+   * Changes a connection. A new host, port, share or username starts a new
+   * target revision, which ends every folder grant made for the previous target:
+   * a grant was checked against what that account could reach, and another
+   * account's permissions on the NAS may differ. Names compare without case, as
+   * SMB servers treat them.
    * Returns false when the connection does not exist.
    */
   async updateConnection(
@@ -193,7 +196,7 @@ export class NetworkShareStore {
     return this.db.transaction().execute(async (tx) => {
       const current = await tx
         .selectFrom('network_share_connections')
-        .select(['host', 'port', 'share', 'target_revision'])
+        .select(['host', 'port', 'share', 'username', 'target_revision'])
         .where('id', '=', id)
         .forUpdate()
         .executeTakeFirst();
@@ -206,7 +209,9 @@ export class NetworkShareStore {
       const targetChanged =
         (patch.host !== undefined && patch.host.toLowerCase() !== current.host.toLowerCase()) ||
         (patch.port !== undefined && patch.port !== current.port) ||
-        (patch.share !== undefined && patch.share.toLowerCase() !== current.share.toLowerCase());
+        (patch.share !== undefined && patch.share.toLowerCase() !== current.share.toLowerCase()) ||
+        (patch.username !== undefined &&
+          patch.username.toLowerCase() !== current.username.toLowerCase());
       await tx
         .updateTable('network_share_connections')
         .set({

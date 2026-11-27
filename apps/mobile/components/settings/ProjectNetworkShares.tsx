@@ -75,9 +75,15 @@ function AccessChoices({
 export function ProjectNetworkShares({
   client,
   projectId,
+  onlyWhenUsed = false,
 }: {
   client: VerityClient;
   projectId: string;
+  /**
+   * Shows nothing while there is no share to pick from and no folder to show,
+   * as on the combined connectors screen, whose index hides the row likewise.
+   */
+  onlyWhenUsed?: boolean;
 }) {
   const [folders, setFolders] = useState<ProjectNetworkShareFolder[]>();
   /** Undefined while loading; null when the person may not manage folders. */
@@ -356,6 +362,9 @@ export function ProjectNetworkShares({
   }
 
   const canManage = connections !== null && connections !== undefined;
+  const unused = folders !== undefined && folders.length === 0 && !connections?.length;
+  // A load error still shows: hiding it would read as “nothing is shared”.
+  if (onlyWhenUsed && !error && (unused || folders === undefined)) return null;
   return (
     <SettingsGroup
       title="Folders for this project"

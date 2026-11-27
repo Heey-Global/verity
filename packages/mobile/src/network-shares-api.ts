@@ -76,7 +76,7 @@ export function networkSharesClient(request: Request) {
       const res = await request('/network-shares', json('POST', input));
       return networkShareConnectionSchema.parse(await res.json());
     },
-    /** Renames a share or changes its address or sign-in; a new address ends project access. */
+    /** Renames a share or changes its address or sign-in; a new address or account ends project access. */
     updateConnection: async (
       id: string,
       patch: { label?: string; address?: string; username?: string; password?: string },

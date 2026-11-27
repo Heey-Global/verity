@@ -209,6 +209,14 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
   // could trip a NAS's lockout after a password change and cut off every agent,
   // so results are reused for a while unless a test is asked for explicitly.
   const tests = new Map<string, { at: number; result: TestResult }>();
+  // Bumped after every saved change or disconnect. A test that loaded the
+  // previous details may finish later; it must not cache a result for details
+  // that no longer apply.
+  const changes = new Map<string, number>();
+  const changed = (connectionId: string) => {
+    tests.delete(connectionId);
+    changes.set(connectionId, (changes.get(connectionId) ?? 0) + 1);
+  };
 
   app.get('/network-shares', async () => ({
     connections: (await shares.listConnections()).map(connectionView),
@@ -251,17 +259,25 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
     try {
       const target =
         body.data.address === undefined ? undefined : parseNetworkShareAddress(body.data.address);
-      // The stored password is only ever sent to the server it was entered for;
-      // a new server needs it entered again.
-      const movesSavedPassword = (saved: { host: string; port: number | null; share: string }) =>
-        target !== undefined &&
+      // The stored password is only ever sent to the server and account it was
+      // entered for; a new server or account needs it entered again. Trying it
+      // with another account would also count as a failed sign-in on the NAS.
+      const movesSavedPassword = (saved: {
+        host: string;
+        port: number | null;
+        share: string;
+        username: string;
+      }) =>
         body.data.password === undefined &&
-        (target.host !== saved.host.toLowerCase() ||
-          target.port !== saved.port ||
-          target.share.toLowerCase() !== saved.share.toLowerCase());
+        ((target !== undefined &&
+          (target.host !== saved.host.toLowerCase() ||
+            target.port !== saved.port ||
+            target.share.toLowerCase() !== saved.share.toLowerCase())) ||
+          (body.data.username !== undefined &&
+            body.data.username.toLowerCase() !== saved.username.toLowerCase()));
       const passwordRequired = () =>
         reply.code(400).send({
-          error: 'Enter the password again for a new address.',
+          error: 'Enter the password again for a new address or account.',
           code: 'password_required',
         });
       if (movesSavedPassword(existing)) return passwordRequired();
@@ -299,7 +315,6 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         if (outcome === PASSWORD_REQUIRED) return passwordRequired();
         tested = outcome;
       }
-      tests.delete(connectionId);
       await shares.updateConnection(connectionId, {
         // Save only onto the target the details were tested against.
         ...(tested === undefined ? {} : { expectedTargetRevision: tested }),
@@ -308,6 +323,7 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         ...(body.data.username === undefined ? {} : { username: body.data.username }),
         ...(body.data.password === undefined ? {} : { password: body.data.password }),
       });
+      changed(connectionId);
       const updated = await shares.getConnection(connectionId);
       if (!updated) return reply.code(404).send({ error: 'network share not found' });
       return connectionView(updated);
@@ -319,9 +335,9 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
   app.delete('/network-shares/:connectionId', async (request, reply) => {
     const params = z.object({ connectionId: id }).strict().safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'invalid network share' });
-    tests.delete(params.data.connectionId);
     if (!(await shares.deleteConnection(params.data.connectionId)))
       return reply.code(404).send({ error: 'network share not found' });
+    changed(params.data.connectionId);
     return reply.code(204).send();
   });
 
@@ -337,6 +353,7 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
     const cached = tests.get(connectionId);
     if (query.data.fresh === undefined && cached && Date.now() - cached.at < TEST_REUSE_MS)
       return cached.result;
+    const before = changes.get(connectionId) ?? 0;
     let result: TestResult;
     try {
       const tested = await withNetworkShareTarget(ctx, connectionId, async (target) => {
@@ -349,7 +366,8 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
       if (!(error instanceof NetworkShareError)) throw error;
       result = { ok: false, code: error.code, error: error.message };
     }
-    tests.set(connectionId, { at: Date.now(), result });
+    if ((changes.get(connectionId) ?? 0) === before)
+      tests.set(connectionId, { at: Date.now(), result });
     return result;
   });
 

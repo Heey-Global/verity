@@ -327,6 +327,46 @@ describe('network share routes', () => {
     expect(folder?.stale).toBe(true);
   });
 
+  // The app treats letter case as no change and sends no password; the route
+  // must agree, or a typo fix is refused and the project folders are lost.
+  it('keeps grants and the saved password for a change of letter case only', async () => {
+    const { client, seen } = fakeClient();
+    const app = await server(client);
+    const { id } = (await call(app, 'admin', 'POST', '/network-shares', studio)).json<{
+      id: string;
+    }>();
+    await call(app, 'admin', 'POST', '/projects/p1/network-shares/folders', {
+      connectionId: id,
+      path: 'Projects',
+    });
+    const recased = await call(app, 'admin', 'PATCH', `/network-shares/${id}`, {
+      address: 'smb://NAS.Studio.lan/TEAM',
+      username: studio.username.toUpperCase(),
+    });
+    expect(recased.statusCode).toBe(200);
+    expect(seen.at(-1)).toMatchObject({ host: 'nas.studio.lan', share: 'TEAM' });
+    const folders = () =>
+      call(app, 'admin', 'GET', '/projects/p1/network-shares/folders').then(
+        (response) => response.json<{ folders: { stale: boolean }[] }>().folders,
+      );
+    expect((await folders())[0]?.stale).toBe(false);
+
+    // The saved password belongs to the old account; it is never tried with another.
+    const attempts = seen.length;
+    const withoutPassword = await call(app, 'admin', 'PATCH', `/network-shares/${id}`, {
+      username: 'backup',
+    });
+    expect(withoutPassword.json()).toMatchObject({ code: 'password_required' });
+    expect(seen).toHaveLength(attempts);
+    expect((await folders())[0]?.stale).toBe(false);
+    const otherAccount = await call(app, 'admin', 'PATCH', `/network-shares/${id}`, {
+      username: 'backup',
+      password: 'pw',
+    });
+    expect(otherAccount.statusCode).toBe(200);
+    expect((await folders())[0]?.stale).toBe(true);
+  });
+
   // A change that lands between the route's first look and the test must not
   // carry the saved password to the address that look still showed.
   it('checks the password rule against the target it tests, not an earlier view', async () => {
@@ -417,6 +457,32 @@ describe('network share routes', () => {
     await call(app, 'admin', 'PATCH', `/network-shares/${id}`, { password: 'pw' });
     vi.mocked(client.test).mockClear();
     await call(app, 'admin', 'POST', `/network-shares/${id}/test`);
+    expect(client.test).toHaveBeenCalledTimes(1);
+  });
+
+  // A test that loaded the old details can finish after a change was saved;
+  // caching its result would show the old outcome for the new details.
+  it('does not cache a test that ran on details changed meanwhile', async () => {
+    const { client } = fakeClient();
+    const app = await server(client);
+    const { id } = (await call(app, 'admin', 'POST', '/network-shares', studio)).json<{
+      id: string;
+    }>();
+    let finish: (() => void) | undefined;
+    vi.mocked(client.test).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+    );
+    const running = call(app, 'admin', 'POST', `/network-shares/${id}/test`);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await call(app, 'admin', 'PATCH', `/network-shares/${id}`, { label: 'Renamed' });
+    finish!();
+    expect((await running).json()).toEqual({ ok: true });
+
+    vi.mocked(client.test).mockClear();
+    vi.mocked(client.test).mockRejectedValueOnce(new NetworkShareError('sign_in_failed'));
+    expect((await call(app, 'admin', 'POST', `/network-shares/${id}/test`)).json()).toMatchObject({
+      ok: false,
+    });
     expect(client.test).toHaveBeenCalledTimes(1);
   });
 
