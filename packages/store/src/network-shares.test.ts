@@ -250,6 +250,7 @@ describe('NetworkShareStore', () => {
     const sameShare = await shares.createConnection({
       ...studio,
       host: studio.host.toUpperCase(),
+      port: 445,
       share: 'TEAM',
       username: 'backup',
     });

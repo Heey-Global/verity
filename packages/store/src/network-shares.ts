@@ -407,7 +407,8 @@ export class NetworkShareStore {
         join
           .on(sql`lower(c.host)`, '=', sql`lower(own.host)`)
           .on(sql`lower(c.share)`, '=', sql`lower(own.share)`)
-          .on(sql<boolean>`c.port is not distinct from own.port`),
+          // No port means SMB's default, 445; both name the same server.
+          .on(sql<boolean>`coalesce(c.port, 445) = coalesce(own.port, 445)`),
       )
       .innerJoin('project_network_share_folders as f', 'f.connection_id', 'c.id')
       .select('f.path')

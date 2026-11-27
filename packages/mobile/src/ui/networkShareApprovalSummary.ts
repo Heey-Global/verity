@@ -36,7 +36,9 @@ export function networkShareApprovalSummary(input: unknown): NetworkShareApprova
     (destination !== undefined && !names(destination))
   )
     return null;
-  // A rename or move without a destination would hide where the item goes.
+  // A replace without its content, or a rename or move without a destination,
+  // would hide what approving does.
+  if ((action === 'update') !== (content !== undefined)) return null;
   if ((action === 'rename' || action === 'move') !== (destination !== undefined)) return null;
   let replacement: NetworkShareApprovalSummary['content'] = null;
   if (content !== undefined) {

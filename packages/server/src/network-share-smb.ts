@@ -641,7 +641,10 @@ export function contentVersion(content: Buffer): string {
 function sibling(path: string, kind: 'tmp' | 'old'): string {
   const segments = path.split('/');
   // SMB names are limited to 255 characters; the prefix, random part and kind take 49.
-  const name = (segments.at(-1) ?? '').slice(0, 200);
+  // Cut by code point: half a surrogate pair would make the name invalid.
+  const name = Array.from(segments.at(-1) ?? '')
+    .slice(0, 200)
+    .join('');
   return [...segments.slice(0, -1), `.verity-${randomUUID()}.${name}.${kind}`].join('/');
 }
 

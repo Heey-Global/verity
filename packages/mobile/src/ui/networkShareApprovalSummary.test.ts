@@ -106,6 +106,7 @@ describe('network share approval cards', () => {
       { action: 'create', kind: 'file', share: 'S', location: ['S', 'a'] },
       { action: 'delete', kind: 'file', share: 'S', location: ['S', 'a'], destination: ['S', 'b'] },
       { action: 'update', kind: 'file', share: 'S', location: ['S', 'a'], content: { bytes: '1' } },
+      { action: 'update', kind: 'file', share: 'S', location: ['S', 'a'] },
     ])
       expect(networkShareApprovalSummary(card(networkShare))).toBeNull();
     expect(networkShareApprovalSummary({ folderId: 'f1' })).toBeNull();
