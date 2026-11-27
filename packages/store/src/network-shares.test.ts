@@ -232,6 +232,39 @@ describe('NetworkShareStore', () => {
     expect(await shares.projectFolders('p1')).toEqual([]);
   });
 
+  // Agents may rename, move or delete folders; any granted path, of any
+  // project and even one made for an earlier target, must be known so that a
+  // grant never ends up pointing at something else.
+  it('lists the granted paths of every project on a connection', async () => {
+    const shares = ctx.store.networkShares;
+    const id = await shares.createConnection(studio);
+    const other = await shares.createConnection({ ...studio, share: 'other' });
+    const grant = (projectId: string, path: string, connectionId = id) =>
+      shares.grantFolder({ projectId, connectionId, path, name: path, accessMode: 'read-only' });
+    await grant('p1', 'Projects/Briefs');
+    await grant('p2', 'Projects/Briefs');
+    await grant('p2', 'Archive');
+    await grant('p1', 'Elsewhere', other);
+    // A second connection to the same share, with another account, grants
+    // folders on the same files; they count no matter which connection asks.
+    const sameShare = await shares.createConnection({
+      ...studio,
+      host: studio.host.toUpperCase(),
+      port: 445,
+      share: 'TEAM',
+      username: 'backup',
+    });
+    await grant('p2', 'Clients/A', sameShare);
+    expect((await shares.grantedPaths(id)).sort()).toEqual([
+      'Archive',
+      'Clients/A',
+      'Projects/Briefs',
+    ]);
+    expect((await shares.grantedPaths(other)).sort()).toEqual(['Elsewhere']);
+    await shares.updateConnection(id, { share: 'moved' });
+    expect((await shares.grantedPaths(id)).sort()).toEqual(['Archive', 'Projects/Briefs']);
+  });
+
   it('refuses to save details tested on a target that changed meanwhile', async () => {
     const shares = ctx.store.networkShares;
     const id = await shares.createConnection(studio);

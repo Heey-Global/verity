@@ -74,6 +74,10 @@ function fakeClient() {
       if (expected !== 'v1') throw new NetworkShareError('conflict');
       return { kind: 'file' as const, size: content.byteLength, version: 'v2' };
     }),
+    createFolder: vi.fn(),
+    rename: vi.fn(),
+    deleteFile: vi.fn(),
+    deleteFolder: vi.fn(),
   };
   return { client, calls };
 }

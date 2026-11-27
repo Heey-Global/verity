@@ -781,6 +781,14 @@ export type { TransportLane, TransportRequestInit } from './api.js';
 export { sameSnapshotValue, reuseSnapshotRecords } from './snapshotIdentity.js';
 
 export { matrixSendSummary, type MatrixSendSummary } from './ui/matrixSendSummary.js';
+export {
+  NETWORK_SHARE_DELETE_WARNING,
+  networkShareApprovalEffect,
+  networkShareApprovalSummary,
+  networkShareItemName,
+  networkSharePlace,
+  type NetworkShareApprovalSummary,
+} from './ui/networkShareApprovalSummary.js';
 
 export type {
   GoogleAccount,

@@ -130,4 +130,52 @@ describe.skipIf(!config)('SmbClient against Samba', () => {
       'new notes.md',
     ]);
   });
+
+  // The agent's folder changes rest on these smbclient commands refusing to
+  // replace a name, refusing a non-empty folder and keeping a changed file.
+  it('creates, renames, moves and deletes without replacing anything', async () => {
+    await client.createFolder(target(), `${base}/Other/Reviews`);
+    expect(await failure(client.createFolder(target(), `${base}/Other/Reviews`))).toBe(
+      'already_exists',
+    );
+    writeFileSync(local('Other', 'Reviews', 'q1.md'), 'q1');
+    writeFileSync(local('Other', 'taken.md'), 'taken');
+    await client.rename(
+      target(),
+      'file',
+      `${base}/Other/Reviews/q1.md`,
+      `${base}/Other/Reviews/Q1 notes.md`,
+    );
+    expect(
+      await failure(
+        client.rename(
+          target(),
+          'file',
+          `${base}/Other/Reviews/Q1 notes.md`,
+          `${base}/Other/taken.md`,
+        ),
+      ),
+    ).toBe('already_exists');
+    expect(readFileSync(local('Other', 'taken.md'), 'utf8')).toBe('taken');
+    expect(
+      await failure(client.rename(target(), 'folder', `${base}/Other/taken.md`, `${base}/x.md`)),
+    ).toBe('not_a_folder');
+    await client.createFolder(target(), `${base}/Archive`);
+    await client.rename(target(), 'folder', `${base}/Other/Reviews`, `${base}/Archive/Reviews`);
+    expect(readFileSync(local('Archive', 'Reviews', 'Q1 notes.md'), 'utf8')).toBe('q1');
+
+    expect(await failure(client.deleteFolder(target(), `${base}/Archive/Reviews`))).toBe(
+      'not_empty',
+    );
+    const { version } = await client.read(target(), `${base}/Archive/Reviews/Q1 notes.md`);
+    writeFileSync(local('Archive', 'Reviews', 'Q1 notes.md'), 'Q1');
+    expect(
+      await failure(client.deleteFile(target(), `${base}/Archive/Reviews/Q1 notes.md`, version)),
+    ).toBe('conflict');
+    expect(readFileSync(local('Archive', 'Reviews', 'Q1 notes.md'), 'utf8')).toBe('Q1');
+    const current = await client.read(target(), `${base}/Archive/Reviews/Q1 notes.md`);
+    await client.deleteFile(target(), `${base}/Archive/Reviews/Q1 notes.md`, current.version);
+    await client.deleteFolder(target(), `${base}/Archive/Reviews`);
+    expect(await client.list(target(), `${base}/Archive`)).toEqual([]);
+  });
 });

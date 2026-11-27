@@ -58,5 +58,53 @@
       "name": "verity_network_shares",
       "action": "update"
     }
+  },
+  {
+    "name": "verity_share_create_folder",
+    "title": "Verity · Share · Create Folder",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "network-shares",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_network_shares",
+      "action": "create_folder"
+    }
+  },
+  {
+    "name": "verity_share_rename",
+    "title": "Verity · Share · Rename",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "network-shares",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_network_shares",
+      "action": "rename"
+    }
+  },
+  {
+    "name": "verity_share_move",
+    "title": "Verity · Share · Move",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "network-shares",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_network_shares",
+      "action": "move"
+    }
+  },
+  {
+    "name": "verity_share_delete",
+    "title": "Verity · Share · Delete",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": "network-shares",
+    "skill": null,
+    "compatibility": {
+      "name": "verity_network_shares",
+      "action": "delete"
+    }
   }
 ]

@@ -1,4 +1,4 @@
-import { PermissionRequestDetails } from '../../components/session/PermissionRequestDetails';
+import { PermissionRequestPreview } from '../../components/session/PermissionRequestPreview';
 import { GmailSendPreview } from '../../components/session/GmailSendPreview';
 import { TranscriptPositionCover } from '../../components/TranscriptPositionCover';
 import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
@@ -7163,7 +7163,7 @@ function PermissionPrompt({
             ) : null}
           </View>
         ) : (
-          <PermissionRequestDetails input={pending.input} inline />
+          <PermissionRequestPreview tool={pending.tool} input={pending.input} />
         )}
       </PinnedScroll>
       <View style={styles.permissionButtons}>

@@ -393,6 +393,31 @@ export class NetworkShareStore {
     return Number(result.numDeletedRows) > 0;
   }
 
+  /**
+   * Every folder path granted on the share a connection points to, through
+   * this or any other connection to the same server and share, for any project
+   * and including grants made for an earlier target: one granted again would
+   * point at the same path. Renaming, moving or deleting must leave these
+   * paths alone.
+   */
+  async grantedPaths(connectionId: string): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('network_share_connections as own')
+      .innerJoin('network_share_connections as c', (join) =>
+        join
+          .on(sql`lower(c.host)`, '=', sql`lower(own.host)`)
+          .on(sql`lower(c.share)`, '=', sql`lower(own.share)`)
+          // No port means SMB's default, 445; both name the same server.
+          .on(sql<boolean>`coalesce(c.port, 445) = coalesce(own.port, 445)`),
+      )
+      .innerJoin('project_network_share_folders as f', 'f.connection_id', 'c.id')
+      .select('f.path')
+      .distinct()
+      .where('own.id', '=', connectionId)
+      .execute();
+    return rows.map((row) => row.path);
+  }
+
   /** Number of projects using any network share, for the connectors overview. */
   async projectsUsingShares(): Promise<number> {
     const row = await this.db
