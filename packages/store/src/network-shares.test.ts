@@ -130,6 +130,16 @@ describe('NetworkShareStore', () => {
     expect(await shares.projectFolders('p1')).toEqual([
       expect.objectContaining({ path: 'projects', accessMode: 'read-only' }),
     ]);
+    // Adding it again without a choice must not quietly change what agents may do.
+    await shares.setFolderAccess('p1', first!, 'read-write');
+    await shares.grantFolder({ projectId: 'p1', connectionId: id, path: 'Projects', name: 'P' });
+    expect(await shares.projectFolders('p1')).toEqual([
+      expect.objectContaining({ accessMode: 'read-write' }),
+    ]);
+    await shares.grantFolder({ projectId: 'p1', connectionId: id, path: 'Other', name: 'Other' });
+    expect(await shares.projectFolders('p1')).toContainEqual(
+      expect.objectContaining({ path: 'Other', accessMode: 'read-only' }),
+    );
   });
 
   it('changes the grant revision with every access change', async () => {

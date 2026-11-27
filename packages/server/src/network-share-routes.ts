@@ -413,8 +413,9 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         connectionId: body.data.connectionId,
         path,
         name: path.split('/').at(-1) || connection.share,
-        // Read only unless the administrator chose otherwise.
-        accessMode: body.data.accessMode ?? 'read-only',
+        // Read only unless the administrator chose otherwise; granting a folder
+        // again without a choice keeps its current access.
+        accessMode: body.data.accessMode,
         // Bind the grant to the server and shared folder that were just checked.
         targetRevision: verified,
       });

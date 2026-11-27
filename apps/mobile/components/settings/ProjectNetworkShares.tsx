@@ -124,17 +124,23 @@ export function ProjectNetworkShares({
     }, [load]),
   );
 
+  /** Changes still running; closing a sheet must not let a second one start meanwhile. */
+  const changing = useRef(0);
   const perform = async (action: () => Promise<unknown>, after?: () => void) => {
+    const opened = navigation.current;
+    changing.current++;
     setBusy(true);
     setError(undefined);
     try {
       await action();
-      after?.();
+      // A sheet closed or replaced meanwhile is left as the user has it.
+      if (opened === navigation.current) after?.();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not change folder access.');
       return;
     } finally {
-      setBusy(false);
+      changing.current--;
+      setBusy(changing.current > 0);
     }
     // The change is done; a failed refresh must not read as a failed change.
     await load().catch((cause: unknown) =>
@@ -160,7 +166,7 @@ export function ProjectNetworkShares({
   };
   const closeSheet = () => {
     navigation.current++;
-    setBusy(false);
+    setBusy(changing.current > 0);
     setStep(undefined);
   };
 

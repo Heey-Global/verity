@@ -285,7 +285,8 @@ export class NetworkShareStore {
 
   /**
    * Grants a project a folder on the connection's current target. Granting the
-   * same folder again replaces its access mode. Returns undefined when the
+   * same folder again sets the given access mode, or keeps the current one when
+   * none is given (a new grant is read only then). Returns undefined when the
    * connection does not exist.
    */
   async grantFolder(input: {
@@ -293,7 +294,7 @@ export class NetworkShareStore {
     connectionId: string;
     path: string;
     name: string;
-    accessMode: NetworkShareAccessMode;
+    accessMode?: NetworkShareAccessMode | undefined;
     /** The target the folder was verified on; a different current target refuses the grant. */
     targetRevision?: string;
   }): Promise<string | undefined> {
@@ -323,7 +324,7 @@ export class NetworkShareStore {
           .set({
             path,
             name: input.name,
-            access_mode: input.accessMode,
+            ...(input.accessMode === undefined ? {} : { access_mode: input.accessMode }),
             connection_target_revision: connection.target_revision,
             revision: randomUUID(),
           })
@@ -341,7 +342,7 @@ export class NetworkShareStore {
           connection_target_revision: connection.target_revision,
           path,
           name: input.name,
-          access_mode: input.accessMode,
+          access_mode: input.accessMode ?? 'read-only',
           revision: randomUUID(),
         })
         .execute();
