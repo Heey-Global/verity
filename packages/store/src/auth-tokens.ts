@@ -18,10 +18,24 @@ export interface AuthTokenRecord {
 }
 
 export class AuthTokenStore {
-  constructor(
-    private readonly getDb: () => Kysely<Database>,
-    private readonly notifyBackupRevocations: () => Promise<void>,
-  ) {}
+  private readonly backupRevocationListeners = new Set<() => Promise<void>>();
+
+  /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
+  subscribeBackupRevocations(listener: () => Promise<void>): () => void {
+    this.backupRevocationListeners.add(listener);
+    return () => {
+      this.backupRevocationListeners.delete(listener);
+    };
+  }
+
+  private async notifyBackupRevocations(): Promise<void> {
+    // A destination outage must not undo or misreport an already committed token deletion.
+    await Promise.allSettled(
+      [...this.backupRevocationListeners].map((listener) => Promise.resolve().then(listener)),
+    );
+  }
+
+  constructor(private readonly getDb: () => Kysely<Database>) {}
 
   private get db(): Kysely<Database> {
     return this.getDb();

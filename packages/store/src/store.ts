@@ -405,28 +405,13 @@ export class EventStore implements EventSink {
   }
   /** Project writes, announced after they commit for live views (ADR 0033). */
   readonly projectChanges = new ProjectChangeFeed();
-  private readonly backupRevocationListeners = new Set<() => Promise<void>>();
-
   /** Wake destination synchronization after commit; the DB outbox remains the durable authority. */
   subscribeBackupRevocations(listener: () => Promise<void>): () => void {
-    this.backupRevocationListeners.add(listener);
-    return () => {
-      this.backupRevocationListeners.delete(listener);
-    };
-  }
-
-  private async notifyBackupRevocations(): Promise<void> {
-    // A destination outage must not undo or misreport an already committed token deletion.
-    await Promise.allSettled(
-      [...this.backupRevocationListeners].map((listener) => Promise.resolve().then(listener)),
-    );
+    return this.authTokens.subscribeBackupRevocations(listener);
   }
 
   private readonly secretKeyMetadata = new SecretKeyMetadataStore(() => this.db);
-  private readonly authTokens = new AuthTokenStore(
-    () => this.db,
-    () => this.notifyBackupRevocations(),
-  );
+  private readonly authTokens = new AuthTokenStore(() => this.db);
   private readonly claudeEgressIdentity: ClaudeEgressIdentityStore;
   private readonly httpMcpConnections = new HttpMcpConnectionStore(
     () => this.db,
