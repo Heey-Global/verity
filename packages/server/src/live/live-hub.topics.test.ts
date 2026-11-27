@@ -278,6 +278,26 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  // A project of someone else is listed for every user who cannot read it;
+  // a scope read after the event already shows that, without another read.
+  it('reads no scope again when the cached one began after the event', async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    const read = vi.spyOn(w.hub.deps.access, 'overviewScope');
+    const before = w.bus!.head;
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p2', rev: 1 });
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 2 });
+    // Subscribing reads the scope after both were published, then replays them.
+    await alice.client({
+      k: 'topics.sub',
+      topics: [{ topic: 'collection:projects', cursor: before }],
+    });
+    await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(1));
+    expect(alice.of('domain')[0]!.event).toMatchObject({ projectId: 'p1' });
+    expect(read).toHaveBeenCalledTimes(1);
+    w.hub.close();
+  });
+
   it('refuses a collection it does not know', async () => {
     const w = world();
     const alice = w.connect('alice');

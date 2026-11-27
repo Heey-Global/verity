@@ -560,7 +560,12 @@ export class LiveHub {
     { topics: Set<LiveHintTopic>; deleted: boolean }
   >();
   private hintTimer: ReturnType<typeof setTimeout> | undefined;
-  private readonly scopes = new Map<string, { scope: LiveOverviewScope; at: number }>();
+  /** `since`: the bus position when the read began; it shows every record up
+   * to there. */
+  private readonly scopes = new Map<
+    string,
+    { scope: LiveOverviewScope; at: number; since: number }
+  >();
   private readonly scopeReads = new Map<
     string,
     { since: number; promise: Promise<LiveOverviewScope> }
@@ -702,6 +707,10 @@ export class LiveHub {
     if (freshAfter === undefined && cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) {
       return cached.scope;
     }
+    // Read after the record was published: it already shows what it brought.
+    if (freshAfter !== undefined && cached !== undefined && cached.since >= freshAfter) {
+      return cached.scope;
+    }
     // One read per user at a time: an event reaches all of a user's devices
     // at once, and each would otherwise read the same scope again.
     const reading = this.scopeReads.get(key);
@@ -719,7 +728,9 @@ export class LiveHub {
         // A read that began earlier and answered later must not replace one
         // that began after it.
         const held = this.scopes.get(key);
-        if (held === undefined || held.at <= at) this.scopes.set(key, { scope, at });
+        if (held === undefined || held.at <= at) {
+          this.scopes.set(key, { scope, at, since: entry.since });
+        }
         return scope;
       })
       .finally(() => {
