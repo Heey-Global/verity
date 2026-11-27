@@ -326,13 +326,17 @@ export function useProjects(client: VerityClient) {
         setListed((current) =>
           current.some((p) => p.id === projectId) ? current : [...current, project],
         );
-      } catch {
-        // Not readable after all, or the read failed: the next list read decides.
+      } catch (error) {
+        // Not readable after all: nothing to list. A read that failed for
+        // another reason leaves the list to decide, so it reads now.
+        if (!(error instanceof VerityApiError && (error.status === 403 || error.status === 404))) {
+          readWhenShown();
+        }
       } finally {
         target.endRead(read);
       }
     },
-    [client],
+    [client, readWhenShown],
   );
   const unlistOne = useCallback((projectId: string) => {
     turn(projectId);

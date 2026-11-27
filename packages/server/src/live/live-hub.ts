@@ -212,9 +212,9 @@ class LiveConnection {
   /**
    * Whether this connection receives a record. A project topic was authorized
    * as a whole; the project collection carries every project, and each
-   * subscriber receives only those its overview would list. A project that no
-   * longer exists reaches everyone: there is nothing left to read it by, and
-   * views drop an id they do not hold.
+   * subscriber receives only those its overview would list. A project leaving
+   * the overview reaches those who held it, by the scope last read for them:
+   * its readers may already have lost the right to read it.
    */
   private mayReceive(record: {
     topic: DomainTopic;
@@ -691,8 +691,6 @@ export class LiveHub {
     }
   }
 
-  /** The projects a user's overview may list, cached briefly; `fresh` reads
-   * them anew. */
   /**
    * The projects a user's overview may list, cached briefly. `freshAfter`, a
    * bus position, asks for a read that began once the record at it was

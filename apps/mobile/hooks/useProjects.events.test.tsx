@@ -270,4 +270,22 @@ describe('useProjects project collection', () => {
     expect(result.current.projects.map((project) => project.id)).toEqual(['p1']);
     unmount();
   });
+
+  // A read that failed for a passing reason must not leave the project off
+  // the list until some unrelated read: the list is read instead.
+  it('reads the list when the listed project could not be read', async () => {
+    const active = { ...starting, state: 'active' as const };
+    const client = {
+      listProjects: jest.fn().mockResolvedValue([active]),
+      getProject: jest.fn().mockRejectedValue(new Error('network down')),
+    };
+    const { unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await waitFor(() => expect(mockSinks.has('collection:projects')).toBe(true));
+    const reads = client.listProjects.mock.calls.length;
+    await act(async () =>
+      mockSinks.get('collection:projects')!.event({ t: 'project.listed', projectId: 'p2', rev: 1 }),
+    );
+    await waitFor(() => expect(client.listProjects.mock.calls.length).toBe(reads + 1));
+    unmount();
+  });
 });
