@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.97.1](https://github.com/Heey-Global/verity/compare/mobile-v1.97.0...mobile-v1.97.1) (2026-11-27)
+
+
+### Features
+
+* **live:** announce branch changes of open sessions in their session row ([#3022](https://github.com/Heey-Global/verity/issues/3022)) ([b265c2a](https://github.com/Heey-Global/verity/commit/b265c2a8baef386a85367ffeed46445c61200e40))
+* **live:** announce changes that reach the overview only as invalidations ([#3028](https://github.com/Heey-Global/verity/issues/3028)) ([4f05bb9](https://github.com/Heey-Global/verity/commit/4f05bb97e1f19a41542b4fa34a413b421d00785f))
+* **live:** announce server attention to administrators on a server topic ([#3016](https://github.com/Heey-Global/verity/issues/3016)) ([04f6e3c](https://github.com/Heey-Global/verity/commit/04f6e3c65ee7802af54a9bb4c80e094ab6e73c3b))
+* **live:** stop watching overview routes that topics cover live ([#3031](https://github.com/Heey-Global/verity/issues/3031)) ([7118659](https://github.com/Heey-Global/verity/commit/71186595234a7a25aac43b0c45d98e3a5eb0d00f))
+* **network-shares:** give agents SMB folders granted per project ([#3015](https://github.com/Heey-Global/verity/issues/3015)) ([9e36826](https://github.com/Heey-Global/verity/commit/9e368263b01bd8b2aa829b9dee915ba7eda169c4))
+
+
+### Bug Fixes
+
+* **network-shares:** treat a new account as a new target and harden the follow-ups ([#3027](https://github.com/Heey-Global/verity/issues/3027)) ([d917906](https://github.com/Heey-Global/verity/commit/d917906a82c34bd1b069baa10c2c470b45a49cd5))
+* **release:** close undeliverable OTA release PRs and surface OTA update status ([#3025](https://github.com/Heey-Global/verity/issues/3025)) ([f336eee](https://github.com/Heey-Global/verity/commit/f336eee52b0dd90384ad20aaf74aa01d21c944d8))
+
 ## [1.96.3](https://github.com/Heey-Global/verity/compare/mobile-v1.96.2...mobile-v1.96.3) (2026-11-27)
 
 
