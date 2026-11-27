@@ -163,6 +163,20 @@ describe('network share agent tool', () => {
     expect(calls[0]).toEqual({ op: 'read', path: 'Projects/Briefs/kickoff.md', password: 'pw' });
   });
 
+  // An empty or root-only path names the granted folder itself; a file action
+  // on it would start replacing the folder.
+  it.each(['', '/', '//'])('refuses file actions on the folder itself (%j)', async (path) => {
+    const { client } = fakeClient();
+    const tool = createNetworkShareTool({ store, client });
+    const folderId = await grant('read-write');
+    await expect(
+      tool.authorize(
+        input({ action: 'update', folderId, path, content: 'x', expectedVersion: 'v1' }),
+      ),
+    ).rejects.toThrow(ControlPlaneSessionToolError);
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
   it('refuses writes to read-only folders before asking anyone', async () => {
     const { client } = fakeClient();
     const tool = createNetworkShareTool({ store, client });

@@ -379,15 +379,24 @@ export class SmbClient {
       await writeFile(local, content, { mode: 0o600 });
       const temporary = sibling(path, 'tmp');
       const previous = sibling(path, 'old');
-      /** Puts the original back and drops the upload; reports whether the original is back. */
-      const restore = async (): Promise<boolean> => {
-        const [back] = await run(target, [
+      /**
+       * Puts the original back and drops the upload. `aside` means the server
+       * confirmed the original is still under its hidden name; `unknown` means
+       * the server could not be reached to ask, so the caller's own error stands.
+       */
+      const restore = async (): Promise<'restored' | 'aside' | 'unknown'> => {
+        const results = await run(target, [
           `rename ${remote(previous)} ${remote(path)}`,
           `del ${remote(temporary)}`,
-        ]).catch(() => [undefined]);
-        const error = back === undefined ? new NetworkShareError('failed') : statusOf(back);
-        // Nothing was moved aside: the original never left its name.
-        return error === undefined || error.code === 'not_found';
+        ]).catch(() => undefined);
+        if (results === undefined) return 'unknown';
+        const error = statusOf(results[0]);
+        // Not found: nothing was moved aside, the original never left its name.
+        return error === undefined || error.code === 'not_found' ? 'restored' : 'aside';
+      };
+      const recover = async (error: unknown): Promise<never> => {
+        if ((await restore()) === 'aside') throw new NetworkShareError('restore_failed');
+        throw error;
       };
       let moved: string[];
       try {
@@ -397,8 +406,7 @@ export class SmbClient {
           `get ${remote(previous)} "${replacedCopy}"`,
         ]);
       } catch (error) {
-        if (!(await restore())) throw new NetworkShareError('restore_failed');
-        throw error;
+        return recover(error);
       }
       const [upload, moveAside, download] = moved;
       const failure = statusOf(upload) ?? statusOf(moveAside) ?? statusOf(download);
@@ -413,16 +421,13 @@ export class SmbClient {
               .catch(() => undefined)
           : undefined;
       const replaced = copy === undefined ? undefined : contentVersion(copy);
-      if (failure !== undefined || replaced !== expectedVersion) {
-        if (!(await restore())) throw new NetworkShareError('restore_failed');
-        throw failure ?? new NetworkShareError('conflict');
-      }
+      if (failure !== undefined || replaced !== expectedVersion)
+        return recover(failure ?? new NetworkShareError('conflict'));
       let published: string[];
       try {
         published = await run(target, [`rename ${remote(temporary)} ${remote(path)}`]);
       } catch (error) {
-        if (!(await restore())) throw new NetworkShareError('restore_failed');
-        throw error;
+        return recover(error);
       }
       const publishError = statusOf(published[0]);
       if (publishError?.code === 'already_exists') {
@@ -431,10 +436,7 @@ export class SmbClient {
         await run(target, [`del ${remote(temporary)}`]).catch(() => undefined);
         throw new NetworkShareError('restore_failed');
       }
-      if (publishError) {
-        if (!(await restore())) throw new NetworkShareError('restore_failed');
-        throw publishError;
-      }
+      if (publishError) return recover(publishError);
       await run(target, [`del ${remote(previous)}`]).catch(() => undefined);
       return { kind: 'file', size: content.byteLength, version: contentVersion(content) };
     });

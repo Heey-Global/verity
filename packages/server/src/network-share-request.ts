@@ -4,6 +4,8 @@ import { z } from 'zod';
 
 const folderId = z.string().min(1).max(200);
 const path = z.string().max(1024);
+/** A file inside the folder: never empty, which would name the folder itself. */
+const file = z.string().min(1).max(1024);
 const content = {
   // Agent tool requests are capped at 2 MiB, so a larger content never arrives.
   content: z.string().max(2_100_000),
@@ -13,13 +15,13 @@ const content = {
 export const networkShareRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('folders') }).strict(),
   z.object({ action: z.literal('list'), folderId, path: path.optional() }).strict(),
-  z.object({ action: z.literal('read'), folderId, path }).strict(),
-  z.object({ action: z.literal('create'), folderId, path, ...content }).strict(),
+  z.object({ action: z.literal('read'), folderId, path: file }).strict(),
+  z.object({ action: z.literal('create'), folderId, path: file, ...content }).strict(),
   z
     .object({
       action: z.literal('update'),
       folderId,
-      path,
+      path: file,
       expectedVersion: z.string().min(1).max(200),
       ...content,
     })
