@@ -101,7 +101,9 @@ export function createNetworkShareTool(deps: {
       const result = await withNetworkShareTarget(deps, folder.connectionId, async (target) => {
         // The grant was made for one server and share; never follow a changed target.
         const current = await deps.store.networkShares.projectFolder(folder.projectId, folder.id);
-        if (!current || current.stale) return undefined;
+        // The grant must still be the one this call was authorized against; a
+        // downgrade between authorization and this point must stop a write.
+        if (!current || current.stale || current.revision !== folder.revision) return undefined;
         return { value: await work(target) };
       });
       if (result === undefined)

@@ -4,6 +4,7 @@ import { createSecretCipher } from './crypto.js';
 import {
   InvalidNetworkSharePathError,
   NetworkShareStore,
+  NetworkShareTargetChangedError,
   networkSharePathWithin,
   normalizeNetworkSharePath,
 } from './network-shares.js';
@@ -141,6 +142,26 @@ describe('NetworkShareStore', () => {
     await shares.updateConnection(id, { share: 'archive' });
     expect((await shares.projectFolder('p1', folder))?.stale).toBe(true);
     expect(await shares.projectsUsingShares()).toBe(0);
+  });
+
+  // A folder is checked on one server, then granted; if the connection moved in
+  // between, the grant would bind to a target nobody checked.
+  it('refuses a grant for a target other than the one that was checked', async () => {
+    const shares = ctx.store.networkShares;
+    const id = await shares.createConnection(studio);
+    const checked = (await shares.credentials(id))!.targetRevision;
+    await shares.updateConnection(id, { host: 'other-nas.lan' });
+    await expect(
+      shares.grantFolder({
+        projectId: 'p1',
+        connectionId: id,
+        path: 'Projects',
+        name: 'Projects',
+        accessMode: 'read-only',
+        targetRevision: checked,
+      }),
+    ).rejects.toThrow(NetworkShareTargetChangedError);
+    expect(await shares.projectFolders('p1')).toEqual([]);
   });
 
   it('removes project folders with the connection', async () => {

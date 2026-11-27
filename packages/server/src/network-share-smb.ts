@@ -45,6 +45,7 @@ export type NetworkShareErrorCode =
   | 'too_large'
   | 'not_a_file'
   | 'timeout'
+  | 'restore_failed'
   | 'failed';
 
 const MESSAGES: Record<NetworkShareErrorCode, string> = {
@@ -61,6 +62,8 @@ const MESSAGES: Record<NetworkShareErrorCode, string> = {
   too_large: `Files on network shares are limited to ${NETWORK_SHARE_MAX_FILE_BYTES / 1_000_000} MB.`,
   not_a_file: 'This is a folder, not a file.',
   timeout: 'The NAS did not answer in time.',
+  restore_failed:
+    'The file changed during the write and could not be put back automatically. The previous version is kept next to it under a hidden .verity-….old name.',
   failed: 'The network share operation failed.',
 };
 
@@ -305,7 +308,7 @@ export class SmbClient {
   /**
    * Creates a file that must not exist yet. The content lands under a temporary
    * name first; the rename that publishes it fails if the name is taken, so an
-   * existing file is never replaced.
+   * existing file is never replaced. A failed run removes the temporary file.
    */
   async create(target: SmbTarget, path: string, content: Buffer): Promise<NetworkShareFileInfo> {
     if (content.byteLength > NETWORK_SHARE_MAX_FILE_BYTES) throw new NetworkShareError('too_large');
@@ -313,25 +316,37 @@ export class SmbClient {
       const local = join(dir, 'upload');
       await writeFile(local, content, { mode: 0o600 });
       const temporary = sibling(path, 'tmp');
-      const [upload, publish] = await run(target, [
-        `put "${local}" ${remote(temporary)}`,
-        `rename ${remote(temporary)} ${remote(path)}`,
-        `del ${remote(temporary)}`,
-      ]);
-      succeeded(upload);
-      succeeded(publish);
+      let results: string[];
+      try {
+        results = await run(target, [
+          `put "${local}" ${remote(temporary)}`,
+          `rename ${remote(temporary)} ${remote(path)}`,
+          `del ${remote(temporary)}`,
+        ]);
+      } catch (error) {
+        await run(target, [`del ${remote(temporary)}`]).catch(() => undefined);
+        throw error;
+      }
+      succeeded(results[0]);
+      succeeded(results[1]);
       return { kind: 'file', size: content.byteLength, version: contentVersion(content) };
     });
   }
 
   /**
-   * Replaces a file whose content is still the one with `expectedVersion`. In
-   * one session the new content is uploaded under a temporary name, the current
-   * file is moved aside, the moved file is downloaded and the new content put
-   * in its place. Only if the moved file's content matches the expected version
-   * is it deleted; otherwise it is put back and the write reports a conflict.
-   * The file a write replaces is therefore always byte for byte the one the
-   * agent read.
+   * Replaces a file whose content is still the one with `expectedVersion`.
+   *
+   * 1. Upload the new content under a temporary name and move the current file
+   *    aside under a second hidden name. Moving is atomic, so whatever another
+   *    writer saved before that moment is what was moved.
+   * 2. Download the moved file and compare its bytes with the expected version.
+   * 3. Only on a match publish the new content; the rename fails rather than
+   *    replace a file someone created in the meantime. Otherwise put the moved
+   *    file back.
+   *
+   * Every failure, including a dropped connection, tries to put the original
+   * back. If that is impossible because a new file now holds the name, the
+   * original stays under its hidden `.old` name and the error says so.
    */
   async update(
     target: SmbTarget,
@@ -343,42 +358,63 @@ export class SmbClient {
     return this.batches(async (run, dir) => {
       const current = parseInfo(succeeded((await run(target, [`allinfo ${remote(path)}`]))[0]));
       if (current.kind !== 'file') throw new NetworkShareError('not_a_file');
+      // The original is downloaded for the comparison; keep that bounded too.
+      if (current.size > NETWORK_SHARE_MAX_FILE_BYTES) throw new NetworkShareError('too_large');
       const local = join(dir, 'upload');
       const replacedCopy = join(dir, 'replaced');
       await writeFile(local, content, { mode: 0o600 });
       const temporary = sibling(path, 'tmp');
       const previous = sibling(path, 'old');
-      const [upload, moveAside, download, publish] = await run(target, [
-        `put "${local}" ${remote(temporary)}`,
-        `rename ${remote(path)} ${remote(previous)}`,
-        `get ${remote(previous)} "${replacedCopy}"`,
-        `rename ${remote(temporary)} ${remote(path)}`,
-      ]);
-      const uploadError = statusOf(upload);
-      const moveError = statusOf(moveAside);
-      if (uploadError || moveError) {
-        // Nothing was replaced; restore what was moved and drop the upload.
-        await run(target, [
-          ...(moveError ? [] : [`rename ${remote(previous)} ${remote(path)}`]),
-          `del ${remote(temporary)}`,
-        ]);
-        throw uploadError ?? moveError!;
-      }
-      const publishError = statusOf(publish);
-      const replaced = statusOf(download)
-        ? undefined
-        : contentVersion(await readFile(replacedCopy).catch(() => Buffer.alloc(0)));
-      if (publishError || replaced !== expectedVersion) {
-        // Put the other writer's file back; keep ours out of the way.
-        const restore = await run(target, [
-          ...(publishError ? [] : [`rename ${remote(path)} ${remote(temporary)}`]),
+      /** Puts the original back and drops the upload; reports whether the original is back. */
+      const restore = async (): Promise<boolean> => {
+        const [back] = await run(target, [
           `rename ${remote(previous)} ${remote(path)}`,
           `del ${remote(temporary)}`,
+        ]).catch(() => [undefined]);
+        const error = back === undefined ? new NetworkShareError('failed') : statusOf(back);
+        // Nothing was moved aside: the original never left its name.
+        return error === undefined || error.code === 'not_found';
+      };
+      let moved: string[];
+      try {
+        moved = await run(target, [
+          `put "${local}" ${remote(temporary)}`,
+          `rename ${remote(path)} ${remote(previous)}`,
+          `get ${remote(previous)} "${replacedCopy}"`,
         ]);
-        const restoreError = statusOf(restore[publishError ? 0 : 1]);
-        throw new NetworkShareError('conflict', restoreError?.status);
+      } catch (error) {
+        if (!(await restore())) throw new NetworkShareError('restore_failed');
+        throw error;
       }
-      await run(target, [`del ${remote(previous)}`]);
+      const [upload, moveAside, download] = moved;
+      const failure = statusOf(upload) ?? statusOf(moveAside) ?? statusOf(download);
+      const replaced =
+        failure === undefined
+          ? contentVersion(await readFile(replacedCopy).catch(() => Buffer.alloc(0)))
+          : undefined;
+      if (failure !== undefined || replaced !== expectedVersion) {
+        if (!(await restore())) throw new NetworkShareError('restore_failed');
+        throw failure ?? new NetworkShareError('conflict');
+      }
+      let published: string[];
+      try {
+        published = await run(target, [`rename ${remote(temporary)} ${remote(path)}`]);
+      } catch (error) {
+        if (!(await restore())) throw new NetworkShareError('restore_failed');
+        throw error;
+      }
+      const publishError = statusOf(published[0]);
+      if (publishError?.code === 'already_exists') {
+        // Someone created the file while it was moved aside: theirs stays, and
+        // the original stays hidden next to it rather than being lost.
+        await run(target, [`del ${remote(temporary)}`]).catch(() => undefined);
+        throw new NetworkShareError('restore_failed');
+      }
+      if (publishError) {
+        if (!(await restore())) throw new NetworkShareError('restore_failed');
+        throw publishError;
+      }
+      await run(target, [`del ${remote(previous)}`]).catch(() => undefined);
       return { kind: 'file', size: content.byteLength, version: contentVersion(content) };
     });
   }

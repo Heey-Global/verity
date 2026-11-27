@@ -10,7 +10,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -95,6 +95,7 @@ export function ProjectNetworkShares({
       }),
     ]);
     setFolders(list);
+    setError(undefined);
     setConnections(shares);
   }, [client, projectId]);
   useFocusEffect(
@@ -119,17 +120,26 @@ export function ProjectNetworkShares({
     }
   };
 
+  /** Bumped on every navigation and on close, so a late listing cannot take over the sheet. */
+  const navigation = useRef(0);
   const browse = async (connection: NetworkShareConnection, path: string) => {
+    const current = ++navigation.current;
     setBusy(true);
     setError(undefined);
     try {
       const listing = await client.networkShares.browseFolders(connection.id, path);
-      setStep({ kind: 'folder', connection, listing });
+      if (current === navigation.current) setStep({ kind: 'folder', connection, listing });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not open the folder.');
+      if (current === navigation.current)
+        setError(cause instanceof Error ? cause.message : 'Could not open the folder.');
     } finally {
-      setBusy(false);
+      if (current === navigation.current) setBusy(false);
     }
+  };
+  const closeSheet = () => {
+    navigation.current++;
+    setBusy(false);
+    setStep(undefined);
   };
 
   const startAdding = () => {
@@ -147,6 +157,7 @@ export function ProjectNetworkShares({
   };
 
   const back = (): void => {
+    if (busy) return;
     setError(undefined);
     if (step?.kind === 'access') {
       void browse(step.connection, step.path);
@@ -155,7 +166,8 @@ export function ProjectNetworkShares({
     if (step?.kind === 'folder') {
       const path = step.listing?.path ?? '';
       if (path) void browse(step.connection, path.split('/').slice(0, -1).join('/'));
-      else setStep(connections && connections.length > 1 ? { kind: 'share' } : undefined);
+      else if (connections && connections.length > 1) setStep({ kind: 'share' });
+      else closeSheet();
     }
   };
   const backButton = (
@@ -348,7 +360,7 @@ export function ProjectNetworkShares({
         visible={step !== undefined}
         title={title}
         headerAction={headerAction}
-        onClose={() => setStep(undefined)}
+        onClose={closeSheet}
         footer={
           footer || error ? (
             <View style={styles.stack}>

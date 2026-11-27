@@ -47,8 +47,11 @@ reachable.
 
 Changing a share's address ends every project's access to it: folders granted
 for one server or shared folder never silently follow it to another. Add the
-folders to the projects again afterwards. **Disconnect share** removes the share
-and every project's folders on it; the files stay on the NAS.
+folders to the projects again afterwards. Changing only the username or
+password keeps the folders, but agents then act as the new NAS account: what
+that account may read or change inside the granted folders is what agents can.
+**Disconnect share** removes the share and every project's folders on it; the
+files stay on the NAS.
 
 ## Give a project folders
 
@@ -59,8 +62,10 @@ pick the share, open the folder and choose **Use this folder**. Then choose:
 - **Read and write**: agents can also create files and update existing ones.
 
 The folder includes its subfolders. Tap a folder in the list to change its
-access or remove it from the project. Changes apply to the next agent action,
-also in sessions that are already running. Project members can see which
+access or remove it from the project. Removing a folder or lowering its access
+applies to the next agent action, also in sessions that are already running.
+When a project gets its first folder, sessions that are already running may only
+see the network share tools after they are restarted. Project members can see which
 folders their project uses; adding, changing and removing them is for
 administrators.
 
@@ -78,8 +83,10 @@ Agents in Claude and Codex sessions use these tools:
   latest read and an approval card for every update.
 
 Deleting, renaming and moving files and creating folders are not available.
-Files are limited to 10 MB per read or write, and each step of an operation
-times out after 30 seconds.
+Reads are limited to files of 10 MB. A write is limited by the 2 MiB size of
+an agent tool request, so about 2 MB of text or 1.5 MB of base64-encoded
+content per create or update. Each step of an operation times out after 30
+seconds.
 
 ## Folder boundaries and conflicts
 
@@ -97,7 +104,10 @@ An update only replaces the exact file the agent read. Verity uploads the new
 content under a temporary name, moves the current file aside, compares it byte
 for byte with the version the agent read and only then puts the new file in
 place. If someone changed the file in the meantime, the original is put back and
-the agent gets a conflict instead of overwriting the change. Creating a file
+the agent gets a conflict instead of overwriting the change. If the original
+cannot be put back because a new file took its name in the meantime, both are
+kept: the new file under the name, the original under a hidden
+`.verity-….old` name next to it, and the agent is told so. Creating a file
 fails instead of replacing one that appeared in the meantime. A program that
 keeps the file open and writes to it during those few moments is not detected.
 

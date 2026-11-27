@@ -47,6 +47,15 @@ export class InvalidNetworkSharePathError extends Error {
   }
 }
 
+export class NetworkShareTargetChangedError extends Error {
+  constructor() {
+    super(
+      'The network share now points to another server or shared folder. Choose the folder again.',
+    );
+    this.name = 'NetworkShareTargetChangedError';
+  }
+}
+
 const MAX_PATH_LENGTH = 1024;
 // `:` would address an alternate data stream; the others are invalid in SMB names.
 const FORBIDDEN_CHARACTERS = /[:*?"<>|]/;
@@ -278,6 +287,8 @@ export class NetworkShareStore {
     path: string;
     name: string;
     accessMode: NetworkShareAccessMode;
+    /** The target the folder was verified on; a different current target refuses the grant. */
+    targetRevision?: string;
   }): Promise<string | undefined> {
     const path = normalizeNetworkSharePath(input.path);
     return this.db.transaction().execute(async (tx) => {
@@ -285,8 +296,11 @@ export class NetworkShareStore {
         .selectFrom('network_share_connections')
         .select('target_revision')
         .where('id', '=', input.connectionId)
+        .forShare()
         .executeTakeFirst();
       if (!connection) return undefined;
+      if (input.targetRevision !== undefined && input.targetRevision !== connection.target_revision)
+        throw new NetworkShareTargetChangedError();
       const row = await tx
         .insertInto('project_network_share_folders')
         .values({

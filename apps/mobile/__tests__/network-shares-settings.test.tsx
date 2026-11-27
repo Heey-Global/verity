@@ -1,5 +1,5 @@
 import { VerityApiError, type VerityClient } from '@verity/mobile';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 import { NetworkShareConnections } from '../components/settings/NetworkShareConnections';
 import { ProjectNetworkShares } from '../components/settings/ProjectNetworkShares';
@@ -135,5 +135,24 @@ describe('project network share folders', () => {
     expect(screen.queryByText('Add folder')).toBeNull();
     fireEvent.press(screen.getByText('Briefs'));
     expect(screen.queryByText('Remove from project')).toBeNull();
+  });
+
+  it('does not reopen the sheet when a folder loads after it was closed', async () => {
+    let finish: (listing: { path: string; folders: never[] }) => void = () => undefined;
+    const client = shareClient({
+      listProjectFolders: jest.fn().mockResolvedValue([]),
+      browseFolders: jest.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    });
+    render(<ProjectNetworkShares client={client} projectId="p" />);
+    fireEvent.press(await screen.findByText('Add folder'));
+    expect(await screen.findByText('Use this folder')).toBeTruthy();
+    fireEvent.press(screen.getAllByLabelText('Close').at(-1)!);
+    await act(async () => finish({ path: '', folders: [] }));
+    expect(screen.queryByText('Use this folder')).toBeNull();
   });
 });

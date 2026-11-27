@@ -451,6 +451,7 @@ export { ProjectChangeFeed } from './project-changes.js';
 export {
   InvalidNetworkSharePathError,
   NetworkShareStore,
+  NetworkShareTargetChangedError,
   networkSharePathWithin,
   normalizeNetworkSharePath,
   type NetworkShareAccessMode,

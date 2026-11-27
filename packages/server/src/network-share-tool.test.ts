@@ -251,6 +251,35 @@ describe('network share agent tool', () => {
     ).rejects.toThrow('not shared with the project');
   });
 
+  // Creating needs no card, so the grant read at authorization is the only
+  // gate; a downgrade landing before the SMB call must still stop the write.
+  it('stops a write when the folder is downgraded during the call', async () => {
+    const { client } = fakeClient();
+    const folderId = await grant('read-write');
+    let reads = 0;
+    const shares = store.networkShares;
+    // Everything else reads through to the real store.
+    const racing = Object.assign(Object.create(shares) as typeof shares, {
+      projectFolder: async (projectId: string, id: string) => {
+        // The second read is the recheck right before the SMB call.
+        if (++reads === 2) await shares.setFolderAccess(projectId, id, 'read-only');
+        return shares.projectFolder(projectId, id);
+      },
+    });
+    const tool = createNetworkShareTool({
+      store: {
+        getSession: (id) => store.getSession(id),
+        getProject: (id) => store.getProject(id),
+        networkShares: racing,
+      },
+      client,
+    });
+    await expect(
+      tool.invoke(input({ action: 'create', folderId, path: 'new.md', content: 'x' })),
+    ).rejects.toThrow('no longer shared');
+    expect(client.create).not.toHaveBeenCalled();
+  });
+
   it('is offered only to projects with a current folder', async () => {
     const available = (projectId: string) =>
       connectorToolAvailable(store, {

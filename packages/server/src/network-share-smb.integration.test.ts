@@ -28,7 +28,8 @@ const config = process.env.VERITY_SMB_TEST
   : undefined;
 
 describe.skipIf(!config)('SmbClient against Samba', () => {
-  const server = config!;
+  // The body is still evaluated when skipped; keep it safe without a server.
+  const server = config ?? ({} as SmbTestServer);
   const client = new SmbClient({
     binary: server.binary,
     env: server.ldLibraryPath ? { LD_LIBRARY_PATH: server.ldLibraryPath } : {},

@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import {
   InvalidNetworkSharePathError,
+  NetworkShareTargetChangedError,
   SealedError,
   normalizeNetworkSharePath,
   type EventStore,
@@ -13,7 +14,13 @@ import { NetworkShareError, type NetworkShareClient, type SmbTarget } from './ne
 
 const id = z.string().min(1).max(200);
 const label = z.string().trim().min(1).max(100);
-const username = z.string().trim().min(1).max(256);
+// smbclient reads USER as `user%password`; a `%` would split the name.
+const username = z
+  .string()
+  .trim()
+  .min(1)
+  .max(256)
+  .refine((value) => !value.includes('%'), 'Usernames cannot contain %.');
 const password = z.string().min(1).max(1024);
 const accessMode = z.enum(['read-only', 'read-write']);
 const address = z.string().trim().min(3).max(600);
@@ -121,7 +128,9 @@ export function sendNetworkShareError(reply: FastifyReply, error: unknown) {
     const status =
       error.code === 'not_found' || error.code === 'share_not_found'
         ? 404
-        : error.code === 'conflict' || error.code === 'already_exists'
+        : error.code === 'conflict' ||
+            error.code === 'already_exists' ||
+            error.code === 'restore_failed'
           ? 409
           : error.code === 'access_denied'
             ? 403
@@ -132,6 +141,8 @@ export function sendNetworkShareError(reply: FastifyReply, error: unknown) {
                 : 502;
     return reply.code(status).send({ error: error.message, code: error.code });
   }
+  if (error instanceof NetworkShareTargetChangedError)
+    return reply.code(409).send({ error: error.message, code: 'target_changed' });
   if (
     error instanceof InvalidNetworkSharePathError ||
     error instanceof InvalidNetworkShareAddressError
@@ -193,7 +204,9 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         password: body.data.password,
       });
       reply.code(201);
-      return connectionView((await shares.getConnection(created))!);
+      const saved = await shares.getConnection(created);
+      if (!saved) return reply.code(404).send({ error: 'network share not found' });
+      return connectionView(saved);
     } catch (error) {
       return sendNetworkShareError(reply, error);
     }
@@ -237,7 +250,9 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         ...(body.data.username === undefined ? {} : { username: body.data.username }),
         ...(body.data.password === undefined ? {} : { password: body.data.password }),
       });
-      return connectionView((await shares.getConnection(connectionId))!);
+      const updated = await shares.getConnection(connectionId);
+      if (!updated) return reply.code(404).send({ error: 'network share not found' });
+      return connectionView(updated);
     } catch (error) {
       return sendNetworkShareError(reply, error);
     }
@@ -317,12 +332,17 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
     try {
       const path = normalizeNetworkSharePath(body.data.path);
       // Granting proves the folder exists on the share's current target.
-      const listed = await withNetworkShareTarget(ctx, body.data.connectionId, async (target) => {
-        await ctx.client.list(target, path);
-        return true;
-      });
-      if (!listed) return reply.code(404).send({ error: 'network share not found' });
-      const connection = (await shares.getConnection(body.data.connectionId))!;
+      const verified = await withNetworkShareTarget(
+        ctx,
+        body.data.connectionId,
+        async (target, targetRevision) => {
+          await ctx.client.list(target, path);
+          return targetRevision;
+        },
+      );
+      const connection = await shares.getConnection(body.data.connectionId);
+      if (verified === undefined || !connection)
+        return reply.code(404).send({ error: 'network share not found' });
       const folderId = await shares.grantFolder({
         projectId: params.data.id,
         connectionId: body.data.connectionId,
@@ -330,6 +350,8 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         name: path.split('/').at(-1) || connection.share,
         // Read only unless the administrator chose otherwise.
         accessMode: body.data.accessMode ?? 'read-only',
+        // Bind the grant to the server and shared folder that were just checked.
+        targetRevision: verified,
       });
       if (!folderId) return reply.code(404).send({ error: 'network share not found' });
       reply.code(201);

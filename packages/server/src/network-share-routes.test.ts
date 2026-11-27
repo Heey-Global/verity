@@ -289,6 +289,27 @@ describe('network share routes', () => {
     expect(tested.json()).toMatchObject({ ok: false, code: 'sign_in_failed' });
   });
 
+  it('does not grant a folder checked on a target that changed meanwhile', async () => {
+    const { client } = fakeClient();
+    const app = await server(client);
+    const { id } = (await call(app, 'admin', 'POST', '/network-shares', studio)).json<{
+      id: string;
+    }>();
+    const list = client.list;
+    client.list = vi.fn(async (target: SmbTarget, path: string) => {
+      const entries = await list(target, path);
+      // Another administrator points the connection elsewhere during the check.
+      await store.networkShares.updateConnection(id, { share: 'archive' });
+      return entries;
+    });
+    const granted = await call(app, 'admin', 'POST', '/projects/p1/network-shares/folders', {
+      connectionId: id,
+      path: 'Projects',
+    });
+    expect(granted.statusCode).toBe(409);
+    expect(await store.networkShares.projectFolders('p1')).toEqual([]);
+  });
+
   it('removes project access when the share is disconnected', async () => {
     const { client } = fakeClient();
     const app = await server(client);
