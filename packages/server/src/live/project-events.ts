@@ -1,7 +1,8 @@
 import { domainTopic, type DomainEvent } from '@verity/events';
 import type { ProjectChangeFeed, ProjectRecord } from '@verity/store';
 import { cachedTrustedToolkitIdentity } from '../runner-boundary-attestation.js';
-import type { SandboxUpdateChecker } from '../sandbox-updates.js';
+import { createSandboxUpdateView } from '../sandbox-update-view.js';
+import type { SandboxUpdateChecker, SandboxUpdateStatus } from '../sandbox-updates.js';
 import type { ServerContext } from '../server-context.js';
 import { reportedToolkitDrift } from '../toolkit-drift.js';
 import { installReleaseChecker } from './release-checker.js';
@@ -11,6 +12,12 @@ import { createRevisions } from './revisions.js';
  * publishes its next change as if seen for the first time, which views apply
  * like any other. */
 const MAX_REMEMBERED_PROJECTS = 4_096;
+
+/** How often the update state of watched projects is computed again from
+ * what the server already holds. The provisioner's repairs and deferrals
+ * change without a store write, and `turnBlocked` and `overdue` turn true by
+ * time alone; recomputing costs no Docker, registry or forge call. */
+const UPDATE_RECHECK_INTERVAL_MS = 10_000;
 
 /** The server's own toolkit identity could not be read. */
 const UNREADABLE = Symbol('unreadable');
@@ -51,7 +58,9 @@ const RELEASE_FIELDS = [
  * drift. The release changes when a read or the release checker stores a new
  * one; the drift when the image or the lifecycle does. The fields the routes
  * derive from the provisioner at read time (update detail, repair verdicts)
- * stay behind the read, which views repeat when an event arrives.
+ * travel as `sandbox.update`: the whole `sandboxUpdate` the routes would show,
+ * computed by the same view from the checker's last status, whenever it
+ * differs from the one last published.
  */
 export function installProjectEvents(
   app: { log: { warn(obj: object, msg: string): void } },
@@ -62,7 +71,11 @@ export function installProjectEvents(
   const updates: SandboxUpdateChecker | undefined = deps.sandboxUpdates;
   const revisions = createRevisions();
   const remembered = new Map<string, Remembered>();
-  const updateAvailable = new Map<string, boolean>();
+  const updateView = createSandboxUpdateView(deps);
+  /** The checker's last status and the project it was last seen with. */
+  const lastStatus = new Map<string, SandboxUpdateStatus>();
+  const lastProject = new Map<string, ProjectRecord>();
+  const publishedUpdate = new Map<string, string>();
   // Cached process-wide on success. A failed lookup is a fault of this server,
   // not news about the project: the verdict last published stands, rather than
   // a banner that disappears and returns with every hiccup.
@@ -73,13 +86,34 @@ export function installProjectEvents(
     domainEvents.publish(domainTopic('project', projectId), event);
   };
 
+  /** Publish the project's update state if it differs from the last one. */
+  const publishUpdate = (projectId: string): void => {
+    const status = lastStatus.get(projectId);
+    const project = lastProject.get(projectId);
+    if (status === undefined || project === undefined) return;
+    const update = updateView.withSelfRepair(project, status, updateView.sandboxRepairVerdicts());
+    const fingerprint = JSON.stringify(update);
+    if (publishedUpdate.get(projectId) === fingerprint) return;
+    bounded(publishedUpdate, projectId, fingerprint);
+    publish(projectId, {
+      t: 'sandbox.update',
+      projectId,
+      rev: revisions.next(),
+      available: update.state === 'available',
+      update: { ...update },
+    });
+  };
+
   const check = async (projectId: string): Promise<void> => {
     const project = await deps.eventStore.getProject(projectId);
     if (project === undefined) {
       remembered.delete(projectId);
-      updateAvailable.delete(projectId);
+      lastStatus.delete(projectId);
+      lastProject.delete(projectId);
+      publishedUpdate.delete(projectId);
       return;
     }
+    bounded(lastProject, projectId, project);
     const identity = await serverToolkitIdentity();
     const drift = identity === UNREADABLE ? undefined : reportedToolkitDrift(project, identity);
     const previous = remembered.get(projectId);
@@ -119,6 +153,7 @@ export function installProjectEvents(
         patch,
       });
     }
+    publishUpdate(projectId);
     // A sandbox that came up or was rebuilt may have changed its update
     // status; checking it here reports through the checker's observer.
     if (
@@ -171,24 +206,21 @@ export function installProjectEvents(
     // nothing about the update; publishing it would make every viewer read
     // again whenever the registry stumbles.
     if (status.state === 'unknown') return;
-    const available = status.state === 'available';
-    const previous = updateAvailable.get(projectId);
-    updateAvailable.delete(projectId);
-    updateAvailable.set(projectId, available);
-    if (updateAvailable.size > MAX_REMEMBERED_PROJECTS) {
-      updateAvailable.delete(updateAvailable.keys().next().value!);
-    }
-    // The first status seen after a start is already in every snapshot a view
-    // reads when it subscribes.
-    if (previous === undefined || previous === available) return;
-    publish(projectId, {
-      t: 'sandbox.update',
-      projectId,
-      rev: revisions.next(),
-      available,
-    });
+    bounded(lastStatus, projectId, status);
+    // Through the project's check, so that it is seen with its current record
+    // and in order with its other events.
+    announce(projectId);
   });
   if (stopObserving !== undefined) lifecycle.onClose(stopObserving);
+  if (updates !== undefined) {
+    lifecycle.every(
+      UPDATE_RECHECK_INTERVAL_MS,
+      () => {
+        for (const projectId of domainEvents.watched('project')) publishUpdate(projectId);
+      },
+      { startWhenReady: true },
+    );
+  }
 }
 
 /** The store's change feed, absent from compositions whose store is a test
@@ -220,6 +252,11 @@ function rememberedOf(project: ProjectRecord, drift: string): Remembered {
 }
 
 function remember(map: Map<string, Remembered>, projectId: string, value: Remembered): void {
+  bounded(map, projectId, value);
+}
+
+/** Set as the most recent entry, forgetting the oldest beyond the bound. */
+function bounded<T>(map: Map<string, T>, projectId: string, value: T): void {
   map.delete(projectId);
   map.set(projectId, value);
   if (map.size > MAX_REMEMBERED_PROJECTS) map.delete(map.keys().next().value!);

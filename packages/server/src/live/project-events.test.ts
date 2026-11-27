@@ -59,17 +59,27 @@ function setup() {
   let identity: string | Error | undefined = 'toolkit-a';
   const domainEvents = new DomainEventBus();
   const closers: (() => unknown)[] = [];
+  const ticks: (() => void)[] = [];
+  const failures = new Map<string, { at: number; message: string }>();
+  const turnBlocked = new Set<string>();
   const ctx = {
     deps: {
       eventStore: { projectChanges, getProject: async (id: string) => rows.get(id) },
       sandboxUpdates,
+      provisioner: {
+        sandboxRepairLastFailures: () => failures,
+        turnBlockedSandboxes: () => turnBlocked,
+      },
       toolkitIdentity: async () => {
         if (identity instanceof Error) throw identity;
         return identity;
       },
     },
     domainEvents,
-    lifecycle: { onClose: (stop: () => unknown) => closers.push(stop) },
+    lifecycle: {
+      onClose: (stop: () => unknown) => closers.push(stop),
+      every: (_ms: number, tick: () => void) => ticks.push(tick),
+    },
   } as unknown as ServerContext;
   installProjectEvents({ log: { warn: () => undefined } }, ctx);
   const published: DomainRecord[] = [];
@@ -87,6 +97,12 @@ function setup() {
     closers,
     setStatus: (next: SandboxUpdateStatus) => (nextStatus = next),
     setIdentity: (next: string | Error | undefined) => (identity = next),
+    failures,
+    turnBlocked,
+    tick: () => ticks.forEach((tick) => tick()),
+    /** Everything but the update state, which these tests do not look at. */
+    others: () => published.map((record) => record.event).filter((e) => e.t !== 'sandbox.update'),
+    updates: () => published.map((record) => record.event).filter((e) => e.t === 'sandbox.update'),
   };
 }
 
@@ -159,8 +175,8 @@ describe('installProjectEvents', () => {
   it('publishes toolkit drift when a new image changes the verdict', async () => {
     const w = setup();
     w.write({ state: 'active', imageRef: 'img:1', toolkitIdentity: 'toolkit-a' });
-    await vi.waitFor(() => expect(w.events()).toHaveLength(2));
-    expect(w.events()[1]).toEqual(
+    await vi.waitFor(() => expect(w.others()).toHaveLength(2));
+    expect(w.others()[1]).toEqual(
       expect.objectContaining({
         patch: expect.objectContaining({
           toolkitDrift: expect.objectContaining({ verdict: 'matches' }),
@@ -169,18 +185,18 @@ describe('installProjectEvents', () => {
     );
     w.write({ imageRef: 'img:2', toolkitIdentity: 'toolkit-old' });
     await vi.waitFor(() =>
-      expect(w.events().at(-1)).toEqual(
+      expect(w.others().at(-1)).toEqual(
         expect.objectContaining({
           t: 'project.changed',
           patch: { toolkitDrift: expect.objectContaining({ verdict: 'drifted' }) },
         }),
       ),
     );
-    const count = w.events().length;
+    const count = w.others().length;
     // A sleeping sandbox is not judged; the verdict disappears with it.
     w.write({ state: 'sleeping' });
     await vi.waitFor(() =>
-      expect(w.events().slice(count)).toContainEqual(
+      expect(w.others().slice(count)).toContainEqual(
         expect.objectContaining({ t: 'project.changed', patch: { toolkitDrift: null } }),
       ),
     );
@@ -189,15 +205,15 @@ describe('installProjectEvents', () => {
   it('keeps the published drift while the server cannot read its own toolkit', async () => {
     const w = setup();
     w.write({ state: 'active', imageRef: 'img:1', toolkitIdentity: 'toolkit-old' });
-    await vi.waitFor(() => expect(w.events()).toHaveLength(2));
+    await vi.waitFor(() => expect(w.others()).toHaveLength(2));
     w.setIdentity(new Error('bundle unreadable'));
     w.write({ name: 'Renamed' });
-    await vi.waitFor(() => expect(w.events()).toHaveLength(3));
+    await vi.waitFor(() => expect(w.others()).toHaveLength(3));
     w.setIdentity('toolkit-a');
     w.write({ name: 'Renamed again' });
-    await vi.waitFor(() => expect(w.events()).toHaveLength(4));
+    await vi.waitFor(() => expect(w.others()).toHaveLength(4));
     // Neither the failure nor the recovery changed the verdict views hold.
-    expect(w.events().filter((event) => 'patch' in event && 'toolkitDrift' in event.patch)).toEqual(
+    expect(w.others().filter((event) => 'patch' in event && 'toolkitDrift' in event.patch)).toEqual(
       [
         expect.objectContaining({
           patch: expect.objectContaining({
@@ -235,28 +251,62 @@ describe('installProjectEvents', () => {
     );
   });
 
-  it('publishes update availability when it flips, from any read of the checker', async () => {
+  it('publishes the update state whenever it changes, from any read of the checker', async () => {
     const w = setup();
     // A sandbox that came up has its update status checked at once.
     w.write({ state: 'active' });
-    await vi.waitFor(() => expect(w.statusCalls).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(w.updates()).toEqual([
+        expect.objectContaining({ available: false, update: { state: 'current' } }),
+      ]),
+    );
     // A read or a reconciler tick later sees a new image.
     for (const observer of w.observers) observer('p1', status('available'));
     for (const observer of w.observers) observer('p1', status('available'));
     // A failed registry read says nothing about the update.
     for (const observer of w.observers) observer('p1', status('unknown'));
-    for (const observer of w.observers) observer('p1', status('available'));
-    expect(w.events().filter((event) => event.t === 'sandbox.update')).toEqual([
-      expect.objectContaining({ t: 'sandbox.update', projectId: 'p1', available: true }),
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(w.updates()).toEqual([
+      expect.objectContaining({ available: false }),
+      expect.objectContaining({ available: true, update: { state: 'available' } }),
     ]);
     // The rebuild finished: the new image is recorded and checked again.
     w.setStatus(status('current'));
     w.write({ imageRef: 'image:2' });
     await vi.waitFor(() =>
-      expect(w.events().at(-1)).toEqual(
-        expect.objectContaining({ t: 'sandbox.update', available: false }),
-      ),
+      expect(w.updates().at(-1)).toEqual(expect.objectContaining({ available: false })),
     );
+  });
+
+  // The provisioner changes these without any store write, and a blocked
+  // update turns overdue by time alone: without the tick a view would show
+  // them only on its next read.
+  it('publishes repair failures and blocked updates on its tick', async () => {
+    const w = setup();
+    w.setStatus(status('available'));
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(1));
+    w.tick();
+    expect(w.updates()).toHaveLength(1);
+
+    w.failures.set('p1', { at: Date.parse('2026-11-27T08:00:00Z'), message: 'pull failed' });
+    w.tick();
+    expect(w.updates().at(-1)).toEqual(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          lastRepairFailure: { at: '2026-11-27T08:00:00.000Z', message: 'pull failed' },
+        }),
+      }),
+    );
+    w.turnBlocked.add('p1');
+    w.tick();
+    expect(w.updates().at(-1)).toEqual(
+      expect.objectContaining({
+        update: expect.objectContaining({ selfRepair: 'stalled', turnBlocked: true }),
+      }),
+    );
+    expect(w.updates()).toHaveLength(3);
   });
 
   it('stops publishing when the server closes', async () => {
@@ -272,7 +322,7 @@ describe('installProjectEvents', () => {
     const ctx = {
       deps: { eventStore: {} },
       domainEvents: new DomainEventBus(),
-      lifecycle: { onClose: () => undefined },
+      lifecycle: { onClose: () => undefined, every: () => undefined },
     } as unknown as ServerContext;
     expect(() => installProjectEvents({ log: { warn: () => undefined } }, ctx)).not.toThrow();
   });
