@@ -155,7 +155,7 @@ export function createNetworkShareTool(deps: {
     /** What an approval card binds to: the folder's grant as the user saw it. */
     async snapshot(input: Input): Promise<string | undefined> {
       const { request, folder, sharePath } = await resolve(input);
-      if (request.action !== 'update' || !folder) return undefined;
+      if (request.action !== 'update' || !folder || sharePath === undefined) return undefined;
       return approvalBinding(request, folder, sharePath);
     },
 
