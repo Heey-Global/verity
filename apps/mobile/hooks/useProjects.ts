@@ -294,8 +294,11 @@ export function useProjects(client: VerityClient) {
   // (ADR 0033); the read that follows adds what the event does not carry. A
   // hidden list keeps the change and reads again when it is shown.
   const listedProjectIds = useMemo(() => projects.map((project) => project.id), [projects]);
-  shownProjectIds.current = listedProjectIds;
-  useEffect(() => coverageRechecks.run(), [coverageRechecks, listedProjectIds]);
+  useEffect(() => {
+    // Committed ids only: a render React discards must not decide coverage.
+    shownProjectIds.current = listedProjectIds;
+    coverageRechecks.run();
+  }, [coverageRechecks, listedProjectIds]);
   const readWhenShown = useCallback(() => {
     if (focused.current) void load({ silent: true });
     else projectsDirty.current = true;

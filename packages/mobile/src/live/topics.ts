@@ -153,16 +153,15 @@ export class LiveTopics {
     if (entry === undefined) return;
     // A replay overlapping what was already applied must not apply twice.
     if (entry.cursor !== undefined && cursor <= entry.cursor) return;
-    // The first row from this server also makes every answered topic
-    // followed; it arrives on one that becomes followed itself, so the
-    // change is reported either way.
     const before = this.follows(topic);
+    const summariesBefore = this.summaries;
     entry.cursor = cursor;
     entry.failures = 0;
     entry.answered = true;
     if (event.t === 'session.summary') this.summaries = true;
     for (const sink of [...entry.sinks]) sink.event(event);
-    if (this.follows(topic) !== before) this.changed();
+    // The first row from this server makes every answered topic followed.
+    if (this.summaries !== summariesBefore || this.follows(topic) !== before) this.changed();
   }
 
   resync(topic: DomainTopic, cursor: number): void {
