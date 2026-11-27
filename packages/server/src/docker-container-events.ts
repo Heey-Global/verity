@@ -91,7 +91,11 @@ export function createContainerEventSource(options: {
           throw new Error(`docker events responded ${String(res.status)}`);
         }
         openedAt = Date.now();
-        handlers.onConnected();
+        try {
+          handlers.onConnected();
+        } catch {
+          // The stream is open whatever its listener made of that.
+        }
         const reader = res.body.getReader();
         // Not every transport ties the body to the request's signal; without
         // this, stopping would wait for an event that may never come.

@@ -86,9 +86,6 @@ export function createEmbeddedProjectList(ctx: FleetContext) {
           },
           { ttlMs: 3_000 },
         );
-  // A state the event stream wrote reaches the overview at once, not after the
-  // cached list expires.
-  if (projectList !== undefined) liveness?.onStateWritten(() => projectList.invalidate());
 
   return projectList;
 }
@@ -147,7 +144,21 @@ export function createEmbeddedProjectFleetBindings(
             const [reconciled] = await liveness.reconcile([project]);
             return reconciled ?? project;
           },
-          containerLiveness: { start: () => liveness.start() },
+          containerLiveness: {
+            start: () => {
+              // A state the event stream wrote reaches the overview at once,
+              // not after the cached list expires; for as long as this server
+              // follows the stream.
+              const unsubscribe = projectList
+                ? liveness.onStateWritten(() => projectList.invalidate())
+                : () => undefined;
+              const stop = liveness.start();
+              return async () => {
+                unsubscribe();
+                await stop();
+              };
+            },
+          },
         }
       : {}),
   };

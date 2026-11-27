@@ -15,13 +15,15 @@ const TRANSITIONS = new Set(['cloning', 'container_starting', 'sleeping_starting
 export interface ContainerLiveness {
   /** Compare the projects with their containers now, writing what changed. */
   reconcile(projects: ProjectRecord[]): Promise<ProjectRecord[]>;
-  /** Whether Docker's event stream is open: while it is, the store already
-   * holds what a read would find by inspecting the containers. */
+  /** Whether Docker's event stream is open and a full comparison after it
+   * opened has succeeded: only then does the store hold what a read would
+   * find by inspecting the containers. */
   following(): boolean;
   /** Follow the event stream and run the periodic comparisons until stopped. */
   start(): () => Promise<void>;
-  /** Called after a comparison wrote a project's state, for caches of rows. */
-  onStateWritten(listener: () => void): void;
+  /** Called after a comparison wrote a project's state, for caches of rows;
+   * returns the call that removes the listener. */
+  onStateWritten(listener: () => void): () => void;
 }
 
 /**
@@ -202,11 +204,21 @@ export function createContainerLiveness(options: {
     following: () => connected,
     onStateWritten: (listener) => {
       written.add(listener);
+      return () => {
+        written.delete(listener);
+      };
     },
     start() {
       // One follower at a time; a server reopened on the same store starts
       // afresh after the previous one stopped.
-      if (started !== undefined) return started;
+      if (started !== undefined) {
+        if (stopped) {
+          log.warn(
+            'verity: Docker event stream not followed: the previous follower is still stopping',
+          );
+        }
+        return started;
+      }
       stopped = false;
       open = false;
       connected = false;
