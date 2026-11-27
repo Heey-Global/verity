@@ -1,4 +1,4 @@
-import { subscribeLiveRefresh } from '../lib/liveConnection';
+import { liveConnectionFor, subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   VerityApiError,
   type VerityClient,
@@ -393,6 +393,32 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
       [{ path }],
     );
   }, [client, sessionId, load, focused, appActive, observeBranchUpdates, enabled]);
+
+  // The session topic (ADR 0033). Following it tells the server the session is
+  // open, so it reads the branch every few seconds and sees a checkout in the
+  // terminal; the session row it publishes then names the branch. A row whose
+  // branch differs from the one shown reads the switcher's lists again, once
+  // per branch: rows arrive with every status change, and a label the row
+  // spells differently (a previewed branch) must not read again each time.
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  const announcedBranch = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!focused || !appActive || !enabled || baseUrl === null) return undefined;
+    announcedBranch.current = undefined;
+    return liveConnectionFor(baseUrl).subscribeTopic(`session:${sessionId}`, {
+      event: (event) => {
+        if (event.t !== 'session.summary' || event.sessionId !== sessionId) return;
+        const branch = event.patch.branch;
+        if (typeof branch !== 'string' || branch === '') return;
+        if (branch === currentRef.current || branch === announcedBranch.current) return;
+        announcedBranch.current = branch;
+        void load({ silent: true });
+      },
+      // Missed rows: read unless a read already runs (the one focus started).
+      resync: () => void load({ silent: true, force: false }),
+    });
+  }, [baseUrl, sessionId, load, focused, appActive, enabled]);
 
   const refresh = useCallback(() => {
     // Focus always revalidates, so hidden refresh requests need no network work.

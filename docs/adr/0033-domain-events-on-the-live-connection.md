@@ -135,6 +135,22 @@ already read at most every five minutes in the background, so limiting them to
 viewed branches would save little. Revisit this with counts of forge calls per
 cause before narrowing background reads.
 
+### Branch changes
+
+The session row (`session.summary`) carries the branch, so a branch change
+needs no event of its own. Every git read of the server's branch cache that
+finds a branch other than the one last announced for the worktree schedules
+the row, whichever read it was: tool activity, a switch in the app, a view's
+read. The row goes out when someone follows the session or its project.
+
+Git run in the sandbox's terminal raises nothing the server sees. The session
+screen therefore follows its `session:<id>` topic, and the server reads the
+branch of every session whose topic someone follows every ten seconds: one
+read per open session, shared by every device, which never wakes a sleeping
+sandbox. A git hook inside the sandbox would report checkouts at once, but it
+would have to join the hook configuration of every repository; it can be added
+later without changing the event.
+
 ## Consequences
 
 - Resource watches remain for logs, meetings and updater progress. Migrated
