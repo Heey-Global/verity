@@ -232,10 +232,49 @@ describe('LiveHub domain-event topics', () => {
     await phone.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
     await tablet.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
     read.mockClear();
-    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 1 });
+    // A project of someone else: both devices miss it in the cached scope and
+    // ask for a fresh one.
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p2', rev: 1 });
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 2 });
     await vi.waitFor(() => expect(tablet.of('domain')).toHaveLength(1));
     await vi.waitFor(() => expect(phone.of('domain')).toHaveLength(1));
     expect(read).toHaveBeenCalledTimes(1);
+    w.hub.close();
+  });
+
+  // A rights check that fails must not drop a record the client needed
+  // silently: it reads its snapshot again.
+  it('asks for a resync when it cannot decide who receives a record', async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    vi.spyOn(w.hub.deps.access, 'overviewScope').mockRejectedValueOnce(new Error('db down'));
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p9', rev: 1 });
+    await vi.waitFor(() =>
+      expect(
+        alice.of('resync').filter(({ topic }) => topic === 'collection:projects'),
+      ).toHaveLength(2),
+    );
+    expect(alice.of('domain')).toEqual([]);
+    w.hub.close();
+  });
+
+  // The scope read on subscribing is what a later deletion asks who held the
+  // project, when no other event has read it before.
+  it('tells holders of a deleted project without any event before it', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    const bob = w.connect('bob');
+    await bob.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.readable.get('bob')!.delete('p2');
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(1));
     w.hub.close();
   });
 

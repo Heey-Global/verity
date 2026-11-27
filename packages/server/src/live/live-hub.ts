@@ -201,7 +201,11 @@ class LiveConnection {
       }
       case 'collection':
         // Anyone who may read the overview; each record is filtered below.
-        return parsed.id === 'projects';
+        // The scope read now is the one a later `unlisted` asks who held the
+        // project: a deleted project takes its memberships along.
+        if (parsed.id !== 'projects') return false;
+        await this.hub.overviewScope(userId);
+        return true;
     }
   }
 
@@ -214,6 +218,7 @@ class LiveConnection {
    */
   private mayReceive(record: {
     topic: DomainTopic;
+    cursor: number;
     event: DomainEvent;
   }): boolean | Promise<boolean> {
     if (record.topic !== PROJECTS_COLLECTION_TOPIC) return true;
@@ -232,7 +237,7 @@ class LiveConnection {
       if (scopeAllows(await this.hub.overviewScope(userId), event.projectId)) return true;
       // The cached scope may predate the project: a creator's other devices
       // must still learn about the project they just made.
-      return scopeAllows(await this.hub.overviewScope(userId, true), event.projectId);
+      return scopeAllows(await this.hub.overviewScope(userId, record.cursor), event.projectId);
     })();
   }
 
@@ -556,7 +561,10 @@ export class LiveHub {
   >();
   private hintTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly scopes = new Map<string, { scope: LiveOverviewScope; at: number }>();
-  private readonly scopeReads = new Map<string, Promise<LiveOverviewScope>>();
+  private readonly scopeReads = new Map<
+    string,
+    { since: number; promise: Promise<LiveOverviewScope> }
+  >();
   private readonly unsubscribeAll: () => void;
 
   constructor(readonly deps: LiveHubDeps) {
@@ -685,27 +693,42 @@ export class LiveHub {
 
   /** The projects a user's overview may list, cached briefly; `fresh` reads
    * them anew. */
-  async overviewScope(userId: string | undefined, fresh = false): Promise<LiveOverviewScope> {
+  /**
+   * The projects a user's overview may list, cached briefly. `freshAfter`, a
+   * bus position, asks for a read that began once the record at it was
+   * published: the cache, or a read begun earlier, may predate it.
+   */
+  async overviewScope(userId: string | undefined, freshAfter?: number): Promise<LiveOverviewScope> {
     const key = userId ?? '';
     const cached = this.scopes.get(key);
-    if (!fresh && cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) {
+    if (freshAfter === undefined && cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) {
       return cached.scope;
     }
     // One read per user at a time: an event reaches all of a user's devices
-    // at once, and each would otherwise read the same scope again. A fresh
-    // read never joins one already under way, which may predate what it is
-    // asked to see.
+    // at once, and each would otherwise read the same scope again.
     const reading = this.scopeReads.get(key);
-    if (reading !== undefined && !fresh) return reading;
-    const read = this.deps.access
+    if (reading !== undefined && (freshAfter === undefined || reading.since >= freshAfter)) {
+      return reading.promise;
+    }
+    const at = this.now();
+    const entry = {
+      since: this.deps.domainEvents?.head ?? 0,
+      promise: Promise.resolve(undefined as unknown as LiveOverviewScope),
+    };
+    entry.promise = this.deps.access
       .overviewScope(userId)
       .then((scope) => {
-        this.scopes.set(key, { scope, at: this.now() });
+        // A read that began earlier and answered later must not replace one
+        // that began after it.
+        const held = this.scopes.get(key);
+        if (held === undefined || held.at <= at) this.scopes.set(key, { scope, at });
         return scope;
       })
-      .finally(() => this.scopeReads.delete(key));
-    this.scopeReads.set(key, read);
-    return read;
+      .finally(() => {
+        if (this.scopeReads.get(key) === entry) this.scopeReads.delete(key);
+      });
+    this.scopeReads.set(key, entry);
+    return entry.promise;
   }
 
   /** The scope last read for a user, however old: who held a project that

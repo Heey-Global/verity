@@ -644,7 +644,7 @@ describe('project state writers', () => {
 
   // The overview drops a hidden or deleted project only through the change
   // feed; a silent writer would leave it on every other device's Home.
-  it('announces every store method that hides, deletes or shows a project', () => {
+  it('announces every store method that hides or deletes a project', () => {
     const silent: string[] = [];
     let writers = 0;
     for (const { file, text } of sources) {

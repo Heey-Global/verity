@@ -104,7 +104,7 @@ export class TopicSubscriptions {
       try {
         return filter(record);
       } catch (error) {
-        this.opts.logger?.warn({ err: error, topic: record.topic }, 'verity: live filter failed');
+        this.undecided(sub, record, error);
         return false;
       }
     };
@@ -133,8 +133,7 @@ export class TopicSubscriptions {
         try {
           allowed = await decide();
         } catch (error) {
-          // Withheld, not sent: a record the connection may not read stays unsent.
-          this.opts.logger?.warn({ err: error, topic: record.topic }, 'verity: live filter failed');
+          this.undecided(sub, record, error);
         }
         // A failing send must not reject the queue: every later record of
         // the topic waits on it.
@@ -151,6 +150,13 @@ export class TopicSubscriptions {
         sub.pending -= 1;
         if (sub.pending === 0) sub.queue = undefined;
       });
+  }
+
+  /** Withheld, not sent: a record the connection may not read stays unsent.
+   * The client may have needed it, so it reads its snapshot again. */
+  private undecided(sub: Subscription, record: DomainRecord, error: unknown): void {
+    this.opts.logger?.warn({ err: error, topic: record.topic }, 'verity: live filter failed');
+    if (!sub.cancelled) this.opts.send({ k: 'resync', topic: record.topic, cursor: record.cursor });
   }
 
   private send(sub: Subscription, record: DomainRecord): void {
