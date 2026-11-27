@@ -78,6 +78,83 @@ export function otaPlanningBaseline(runtime, baseline, releases, execute = run) 
   return source;
 }
 
+export const otaReleaseBranch = 'release-please--branches--main--components--mobile-ota';
+
+/**
+ * Planning skips a native change, so it never refreshes an open OTA release PR
+ * either. That PR stays green and mergeable, and merging it pulls the native
+ * change from main into an OTA version that publication can only refuse: the
+ * version is consumed on main and stays unpublished until the next native line.
+ * Close it instead; the native release PR delivers its changes, and planning
+ * opens a fresh OTA PR once that runtime exists. A PR not authored by the
+ * release bot is left alone, since closing it is not this workflow's call.
+ * @param {(command: string, args: string[]) => string} [execute]
+ * @returns {number[]}
+ */
+export function closeUndeliverableOtaReleasePrs(execute = run) {
+  const owner = repository().split('/')[0] ?? '';
+  /** @type {unknown} */
+  const rawPages = JSON.parse(
+    execute('gh', [
+      'api',
+      '--paginate',
+      '--slurp',
+      `repos/${repository()}/pulls?state=open&base=main&head=${encodeURIComponent(`${owner}:${otaReleaseBranch}`)}&per_page=100`,
+    ]),
+  );
+  if (
+    !Array.isArray(rawPages) ||
+    rawPages.some(
+      (page) =>
+        !Array.isArray(page) || page.some((pull) => typeof pull !== 'object' || pull === null),
+    )
+  )
+    throw new Error('Invalid OTA release PR listing');
+  const pulls = /** @type {Pull[]} */ (rawPages.flat());
+  /** @type {number[]} */
+  const closed = [];
+  for (const pull of pulls) {
+    if (
+      !Number.isSafeInteger(pull.number) ||
+      pull.number < 1 ||
+      pull.base?.ref !== 'main' ||
+      pull.head?.ref !== otaReleaseBranch ||
+      !isReleaseBotLogin(pull.user?.login)
+    ) {
+      console.log(
+        `Leaving OTA release PR #${String(pull.number)} open: not a release-bot PR from ${otaReleaseBranch} into main.`,
+      );
+      continue;
+    }
+    const number = String(pull.number);
+    // Label first: if closing then fails, the PR is still open and the next
+    // planning run retries both, instead of leaving a closed pending release.
+    execute('gh', [
+      'pr',
+      'edit',
+      number,
+      '--repo',
+      repository(),
+      '--remove-label',
+      'autorelease: pending-mobile-ota',
+    ]);
+    execute('gh', [
+      'pr',
+      'close',
+      number,
+      '--repo',
+      repository(),
+      '--comment',
+      'Closed automatically: main gained native mobile changes after this OTA release PR ' +
+        'was planned, so merging it would produce an OTA version that cannot be published. ' +
+        'The native mobile release PR delivers these changes; OTA planning opens a new ' +
+        'release PR once that native runtime reaches Staging.',
+    ]);
+    closed.push(pull.number);
+  }
+  return closed;
+}
+
 /** @param {string} runtime */
 async function plan(runtime) {
   const repo = repository();
@@ -93,6 +170,8 @@ async function plan(runtime) {
   const next = otaReleasePlan(runtime, releases);
   const baselineSha = otaPlanningBaseline(runtime, next.baseline, releases);
   if (!baselineSha) {
+    for (const number of closeUndeliverableOtaReleasePrs())
+      console.log(`Closed undeliverable Staging OTA release PR #${number}.`);
     console.log('OTA planning waits for a native candidate containing the pending native changes.');
     return;
   }
