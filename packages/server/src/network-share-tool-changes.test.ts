@@ -273,6 +273,7 @@ describe('network share changes', () => {
       { action: 'move', folderId, path: 'a.md', kind: 'file', toPath: '../a.md' },
       { action: 'rename', folderId, path: 'a.md', kind: 'file', newName: 'sub/b.md' },
       { action: 'rename', folderId, path: 'a.md', kind: 'file', newName: '..' },
+      { action: 'rename', folderId, path: 'a.md', kind: 'file', newName: 'a.md' },
     ])
       await expect(tool.authorize(input(request))).rejects.toThrow();
   });
@@ -355,6 +356,15 @@ describe('network share changes', () => {
     }))!.networkShare;
     expect(update.content?.bytes).toBe(Buffer.byteLength(long));
     expect(update.content?.preview).toBe(long.slice(0, 600));
+    // Characters outside the basic plane are two UTF-16 units; none is cut in half.
+    const emoji = (await present({
+      action: 'update',
+      folderId,
+      path: 'kickoff.md',
+      expectedVersion: 'v1',
+      content: '😀'.repeat(700),
+    }))!.networkShare;
+    expect(emoji.content?.preview).toBe('😀'.repeat(600));
     const binary = (await present({
       action: 'update',
       folderId,

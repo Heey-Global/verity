@@ -193,6 +193,9 @@ export function createNetworkShareTool(deps: {
       if (name === '') throw new ControlPlaneSessionToolError('newName names the item.');
       const parent = sharePath.split('/').slice(0, -1);
       destination = { folder, sharePath: [...parent, name].join('/') };
+      // A change of letter case is a rename; the very same name is not.
+      if (destination.sharePath === sharePath)
+        throw new ControlPlaneSessionToolError('The item already has this name.');
     } else if (request.action === 'move') {
       const target =
         request.toFolderId === undefined || request.toFolderId === folder.id
@@ -343,7 +346,10 @@ export function createNetworkShareTool(deps: {
         const decoded = text(bytes);
         content = {
           bytes: bytes.byteLength,
-          ...(decoded === undefined ? {} : { preview: decoded.slice(0, PREVIEW_CHARACTERS) }),
+          // Cut whole characters: half a surrogate pair would end the preview garbled.
+          ...(decoded === undefined
+            ? {}
+            : { preview: Array.from(decoded).slice(0, PREVIEW_CHARACTERS).join('') }),
         };
       }
       return {
