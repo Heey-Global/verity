@@ -17,7 +17,7 @@ export const networkShareConnectionSchema = z.object({
 });
 export type NetworkShareConnection = z.infer<typeof networkShareConnectionSchema>;
 
-export const networkShareAccessModeSchema = z.enum(['read-only', 'read-write']);
+const networkShareAccessModeSchema = z.enum(['read-only', 'read-write']);
 export type NetworkShareAccessMode = z.infer<typeof networkShareAccessModeSchema>;
 
 export const projectNetworkShareFolderSchema = z.object({
@@ -33,13 +33,13 @@ export const projectNetworkShareFolderSchema = z.object({
 });
 export type ProjectNetworkShareFolder = z.infer<typeof projectNetworkShareFolderSchema>;
 
-export const networkShareFolderListingSchema = z.object({
+const networkShareFolderListingSchema = z.object({
   path: z.string(),
   folders: z.array(z.object({ name: z.string(), path: z.string() })),
 });
 export type NetworkShareFolderListing = z.infer<typeof networkShareFolderListingSchema>;
 
-export const networkShareTestResultSchema = z.object({
+const networkShareTestResultSchema = z.object({
   ok: z.boolean(),
   code: z.string().optional(),
   error: z.string().optional(),
@@ -131,4 +131,3 @@ export function networkSharesClient(request: Request) {
     },
   };
 }
-export type NetworkSharesClient = ReturnType<typeof networkSharesClient>;

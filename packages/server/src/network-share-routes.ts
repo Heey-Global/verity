@@ -54,7 +54,7 @@ const PASSWORD_REQUIRED = Symbol('password required');
 const hasControlCharacter = (value: string) =>
   [...value].some((character) => character.charCodeAt(0) < 0x20 || character === '\u007f');
 
-export class InvalidNetworkShareAddressError extends Error {
+class InvalidNetworkShareAddressError extends Error {
   constructor() {
     super('Enter the address as smb://server/shared-folder or \\\\server\\shared-folder.');
     this.name = 'InvalidNetworkShareAddressError';
@@ -121,7 +121,7 @@ function connectionView(connection: NetworkShareConnectionRecord) {
   };
 }
 
-export function networkShareFolderView(folder: ProjectNetworkShareFolderRecord) {
+function networkShareFolderView(folder: ProjectNetworkShareFolderRecord) {
   return {
     id: folder.id,
     connectionId: folder.connectionId,
@@ -143,7 +143,7 @@ function addressable(parent: string, name: string): boolean {
 }
 
 /** The reply for an adapter failure: a stable code and a message without NAS internals. */
-export function sendNetworkShareError(reply: FastifyReply, error: unknown) {
+function sendNetworkShareError(reply: FastifyReply, error: unknown) {
   if (error instanceof NetworkShareError) {
     const status =
       error.code === 'not_found' || error.code === 'share_not_found'

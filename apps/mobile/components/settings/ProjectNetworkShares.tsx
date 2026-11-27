@@ -39,7 +39,7 @@ const ACCESS_LABELS: Record<NetworkShareAccessMode, string> = {
 };
 
 /** `Studio NAS › Projects › Briefs`: the share's name, then the folders inside it. */
-export function networkShareLocation(label: string, path: string): string {
+function networkShareLocation(label: string, path: string): string {
   return [label, ...path.split('/').filter(Boolean)].join(' › ');
 }
 

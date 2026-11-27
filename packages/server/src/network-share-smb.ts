@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 
-export const NETWORK_SHARE_MAX_FILE_BYTES = 10_000_000;
+const NETWORK_SHARE_MAX_FILE_BYTES = 10_000_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const STATUS = /\b(NT_STATUS_[A-Z0-9_]+)\b/;
 
