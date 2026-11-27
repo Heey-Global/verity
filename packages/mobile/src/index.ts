@@ -563,7 +563,8 @@ export {
   sameProjectSettingsDraft,
   type ProjectSettingsDraft,
 } from './projectSettings.js';
-export { secretStatusSchema, type SecretStatus } from './api.js';
+export { secretStatusSchema, type SecretStatus } from './secret-status.js';
+export { hostResourcesSchema, usedPercent, type HostResources } from './host-resources-api.js';
 export {
   providerConnectionsSchema,
   type ProviderConnection,
