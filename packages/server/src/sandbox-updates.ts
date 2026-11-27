@@ -127,6 +127,19 @@ export interface SandboxUpdateChecker {
    * checker of its own. Returns the function that stops listening.
    */
   observe?(listener: (projectId: string, status: SandboxUpdateStatus) => void): () => void;
+  /**
+   * Reuse each project's last container inspection while `source` follows
+   * Docker's event stream, until an event names the project or the stream may
+   * have missed one. Reads then cost no inspect per running sandbox. Returns
+   * the function that stops trusting `source`.
+   */
+  trustInspections?(source: InspectionTrust): () => void;
+}
+
+/** What the checker needs to know whether a held inspection is current. */
+export interface InspectionTrust {
+  following(): boolean;
+  onContainerChange(listener: (projectId: string | undefined) => void): () => void;
 }
 
 export type SandboxRefSource = string | (() => Promise<string | undefined>);
@@ -239,8 +252,32 @@ export function createSandboxUpdateChecker(args: {
     return cached.target;
   };
 
+  // Inspections held while the event stream vouches for them. `generation`
+  // moves with every change the stream reports, so an inspection that was on
+  // its way when the container changed is not kept.
+  let trust: InspectionTrust | undefined;
+  let generation = 0;
+  const generations = new Map<string, number>();
+  const held = new Map<string, { containerName: string; inspection: Inspection }>();
   const inspectProject = async (project: ProjectRecord): Promise<Inspection> => {
     if (project.state !== 'active') return { ok: false, status: unknown('project is not active') };
+    const trusted = trust?.following() === true;
+    const kept = trusted ? held.get(project.id) : undefined;
+    if (kept !== undefined && kept.containerName === project.containerName) return kept.inspection;
+    const asked = { all: generation, project: generations.get(project.id) ?? 0 };
+    const inspection = await inspectContainerOf(project);
+    const unchanged =
+      asked.all === generation && asked.project === (generations.get(project.id) ?? 0);
+    // A failed inspect says nothing the next read should repeat.
+    const failed = !inspection.ok && inspection.status.reason === 'container inspect failed';
+    if (trusted && unchanged && !failed && trust?.following() === true) {
+      held.delete(project.id);
+      held.set(project.id, { containerName: project.containerName, inspection });
+      if (held.size > 4_096) held.delete(held.keys().next().value!);
+    }
+    return inspection;
+  };
+  const inspectContainerOf = async (project: ProjectRecord): Promise<Inspection> => {
     let inspected: ContainerInspect;
     try {
       inspected = await args.docker.inspectContainer(project.containerName);
@@ -305,6 +342,27 @@ export function createSandboxUpdateChecker(args: {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
+      };
+    },
+    trustInspections(source) {
+      trust = source;
+      held.clear();
+      const stopListening = source.onContainerChange((projectId) => {
+        if (projectId === undefined) {
+          generation += 1;
+          held.clear();
+          generations.clear();
+          return;
+        }
+        generations.set(projectId, (generations.get(projectId) ?? 0) + 1);
+        if (generations.size > 4_096) generations.delete(generations.keys().next().value!);
+        held.delete(projectId);
+      });
+      return () => {
+        stopListening();
+        if (trust === source) trust = undefined;
+        generation += 1;
+        held.clear();
       };
     },
   };

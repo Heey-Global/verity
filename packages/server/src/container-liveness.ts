@@ -25,6 +25,10 @@ export interface ContainerLiveness {
   /** Called after a comparison wrote a project's state, for caches of rows;
    * returns the call that removes the listener. */
   onStateWritten(listener: () => void): () => void;
+  /** Called with the project an event named, or with `undefined` when the
+   * stream may have missed something, for caches of what containers showed;
+   * returns the call that removes the listener. */
+  onContainerChange(listener: (projectId: string | undefined) => void): () => void;
 }
 
 /**
@@ -130,9 +134,20 @@ export function createContainerLiveness(options: {
     void work.finally(() => inFlight.delete(work));
     return work;
   };
+  const changed = new Set<(projectId: string | undefined) => void>();
+  const announceChange = (projectId: string | undefined): void => {
+    for (const listener of changed) {
+      try {
+        listener(projectId);
+      } catch (error) {
+        log.warn('verity: a container change listener failed', error);
+      }
+    }
+  };
   const lose = (): void => {
     epoch += 1;
     connected = false;
+    announceChange(undefined);
   };
 
   // One comparison per project at a time, whether an event or a sweep asked
@@ -175,6 +190,7 @@ export function createContainerLiveness(options: {
   };
   const onEvent = (projectId: string): void => {
     if (stopped) return;
+    announceChange(projectId);
     void compare(projectId).then((ok) => {
       if (ok || stopped) return;
       // The rows no longer hold everything the stream reported: reads compare
@@ -296,6 +312,12 @@ export function createContainerLiveness(options: {
       written.add(listener);
       return () => {
         written.delete(listener);
+      };
+    },
+    onContainerChange: (listener) => {
+      changed.add(listener);
+      return () => {
+        changed.delete(listener);
       };
     },
     start() {

@@ -1107,3 +1107,100 @@ describe('createSandboxUpdateChecker.statusAll', () => {
     });
   });
 });
+
+describe('trustInspections', () => {
+  function trustSource() {
+    let following = true;
+    const listeners = new Set<(projectId: string | undefined) => void>();
+    return {
+      source: {
+        following: () => following,
+        onContainerChange: (listener: (projectId: string | undefined) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      setFollowing: (next: boolean) => (following = next),
+      change: (projectId: string | undefined) => {
+        for (const listener of listeners) listener(projectId);
+      },
+    };
+  }
+
+  // Every overview read inspected each running sandbox to compare its image;
+  // while the event stream vouches for the container, the last answer stands.
+  it('reuses an inspection until the stream reports a change or stops vouching', async () => {
+    const inspectContainer = vi.fn(async () => inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: DEFAULT_IMAGE,
+      toolkitFeatureRef: TOOLKIT,
+    });
+    const t = trustSource();
+    const stop = checker.trustInspections!(t.source);
+    await checker.statusAll([project()]);
+    await checker.statusAll([project()]);
+    await checker.status(project());
+    expect(inspectContainer).toHaveBeenCalledTimes(1);
+
+    t.change('p1');
+    await checker.statusAll([project()]);
+    expect(inspectContainer).toHaveBeenCalledTimes(2);
+    t.change(undefined);
+    await checker.statusAll([project()]);
+    expect(inspectContainer).toHaveBeenCalledTimes(3);
+    t.setFollowing(false);
+    await checker.statusAll([project()]);
+    await checker.statusAll([project()]);
+    expect(inspectContainer).toHaveBeenCalledTimes(5);
+
+    t.setFollowing(true);
+    stop();
+    await checker.statusAll([project()]);
+    await checker.statusAll([project()]);
+    expect(inspectContainer).toHaveBeenCalledTimes(7);
+  });
+
+  // An answer that was on its way while the container changed describes the
+  // container before the change.
+  it('keeps no inspection that was under way when its project changed', async () => {
+    let release!: () => void;
+    const inspectContainer = vi
+      .fn<DockerClient['inspectContainer']>()
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (release = () => resolve(inspect({ image: 'old-image' })))),
+      )
+      .mockResolvedValue(inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: DEFAULT_IMAGE,
+      toolkitFeatureRef: TOOLKIT,
+    });
+    const t = trustSource();
+    checker.trustInspections!(t.source);
+    const first = checker.statusAll([project()]);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    t.change('p1');
+    release();
+    await first;
+    await checker.statusAll([project()]);
+    expect(inspectContainer).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks again after an inspect that failed', async () => {
+    const inspectContainer = vi
+      .fn<DockerClient['inspectContainer']>()
+      .mockRejectedValueOnce(new Error('daemon busy'))
+      .mockResolvedValue(inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: DEFAULT_IMAGE,
+      toolkitFeatureRef: TOOLKIT,
+    });
+    checker.trustInspections!(trustSource().source);
+    await checker.statusAll([project()]);
+    await checker.statusAll([project()]);
+    await checker.statusAll([project()]);
+    expect(inspectContainer).toHaveBeenCalledTimes(2);
+  });
+});

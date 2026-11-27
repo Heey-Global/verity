@@ -426,6 +426,23 @@ describe('createContainerLiveness', () => {
     await second();
   });
 
+  // Caches of container inspections rely on these: an event for a project, or
+  // anything that may have been missed, makes what they hold stale.
+  it('reports the project an event names, and every loss of the stream', async () => {
+    const l = setup([project('p1')]);
+    const changes: (string | undefined)[] = [];
+    const stopListening = l.liveness.onContainerChange((projectId) => changes.push(projectId));
+    const stop = l.liveness.start();
+    l.handlers().onConnected();
+    l.handlers().onEvent('p1', 'die');
+    l.handlers().onDisconnected(new Error('daemon restarting'));
+    expect(changes).toEqual([undefined, 'p1', undefined]);
+    stopListening();
+    l.handlers().onConnected();
+    expect(changes).toHaveLength(3);
+    await stop();
+  });
+
   it('never follows without an event stream, so reads keep comparing', () => {
     const l = setup([project('p1')], { stream: false });
     const stop = l.liveness.start();

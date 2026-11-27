@@ -440,7 +440,9 @@ export interface ServerDeps {
    * event stream, so reads need not inspect them. Started with the server and
    * stopped when it closes. Absent → reads compare as before.
    */
-  containerLiveness?: { start(): () => Promise<void> } | undefined;
+  containerLiveness?:
+    | ({ start(): () => Promise<void> } & Partial<import('./sandbox-updates.js').InspectionTrust>)
+    | undefined;
   /**
    * Lists all GitHub-App installation repositories that can become Verity projects.
    * Unlike `listProjects`, this includes rows that are still `state='absent'`
