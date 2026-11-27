@@ -178,16 +178,23 @@ export class NetworkShareStore {
       share?: string;
       username?: string;
       password?: string;
+      /** The target the new details were tested on; another current target refuses the change. */
+      expectedTargetRevision?: string;
     },
   ): Promise<boolean> {
     return this.db.transaction().execute(async (tx) => {
       const current = await tx
         .selectFrom('network_share_connections')
-        .select(['host', 'port', 'share'])
+        .select(['host', 'port', 'share', 'target_revision'])
         .where('id', '=', id)
         .forUpdate()
         .executeTakeFirst();
       if (!current) return false;
+      if (
+        patch.expectedTargetRevision !== undefined &&
+        patch.expectedTargetRevision !== current.target_revision
+      )
+        throw new NetworkShareTargetChangedError();
       const targetChanged =
         (patch.host !== undefined && patch.host.toLowerCase() !== current.host.toLowerCase()) ||
         (patch.port !== undefined && patch.port !== current.port) ||

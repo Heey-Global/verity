@@ -164,6 +164,17 @@ describe('NetworkShareStore', () => {
     expect(await shares.projectFolders('p1')).toEqual([]);
   });
 
+  it('refuses to save details tested on a target that changed meanwhile', async () => {
+    const shares = ctx.store.networkShares;
+    const id = await shares.createConnection(studio);
+    const tested = (await shares.credentials(id))!.targetRevision;
+    await shares.updateConnection(id, { host: 'other-nas.lan' });
+    await expect(
+      shares.updateConnection(id, { password: 'new', expectedTargetRevision: tested }),
+    ).rejects.toThrow(NetworkShareTargetChangedError);
+    expect((await shares.credentials(id))!.password.toString()).toBe('pw-1');
+  });
+
   it('removes project folders with the connection', async () => {
     const shares = ctx.store.networkShares;
     const id = await shares.createConnection(studio);

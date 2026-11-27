@@ -86,7 +86,10 @@ export function ProjectNetworkShares({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
+  /** Only the latest load may update the list; an older one finishing late is dropped. */
+  const loads = useRef(0);
   const load = useCallback(async () => {
+    const current = ++loads.current;
     const [list, shares] = await Promise.all([
       client.networkShares.listProjectFolders(projectId),
       // Folders stay visible when the shares cannot be listed; only managing waits.
@@ -102,15 +105,22 @@ export function ProjectNetworkShares({
               }),
         })),
     ]);
+    if (current !== loads.current) return;
     setFolders(list);
     setError('error' in shares ? shares.error : undefined);
     setConnections(shares.connections);
   }, [client, projectId]);
   useFocusEffect(
     useCallback(() => {
-      void load().catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : 'Could not load network shares.'),
-      );
+      const started = loads.current + 1;
+      void load().catch((cause: unknown) => {
+        if (started === loads.current)
+          setError(cause instanceof Error ? cause.message : 'Could not load network shares.');
+      });
+      return () => {
+        // Leaving the screen ends interest in any load still running.
+        loads.current++;
+      };
     }, [load]),
   );
 

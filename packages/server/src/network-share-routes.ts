@@ -249,9 +249,10 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         target !== undefined ||
         body.data.username !== undefined ||
         body.data.password !== undefined;
+      let tested: string | undefined;
       if (reaches) {
         // New sign-in details or a new target are only saved once they work.
-        await withNetworkShareTarget(ctx, connectionId, async (current) => {
+        tested = await withNetworkShareTarget(ctx, connectionId, async (current, revision) => {
           const secret =
             body.data.password === undefined ? current.password : Buffer.from(body.data.password);
           try {
@@ -264,9 +265,13 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
           } finally {
             if (secret !== current.password) secret.fill(0);
           }
+          return revision;
         });
+        if (tested === undefined) return reply.code(404).send({ error: 'network share not found' });
       }
       await shares.updateConnection(connectionId, {
+        // Save only onto the target the details were tested against.
+        ...(tested === undefined ? {} : { expectedTargetRevision: tested }),
         ...(body.data.label === undefined ? {} : { label: body.data.label }),
         ...target,
         ...(body.data.username === undefined ? {} : { username: body.data.username }),
