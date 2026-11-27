@@ -1,7 +1,11 @@
 import type { SessionRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 import type { ServerContext } from '../server-context.js';
-import { installBranchEvents, OPEN_SESSION_BRANCH_CHECK_MS } from './branch-events.js';
+import {
+  BRANCHES_SETTLE_MS,
+  installBranchEvents,
+  OPEN_SESSION_BRANCH_CHECK_MS,
+} from './branch-events.js';
 import { DomainEventBus } from './domain-events.js';
 
 const record = (sessionId: string, projectId: string | null = 'p1') =>
@@ -158,7 +162,7 @@ describe('branch list changes', () => {
     b.invalidate('/sessions/s1/merge');
     b.invalidate('/sessions/s1/seen');
     b.invalidate('/sessions/s2/permissions/t1');
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, BRANCHES_SETTLE_MS + 200));
     expect(events).toEqual(['branches.changed']);
     b.close();
   });
@@ -169,7 +173,7 @@ describe('branch list changes', () => {
     b.domainEvents.subscribe('session:s1', undefined, ({ event }) => events.push(event.t));
     b.invalidate('/sessions/s1/branches');
     b.close();
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await new Promise((resolve) => setTimeout(resolve, BRANCHES_SETTLE_MS + 200));
     expect(events).toEqual([]);
   });
 });

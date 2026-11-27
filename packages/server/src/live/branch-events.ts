@@ -4,9 +4,11 @@ import type { ServerContext } from '../server-context.js';
 import { invalidatedBranches } from './invalidation-targets.js';
 import { createRevisions } from './revisions.js';
 
-/** How long invalidations of one session's branch list gather into one
- * `branches.changed`. */
-const BRANCHES_SETTLE_MS = 100;
+/** How long invalidations of session branch lists gather into one
+ * `branches.changed` each. Writes through the broker can arrive steadily
+ * while an agent works; every event costs each device showing the session a
+ * read, so a session announces at most one per window. */
+export const BRANCHES_SETTLE_MS = 1_000;
 
 /** How often the branch of an open session is read from git. A branch moved
  * by the agent or a switch in the app is seen at once; this bounds how long a
