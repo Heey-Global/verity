@@ -157,6 +157,8 @@ export function createNetworkShareTool(deps: {
     toPath?: string;
     action: NetworkShareLogAction;
     bytes: number;
+    /** Set when the change failed; it may still have altered the share. */
+    outcome?: 'failed';
   }) => void;
 }) {
   const resolve = async (input: Input): Promise<Resolved> => {
@@ -409,7 +411,7 @@ export function createNetworkShareTool(deps: {
       }
       const relative = (path: string, within = folder) =>
         path.slice(within.path.length).replace(/^\//, '');
-      const logChange = (action: NetworkShareLogAction, bytes = 0) =>
+      const logChange = (action: NetworkShareLogAction, bytes = 0, failed = false) =>
         deps.logWrite?.({
           projectId: input.projectId,
           sessionId: input.sessionId,
@@ -420,7 +422,27 @@ export function createNetworkShareTool(deps: {
             : { toFolderId: destination.folder.id, toPath: destination.sharePath }),
           action,
           bytes,
+          ...(failed ? { outcome: 'failed' as const } : {}),
         });
+      /**
+       * Runs a change on the share and logs it either way: a change cut short
+       * may still have altered the share, and that is when the log is needed.
+       */
+      const change = async <T>(
+        action: NetworkShareLogAction,
+        bytes: number,
+        work: () => Promise<T>,
+      ): Promise<T> => {
+        try {
+          const result = await work();
+          logChange(action, bytes);
+          return result;
+        } catch (error) {
+          // A refusal before the share was reached changed nothing.
+          if (!(error instanceof ControlPlaneSessionAuthorityError)) logChange(action, bytes, true);
+          throw error;
+        }
+      };
       switch (request.action) {
         case 'list': {
           const entries = await run(folder, (target) => deps.client.list(target, sharePath));
@@ -440,28 +462,32 @@ export function createNetworkShareTool(deps: {
         case 'create':
         case 'update': {
           const bytes = decode(request);
-          const info = await run(folder, (target) =>
-            request.action === 'create'
-              ? deps.client.create(target, sharePath, bytes)
-              : deps.client.update(target, sharePath, bytes, request.expectedVersion),
+          const info = await change(request.action, bytes.byteLength, () =>
+            run(folder, (target) =>
+              request.action === 'create'
+                ? deps.client.create(target, sharePath, bytes)
+                : deps.client.update(target, sharePath, bytes, request.expectedVersion),
+            ),
           );
-          logChange(request.action, bytes.byteLength);
           return { path: relative(sharePath), version: info.version, size: info.size };
         }
         case 'create_folder': {
-          await run(folder, (target) => deps.client.createFolder(target, sharePath));
-          logChange('create_folder');
+          await change('create_folder', 0, () =>
+            run(folder, (target) => deps.client.createFolder(target, sharePath)),
+          );
           return { path: relative(sharePath), kind: 'folder' };
         }
         case 'rename':
         case 'move': {
           if (!destination) throw new ControlPlaneSessionToolError('destination required');
-          await run(
-            folder,
-            (target) => deps.client.rename(target, request.kind, sharePath, destination.sharePath),
-            destination.folder === folder ? [] : [destination.folder],
+          await change(request.action, 0, () =>
+            run(
+              folder,
+              (target) =>
+                deps.client.rename(target, request.kind, sharePath, destination.sharePath),
+              destination.folder === folder ? [] : [destination.folder],
+            ),
           );
-          logChange(request.action);
           return {
             folderId: destination.folder.id,
             path: relative(destination.sharePath, destination.folder),
@@ -469,12 +495,13 @@ export function createNetworkShareTool(deps: {
           };
         }
         case 'delete': {
-          await run(folder, (target) =>
-            request.kind === 'file'
-              ? deps.client.deleteFile(target, sharePath, request.expectedVersion!)
-              : deps.client.deleteFolder(target, sharePath),
+          await change('delete', 0, () =>
+            run(folder, (target) =>
+              request.kind === 'file'
+                ? deps.client.deleteFile(target, sharePath, request.expectedVersion!)
+                : deps.client.deleteFolder(target, sharePath),
+            ),
           );
-          logChange('delete');
           return { path: relative(sharePath), kind: request.kind, deleted: true };
         }
       }

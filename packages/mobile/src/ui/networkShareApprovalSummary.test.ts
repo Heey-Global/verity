@@ -95,6 +95,16 @@ describe('network share approval cards', () => {
       }),
     );
     expect(move.lines[0]?.text).toBe('Studio NAS › "Briefs › Archive" › a.md');
+    const lookalike = permissionSummary(
+      'verity_network_shares',
+      card({
+        action: 'delete',
+        kind: 'file',
+        share: 'Studio NAS',
+        location: ['Studio NAS', 'Briefs ⟩ Archive', 'a.md'],
+      }),
+    );
+    expect(lookalike.lines[0]?.text).toBe('Studio NAS › "Briefs ⟩ Archive" › a.md');
   });
 
   // A card that cannot say where something goes must fall back to the raw
@@ -110,6 +120,11 @@ describe('network share approval cards', () => {
     ])
       expect(networkShareApprovalSummary(card(networkShare))).toBeNull();
     expect(networkShareApprovalSummary({ folderId: 'f1' })).toBeNull();
+    expect(
+      networkShareApprovalSummary(
+        card({ action: 'delete', kind: 'file', share: '', location: ['S', 'a'] }),
+      ),
+    ).toBeNull();
     expect(
       permissionSummary('verity_network_shares', { action: 'delete', folderId: 'f1' }).title,
     ).not.toContain('Studio NAS');

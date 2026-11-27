@@ -280,7 +280,8 @@ describe('network share changes', () => {
 
   it('deletes a file only at the version read, and folders without a version', async () => {
     const client = fakeClient();
-    const tool = createNetworkShareTool({ store, client });
+    const logWrite = vi.fn();
+    const tool = createNetworkShareTool({ store, client, logWrite });
     const folderId = await grant('Projects/Briefs');
     await expect(
       tool.authorize(input({ action: 'delete', folderId, path: 'a.md', kind: 'file' })),
@@ -301,6 +302,10 @@ describe('network share changes', () => {
     expect(client.deleteFile).toHaveBeenCalledWith(expect.anything(), 'Projects/Briefs/a.md', 'v1');
     await expect(approved(tool, { ...remove, expectedVersion: 'old' })).rejects.toThrow(
       'changed on the share',
+    );
+    // A change that failed on the share may still have altered it; it is logged too.
+    expect(logWrite).toHaveBeenLastCalledWith(
+      expect.objectContaining({ action: 'delete', outcome: 'failed' }),
     );
     expect(
       await approved(tool, { action: 'delete', folderId, path: 'Empty', kind: 'folder' }),

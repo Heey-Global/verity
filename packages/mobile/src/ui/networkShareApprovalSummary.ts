@@ -32,6 +32,7 @@ export function networkShareApprovalSummary(input: unknown): NetworkShareApprova
     !ACTIONS.has(action) ||
     (kind !== 'file' && kind !== 'folder') ||
     typeof share !== 'string' ||
+    share.length === 0 ||
     !names(location) ||
     (destination !== undefined && !names(destination))
   )
@@ -84,8 +85,10 @@ export function networkSharePlace(location: readonly string[]): string {
   return location.map(quoted).join(' › ');
 }
 
-const quoted = (name: string) =>
-  name.includes('›') || name.includes('"') ? JSON.stringify(name) : name;
+// The separator, quotes and characters that look like a separator.
+const SEPARATOR_LIKE = /[›‹»«⟩⟨〉〈❯❮>|/\\"]/u;
+
+const quoted = (name: string) => (SEPARATOR_LIKE.test(name) ? JSON.stringify(name) : name);
 
 /** What approving does, in one or two sentences. */
 export function networkShareApprovalEffect(summary: NetworkShareApprovalSummary): string {
