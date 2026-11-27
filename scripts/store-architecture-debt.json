@@ -53,8 +53,6 @@
     "commitSessionMove": "7bb04c0c 3ce86880 66fa3b17 c5793864 b6332d62 b7bb9143 66a31b7e 56f163f4",
     "sessionLifecycle": "f523b7d6 267756fb 2c043270 4deed3f4 c0d70ecd d8581455 dd5e3a28 62471bc9",
     "sessionMoves": "a316dca3 9f0d3804 db75340d 017e95cf c72922fb 31359f37 21407131 66d46e10",
-    "appendPendingNote": "86af5a15 c9eb12b6 bc78c6b0 0a2abd7c 88d3a110 44446ba7 81216a52 4280c23c",
-    "consumePendingNotes": "d8d0a10f 13e18e87 ef75903b 977df67b dda2e28b bce5d5a1 2bf2d25e 1cf1e94a",
     "finishSessionDeletionCleanup": "f6e98a4d adb2142a ec69ba7f 85562774 0dbfc9bc 7a63cd2a 7922dce3 0adb0cba",
     "externalizeToolResult": "d9c8e657 473da598 2cf8ba0f 24c1379b 78401a94 6a89369c c72549ff 43c90c01",
     "getEvents": "5e61366b 965fb5d4 b620aa76 85608365 9349c338 d07f89f1 d40c2cb7 d2a81015",
