@@ -195,12 +195,7 @@ export type {
   SessionCalendarConnection,
   SessionContactsConnection,
 } from './google-connections.js';
-import {
-  HISTORY_MAX_BYTES,
-  HISTORY_MAX_EVENTS,
-  type BoundedHistoryPage,
-  type BoundedHistoryResult,
-} from '@verity/events';
+import type { BoundedHistoryResult } from '@verity/events';
 import { BackupRepositoryStore } from './backup-repositories.js';
 import type { AgentEvent } from '@verity/events';
 import type { Kysely } from 'kysely';
@@ -816,7 +811,10 @@ export class EventStore implements EventSink {
     () => this.googleAccounts,
   );
   readonly sessionProjections = new SessionProjectionStore(() => this.db);
-  private readonly eventHistory = new EventHistoryStore(() => this.db);
+  private readonly eventHistory = new EventHistoryStore(
+    () => this.db,
+    (sessionId, limit, beforeSeq) => this.getEventsBeforeSeq(sessionId, limit, beforeSeq),
+  );
   private readonly eventSnapshots = new EventSnapshotStore(() => this.db);
   private readonly starterProjects = new StarterProjectStore(() => this.db);
   private readonly projectLifecycle = new ProjectLifecycleStore(
@@ -1712,62 +1710,7 @@ export class EventStore implements EventSink {
     snapshotSeq?: number,
     eventOffset?: number,
   ): Promise<BoundedHistoryResult> {
-    // One query establishes the initial snapshot, including the empty-log case.
-    const source = await this.getEventsBeforeSeq(
-      sessionId,
-      eventOffset === undefined ? HISTORY_MAX_EVENTS : 1,
-      snapshotSeq === undefined ? beforeSeq : Math.min(beforeSeq ?? Infinity, snapshotSeq + 1),
-    );
-    const snapshot = snapshotSeq ?? source.events.at(-1)?.seq ?? 0;
-    const page: BoundedHistoryPage = {
-      contract: 'bounded-history-v1',
-      kind: 'page',
-      events: [],
-      snapshotSeq: snapshot,
-      beforeSeq: null,
-      hasMore: false,
-    };
-    for (let i = source.events.length - 1; i >= 0; i -= 1) {
-      const event = source.events[i]!;
-      const candidate: BoundedHistoryPage = {
-        ...page,
-        events: [event, ...page.events],
-        beforeSeq: event.seq,
-        hasMore: i > 0 || source.hasMore,
-      };
-      const requiredBytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8');
-      if (requiredBytes > HISTORY_MAX_BYTES) {
-        if (page.events.length === 0) {
-          if (eventOffset !== undefined) {
-            const serialized = JSON.stringify(candidate);
-            // A JSON string needs at most six UTF-8 bytes per UTF-16 code unit.
-            // Leave room for the chunk envelope, including all numeric cursors.
-            const chunkChars = Math.floor((HISTORY_MAX_BYTES - 1024) / 6);
-            if (eventOffset >= serialized.length) throw new RangeError('invalid history offset');
-            return {
-              contract: 'bounded-history-v1',
-              kind: 'event-chunk',
-              seq: event.seq,
-              snapshotSeq: snapshot,
-              offset: eventOffset,
-              totalChars: serialized.length,
-              data: serialized.slice(eventOffset, eventOffset + chunkChars),
-            };
-          }
-          return {
-            contract: 'bounded-history-v1',
-            kind: 'oversized-event',
-            seq: event.seq,
-            requiredBytes,
-            maxBytes: HISTORY_MAX_BYTES,
-            snapshotSeq: snapshot,
-          };
-        }
-        return page;
-      }
-      Object.assign(page, candidate);
-    }
-    return page;
+    return this.eventHistory.getBoundedHistory(sessionId, beforeSeq, snapshotSeq, eventOffset);
   }
 
   /**
