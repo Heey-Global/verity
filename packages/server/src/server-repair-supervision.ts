@@ -60,8 +60,8 @@ export function installRepairSupervision(
       ...(deps.repairPullRequest ? { pullRequest: deps.repairPullRequest } : {}),
       changed: (projectId) => {
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/repairs`);
+        // Also refreshes the project list and page it is shown on.
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/qa`);
-        resources.invalidate('/projects');
         void deps.eventStore.repairs
           .incidents(projectId)
           .then((incidents) => {
@@ -76,8 +76,8 @@ export function installRepairSupervision(
           .catch(() => undefined);
       },
       stopped: (projectId, issues) => {
-        // Home's QA items come from the project list: refresh it before the push lands.
-        resources.invalidate('/projects');
+        // Home's QA items come from the project list: refresh it, and the
+        // project's page, before the push lands.
         resources.invalidate(`/projects/${encodeURIComponent(projectId)}/qa`);
         void pushQAStopped(deps.eventStore, ctx.pushSender, projectId, issues).catch(
           (error: unknown) => app.log.warn({ error }, 'QA push failed'),
@@ -199,7 +199,6 @@ export function installRepairRoutes(app: FastifyInstance, ctx: ServerContext): v
   registerRepairRoutes(app, ctx.deps.eventStore);
   registerProjectQARoutes(app, ctx.deps.eventStore, (projectId) => {
     ctx.resources.invalidate(`/projects/${encodeURIComponent(projectId)}/qa`);
-    ctx.resources.invalidate('/projects');
   });
   registerQASettingsRoutes(app, ctx.deps.eventStore, (id) => ctx.conductor.cancelTurn(id));
 }

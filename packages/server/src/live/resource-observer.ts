@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { liveResourceInterval, type LiveResource } from '@verity/events';
 
 type Reader = (resource: LiveResource) => Promise<{ statusCode: number; body: string }>;
-type InvalidationSource = 'pr-status';
+/** `pr-status`: a pull request status changed; `pr-read`: a pull request read
+ * finished, and its answer is the change. */
+type InvalidationSource = 'pr-status' | 'pr-read';
 type Listener = { read: Reader; changed: () => void; initial: boolean };
 type Entry = {
   resource: LiveResource;

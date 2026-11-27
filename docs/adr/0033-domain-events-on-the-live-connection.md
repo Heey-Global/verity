@@ -151,6 +151,30 @@ sandbox. A git hook inside the sandbox would report checkouts at once, but it
 would have to join the hook configuration of every repository; it can be added
 later without changing the event.
 
+### Changes announced as invalidations
+
+Some changes the overview routes show have no event of their own: writes
+through the project routes (settings, members, secrets, QA, the order),
+QA and repair state, vulnerability findings, and what the branch list shows
+beyond the branch (local commits, pull requests of other repositories, a
+merge or push, a pull request read that finished after the response). They
+announce themselves as resource invalidations, which the server turns into
+events:
+
+- an invalidation of a project route becomes an empty `project.changed`;
+  views read the project again. Subresources the project routes do not show
+  (knowledge, vulnerability scans, shares) raise none. A change of the list
+  as a whole (the order, a new project) reaches every followed project;
+- an invalidation of a session's branch list, or a write that may change it,
+  becomes `branches.changed` on the session topic; the open session reads its
+  list again, which answers `304` when nothing it shows moved;
+- the vulnerability monitor reports only the sessions and projects whose
+  findings changed: sessions schedule their row, projects are invalidated.
+
+Each burst of invalidations becomes one event per entity. With these, the
+resource watches of the overview routes carry nothing the topics do not, and
+version 2 clients can stop watching them.
+
 ## Consequences
 
 - Resource watches remain for logs, meetings and updater progress. Migrated

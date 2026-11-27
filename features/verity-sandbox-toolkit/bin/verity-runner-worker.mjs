@@ -25203,6 +25203,10 @@ var domainEventSchema = import_zod9.z.discriminatedUnion("t", [
   import_zod9.z.object({ t: import_zod9.z.literal("choices.opened"), sessionId: id2, rev }),
   import_zod9.z.object({ t: import_zod9.z.literal("choices.answered"), sessionId: id2, rev }),
   import_zod9.z.object({ t: import_zod9.z.literal("pr.status"), sessionId: id2, rev, pr: patch.nullable() }),
+  /** What the session's branch list shows may have changed: a local commit,
+   * a pull request of another repository, a merge or push. Views showing the
+   * list read it again; an unchanged list answers `304`. */
+  import_zod9.z.object({ t: import_zod9.z.literal("branches.changed"), sessionId: id2, rev }),
   import_zod9.z.object({ t: import_zod9.z.literal("project.changed"), projectId: id2, rev, patch }),
   /** The project entered the overview: views read it and list it. */
   import_zod9.z.object({ t: import_zod9.z.literal("project.listed"), projectId: id2, rev, userId: id2.optional() }),

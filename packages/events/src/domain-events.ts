@@ -116,6 +116,10 @@ export const domainEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('choices.opened'), sessionId: id, rev }),
   z.object({ t: z.literal('choices.answered'), sessionId: id, rev }),
   z.object({ t: z.literal('pr.status'), sessionId: id, rev, pr: patch.nullable() }),
+  /** What the session's branch list shows may have changed: a local commit,
+   * a pull request of another repository, a merge or push. Views showing the
+   * list read it again; an unchanged list answers `304`. */
+  z.object({ t: z.literal('branches.changed'), sessionId: id, rev }),
   z.object({ t: z.literal('project.changed'), projectId: id, rev, patch }),
   /** The project entered the overview: views read it and list it. */
   z.object({ t: z.literal('project.listed'), projectId: id, rev, userId: id.optional() }),

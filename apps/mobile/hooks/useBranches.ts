@@ -413,7 +413,14 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     announcedBranch.current = undefined;
     return liveConnectionFor(baseUrl).subscribeTopic(`session:${sessionId}`, {
       event: (event) => {
-        if (event.t !== 'session.summary' || event.sessionId !== sessionId) return;
+        if (!('sessionId' in event) || event.sessionId !== sessionId) return;
+        // Local commits, another repository's pull request, a merge or push:
+        // the list is read again, and answers `304` when nothing it shows moved.
+        if (event.t === 'branches.changed') {
+          void load({ silent: true });
+          return;
+        }
+        if (event.t !== 'session.summary') return;
         const branch = event.patch.branch;
         if (typeof branch !== 'string' || branch === '') return;
         if (branch === currentRef.current) return;

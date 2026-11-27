@@ -83,9 +83,15 @@ export function createServerVulnerabilities(
     getSession: (id) => deps.eventStore.getSession(id),
     listSessions: () => deps.eventStore.listSessions(),
     isBusy: (id) => conductor.isBusy(id),
-    changed: () => {
-      resources.invalidate('/sessions');
-      resources.invalidate('/projects');
+    // Only what changed: the expiry timer rebuilds every minute. A session's
+    // count is part of its row; a project's summary is read with the project.
+    changed: (sessions, projects) => {
+      for (const sessionId of sessions) {
+        ctx.liveHub.notify({ sessionId, topics: ['status'] });
+      }
+      for (const projectId of projects) {
+        resources.invalidate(`/projects/${encodeURIComponent(projectId)}`);
+      }
     },
     warn: (err) => app.log.warn({ err }, 'Vulnerability session update failed'),
   });

@@ -112,6 +112,22 @@ describe('useBranches on the session topic', () => {
     unmount();
   });
 
+  // Local commits and other repositories' pull requests change the list
+  // without a different branch; the server announces them as their own event.
+  it('reads the branch list again when it changed, for its own session only', async () => {
+    const getBranches = jest.fn().mockResolvedValue(list('main'));
+    const client = { getBranches } as unknown as VerityClient;
+    const { result, unmount } = renderHook(() => useBranches(client, 's1'));
+    await waitFor(() => expect(result.current.current).toBe('main'));
+    const sink = mockSinks.get('session:s1')!;
+    act(() => sink.event({ t: 'branches.changed', sessionId: 's2', rev: 1 }));
+    await act(async () => undefined);
+    expect(getBranches).toHaveBeenCalledTimes(1);
+    act(() => sink.event({ t: 'branches.changed', sessionId: 's1', rev: 2 }));
+    await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(2));
+    unmount();
+  });
+
   it('reads again after missed rows', async () => {
     const getBranches = jest.fn().mockResolvedValue(list('main'));
     const client = { getBranches } as unknown as VerityClient;

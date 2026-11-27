@@ -83,6 +83,27 @@ describe('ResourceObserver', () => {
     expect(other).toHaveBeenCalledTimes(1);
   });
 
+  // QA, repair and vulnerability changes invalidate only the project they
+  // concern. Version 1 clients still learn of them through their watch of the
+  // project list, so that watch must be refreshed by the project's paths.
+  it('refreshes the project list and page after a change of one project', async () => {
+    let body = 'before';
+    const read = async () => ({ statusCode: 200, body });
+    const list = vi.fn();
+    const page = vi.fn();
+    const other = vi.fn();
+    observer.watch('alice', { path: '/projects' }, read, list);
+    observer.watch('alice', { path: '/projects/p1' }, read, page);
+    observer.watch('alice', { path: '/projects/p2' }, read, other);
+    await vi.advanceTimersByTimeAsync(1000);
+    body = 'after';
+    observer.invalidate('/projects/p1/qa');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(page).toHaveBeenCalledTimes(2);
+    expect(other).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps branch observation bounded while explicit branch changes refresh immediately', async () => {
     const read = vi.fn(async () => ({ statusCode: 200, body: '{}' }));
     observer.watch('alice', { path: '/sessions/s/branches' }, read, () => {});
