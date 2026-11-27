@@ -213,5 +213,8 @@ function entityKey(event: DomainEvent): string {
     case 'project.listed':
     case 'project.unlisted':
       return `listed:${event.projectId}`;
+    // The server's conditions are one entity, announced whole.
+    case 'server.attention':
+      return event.t;
   }
 }

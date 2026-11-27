@@ -9,7 +9,9 @@ import { z } from 'zod';
  * A topic names whose state it carries:
  * - `user:<id>`    state that belongs to one person;
  * - `project:<id>` project, sandbox and project-wide pull request state;
- * - `session:<id>` overview fields of one session.
+ * - `session:<id>` overview fields of one session;
+ * - `collection:<id>` a list several entities enter and leave;
+ * - `server:<id>` state of the server itself, for its administrators.
  *
  * Authorization is checked when a connection subscribes to a topic, with the
  * same policy the corresponding HTTP read applies, and again when access may
@@ -17,13 +19,13 @@ import { z } from 'zod';
  * withhold from a viewer of the topic.
  */
 
-export const DOMAIN_TOPIC_KINDS = ['user', 'project', 'session', 'collection'] as const;
+export const DOMAIN_TOPIC_KINDS = ['user', 'project', 'session', 'collection', 'server'] as const;
 export type DomainTopicKind = (typeof DOMAIN_TOPIC_KINDS)[number];
 
 /** Topics a connection may hold at once. */
 export const LIVE_MAX_TOPIC_SUBSCRIPTIONS = 64;
 
-const TOPIC_PATTERN = /^(user|project|session|collection):[^\s:]{1,200}$/u;
+const TOPIC_PATTERN = /^(user|project|session|collection|server):[^\s:]{1,200}$/u;
 export const domainTopicSchema = z.string().regex(TOPIC_PATTERN);
 export type DomainTopic = z.infer<typeof domainTopicSchema>;
 
@@ -39,6 +41,14 @@ export function domainTopic(kind: DomainTopicKind, id: string): DomainTopic {
  * project, or were removed from it.
  */
 export const PROJECTS_COLLECTION_TOPIC: DomainTopic = 'collection:projects';
+
+/**
+ * The server-level conditions an administrator has to be told about — a
+ * sealed secret store, an Updater that does not answer, an unhealthy usage
+ * probe, low storage — as `server.attention`, whole. Only those the session
+ * list would show them to may subscribe.
+ */
+export const SERVER_ATTENTION_TOPIC: DomainTopic = 'server:attention';
 
 /** The kind and id of a topic, or undefined for a malformed one. */
 export function parseDomainTopic(topic: string): { kind: DomainTopicKind; id: string } | undefined {
@@ -117,6 +127,21 @@ export const domainEventSchema = z.discriminatedUnion('t', [
     rev,
     userId: id.optional(),
     gone: z.boolean().optional(),
+  }),
+  /** Every server-level condition that holds now; an empty list when the
+   * server is healthy. Signals as `GET /sessions?envelope=1` reports them. */
+  z.object({
+    t: z.literal('server.attention'),
+    rev,
+    attention: z
+      .array(
+        z.object({
+          code: z.string().min(1).max(64),
+          message: z.string().min(1).max(2_000),
+          action: z.string().min(1).max(64).optional(),
+        }),
+      )
+      .max(32),
   }),
   z.object({
     t: z.literal('sandbox.lifecycle'),

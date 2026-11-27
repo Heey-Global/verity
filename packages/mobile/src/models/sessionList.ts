@@ -135,6 +135,10 @@ export class SessionListModel {
   private pendingOrders = new Map<string | null, { ids: string[]; maxRequest: number }>();
   private _sessions: SessionSummary[] = [];
   private _attention: AttentionSignal[] = [];
+  /** The revision of the last `server.attention` applied; a list read that
+   * began before it was applied keeps the event's signals. */
+  private attentionRev = -1;
+  private attentionEvents = 0;
   private _providerLimits: ProviderLimitSummary[] = [];
   private _loading = false;
   private _error: string | undefined;
@@ -347,6 +351,19 @@ export class SessionListModel {
     if (this.poll !== undefined && !this.writingStore) this.opts.onChange?.(this.state);
   }
 
+  /**
+   * The server-level signals as `server.attention` announced them (ADR 0033),
+   * whole. An older revision than the one applied is ignored, and a list read
+   * already out when it arrives does not overwrite it.
+   */
+  applyServerAttention(attention: AttentionSignal[], rev: number): void {
+    if (rev <= this.attentionRev) return;
+    this.attentionRev = rev;
+    this.attentionEvents += 1;
+    this._attention = attention;
+    this.emit();
+  }
+
   /** Reload the session list now. Safe to call concurrently with polling — a
    * stale response (superseded by a newer refresh) is discarded. */
   async refresh(opts: { silent?: boolean } = {}): Promise<void> {
@@ -358,6 +375,7 @@ export class SessionListModel {
     // Events that arrive while the read is out are applied again on top of it.
     const target = this.opts.store?.();
     const read = target?.beginRead();
+    const attentionEvents = this.attentionEvents;
     try {
       const overview = this.opts.client.listSessionOverview;
       const [list, providerLimits] = await Promise.all([
@@ -371,7 +389,7 @@ export class SessionListModel {
       ]);
       const sessions = list.sessions;
       if (req !== this.reqSeq) return; // superseded
-      this._attention = list.attention;
+      if (this.attentionEvents === attentionEvents) this._attention = list.attention;
       this.sessionReordering = list.sessionReordering === true;
       this._sessions = sessions
         .filter((session) => !this.pendingDeletes.has(session.sessionId))

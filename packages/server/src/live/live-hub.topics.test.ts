@@ -83,7 +83,12 @@ function world({ topics = true, now }: { topics?: boolean; now?: () => number } 
       overviewScope: async (userId) =>
         userId === undefined
           ? { all: true }
-          : { all: false, projectIds: new Set(readable.get(userId) ?? []), unassigned: false },
+          : {
+              all: false,
+              projectIds: new Set(readable.get(userId) ?? []),
+              // root administers the server and reads no project.
+              unassigned: userId === 'root',
+            },
     },
     domainEvents,
     ...(now === undefined ? {} : { now }),
@@ -148,6 +153,33 @@ describe('LiveHub domain-event topics', () => {
     w.bus!.publish('project:p1', lifecycle('p1', 1));
     w.bus!.publish('project:p2', lifecycle('p2', 1));
     expect(socket.of('domain').map(({ topic }) => topic)).toEqual(['project:p1']);
+    w.hub.close();
+  });
+
+  // The server's conditions name its secret store and Updater; the session
+  // list shows them to administrators alone, and so must the topic.
+  it('delivers server attention to administrators and the single operator only', async () => {
+    const w = world();
+    const root = w.connect('root');
+    const alice = w.connect('alice');
+    const operator = w.connect();
+    for (const socket of [root, alice, operator])
+      await socket.client({
+        k: 'topics.sub',
+        topics: [{ topic: 'server:attention' }, { topic: 'server:other' }],
+      });
+    w.bus!.publish('server:attention', { t: 'server.attention', rev: 1, attention: [] });
+    for (const socket of [root, operator]) {
+      expect(socket.of('domain').map(({ topic }) => topic)).toEqual(['server:attention']);
+      expect(socket.of('topic_ended').map(({ topic }) => topic)).toEqual(['server:other']);
+    }
+    expect(alice.of('domain')).toEqual([]);
+    expect(alice.of('topic_ended').map(({ topic, reason }) => [topic, reason])).toEqual(
+      expect.arrayContaining([
+        ['server:attention', 'forbidden'],
+        ['server:other', 'forbidden'],
+      ]),
+    );
     w.hub.close();
   });
 
