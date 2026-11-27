@@ -7,7 +7,6 @@
     "withEgressDestinationTransaction": "a0ebe517 31b5d7bf 5b88b44f 8759019c 08ff961f 70fe58e2 b673e17e 2bd4b629",
     "projectChanges": "f37aa7d7 2663793c b6fe3740 badf7a4c f10613f7 1c9a7b64 06e44ada 06199e81",
     "httpMcpConnections": "33fc7ea2 ca31801a 8948a4b1 f7b898a0 38423e51 f5d23176 dd1c7002 a1fa39eb",
-    "previewShares": "f44cb2bf e395cb1f 1113502b 3ebd6211 64d84009 8de7b867 67ddb656 215c4353",
     "turnRecords": "fd1af23a 6a08968b c2890940 d6737a6b c09bbd32 5a058dfc cd1dd319 2b70683b",
     "messageProjection": "1928225a 7584ec3a eccd1acb cfab89cd 44bb92d4 566d80a6 534a4fcd 459a209b",
     "attachments": "ebe3274d b333f9a8 37b350c5 4e0591bb 598ab59c 8dd65c45 7839af9c 19386ecd",
@@ -42,9 +41,6 @@
     "updateProjectState": "a757ca0b 4d2da1ca d6de5ceb 1e7f9b95 551a918f 7eb2e92e ccfac143 c7ea9961",
     "setSessionAutomation": "0e4e135d 840f5ca3 4273e0ce 0fbbfa17 cad9095b cba10ba9 5740958d 1c018f5c",
     "setSessionAutomationStatus": "8c186878 f5137abc 1ebfa799 a8ddec98 dad07ac5 5c4a3f2e e4cd2684 3b3a14cf",
-    "createPublicPreviewShare": "2c2a88bf 192fef57 cddc0e06 b97b11c6 1c1e64b3 f97e4406 3f376678 7c35f1da",
-    "transitionPublicPreviewShare": "18ba892e c5284db1 d8d63c0d 6cdd04a0 dbd64f91 04e05b20 dee77dad e411cda9",
-    "listPublicPreviewSharesDue": "e176e75c fa33f7fb 15f2823d f8997c6d 7a7a0059 474e9371 0896ea27 24c46543",
     "listDuePushReceipts": "ec5d9c81 b1d006bd 12e15d1a 87d59923 4431de40 e0498a68 b7d65056 eb6a0a52"
   },
   "imports": [

@@ -458,3 +458,5 @@ export {
   type NetworkShareCredentials,
   type ProjectNetworkShareFolderRecord,
 } from './network-shares.js';
+
+export type { PublicPreviewShareTransitionPatch } from './preview-shares.js';

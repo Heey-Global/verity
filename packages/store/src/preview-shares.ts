@@ -65,11 +65,20 @@ export interface PublicPreviewShareCreateInput {
   expiresAt: Date;
 }
 
+export interface PublicPreviewShareTransitionPatch {
+  connectorContainerId?: string | null;
+  targetPort?: number;
+  containerGeneration?: string;
+  failure?: string | null;
+  revokedAt?: Date | null;
+}
+
 export class PreviewShareStore {
   constructor(
     private readonly getDb: () => Kysely<Database>,
     private readonly encryptSecret: (value: string | null) => string | null,
     private readonly decryptSecret: (value: string | null) => string | null,
+    private readonly readPublicPreviewShare: PreviewShareStore['getPublicPreviewShare'],
   ) {}
 
   private get db(): Kysely<Database> {
@@ -167,7 +176,6 @@ export class PreviewShareStore {
 
   async createPublicPreviewShare(
     input: PublicPreviewShareCreateInput,
-    getPublicPreviewShare: (id: string) => Promise<PublicPreviewShareRecord | undefined>,
   ): Promise<PublicPreviewShareRecord> {
     const row = await this.db
       .insertInto('public_preview_shares')
@@ -201,7 +209,7 @@ export class PreviewShareStore {
       .where('id', 'in', this.db.selectFrom('public_preview_pin_locks').select('share_id'))
       .execute();
     await this.db.deleteFrom('public_preview_pin_locks').where('share_id', '=', row.id).execute();
-    return (await getPublicPreviewShare(row.id))!;
+    return (await this.readPublicPreviewShare(row.id))!;
   }
 
   /** PIN lockout blocks new authentication, never the active connector or cookies. */
@@ -273,13 +281,7 @@ export class PreviewShareStore {
     id: string,
     from: readonly PublicPreviewShareState[],
     to: PublicPreviewShareState,
-    patch: {
-      connectorContainerId?: string | null;
-      targetPort?: number;
-      containerGeneration?: string;
-      failure?: string | null;
-      revokedAt?: Date | null;
-    } = {},
+    patch: PublicPreviewShareTransitionPatch = {},
   ): Promise<PublicPreviewShareRecord | undefined> {
     if (from.length === 0) return undefined;
     const row = await this.db
