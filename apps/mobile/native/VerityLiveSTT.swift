@@ -777,6 +777,10 @@ private final class LiveSTTService {
 
   func stopMeeting() async throws {
     guard dictationOwner == nil else { return }
+    if activeEngine == nil, meetingId != nil {
+      clear()
+      return
+    }
     try await stop()
   }
 

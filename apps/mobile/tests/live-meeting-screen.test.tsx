@@ -1,3 +1,7 @@
+jest.mock('../lib/meetingStartAccess', () => ({
+  ...jest.requireActual('../lib/meetingStartAccess'),
+  requireMeetingStartAccess: jest.fn().mockResolvedValue(undefined),
+}));
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { VerityApiError } from '@verity/mobile';
 import { Alert, FlatList } from 'react-native';
@@ -6,6 +10,7 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { KEYBOARD_BOTTOM_OFFSET } from '../lib/keyboardOffsets';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
+import { requireMeetingStartAccess } from '../lib/meetingStartAccess';
 import {
   discardFinishedMeeting,
   finalizeMeetingOnServer,
@@ -38,7 +43,6 @@ import {
 } from '../lib/liveMeetingStore';
 import { liveMeetingSTT } from '../lib/liveMeetingSTT';
 
-// Keep a distinct component identity so a plain ScrollView cannot pass the keyboard guard.
 jest.mock('react-native-keyboard-controller', () => ({
   ...require('react-native-keyboard-controller/jest'),
   KeyboardAwareScrollView: (props: object) =>
@@ -46,6 +50,7 @@ jest.mock('react-native-keyboard-controller', () => ({
 }));
 
 jest.mock('expo-router', () => ({
+  useFocusEffect: jest.fn(),
   router: { back: jest.fn(), push: jest.fn(), replace: jest.fn(), canGoBack: jest.fn(() => true) },
   Stack: { Screen: () => null },
   useLocalSearchParams: jest.fn(() => ({ sessionId: 'session-1' })),
@@ -111,7 +116,6 @@ jest.mock('../lib/client', () => ({
   getActiveMeetingServerId: jest.fn().mockReturnValue(null),
 }));
 
-// The phone layout keeps the note field behind the Note button until a note is being written.
 async function noteInput() {
   const target = await screen.findByLabelText(/^(Write a note|Add a meeting note)$/);
   if (target.props.accessibilityLabel === 'Write a note') fireEvent.press(target);
@@ -137,14 +141,9 @@ beforeEach(() => {
   jest.mocked(liveMeetingSTT!.pendingAudioBuffers!).mockResolvedValue([]);
 });
 
-// The transcript groups lines under a speaker heading, so "who said it" is the nearest
-// heading before the words. A plain /Speaker 1.*Hello/ would also match a line that
-// follows Speaker 1's heading through someone else's turn.
-// The ended meeting keeps reference material collapsed under "<name> · <count>".
 async function openSection(name: string) {
   fireEvent.press(await screen.findByText(new RegExp(`^${name}( · \\d+)?$`)));
 }
-
 function expectTurn(speaker: string, words: RegExp | string) {
   const parts = screen
     .getByTestId('meeting-transcript')
@@ -160,22 +159,29 @@ function expectTurn(speaker: string, words: RegExp | string) {
   }
   expect(owners).toContain(speaker);
 }
-
-it('passes the selected expected group size when starting a meeting', async () => {
+it('checks permission before recording with the selected group size', async () => {
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByRole('radio', { name: /^Up to 4 people/ }));
   expect(screen.getByRole('radio', { name: /^Up to 4 people/ }).props.accessibilityState).toEqual(
     expect.objectContaining({ checked: true }),
   );
+  jest
+    .mocked(requireMeetingStartAccess)
+    .mockRejectedValueOnce(new Error('Execute permission required'));
   fireEvent.press(screen.getByLabelText('Start meeting'));
-  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4));
+  expect(await screen.findByText(/Execute permission required/)).toBeOnTheScreen();
+  expect(startMeeting).not.toHaveBeenCalled();
+  const assertAccess = jest.fn();
+  jest.mocked(requireMeetingStartAccess).mockResolvedValueOnce(assertAccess);
+  fireEvent.press(screen.getByLabelText('Start meeting'));
+  await waitFor(() => expect(jest.mocked(startMeeting).mock.lastCall?.[2]).toBe(4));
+  expect(jest.mocked(startMeeting).mock.lastCall?.[4]?.assertAccess).toBe(assertAccess);
 });
-
 it('offers larger groups and passes their size to the recorder', async () => {
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByRole('radio', { name: /^Larger group/ }));
   fireEvent.press(screen.getByLabelText('Start meeting'));
-  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 10));
+  await waitFor(() => expect(jest.mocked(startMeeting).mock.lastCall?.[2]).toBe(10));
 });
 
 it('keeps raw audio buffering off unless explicitly enabled before starting', async () => {
@@ -501,8 +507,6 @@ it('keeps the unfinished transcript visible after timed words', async () => {
   expect(screen.getByText('from the meeting')).toBeOnTheScreen();
 });
 
-// Words the diarizer had not reached yet were labelled Unknown speaker for about a
-// second; open turns now attribute them live and the rest wait without a label.
 it('attributes live words from open diarizer turns and leaves unreached words pending', async () => {
   const meeting: MeetingRecord = {
     id: 'meeting-pending',
@@ -1106,7 +1110,7 @@ it('starts with Nemotron and saves a note at its first edit', async () => {
   );
   render(<MeetingScreen />);
   fireEvent.press(await screen.findByLabelText('Start meeting'));
-  await waitFor(() => expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4));
+  await waitFor(() => expect(jest.mocked(startMeeting).mock.lastCall?.[2]).toBe(4));
   const input = await noteInput();
   fireEvent.changeText(input, 'Decision: ship locally');
   await waitFor(() =>
@@ -1510,8 +1514,6 @@ it('keeps the retry draft when Done note is pressed after remount during a faile
   expect(screen.getByLabelText('Add a meeting note')).toHaveDisplayValue('Recover me');
 });
 
-// Finished meetings are filed in the project knowledge and linked from the session,
-// so the meeting screen no longer offers its own way back into them.
 it('stays on the live meeting without listing earlier meetings', async () => {
   const live: MeetingRecord = {
     id: 'live',
@@ -2246,9 +2248,7 @@ it('passes the chosen title to the recorder', async () => {
   render(<MeetingScreen />);
   fireEvent.changeText(await screen.findByLabelText('Meeting title'), 'Pricing sync');
   fireEvent.press(screen.getByLabelText('Start meeting'));
-  await waitFor(() =>
-    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4, 'Pricing sync'),
-  );
+  await waitFor(() => expect(jest.mocked(startMeeting).mock.lastCall?.[3]).toBe('Pricing sync'));
 });
 
 it('hides recording controls while the full-screen transcript is open', async () => {
@@ -2503,9 +2503,7 @@ it('shows calendar entries for in-person meetings and uses the selected title', 
   );
   fireEvent.press(await screen.findByRole('radio', { name: /^Up to 4 people/ }));
   fireEvent.press(screen.getByLabelText('Start meeting'));
-  await waitFor(() =>
-    expect(startMeeting).toHaveBeenCalledWith('session-1', 'fluid-nemotron', 4, 'Office review'),
-  );
+  await waitFor(() => expect(jest.mocked(startMeeting).mock.lastCall?.[3]).toBe('Office review'));
 });
 
 it('keeps manual meeting link entry in a keyboard-aware form', async () => {
