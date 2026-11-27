@@ -332,51 +332,41 @@ export interface EventSink {
  * hand out — an event that violates the schema.
  */
 export class EventStore implements EventSink {
-  listProjectRepositories(projectId: string, options: { includeRemoved?: boolean } = {}) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).list(
-      projectId,
-      options,
-    );
+  private readonly projectRepositories = new ProjectRepositoryStore(
+    () => this.db,
+    (id) => this.getProject(id),
+  );
+
+  listProjectRepositories(projectId: string, options?: { includeRemoved?: boolean }) {
+    return this.projectRepositories.list(projectId, options);
   }
 
   getProjectRepository(projectId: string, repositoryId?: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).get(
-      projectId,
-      repositoryId,
-    );
+    return this.projectRepositories.get(projectId, repositoryId);
   }
 
   addProjectRepository(input: AddProjectRepositoryInput) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).add(input);
+    return this.projectRepositories.add(input);
   }
 
   removeProjectRepository(projectId: string, repositoryId: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).remove(
-      projectId,
-      repositoryId,
-    );
+    return this.projectRepositories.remove(projectId, repositoryId);
   }
 
   recordRepositoryPullRequest(...args: Parameters<ProjectRepositoryStore['recordPullRequest']>) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).recordPullRequest(
-      ...args,
-    );
+    return this.projectRepositories.recordPullRequest(...args);
   }
 
   sessionRepositoryWorkspaceSessionId(worktree: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).workspaceSessionId(
-      worktree,
-    );
+    return this.projectRepositories.workspaceSessionId(worktree);
   }
 
   listSessionRepositoryWorkspaces(sessionId: string) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).listWorkspaces(
-      sessionId,
-    );
+    return this.projectRepositories.listWorkspaces(sessionId);
   }
 
   upsertSessionRepositoryWorkspace(input: Omit<SessionRepositoryWorkspaceRecord, 'createdAt'>) {
-    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).upsertWorkspace(input);
+    return this.projectRepositories.upsertWorkspace(input);
   }
 
   private egressDestinationMutation: EgressDestinationMutation = unguardedEgressDestinationMutation;
