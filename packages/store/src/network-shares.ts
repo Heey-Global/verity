@@ -300,11 +300,13 @@ export class NetworkShareStore {
   }): Promise<string | undefined> {
     const path = normalizeNetworkSharePath(input.path);
     return this.db.transaction().execute(async (tx) => {
+      // Locked exclusively so grants on one share run one after another: two
+      // first grants of the same folder must not both insert.
       const connection = await tx
         .selectFrom('network_share_connections')
         .select('target_revision')
         .where('id', '=', input.connectionId)
-        .forShare()
+        .forUpdate()
         .executeTakeFirst();
       if (!connection) return undefined;
       if (input.targetRevision !== undefined && input.targetRevision !== connection.target_revision)
