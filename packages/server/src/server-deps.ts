@@ -68,6 +68,7 @@ import type { SshKeygenSpawner } from './signing-key.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
 import type { TeamAvailability } from './uplink-feature-state.js';
 import type { WorktreeProvisioner } from './worktree.js';
+import type { InspectionTrust } from './sandbox-updates.js';
 
 export interface ServerDeps {
   dependencyCapacity?: DependencyCapacity | undefined;
@@ -435,6 +436,12 @@ export interface ServerDeps {
    * container that had already died. Absent → the route serves the cached row.
    */
   reconcileProjectState?: (project: ProjectRecord) => Promise<ProjectRecord>;
+  /**
+   * Keeps project states in step with their sandbox containers from Docker's
+   * event stream, so reads need not inspect them. Started with the server and
+   * stopped when it closes. Absent → reads compare as before.
+   */
+  containerLiveness?: ({ start(): () => Promise<void> } & Partial<InspectionTrust>) | undefined;
   /**
    * Lists all GitHub-App installation repositories that can become Verity projects.
    * Unlike `listProjects`, this includes rows that are still `state='absent'`
