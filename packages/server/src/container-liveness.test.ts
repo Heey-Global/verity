@@ -44,9 +44,10 @@ function setup(rows: ProjectRecord[], options: { stream?: boolean } = {}) {
     projects.set(id, next);
     return next;
   });
+  const getProject = vi.fn(async (id: string) => projects.get(id));
   const liveness = createContainerLiveness({
     eventStore: {
-      getProject: async (id: string) => projects.get(id),
+      getProject,
       listProjects: async () => [...projects.values()],
       updateProjectState,
     },
@@ -59,6 +60,7 @@ function setup(rows: ProjectRecord[], options: { stream?: boolean } = {}) {
     liveness,
     inspectContainer,
     updateProjectState,
+    getProject,
     stopStream,
     handlers: () => handlers!,
     stopContainer: (projectId: string) => running.set(`dev-${projectId}`, false),
@@ -105,7 +107,7 @@ describe('createContainerLiveness', () => {
     const stop = l.liveness.start();
     expect(l.liveness.following()).toBe(false);
     l.handlers().onConnected();
-    expect(l.liveness.following()).toBe(true);
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
     l.handlers().onDisconnected(new Error('daemon restarting'));
     expect(l.liveness.following()).toBe(false);
 
@@ -132,6 +134,67 @@ describe('createContainerLiveness', () => {
     await stop();
     l.inspectContainer.mockClear();
     await vi.advanceTimersByTimeAsync(600_000);
+    expect(l.inspectContainer).not.toHaveBeenCalled();
+  });
+
+  // Until every project has been compared after the stream opened, the rows
+  // may still miss what happened while it was down.
+  it('lets reads rely on the rows only once the catch-up is done', async () => {
+    const l = setup([project('p1')]);
+    let release!: () => void;
+    l.inspectContainer.mockImplementationOnce(
+      (id: string) => new Promise((resolve) => (release = () => resolve({ id, running: true }))),
+    );
+    const stop = l.liveness.start();
+    l.handlers().onConnected();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(l.liveness.following()).toBe(false);
+    release();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    await stop();
+  });
+
+  // A catch-up folded into a running sweep would compare only the projects
+  // that sweep filtered for, with rows read before what it must catch up on.
+  it('runs a full comparison asked for during a filtered sweep after it', async () => {
+    vi.useFakeTimers();
+    const l = setup([project('p1'), project('p2', { state: 'container_starting' })]);
+    let release!: () => void;
+    l.inspectContainer.mockImplementationOnce(
+      (id: string) => new Promise((resolve) => (release = () => resolve({ id, running: true }))),
+    );
+    const stop = l.liveness.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(l.inspectContainer.mock.calls).toEqual([['dev-p2']]);
+    l.handlers().onConnected();
+    release();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    expect(l.inspectContainer.mock.calls.map(([name]) => name)).toContain('dev-p1');
+    await stop();
+  });
+
+  // Stopping comes with the server closing its store: a comparison still
+  // writing then, or one an event starts afterwards, would write into it.
+  it('waits for comparisons under way when stopped, and starts no more', async () => {
+    const l = setup([project('p1')]);
+    let release!: () => void;
+    l.inspectContainer.mockImplementationOnce(
+      (id: string) => new Promise((resolve) => (release = () => resolve({ id, running: false }))),
+    );
+    const stop = l.liveness.start();
+    l.handlers().onEvent('p1', 'die');
+    await vi.waitFor(() => expect(release).toBeDefined());
+    let stoppedAll = false;
+    const stopping = stop().then(() => (stoppedAll = true));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stoppedAll).toBe(false);
+    release();
+    await stopping;
+    l.inspectContainer.mockClear();
+    l.getProject.mockClear();
+    l.handlers().onEvent('p1', 'start');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(l.getProject).not.toHaveBeenCalled();
     expect(l.inspectContainer).not.toHaveBeenCalled();
   });
 

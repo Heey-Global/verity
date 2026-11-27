@@ -62,12 +62,23 @@ export function createContainerLiveness(options: {
       provisioner?.recoverInterruptedSleep?.bind(provisioner),
       provisioner?.recoverInterruptedWake?.bind(provisioner),
     );
+  /** The stream is open, though its catch-up comparison may still run. */
+  let open = false;
+  /** Open and caught up: reads may rely on the rows. */
   let connected = false;
+  let connections = 0;
+  let stopped = false;
+  const inFlight = new Set<Promise<void>>();
+  const track = (work: Promise<void>): void => {
+    inFlight.add(work);
+    void work.finally(() => inFlight.delete(work));
+  };
 
   // One comparison per project at a time, and one more if an event arrived
   // meanwhile: a burst of events ends in the state the container ended in.
   const pending = new Map<string, { again: boolean }>();
   const reconcileProject = (projectId: string): void => {
+    if (stopped) return;
     const running = pending.get(projectId);
     if (running !== undefined) {
       running.again = true;
@@ -75,33 +86,55 @@ export function createContainerLiveness(options: {
     }
     const entry = { again: false };
     pending.set(projectId, entry);
-    void (async () => {
-      try {
-        do {
-          entry.again = false;
-          const project = await eventStore.getProject(projectId);
-          if (project !== undefined) await reconcile([project]);
-        } while (entry.again);
-      } catch (error) {
-        log.warn(`verity: could not compare project ${projectId} with its sandbox`, error);
-      } finally {
-        pending.delete(projectId);
-      }
-    })();
+    track(
+      (async () => {
+        try {
+          do {
+            entry.again = false;
+            try {
+              const project = await eventStore.getProject(projectId);
+              if (project !== undefined && !stopped) await reconcile([project]);
+            } catch (error) {
+              log.warn(`verity: could not compare project ${projectId} with its sandbox`, error);
+            }
+          } while (entry.again && !stopped);
+        } finally {
+          pending.delete(projectId);
+        }
+      })(),
+    );
   };
 
+  // One sweep at a time. A full comparison asked for while another sweep runs
+  // is not folded into it, which may be filtered or have read the projects
+  // before what it must catch up on: one more full pass follows it.
   let sweeping: Promise<void> | undefined;
-  const sweep = (only?: (project: ProjectRecord) => boolean): Promise<void> =>
-    (sweeping ??= (async () => {
+  let fullQueued = false;
+  const sweep = (only?: (project: ProjectRecord) => boolean): Promise<void> => {
+    if (sweeping !== undefined) {
+      if (only === undefined) fullQueued = true;
+      return sweeping;
+    }
+    sweeping = (async () => {
+      let filter = only;
       try {
-        const projects = await eventStore.listProjects();
-        await reconcile(only === undefined ? projects : projects.filter(only));
-      } catch (error) {
-        log.warn('verity: could not compare projects with their sandboxes', error);
+        do {
+          fullQueued = false;
+          try {
+            const projects = await eventStore.listProjects();
+            if (stopped) return;
+            await reconcile(filter === undefined ? projects : projects.filter(filter));
+          } catch (error) {
+            log.warn('verity: could not compare projects with their sandboxes', error);
+          }
+          filter = undefined;
+        } while (fullQueued && !stopped);
       } finally {
         sweeping = undefined;
       }
-    })());
+    })();
+    return sweeping;
+  };
 
   return {
     reconcile,
@@ -110,11 +143,17 @@ export function createContainerLiveness(options: {
       const stopStream = docker.followContainerEvents?.({
         onEvent: reconcileProject,
         onConnected: () => {
-          connected = true;
-          void sweep();
+          open = true;
+          const connection = ++connections;
+          // Events from before the stream opened are not replayed: reads keep
+          // comparing until every project has been compared once.
+          void sweep().then(() => {
+            if (open && connection === connections && !stopped) connected = true;
+          });
         },
         onDisconnected: (error) => {
           if (connected) log.warn('verity: Docker event stream ended; reads compare again', error);
+          open = false;
           connected = false;
         },
       });
@@ -126,11 +165,13 @@ export function createContainerLiveness(options: {
       full.unref?.();
       transitions.unref?.();
       return async () => {
+        stopped = true;
         clearInterval(full);
         clearInterval(transitions);
+        open = false;
         connected = false;
         await stopStream?.();
-        await sweeping;
+        await Promise.all([sweeping, ...inFlight]);
       };
     },
   };
