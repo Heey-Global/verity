@@ -13,6 +13,13 @@ import {
   knowledgePublishSummary,
 } from './knowledgePublishSummary.js';
 import { matrixSendSummary } from './matrixSendSummary.js';
+import {
+  NETWORK_SHARE_DELETE_WARNING,
+  networkShareApprovalEffect,
+  networkShareApprovalSummary,
+  networkShareApprovalTitle,
+  networkShareItemName,
+} from './networkShareApprovalSummary.js';
 import { packageInstallSummary } from './packageInstallSummary.js';
 import { schedulingApprovalSummary } from './schedulingSummary.js';
 import {
@@ -209,6 +216,30 @@ function summarize(
     return {
       title: `Send Matrix message to ${spellOutBidiControls(matrix.roomName)}?`,
       lines: [{ kind: 'text', text: spellOutBidiControls(matrix.body) }],
+    };
+  const share = tool === 'verity_network_shares' ? networkShareApprovalSummary(input) : null;
+  if (share !== null)
+    return {
+      title: spellOutBidiControls(networkShareApprovalTitle(share)),
+      lines: [
+        { kind: 'text', text: spellOutBidiControls(share.location) },
+        ...(share.destination === null
+          ? []
+          : [
+              {
+                kind: 'text' as const,
+                text: spellOutBidiControls(
+                  share.action === 'rename'
+                    ? `New name: ${networkShareItemName(share.destination)}`
+                    : `To ${share.destination}`,
+                ),
+              },
+            ]),
+        { kind: 'text', text: networkShareApprovalEffect(share) },
+        ...(share.action === 'delete' && share.kind === 'file'
+          ? [{ kind: 'text' as const, text: NETWORK_SHARE_DELETE_WARNING }]
+          : []),
+      ],
     };
   const gmail = tool === 'verity_gmail' ? gmailSendSummary(input) : null;
   if (gmail !== null)

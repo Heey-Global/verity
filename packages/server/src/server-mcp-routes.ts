@@ -71,8 +71,7 @@ import { hasGoogleWorkspaceScope } from './google-oauth-scopes.js';
 import { resolveGoogleServiceCredentialForTurn } from './google-service-credentials.js';
 import { assertWorkspaceWritePermission } from './google-workspace-tool-types.js';
 import { httpMcpAuthorization } from './http-mcp-oauth.js';
-import { createNetworkShareTool } from './network-share-tool.js';
-import { SmbClient } from './network-share-smb.js';
+import { createServerNetworkShareTool } from './network-share-tool.js';
 import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
 import {
   createProjectSourceFolder,
@@ -847,12 +846,7 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
       isPlanningTurn: (id) => conductor.isPlanningTurn?.(id) === true,
       warn: (err) => app.log.warn({ err }, 'Agent vulnerability scan failed'),
     });
-    const networkShareTool = createNetworkShareTool({
-      store: deps.eventStore,
-      client: deps.networkShareClient ?? new SmbClient(),
-      isSealed: () => deps.secretCipher?.isSealed() === true,
-      logWrite: (entry) => app.log.info(entry, 'Agent wrote to a network share'),
-    });
+    const networkShareTool = createServerNetworkShareTool(deps, app.log);
     const gateway = createMcpGateway({
       ...gatewayDeps,
       capabilityVersionForCaller: async (caller) => {
@@ -2038,11 +2032,14 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
           request: input,
           userId: (await runningTurnInitiator(sessionId, turnId))?.userId,
         });
-        // The card shows the stored draft itself, never the agent's description of it.
-        const scheduling =
-          toolName === 'verity_scheduling'
-            ? await schedulingTool.presentation({ projectId, sessionId, request: input })
-            : undefined;
+        // The card shows the stored draft itself, never the agent's description of it;
+        // a network share change is shown by its folders' names, not the agent's IDs.
+        const presentation =
+          toolName === 'verity_network_shares'
+            ? await networkShareTool.presentation({ projectId, sessionId, turnId, request: input })
+            : toolName === 'verity_scheduling'
+              ? await schedulingTool.presentation({ projectId, sessionId, request: input })
+              : undefined;
         const coordinationPresentation =
           toolName === 'verity_session_coordinate'
             ? await coordination.presentation({ projectId, sessionId, turnId, request: input })
@@ -2057,7 +2054,7 @@ export function registerServerMcpRoutes(routeDeps: ServerMcpRouteDeps) {
               ...input,
               ...coordinationPresentation,
               ...(googleAccount ? { googleAccount } : {}),
-              ...scheduling,
+              ...presentation,
               ...(toolName === 'verity_qa_analysis' &&
               (input as { action?: string }).action === 'request_assignment' &&
               authorizationSnapshot

@@ -393,6 +393,21 @@ export class NetworkShareStore {
     return Number(result.numDeletedRows) > 0;
   }
 
+  /**
+   * Every folder path granted on a connection, for any project and including
+   * grants made for an earlier target: one granted again would point at the
+   * same path. Renaming, moving or deleting must leave these paths alone.
+   */
+  async grantedPaths(connectionId: string): Promise<string[]> {
+    const rows = await this.db
+      .selectFrom('project_network_share_folders')
+      .select('path')
+      .distinct()
+      .where('connection_id', '=', connectionId)
+      .execute();
+    return rows.map((row) => row.path);
+  }
+
   /** Number of projects using any network share, for the connectors overview. */
   async projectsUsingShares(): Promise<number> {
     const row = await this.db

@@ -45,6 +45,8 @@ export type NetworkShareErrorCode =
   | 'conflict'
   | 'too_large'
   | 'not_a_file'
+  | 'not_a_folder'
+  | 'not_empty'
   | 'timeout'
   | 'restore_failed'
   | 'interrupted'
@@ -58,16 +60,18 @@ const MESSAGES: Record<NetworkShareErrorCode, string> = {
     'The NAS does not offer SMB3 encryption. Enable SMB3 and encryption on the NAS.',
   share_not_found: 'The NAS has no shared folder with this name.',
   not_found: 'No such file or folder.',
-  already_exists: 'A file with this name already exists.',
+  already_exists: 'A file or folder with this name already exists.',
   access_denied: 'The NAS account may not do this here.',
-  conflict: 'The file changed on the share since it was read. Read it again before writing.',
+  conflict: 'The file changed on the share since it was read. Read it again before changing it.',
   too_large: `Files on network shares are limited to ${NETWORK_SHARE_MAX_FILE_BYTES / 1_000_000} MB.`,
   not_a_file: 'This is a folder, not a file.',
+  not_a_folder: 'This is a file, not a folder.',
+  not_empty: 'The folder is not empty. Only empty folders can be deleted.',
   timeout: 'The NAS did not answer in time.',
   restore_failed:
-    'The file changed during the write and could not be put back automatically. The previous version is kept next to it under a hidden .verity-….old name.',
+    'Someone else changed the file at the same moment, so it could not be put back automatically. The previous version is kept next to it under a hidden .verity-….old name.',
   interrupted:
-    'The connection to the NAS dropped during the write. The file may be missing from its name; its previous version is then kept next to it under a hidden .verity-….old name. Check the folder before writing again.',
+    'The connection to the NAS dropped during the change. The file may be missing from its name; its previous version is then kept next to it under a hidden .verity-….old name. Check the folder before changing it again.',
   failed: 'The network share operation failed.',
 };
 
@@ -104,20 +108,24 @@ function errorFor(status: string): NetworkShareError {
               ? 'access_denied'
               : status === 'NT_STATUS_FILE_IS_A_DIRECTORY'
                 ? 'not_a_file'
-                : status === 'NT_STATUS_HOST_UNREACHABLE' ||
-                    status === 'NT_STATUS_CONNECTION_REFUSED' ||
-                    status === 'NT_STATUS_IO_TIMEOUT' ||
-                    status === 'NT_STATUS_UNSUCCESSFUL' ||
-                    status === 'NT_STATUS_NETWORK_UNREACHABLE' ||
-                    status === 'NT_STATUS_CONNECTION_RESET' ||
-                    status === 'NT_STATUS_CONNECTION_DISCONNECTED' ||
-                    status === 'NT_STATUS_INVALID_NETWORK_RESPONSE'
-                  ? 'unreachable'
-                  : status === 'NT_STATUS_NOT_SUPPORTED' ||
-                      status === 'NT_STATUS_ACCESS_DENIED_ENCRYPTION' ||
-                      status === 'NT_STATUS_INVALID_PARAMETER_MIX'
-                    ? 'encryption_unavailable'
-                    : 'failed';
+                : status === 'NT_STATUS_NOT_A_DIRECTORY'
+                  ? 'not_a_folder'
+                  : status === 'NT_STATUS_DIRECTORY_NOT_EMPTY'
+                    ? 'not_empty'
+                    : status === 'NT_STATUS_HOST_UNREACHABLE' ||
+                        status === 'NT_STATUS_CONNECTION_REFUSED' ||
+                        status === 'NT_STATUS_IO_TIMEOUT' ||
+                        status === 'NT_STATUS_UNSUCCESSFUL' ||
+                        status === 'NT_STATUS_NETWORK_UNREACHABLE' ||
+                        status === 'NT_STATUS_CONNECTION_RESET' ||
+                        status === 'NT_STATUS_CONNECTION_DISCONNECTED' ||
+                        status === 'NT_STATUS_INVALID_NETWORK_RESPONSE'
+                      ? 'unreachable'
+                      : status === 'NT_STATUS_NOT_SUPPORTED' ||
+                          status === 'NT_STATUS_ACCESS_DENIED_ENCRYPTION' ||
+                          status === 'NT_STATUS_INVALID_PARAMETER_MIX'
+                        ? 'encryption_unavailable'
+                        : 'failed';
   return new NetworkShareError(code, status);
 }
 
@@ -302,6 +310,93 @@ export function parseInfo(output: string): { kind: 'folder' | 'file'; size: numb
   return { kind, size };
 }
 
+type Run = (target: SmbTarget, commands: readonly string[], download?: string) => Promise<string[]>;
+
+/**
+ * Recovery for a change that moves a file aside under the hidden `previous`
+ * name. `recover` puts it back (and drops an upload under `temporary`) and
+ * throws the error that tells the agent where the original is.
+ */
+function asideRecovery(
+  run: Run,
+  target: SmbTarget,
+  path: string,
+  previous: string,
+  temporary?: string,
+): (error: unknown, mayHaveMoved: boolean) => Promise<never> {
+  /**
+   * `aside` means the server confirmed the original is still under its hidden
+   * name; `unknown` means the server could not be reached to ask, so the
+   * caller's own error stands.
+   */
+  const restore = async (): Promise<'restored' | 'aside' | 'unknown'> => {
+    const results = await run(target, [
+      `rename ${remote(previous)} ${remote(path)}`,
+      ...(temporary === undefined ? [] : [`del ${remote(temporary)}`]),
+    ]).catch(() => undefined);
+    if (results === undefined) return 'unknown';
+    const error = statusOf(results[0]);
+    // Not found: nothing was moved aside, the original never left its name.
+    return error === undefined || error.code === 'not_found' ? 'restored' : 'aside';
+  };
+  /**
+   * If the server cannot be asked and the original may already be under its
+   * hidden name, say so instead of a plain connection error that would invite
+   * writing a fresh file over the gap.
+   */
+  return async (error, mayHaveMoved) => {
+    const outcome = await restore();
+    if (outcome === 'aside') throw new NetworkShareError('restore_failed');
+    if (outcome === 'unknown' && mayHaveMoved) throw new NetworkShareError('interrupted');
+    throw error;
+  };
+}
+
+/**
+ * Moves the file at `path` aside under `previous` and checks that the moved
+ * bytes are `expectedVersion`. Moving is atomic, so whatever another writer
+ * saved before that moment is what gets compared. On any mismatch or failure
+ * the file is put back and the matching error thrown.
+ */
+async function moveAsideMatching(
+  run: Run,
+  target: SmbTarget,
+  dir: string,
+  path: string,
+  previous: string,
+  expectedVersion: string,
+  recover: (error: unknown, mayHaveMoved: boolean) => Promise<never>,
+): Promise<void> {
+  const replacedCopy = join(dir, 'replaced');
+  let moved: string[];
+  try {
+    moved = await run(
+      target,
+      [`rename ${remote(path)} ${remote(previous)}`, `get ${remote(previous)} "${replacedCopy}"`],
+      replacedCopy,
+    );
+  } catch (error) {
+    // A failure may have cut the rename short after it took effect; the
+    // restore finds out which.
+    return recover(error, true);
+  }
+  const [moveAside, download] = moved;
+  const failure = statusOf(moveAside) ?? statusOf(download);
+  // A copy that cannot be read, or grew past the limit, proves nothing:
+  // never let it pass as some version of the original.
+  const copy =
+    failure === undefined
+      ? await stat(replacedCopy)
+          .then((info) =>
+            info.size > NETWORK_SHARE_MAX_FILE_BYTES ? undefined : readFile(replacedCopy),
+          )
+          .catch(() => undefined)
+      : undefined;
+  const replaced = copy === undefined ? undefined : contentVersion(copy);
+  if (failure !== undefined || replaced !== expectedVersion)
+    return recover(failure ?? new NetworkShareError('conflict'), statusOf(moveAside) === undefined);
+}
+
 /** Network share operations against one target, each step one encrypted smbclient run. */
 export class SmbClient {
   constructor(private readonly options: SmbClientOptions = {}) {}
@@ -423,36 +518,10 @@ export class SmbClient {
       // The original is downloaded for the comparison; keep that bounded too.
       if (current.size > NETWORK_SHARE_MAX_FILE_BYTES) throw new NetworkShareError('too_large');
       const local = join(dir, 'upload');
-      const replacedCopy = join(dir, 'replaced');
       await writeFile(local, content, { mode: 0o600 });
       const temporary = sibling(path, 'tmp');
       const previous = sibling(path, 'old');
-      /**
-       * Puts the original back and drops the upload. `aside` means the server
-       * confirmed the original is still under its hidden name; `unknown` means
-       * the server could not be reached to ask, so the caller's own error stands.
-       */
-      const restore = async (): Promise<'restored' | 'aside' | 'unknown'> => {
-        const results = await run(target, [
-          `rename ${remote(previous)} ${remote(path)}`,
-          `del ${remote(temporary)}`,
-        ]).catch(() => undefined);
-        if (results === undefined) return 'unknown';
-        const error = statusOf(results[0]);
-        // Not found: nothing was moved aside, the original never left its name.
-        return error === undefined || error.code === 'not_found' ? 'restored' : 'aside';
-      };
-      /**
-       * Restores after `error`. If the server cannot be asked and the original
-       * may already be under its hidden name, say so instead of a plain
-       * connection error that would invite writing a fresh file over the gap.
-       */
-      const recover = async (error: unknown, mayHaveMoved: boolean): Promise<never> => {
-        const outcome = await restore();
-        if (outcome === 'aside') throw new NetworkShareError('restore_failed');
-        if (outcome === 'unknown' && mayHaveMoved) throw new NetworkShareError('interrupted');
-        throw error;
-      };
+      const recover = asideRecovery(run, target, path, previous, temporary);
       // Upload first and check it: a write that cannot land must not move the
       // original aside (smbclient carries on after a failed command).
       try {
@@ -463,39 +532,7 @@ export class SmbClient {
         await run(target, [`del ${remote(temporary)}`]).catch(() => undefined);
         throw error;
       }
-      let moved: string[];
-      try {
-        moved = await run(
-          target,
-          [
-            `rename ${remote(path)} ${remote(previous)}`,
-            `get ${remote(previous)} "${replacedCopy}"`,
-          ],
-          replacedCopy,
-        );
-      } catch (error) {
-        // The upload just reached the server, so a failure here may have cut
-        // the rename short after it took effect; the restore finds out which.
-        return recover(error, true);
-      }
-      const [moveAside, download] = moved;
-      const failure = statusOf(moveAside) ?? statusOf(download);
-      // A copy that cannot be read, or grew past the limit, proves nothing:
-      // never let it pass as some version of the original.
-      const copy =
-        failure === undefined
-          ? await stat(replacedCopy)
-              .then((info) =>
-                info.size > NETWORK_SHARE_MAX_FILE_BYTES ? undefined : readFile(replacedCopy),
-              )
-              .catch(() => undefined)
-          : undefined;
-      const replaced = copy === undefined ? undefined : contentVersion(copy);
-      if (failure !== undefined || replaced !== expectedVersion)
-        return recover(
-          failure ?? new NetworkShareError('conflict'),
-          statusOf(moveAside) === undefined,
-        );
+      await moveAsideMatching(run, target, dir, path, previous, expectedVersion, recover);
       let published: string[];
       try {
         published = await run(target, [`rename ${remote(temporary)} ${remote(path)}`]);
@@ -514,6 +551,74 @@ export class SmbClient {
       return { kind: 'file', size: content.byteLength, version: contentVersion(content) };
     });
   }
+
+  /** Creates a folder; fails if the name is taken. */
+  async createFolder(target: SmbTarget, path: string): Promise<void> {
+    await this.batches(async (run) => {
+      succeeded((await run(target, [`mkdir ${remote(path)}`]))[0]);
+    });
+  }
+
+  /**
+   * Renames or moves a file or folder within the share. `kind` is what the
+   * approval named; anything else at `from` is refused. SMB refuses a target
+   * name that exists, so nothing is replaced.
+   */
+  async rename(
+    target: SmbTarget,
+    kind: 'file' | 'folder',
+    from: string,
+    to: string,
+  ): Promise<void> {
+    await this.batches(async (run) => {
+      await expectKind(run, target, from, kind);
+      succeeded((await run(target, [`rename ${remote(from)} ${remote(to)}`]))[0]);
+    });
+  }
+
+  /**
+   * Deletes a file whose content is still `expectedVersion`. The file is moved
+   * aside and compared first, as for {@link update}, so a version someone saved
+   * meanwhile is put back instead of deleted.
+   */
+  async deleteFile(target: SmbTarget, path: string, expectedVersion: string): Promise<void> {
+    await this.batches(async (run, dir) => {
+      const current = await expectKind(run, target, path, 'file');
+      if (current.size > NETWORK_SHARE_MAX_FILE_BYTES) throw new NetworkShareError('too_large');
+      const previous = sibling(path, 'old');
+      const recover = asideRecovery(run, target, path, previous);
+      await moveAsideMatching(run, target, dir, path, previous, expectedVersion, recover);
+      let removed: string[];
+      try {
+        removed = await run(target, [`del ${remote(previous)}`]);
+      } catch (error) {
+        return recover(error, true);
+      }
+      const removeError = statusOf(removed[0]);
+      if (removeError) return recover(removeError, true);
+    });
+  }
+
+  /** Deletes an empty folder; SMB refuses one with contents. */
+  async deleteFolder(target: SmbTarget, path: string): Promise<void> {
+    await this.batches(async (run) => {
+      await expectKind(run, target, path, 'folder');
+      succeeded((await run(target, [`rmdir ${remote(path)}`]))[0]);
+    });
+  }
+}
+
+/** Looks `path` up and refuses anything but `kind`. */
+async function expectKind(
+  run: Run,
+  target: SmbTarget,
+  path: string,
+  kind: 'file' | 'folder',
+): Promise<{ kind: 'folder' | 'file'; size: number }> {
+  const info = parseInfo(succeeded((await run(target, [`allinfo ${remote(path)}`]))[0]));
+  if (info.kind !== kind)
+    throw new NetworkShareError(kind === 'file' ? 'not_a_file' : 'not_a_folder');
+  return info;
 }
 
 /** A file's version: a digest of its exact bytes, so any change shows. */
@@ -529,5 +634,14 @@ function sibling(path: string, kind: 'tmp' | 'old'): string {
 /** What the routes and agent tools need from an SMB client; tests substitute a fake. */
 export type NetworkShareClient = Pick<
   SmbClient,
-  'test' | 'list' | 'info' | 'read' | 'create' | 'update'
+  | 'test'
+  | 'list'
+  | 'info'
+  | 'read'
+  | 'create'
+  | 'update'
+  | 'createFolder'
+  | 'rename'
+  | 'deleteFile'
+  | 'deleteFolder'
 >;

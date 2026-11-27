@@ -62,6 +62,10 @@ function fakeClient() {
     read: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+    createFolder: vi.fn(),
+    rename: vi.fn(),
+    deleteFile: vi.fn(),
+    deleteFolder: vi.fn(),
   };
   return { client, seen };
 }

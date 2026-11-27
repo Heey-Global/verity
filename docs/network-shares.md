@@ -62,7 +62,8 @@ In **Project settings › Connectors › Network shares**, choose **Add folder**
 pick the share, open the folder and choose **Use this folder**. Then choose:
 
 - **Read only** (the default): agents can browse folders and read files.
-- **Read and write**: agents can also create files and update existing ones.
+- **Read and write**: agents can also create files and folders, and, after an
+  approval card each time, replace, rename, move and delete them.
 
 The folder includes its subfolders. Tap a folder in the list to change its
 access or remove it from the project. Removing a folder or lowering its access
@@ -84,13 +85,37 @@ Agents in Claude and Codex sessions use these tools:
   never replaces a file.
 - `verity_share_update`: replaces a file. It needs the version from the agent's
   latest read and an approval card for every update.
+- `verity_share_create_folder`: a new folder. It fails if the name already
+  exists.
+- `verity_share_rename`: gives a file or folder a new name in the same folder.
+- `verity_share_move`: moves a file or folder within the granted folder, or into
+  another read-write folder the project was granted on the same share.
+- `verity_share_delete`: deletes a file, only while it still has the version from
+  the agent's latest read, or an empty folder.
+
+Replacing, renaming, moving and deleting each need an approval card. The card
+names the share and the folders as they appear in Verity, says what approving
+does, and shows the beginning of a replacement's new text; the full request is
+one tap away. Nothing is replaced at the destination of a rename or move: it
+fails if the name is taken.
+
+**Deleting is permanent.** SMB has no recycle bin of its own, and Verity keeps
+no copy. A deleted file can only be recovered if the NAS keeps a recycle bin for
+the share. On a Synology NAS, enable it in **Control Panel › Shared Folder ›
+Edit › Enable Recycle Bin**; other NAS systems and Samba (`vfs objects =
+recycle`) offer the same. Folders are only deleted when empty, and files larger
+than 10 MB cannot be deleted, because the version check reads them first.
+
+The granted folder itself cannot be renamed, moved or deleted. Neither can a
+folder that is granted to any project or contains one, nor can something be
+moved or renamed onto such a path: folder grants are paths, and the change would
+otherwise leave a project without its folder or point the grant at other files.
 
 If the NAS refuses the saved sign-in details, agents leave the share alone for
 five minutes instead of retrying, so a changed NAS password does not lock out
 the Verity server. Entering the new password in the share's settings ends the
 pause at once.
 
-Deleting, renaming and moving files and creating folders are not available.
 Reads are limited to files of 10 MB; the size is checked before and after the
 transfer, and a file that grows during it is bounded only by the timeout. A write is limited by the 2 MiB size of
 an agent tool request, so about 2 MB of text or 1.5 MB of base64-encoded
@@ -120,15 +145,18 @@ kept: the new file under the name, the original under a hidden
 Verity cannot reach the NAS to put it back, the agent is told to check the
 folder: the original then remains under its hidden name. The same applies if the Verity server stops during
 those moments: look for a hidden `.verity-….old` file next to the file and
-rename it back. Creating a file
+rename it back. Deleting a file follows the same steps: the file is moved
+aside, compared with the version the agent read and only then deleted; a
+changed file is put back. Creating a file
 fails instead of replacing one that appeared in the meantime. A program that
 keeps the file open and writes to it during those few moments is not detected.
 
 ## Logging
 
 Every agent call is recorded in the tool audit trail without its arguments.
-Writes are also logged by the server with project, folder, path and size; file
-contents and credentials are never logged.
+Every change is also logged by the server with project, folder, action, path,
+the destination of a rename or move and the size of a write; file contents and
+credentials are never logged.
 
 ## Server installation
 

@@ -10,6 +10,7 @@ import {
 } from '@verity/store';
 import {
   networkShareIsMutation,
+  networkShareNeedsApproval,
   networkShareRequestSchema,
   type NetworkShareRequest,
 } from './network-share-request.js';
@@ -17,32 +18,70 @@ import {
 import { createHash } from 'node:crypto';
 
 import { withNetworkShareTarget } from './network-share-routes.js';
-import { NetworkShareError, type NetworkShareClient, type SmbTarget } from './network-share-smb.js';
+import {
+  NetworkShareError,
+  SmbClient,
+  type NetworkShareClient,
+  type SmbTarget,
+} from './network-share-smb.js';
 import {
   ControlPlaneSessionAuthorityError,
   ControlPlaneSessionToolError,
 } from './session-handoff-tool.js';
 
 /**
- * What an approval for a replace covers: the folder's grant as the user saw it,
- * the file, the version it replaces and the exact new bytes. Any other request
+ * What an approval covers: the grants as the user saw them, the item, the
+ * version it changes and, for a replace, the exact new bytes. Any other request
  * under the same card no longer matches.
  */
 function approvalBinding(
-  request: Extract<NetworkShareRequest, { action: 'update' }>,
-  folder: ProjectNetworkShareFolderRecord,
-  sharePath: string,
+  resolved: Required<Pick<Resolved, 'folder' | 'sharePath'>> & Resolved,
 ): string {
+  const { request, folder, sharePath, destination } = resolved;
   return JSON.stringify({
+    action: request.action,
     folderId: folder.id,
     revision: folder.revision,
     path: sharePath,
-    expectedVersion: request.expectedVersion,
-    content: createHash('sha256')
-      .update(`${request.encoding ?? 'utf8'}:${request.content}`)
-      .digest('hex'),
+    ...('kind' in request ? { kind: request.kind } : {}),
+    ...('expectedVersion' in request ? { expectedVersion: request.expectedVersion } : {}),
+    ...('content' in request
+      ? {
+          content: createHash('sha256')
+            .update(`${request.encoding ?? 'utf8'}:${request.content}`)
+            .digest('hex'),
+        }
+      : {}),
+    ...(destination === undefined
+      ? {}
+      : {
+          destination: {
+            folderId: destination.folder.id,
+            revision: destination.folder.revision,
+            path: destination.sharePath,
+          },
+        }),
   });
 }
+
+/** How much of a replacement's text the card previews; the full request stays available. */
+const PREVIEW_CHARACTERS = 600;
+
+/** The approval card's account of a change, in the user's terms. */
+interface NetworkSharePresentation {
+  action: 'update' | 'rename' | 'move' | 'delete';
+  kind: 'file' | 'folder';
+  /** The share's name in Verity. */
+  share: string;
+  /** Share name and folders down to the item, joined with ` › `. */
+  location: string;
+  /** Where a rename or move puts the item, in the same form. */
+  destination?: string;
+  /** A replacement's size and, when it is text, its beginning. */
+  content?: { bytes: number; preview?: string };
+}
+
+type NetworkShareLogAction = 'create' | 'update' | 'create_folder' | 'rename' | 'move' | 'delete';
 
 type Input = { projectId: string; sessionId: string; turnId: string; request: unknown };
 
@@ -51,7 +90,22 @@ interface Resolved {
   folder?: ProjectNetworkShareFolderRecord;
   /** The path on the share: the granted folder joined with the request's path. */
   sharePath?: string;
+  /** Where a rename or move puts the item, and the grant that covers it. */
+  destination?: { folder: ProjectNetworkShareFolderRecord; sharePath: string };
 }
+
+function relativePath(path: string): string {
+  try {
+    return normalizeNetworkSharePath(path);
+  } catch (error) {
+    if (error instanceof InvalidNetworkSharePathError)
+      throw new ControlPlaneSessionToolError(error.message);
+    throw error;
+  }
+}
+
+const READ_ONLY =
+  'This project may only read this folder. An administrator can allow changes in project settings.';
 
 function decode(request: { content: string; encoding?: 'utf8' | 'base64' | undefined }): Buffer {
   if (request.encoding !== 'base64') return Buffer.from(request.content, 'utf8');
@@ -77,13 +131,16 @@ export function createNetworkShareTool(deps: {
   store: Pick<EventStore, 'getSession' | 'getProject' | 'networkShares'>;
   client: NetworkShareClient;
   isSealed?: () => boolean;
-  /** Logs one write without its content or credentials. */
+  /** Logs one change without its content or credentials. */
   logWrite?: (entry: {
     projectId: string;
     sessionId: string;
     folderId: string;
     path: string;
-    action: 'create' | 'update';
+    /** Where a rename or move put the item. */
+    toFolderId?: string;
+    toPath?: string;
+    action: NetworkShareLogAction;
     bytes: number;
   }) => void;
 }) {
@@ -100,25 +157,77 @@ export function createNetworkShareTool(deps: {
       throw new ControlPlaneSessionAuthorityError(
         'This folder is not shared with the project (anymore). Call folders for the current list.',
       );
-    let relative: string;
-    try {
-      relative = normalizeNetworkSharePath(request.path ?? '');
-    } catch (error) {
-      if (error instanceof InvalidNetworkSharePathError)
-        throw new ControlPlaneSessionToolError(error.message);
-      throw error;
-    }
+    const relative = relativePath(request.path ?? '');
     const sharePath = [folder.path, relative].filter(Boolean).join('/');
     // Normalization already refuses `..`; this keeps the boundary explicit.
     if (!networkSharePathWithin(folder.path, sharePath))
       throw new ControlPlaneSessionAuthorityError('The path leaves the shared folder.');
     if ((request.action === 'read' || networkShareIsMutation(request)) && relative === '')
-      throw new ControlPlaneSessionToolError('Name a file inside the folder.');
-    if (networkShareIsMutation(request) && folder.accessMode !== 'read-write')
-      throw new ControlPlaneSessionAuthorityError(
-        'This project may only read this folder. An administrator can allow changes in project settings.',
+      throw new ControlPlaneSessionToolError(
+        request.action === 'create_folder' || ('kind' in request && request.kind === 'folder')
+          ? 'Name a folder inside the granted folder; the granted folder itself cannot be changed.'
+          : 'Name a file inside the folder.',
       );
-    return { request, folder, sharePath };
+    if (networkShareIsMutation(request) && folder.accessMode !== 'read-write')
+      throw new ControlPlaneSessionAuthorityError(READ_ONLY);
+    if (
+      request.action === 'delete' &&
+      (request.kind === 'file') !== (request.expectedVersion !== undefined)
+    )
+      throw new ControlPlaneSessionToolError(
+        request.kind === 'file'
+          ? 'Deleting a file needs expectedVersion from your latest read of it.'
+          : 'A folder has no version; leave out expectedVersion.',
+      );
+    let destination: Resolved['destination'];
+    if (request.action === 'rename') {
+      if (request.newName.includes('/') || request.newName.includes('\\'))
+        throw new ControlPlaneSessionToolError(
+          'newName is a name only; use move to change folders.',
+        );
+      const name = relativePath(request.newName);
+      const parent = sharePath.split('/').slice(0, -1);
+      destination = { folder, sharePath: [...parent, name].join('/') };
+    } else if (request.action === 'move') {
+      const target =
+        request.toFolderId === undefined || request.toFolderId === folder.id
+          ? folder
+          : await deps.store.networkShares.projectFolder(input.projectId, request.toFolderId);
+      if (!target || target.stale)
+        throw new ControlPlaneSessionAuthorityError(
+          'The destination folder is not shared with the project (anymore). Call folders for the current list.',
+        );
+      if (target.accessMode !== 'read-write')
+        throw new ControlPlaneSessionAuthorityError(READ_ONLY);
+      // A move is one rename on the server; it cannot cross to another share.
+      if (target.connectionId !== folder.connectionId)
+        throw new ControlPlaneSessionToolError(
+          'Files can only be moved between folders on the same network share.',
+        );
+      const to = relativePath(request.toPath);
+      if (to === '')
+        throw new ControlPlaneSessionToolError('toPath names the new place of the item.');
+      destination = { folder: target, sharePath: [target.path, to].filter(Boolean).join('/') };
+      if (!networkSharePathWithin(target.path, destination.sharePath))
+        throw new ControlPlaneSessionAuthorityError('The destination leaves the shared folder.');
+      if (networkSharePathWithin(sharePath, destination.sharePath))
+        throw new ControlPlaneSessionToolError(
+          sharePath.toLowerCase() === destination.sharePath.toLowerCase()
+            ? 'The item is already there.'
+            : 'A folder cannot be moved into itself.',
+        );
+    }
+    if (request.action === 'rename' || request.action === 'move' || request.action === 'delete') {
+      // Grants are paths. Changing a folder that is or holds one would leave a
+      // project without its folder or, worse, point the grant at other files.
+      const granted = await deps.store.networkShares.grantedPaths(folder.connectionId);
+      const touched = [sharePath, ...(destination ? [destination.sharePath] : [])];
+      if (granted.some((path) => touched.some((item) => networkSharePathWithin(item, path))))
+        throw new ControlPlaneSessionAuthorityError(
+          'This folder is, or contains, a folder shared with a project, so it cannot be renamed, moved or deleted here.',
+        );
+    }
+    return { request, folder, sharePath, ...(destination === undefined ? {} : { destination }) };
   };
 
   // A NAS counts failed sign-ins and may block the server's address after a
@@ -157,6 +266,8 @@ export function createNetworkShareTool(deps: {
   const run = async <T>(
     folder: ProjectNetworkShareFolderRecord,
     work: (target: SmbTarget) => Promise<T>,
+    /** Further grants the call relies on, such as a move's destination. */
+    others: readonly ProjectNetworkShareFolderRecord[] = [],
   ): Promise<T> => {
     try {
       const result = await withNetworkShareTarget(deps, folder.connectionId, async (target) => {
@@ -165,6 +276,10 @@ export function createNetworkShareTool(deps: {
         // The grant must still be the one this call was authorized against; a
         // downgrade between authorization and this point must stop a write.
         if (!current || current.stale || current.revision !== folder.revision) return undefined;
+        for (const other of others) {
+          const now = await deps.store.networkShares.projectFolder(other.projectId, other.id);
+          if (!now || now.stale || now.revision !== other.revision) return undefined;
+        }
         return { value: await signIn(folder.connectionId, target, work) };
       });
       if (result === undefined)
@@ -184,23 +299,63 @@ export function createNetworkShareTool(deps: {
       await resolve(input);
     },
 
-    /** Reads and creating new files run under the grant; replacing a file asks the user. */
+    /** Reads and creating new things run under the grant; changing what exists asks the user. */
     async standing(input: Input): Promise<boolean> {
       const { request } = await resolve(input);
-      return request.action !== 'update';
+      return !networkShareNeedsApproval(request);
     },
 
-    /** What an approval card binds to: the folder's grant as the user saw it. */
+    /** What an approval card binds to: the grants as the user saw them. */
     async snapshot(input: Input): Promise<string | undefined> {
-      const { request, folder, sharePath } = await resolve(input);
-      if (request.action !== 'update' || !folder || sharePath === undefined) return undefined;
-      return approvalBinding(request, folder, sharePath);
+      const resolved = await resolve(input);
+      const { request, folder, sharePath } = resolved;
+      if (!networkShareNeedsApproval(request) || !folder || sharePath === undefined)
+        return undefined;
+      return approvalBinding({ ...resolved, folder, sharePath });
+    },
+
+    /**
+     * What the approval card shows, in words: where the item is, where a rename
+     * or move puts it and, for a replace, the new content. Merged into the
+     * card's input by the server; agents cannot supply it, as their requests
+     * are strict.
+     */
+    async presentation(
+      input: Input,
+    ): Promise<{ networkShare: NetworkSharePresentation } | undefined> {
+      const { request, folder, sharePath, destination } = await resolve(input);
+      if (!networkShareNeedsApproval(request) || !folder || sharePath === undefined)
+        return undefined;
+      const location = (grant: ProjectNetworkShareFolderRecord, path: string) =>
+        [grant.connectionLabel, ...path.split('/').filter(Boolean)].join(' › ');
+      let content: NetworkSharePresentation['content'];
+      if (request.action === 'update') {
+        const bytes = decode(request);
+        const decoded = text(bytes);
+        content = {
+          bytes: bytes.byteLength,
+          ...(decoded === undefined ? {} : { preview: decoded.slice(0, PREVIEW_CHARACTERS) }),
+        };
+      }
+      return {
+        networkShare: {
+          action: request.action,
+          kind: 'kind' in request ? request.kind : 'file',
+          share: folder.connectionLabel,
+          location: location(folder, sharePath),
+          ...(destination === undefined
+            ? {}
+            : { destination: location(destination.folder, destination.sharePath) }),
+          ...(content === undefined ? {} : { content }),
+        },
+      };
     },
 
     async invoke(
       input: Input & { approvedByCard?: boolean; authorizationSnapshot?: string },
     ): Promise<unknown> {
-      const { request, folder, sharePath } = await resolve(input);
+      const resolved = await resolve(input);
+      const { request, folder, sharePath, destination } = resolved;
       if (request.action === 'folders') {
         const folders = await deps.store.networkShares.projectFolders(input.projectId);
         return {
@@ -218,15 +373,28 @@ export function createNetworkShareTool(deps: {
       }
       if (!folder || sharePath === undefined)
         throw new ControlPlaneSessionToolError('folder required');
-      if (request.action === 'update') {
-        // The approval covered this grant; a changed grant needs a new approval.
-        const expected = approvalBinding(request, folder, sharePath);
+      if (networkShareNeedsApproval(request)) {
+        // The approval covered these grants; a changed grant needs a new approval.
+        const expected = approvalBinding({ ...resolved, folder, sharePath });
         if (input.approvedByCard !== true || input.authorizationSnapshot !== expected)
           throw new ControlPlaneSessionAuthorityError(
             'Folder access changed since the approval. Ask again.',
           );
       }
-      const relative = (path: string) => path.slice(folder.path.length).replace(/^\//, '');
+      const relative = (path: string, within = folder) =>
+        path.slice(within.path.length).replace(/^\//, '');
+      const logChange = (action: NetworkShareLogAction, bytes = 0) =>
+        deps.logWrite?.({
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          folderId: folder.id,
+          path: sharePath,
+          ...(destination === undefined
+            ? {}
+            : { toFolderId: destination.folder.id, toPath: destination.sharePath }),
+          action,
+          bytes,
+        });
       switch (request.action) {
         case 'list': {
           const entries = await run(folder, (target) => deps.client.list(target, sharePath));
@@ -251,17 +419,56 @@ export function createNetworkShareTool(deps: {
               ? deps.client.create(target, sharePath, bytes)
               : deps.client.update(target, sharePath, bytes, request.expectedVersion),
           );
-          deps.logWrite?.({
-            projectId: input.projectId,
-            sessionId: input.sessionId,
-            folderId: folder.id,
-            path: sharePath,
-            action: request.action,
-            bytes: bytes.byteLength,
-          });
+          logChange(request.action, bytes.byteLength);
           return { path: relative(sharePath), version: info.version, size: info.size };
+        }
+        case 'create_folder': {
+          await run(folder, (target) => deps.client.createFolder(target, sharePath));
+          logChange('create_folder');
+          return { path: relative(sharePath), kind: 'folder' };
+        }
+        case 'rename':
+        case 'move': {
+          if (!destination) throw new ControlPlaneSessionToolError('destination required');
+          await run(
+            folder,
+            (target) => deps.client.rename(target, request.kind, sharePath, destination.sharePath),
+            destination.folder === folder ? [] : [destination.folder],
+          );
+          logChange(request.action);
+          return {
+            folderId: destination.folder.id,
+            path: relative(destination.sharePath, destination.folder),
+            kind: request.kind,
+          };
+        }
+        case 'delete': {
+          await run(folder, (target) =>
+            request.kind === 'file'
+              ? deps.client.deleteFile(target, sharePath, request.expectedVersion!)
+              : deps.client.deleteFolder(target, sharePath),
+          );
+          logChange('delete');
+          return { path: relative(sharePath), kind: request.kind, deleted: true };
         }
       }
     },
   };
+}
+
+/** The tool as the server wires it: the real SMB client unless a test supplies one. */
+export function createServerNetworkShareTool(
+  deps: {
+    eventStore: Pick<EventStore, 'getSession' | 'getProject' | 'networkShares'>;
+    networkShareClient?: NetworkShareClient | undefined;
+    secretCipher?: { isSealed(): boolean } | undefined;
+  },
+  log: { info(entry: object, message: string): void },
+): ReturnType<typeof createNetworkShareTool> {
+  return createNetworkShareTool({
+    store: deps.eventStore,
+    client: deps.networkShareClient ?? new SmbClient(),
+    isSealed: () => deps.secretCipher?.isSealed() === true,
+    logWrite: (entry) => log.info(entry, 'Agent changed a network share'),
+  });
 }

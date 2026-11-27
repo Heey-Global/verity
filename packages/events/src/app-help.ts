@@ -225,7 +225,7 @@ export const APP_HELP_TOPICS: readonly AppHelpTopic[] = [
     title: 'Network shares',
     summary: 'Give a project access to folders on an SMB server.',
     details:
-      'An administrator adds an SMB share in Settings, Connectors, Network shares, then grants a folder in the project’s Network shares settings. Folders start read-only. With write access, agents can create files and request approval to replace existing files.',
+      'An administrator adds an SMB share in Settings, Connectors, Network shares, then grants a folder in the project’s Network shares settings. Folders start read-only. With write access, agents can create files and folders and, with an approval each time, replace, rename, move or delete them. Deleting is permanent unless the NAS keeps a recycle bin.',
     appLink: 'verity://settings/services/network-shares',
     docsPath: 'docs/network-shares.md',
     keywords: ['smb', 'nas', 'synology', 'network share', 'file server'],
