@@ -1,5 +1,16 @@
 import Fastify from 'fastify';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// 100 GiB in 4 KiB blocks: 20 GiB free, of which 5 GiB are reserved for root.
+vi.mock('node:fs/promises', async (original) => ({
+  ...(await original<typeof import('node:fs/promises')>()),
+  statfs: async () => ({
+    bsize: 4096,
+    blocks: (100 * 1024 ** 3) / 4096,
+    bfree: (20 * 1024 ** 3) / 4096,
+    bavail: (15 * 1024 ** 3) / 4096,
+  }),
+}));
 import {
   createHostResourcesSampler,
   parseCpuTimes,
@@ -61,6 +72,17 @@ describe('host resources', () => {
       },
     });
     expect((await failing()).disk).toBeNull();
+  });
+
+  // Counting the free blocks reserved for root as used would overstate a disk
+  // by its reserve (commonly 5 %) and disagree with `df`.
+  it('counts used disk as df does, without the free blocks reserved for root', async () => {
+    const sample = createHostResourcesSampler({
+      dataRoot: '/data',
+      readProcFile: async () => '',
+      wait: async () => {},
+    });
+    expect((await sample()).disk).toEqual({ usedBytes: 80 * GiB, totalBytes: 100 * GiB });
   });
 
   // The figures describe the machine, not anything a user owns.

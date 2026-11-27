@@ -2,7 +2,7 @@
 // and the disk that holds Verity's data. A disk that fills over days shows up
 // here long before anything fails. Administrators only; for anyone else the
 // server refuses and nothing is shown.
-import { usedPercent, type HostResources as Resources } from '@verity/mobile';
+import { usedPercent, VerityApiError, type HostResources as Resources } from '@verity/mobile';
 import { useEffect, useState } from 'react';
 
 import { createVerityClient } from '../../lib/client';
@@ -32,11 +32,15 @@ function Value({ share, detail }: { share: number | null; detail: string }) {
   );
 }
 
+// At module scope: a default created per render would restart the polling
+// effect after every reading and turn the 15-second refresh into a busy loop.
+function loadFromActiveServer(): Promise<Resources> | null {
+  const client = createVerityClient();
+  return client === null ? null : client.getHostResources();
+}
+
 export function HostResources({
-  load = () => {
-    const client = createVerityClient();
-    return client === null ? null : client.getHostResources();
-  },
+  load = loadFromActiveServer,
   intervalMs = 15_000,
 }: {
   /** Null when there is no server to ask. */
@@ -47,21 +51,25 @@ export function HostResources({
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let loaded = false;
     const poll = () => {
       const request = load();
       if (request === null) return;
       request
         .then((next) => {
           if (!active) return;
-          loaded = true;
           setResources(next);
           timer = setTimeout(poll, intervalMs);
         })
-        .catch(() => {
-          // A refusal before anything loaded (not an administrator) ends it; a
-          // failure after that keeps the last reading and tries again.
-          if (active && loaded) timer = setTimeout(poll, intervalMs);
+        .catch((error: unknown) => {
+          if (!active) return;
+          // Refused: not (or no longer) an administrator. Drop any reading
+          // rather than leave stale figures up, and stop asking.
+          if (error instanceof VerityApiError && error.status === 403) {
+            setResources(null);
+            return;
+          }
+          // Anything else is transient: keep the last reading and try again.
+          timer = setTimeout(poll, intervalMs);
         });
     };
     poll();

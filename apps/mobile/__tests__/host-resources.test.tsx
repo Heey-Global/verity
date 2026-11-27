@@ -2,9 +2,12 @@
 // data disk filled over two weeks with nothing on screen until the server
 // stopped; the reading here is what shows it coming.
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import type { HostResources as Resources } from '@verity/mobile';
+import { VerityApiError, type HostResources as Resources } from '@verity/mobile';
 
-jest.mock('../lib/client', () => ({ createVerityClient: () => null }));
+const mockGetHostResources = jest.fn<Promise<Resources>, []>();
+jest.mock('../lib/client', () => ({
+  createVerityClient: () => ({ getHostResources: mockGetHostResources }),
+}));
 
 import { HostResources, hostResourcesSummary } from '../components/home/HostResources';
 
@@ -37,7 +40,9 @@ it('leaves out what the server cannot measure', () => {
 it('shows nothing and stops asking when the server refuses', async () => {
   jest.useFakeTimers();
   try {
-    const load = jest.fn(() => Promise.reject(new Error('403')));
+    const load = jest.fn(() =>
+      Promise.reject(new VerityApiError(403, 'Administrator access required')),
+    );
     render(<HostResources load={load} intervalMs={1000} />);
     await act(async () => {
       await jest.advanceTimersByTimeAsync(5000);
@@ -66,6 +71,62 @@ it('keeps the last reading through a failed refresh and keeps refreshing', async
       await jest.advanceTimersByTimeAsync(1100);
     });
     expect(screen.getByText('CPU 55 % · RAM 29 % · Disk 90 %')).toBeOnTheScreen();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// A default loader created per render restarted the polling effect after each
+// reading, so the 15-second refresh became back-to-back requests.
+it('asks the active server once per interval with the default loader', async () => {
+  jest.useFakeTimers();
+  try {
+    mockGetHostResources.mockReset().mockResolvedValue(reading());
+    render(<HostResources intervalMs={1000} />);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(2500);
+    });
+    expect(screen.getByText('CPU 12 % · RAM 29 % · Disk 90 %')).toBeOnTheScreen();
+    expect(mockGetHostResources).toHaveBeenCalledTimes(3);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// A server still starting up, or a dropped connection, must not end the
+// display for the rest of the visit; only a refusal does.
+it('retries a failure before the first reading', async () => {
+  jest.useFakeTimers();
+  try {
+    const load = jest
+      .fn<Promise<Resources>, []>()
+      .mockRejectedValueOnce(new VerityApiError(503, 'Starting'))
+      .mockResolvedValue(reading());
+    render(<HostResources load={load} intervalMs={1000} />);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1100);
+    });
+    expect(screen.getByText('CPU 12 % · RAM 29 % · Disk 90 %')).toBeOnTheScreen();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// Administrator rights can be withdrawn while the screen is open; the last
+// figures must not stay up, refreshed by nothing.
+it('drops the reading and stops when a later refresh is refused', async () => {
+  jest.useFakeTimers();
+  try {
+    const load = jest
+      .fn<Promise<Resources>, []>()
+      .mockResolvedValueOnce(reading())
+      .mockRejectedValue(new VerityApiError(403, 'Administrator access required'));
+    render(<HostResources load={load} intervalMs={1000} />);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.queryByText('Server')).not.toBeOnTheScreen();
+    expect(load).toHaveBeenCalledTimes(2);
   } finally {
     jest.useRealTimers();
   }

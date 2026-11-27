@@ -67,8 +67,9 @@ export function createHostResourcesSampler(
     (async (path: string) => {
       const stats = await statfs(path);
       const totalBytes = stats.blocks * stats.bsize;
-      // As `df` counts it: what an unprivileged writer can no longer use.
-      return { usedBytes: totalBytes - stats.bavail * stats.bsize, totalBytes };
+      // `df`'s Used column: blocks in use. `bavail` would also count the free
+      // blocks reserved for root as used.
+      return { usedBytes: totalBytes - stats.bfree * stats.bsize, totalBytes };
     });
   let previous: (CpuTimes & { at: number }) | undefined;
   const cpuTimes = async () => parseCpuTimes(await read('/proc/stat').catch(() => ''));
