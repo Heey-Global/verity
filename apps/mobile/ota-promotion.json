@@ -1,23 +1,18 @@
 {
   "schema": 1,
-  "version": "1.95.7",
-  "runtime": "1.95.0",
+  "version": "1.96.2",
+  "runtime": "1.96.0",
   "channel": "production",
-  "commit": "c83acffa16ae72fecd1e57362fa284bcfbba7763",
-  "tag": "mobile-v1.95.7",
-  "branch": "staging-mobile-v1.95.7-c83acffa16ae72fecd1e57362fa284bcfbba7763",
-  "baseline": "mobile-v1.95.5",
-  "group": "f6646849-1eb0-450a-b065-1ff26a180f05",
+  "commit": "c8729a15e5e55f3434b8f8cd06df40bba0aaa37b",
+  "tag": "mobile-v1.96.2",
+  "branch": "staging-mobile-v1.96.2-c8729a15e5e55f3434b8f8cd06df40bba0aaa37b",
+  "baseline": "mobile-v1.96.0",
+  "group": "4af92c4d-42f6-4d38-8704-446d46d7e221",
   "notes": [
-    "share one overview store and topic subscription across views (#2944)",
-    "keep approval buttons reachable above long requests (#2943)",
-    "show active sessions ahead of mockup reviews (#2941)",
-    "publish pull request status as domain events (#2936)",
-    "leave dropped and older done tasks out of the default list (#2935)",
-    "publish sandbox lifecycle, update and project changes as domain events (#2930)",
-    "load only the tasks a view shows, and only while it is open (#2928)",
-    "publish answered requests and Quick Actions as domain events (#2923)",
-    "stop hidden session screens from polling secret approvals (#2925)",
-    "domain-event topics on the live connection (protocol 2) (#2915)"
+    "publish release and toolkit drift changes as project events (#2985)",
+    "read a pull request fresh when its session is opened (#2978)",
+    "decide Verity's handoffs on their card in the panel (#2976)",
+    "reuse unchanged session projections and measure overview revalidation (#2957)",
+    "publish session status as session.summary events (#2972)"
   ]
 }
