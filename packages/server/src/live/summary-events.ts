@@ -1,8 +1,14 @@
-import { SESSION_SUMMARY_FIELDS, domainTopic, type DomainTopic } from '@verity/events';
+import {
+  SESSION_SUMMARY_FIELDS,
+  domainTopic,
+  type DomainTopic,
+  type LiveHintTopic,
+} from '@verity/events';
 import type { SessionRecord } from '@verity/store';
 import type { ServerContext } from '../server-context.js';
 import type { SessionSummary } from '../server-types.js';
 import { planningPresented } from '../session-row.js';
+import { ObservedSet } from '../observed-set.js';
 import { isMaintenanceSession } from './pr-events.js';
 import { createRevisions } from './revisions.js';
 
@@ -16,6 +22,8 @@ const MAX_REMEMBERED_SESSIONS = 4_096;
 const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000];
 
 type Row = Record<string, unknown>;
+/** The hints a changed row raises; `activity` and `permission` come with one of them. */
+const ROW_TOPICS: ReadonlySet<LiveHintTopic> = new Set(['session', 'status', 'events']);
 
 /** The row every viewer's list shows alike ({@link SESSION_SUMMARY_FIELDS}),
  * with `planningPresented` derived as `/sessions` derives it. */
@@ -34,8 +42,11 @@ export function sharedRow(summary: SessionSummary): Row {
  * alike, whole. Home and the project page then follow a session without
  * reading the whole list again for each status change or burst of transcript.
  *
- * Every change hinted to the overview as `status` or `events` schedules the
- * row, whatever raised it: a session event, a process that ended, a repair.
+ * Every change hinted to the overview as `session`, `status` or `events`
+ * schedules the row, whatever raised it: a session event, a process that
+ * ended, a repair, a name the session gave itself. So does the project's
+ * sandbox losing or regaining the broker, which every session of the project
+ * shows.
  * Home skips its list read for those hints once it follows the project, so
  * none may go without a row. A burst becomes one row after it settles, and a
  * long burst one row at least every {@link MAX_WAIT_MS}; a row that could
@@ -133,12 +144,29 @@ export function installSummaryEvents(
       lastRevisions.delete(change.sessionId);
       return;
     }
-    if (change.topics.some((topic) => topic === 'status' || topic === 'events'))
-      schedule(change.sessionId);
+    if (change.topics.some((topic) => ROW_TOPICS.has(topic))) schedule(change.sessionId);
   });
+  // The provisioner's reconciler classifies sandboxes without a hint of its
+  // own; each session of the project names the condition in its row.
+  const disconnected = deps.provisioner?.disconnectedSandboxProjects?.();
+  const stopObservingSandboxes =
+    disconnected instanceof ObservedSet
+      ? (disconnected as ObservedSet<string>).observe((projectId) => {
+          void deps.eventStore
+            .listSessions()
+            .then((sessions) => {
+              for (const session of sessions)
+                if (session.projectId === projectId) schedule(session.sessionId);
+            })
+            .catch((error: unknown) => {
+              app.log.warn({ err: error, projectId }, 'verity: sandbox sessions not announced');
+            });
+        })
+      : undefined;
   lifecycle.onClose(() => {
     closed = true;
     unsubscribe();
+    stopObservingSandboxes?.();
     for (const { timer } of scheduled.values()) timers.clearTimeout(timer);
     scheduled.clear();
   });

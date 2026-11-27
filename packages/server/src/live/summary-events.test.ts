@@ -8,6 +8,7 @@ import { DomainEventBus, type DomainRecord } from './domain-events.js';
 import { LiveHub } from './live-hub.js';
 import type { LiveHubChange } from './live-hub.js';
 import { installSummaryEvents, sharedRow } from './summary-events.js';
+import { ObservedSet } from '../observed-set.js';
 
 function summary(extra: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -20,7 +21,11 @@ function summary(extra: Partial<SessionSummary> = {}): SessionSummary {
   } as SessionSummary;
 }
 
-function setup(rows: SessionSummary[], maintenance: ReadonlySet<string> = new Set()) {
+function setup(
+  rows: SessionSummary[],
+  maintenance: ReadonlySet<string> = new Set(),
+  sandboxes: { disconnected?: ReadonlySet<string>; sessions?: SessionRecord[] } = {},
+) {
   const domainEvents = new DomainEventBus();
   let observer: ((change: LiveHubChange) => void) | undefined;
   let failing = 0;
@@ -31,7 +36,9 @@ function setup(rows: SessionSummary[], maintenance: ReadonlySet<string> = new Se
         getSession: async (id: string) =>
           ({ sessionId: id, projectId: 'p1' }) as unknown as SessionRecord,
         wikiMaintenance: { isSession: async (id: string) => maintenance.has(id) },
+        listSessions: async () => sandboxes.sessions ?? [],
       },
+      provisioner: { disconnectedSandboxProjects: () => sandboxes.disconnected ?? new Set() },
     },
     domainEvents,
     lifecycle: { onClose: (fn: () => void) => closers.push(fn) },
@@ -159,11 +166,11 @@ describe('session.summary', () => {
   });
 
   // Home skips its list read for these hints, whatever raised them.
-  it('publishes for every status or transcript hint and for no other', async () => {
+  it('publishes for every session, status or transcript hint and for no other', async () => {
     const w = setup([summary()]);
     w.record('project:p1');
-    w.event(['session']);
     w.event(['activity']);
+    w.event(['permission']);
     w.advance(2_000);
     // Time for a computation that should not run to have run.
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -171,6 +178,10 @@ describe('session.summary', () => {
     w.event(['status']);
     w.advance(300);
     await vi.waitFor(() => expect(w.published).toHaveLength(1));
+    // A name the session gave itself is hinted as `session` alone.
+    w.event(['session']);
+    w.advance(300);
+    await vi.waitFor(() => expect(w.published).toHaveLength(2));
     w.close();
   });
 
@@ -187,6 +198,39 @@ describe('session.summary', () => {
     w.advance(2_000);
     await vi.waitFor(() => expect(w.published).toHaveLength(1));
     w.close();
+  });
+
+  // The reconciler classifies sandboxes without a hint; every session of the
+  // project names a cut-off sandbox in its row, and would keep naming it, or
+  // keep missing it, until something unrelated hinted the session.
+  it('publishes the rows of a project whose sandbox lost or regained the broker', async () => {
+    const disconnected = new ObservedSet<string>();
+    const sessions = [
+      { sessionId: 's1', projectId: 'p1' },
+      { sessionId: 's2', projectId: 'p1' },
+      { sessionId: 's3', projectId: 'p2' },
+    ] as unknown as SessionRecord[];
+    const w = setup([summary()], new Set(), { disconnected, sessions });
+    w.record('session:s1');
+    w.record('session:s2');
+    w.record('session:s3');
+    disconnected.add('p1');
+    // Classified again on the next tick: no change, nothing to announce.
+    disconnected.add('p1');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    w.advance(300);
+    await vi.waitFor(() => expect(w.published).toHaveLength(2));
+    expect(w.published.map((r) => r.topic).sort()).toEqual(['session:s1', 'session:s2']);
+    disconnected.delete('p1');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    w.advance(300);
+    await vi.waitFor(() => expect(w.published).toHaveLength(4));
+    w.close();
+    disconnected.add('p1');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    w.advance(300);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(w.published).toHaveLength(4);
   });
 
   it('keeps Wiki maintenance sessions to their own topic', async () => {
