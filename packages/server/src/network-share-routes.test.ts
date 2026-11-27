@@ -323,6 +323,29 @@ describe('network share routes', () => {
     expect(folder?.stale).toBe(true);
   });
 
+  // A change that lands between the route's first look and the test must not
+  // carry the saved password to the address that look still showed.
+  it('checks the password rule against the target it tests, not an earlier view', async () => {
+    const { client, seen } = fakeClient();
+    const app = await server(client);
+    const { id } = (await call(app, 'admin', 'POST', '/network-shares', studio)).json<{
+      id: string;
+    }>();
+    const saved = await store.networkShares.getConnection(id);
+    vi.spyOn(store.networkShares, 'getConnection').mockResolvedValueOnce({
+      ...saved!,
+      host: 'attacker.example',
+      share: 'archive',
+    });
+    seen.length = 0;
+    const response = await call(app, 'admin', 'PATCH', `/network-shares/${id}`, {
+      address: 'smb://attacker.example/archive',
+    });
+    expect(response.json()).toMatchObject({ code: 'password_required' });
+    expect(seen).toEqual([]);
+    expect((await store.networkShares.getConnection(id))?.host).toBe('nas.studio.lan');
+  });
+
   it('reports a failed connection test without failing the request', async () => {
     const { client } = fakeClient();
     const app = await server(client);

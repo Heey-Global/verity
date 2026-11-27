@@ -43,6 +43,8 @@ const accessBody = z.object({ accessMode }).strict();
 const HOST =
   /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)*$|^\d{1,3}(?:\.\d{1,3}){3}$/;
 const SHARE = /^[^\\/:*?"<>|]{1,80}$/;
+/** Returned instead of a tested revision when the saved password would follow to a new address. */
+const PASSWORD_REQUIRED = Symbol('password required');
 const hasControlCharacter = (value: string) =>
   [...value].some((character) => character.charCodeAt(0) < 0x20 || character === '\u007f');
 
@@ -245,17 +247,18 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         body.data.address === undefined ? undefined : parseNetworkShareAddress(body.data.address);
       // The stored password is only ever sent to the server it was entered for;
       // a new server needs it entered again.
-      if (
+      const movesSavedPassword = (saved: { host: string; port: number | null; share: string }) =>
         target !== undefined &&
         body.data.password === undefined &&
-        (target.host !== existing.host.toLowerCase() ||
-          target.port !== existing.port ||
-          target.share.toLowerCase() !== existing.share.toLowerCase())
-      )
-        return reply.code(400).send({
+        (target.host !== saved.host.toLowerCase() ||
+          target.port !== saved.port ||
+          target.share.toLowerCase() !== saved.share.toLowerCase());
+      const passwordRequired = () =>
+        reply.code(400).send({
           error: 'Enter the password again for a new address.',
           code: 'password_required',
         });
+      if (movesSavedPassword(existing)) return passwordRequired();
       const reaches =
         target !== undefined ||
         body.data.username !== undefined ||
@@ -263,22 +266,32 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
       let tested: string | undefined;
       if (reaches) {
         // New sign-in details or a new target are only saved once they work.
-        tested = await withNetworkShareTarget(ctx, connectionId, async (current, revision) => {
-          const secret =
-            body.data.password === undefined ? current.password : Buffer.from(body.data.password);
-          try {
-            await ctx.client.test({
-              ...current,
-              ...target,
-              ...(body.data.username === undefined ? {} : { username: body.data.username }),
-              password: secret,
-            });
-          } finally {
-            if (secret !== current.password) secret.fill(0);
-          }
-          return revision;
-        });
-        if (tested === undefined) return reply.code(404).send({ error: 'network share not found' });
+        const outcome = await withNetworkShareTarget(
+          ctx,
+          connectionId,
+          async (current, revision): Promise<string | typeof PASSWORD_REQUIRED> => {
+            // Checked again on the loaded target: another change may have moved
+            // the share since, and its password must not follow to this address.
+            if (movesSavedPassword(current)) return PASSWORD_REQUIRED;
+            const secret =
+              body.data.password === undefined ? current.password : Buffer.from(body.data.password);
+            try {
+              await ctx.client.test({
+                ...current,
+                ...target,
+                ...(body.data.username === undefined ? {} : { username: body.data.username }),
+                password: secret,
+              });
+            } finally {
+              if (secret !== current.password) secret.fill(0);
+            }
+            return revision;
+          },
+        );
+        if (outcome === undefined)
+          return reply.code(404).send({ error: 'network share not found' });
+        if (outcome === PASSWORD_REQUIRED) return passwordRequired();
+        tested = outcome;
       }
       tests.delete(connectionId);
       await shares.updateConnection(connectionId, {
