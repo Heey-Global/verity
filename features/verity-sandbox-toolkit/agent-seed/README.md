@@ -67,7 +67,10 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   inventory (a copy where the filesystem refuses links) and workspace links
   restored to its own sources; `install --private` replaces the links with
   writable copies. Existing local patches and incomplete files are preserved
-  before replacement; writable files are never shared. Declared workspace executables target the receiving
+  before replacement; writable files are never shared. A newly published
+  inventory links each sealed file that is byte-identical, with the same mode, to
+  the file at the same path of another sealed inventory, so a new dependency
+  version stores only the packages that changed. Declared workspace executables target the receiving
   sources; like npm, activation restores executable bits and normalizes CRLF
   shebangs. Non-regular or external executable targets are rejected; CRLF
   normalization is bounded to 1 MiB.

@@ -1268,6 +1268,12 @@ async function main() {
           throw new Error(
             'Central dependency inventory is full while other identities are active; retry after they finish. No private installation was attempted.',
           );
+        // Under the publication lock, so no other inventory is retired meanwhile.
+        const reused = dedupeInventory(stage, cacheRoot, currentIdentity);
+        if (reused.files > 0)
+          console.log(
+            `Shared ${reused.files} unchanged dependency files (${Math.round(reused.bytes / 1024 ** 2)} MiB) with an earlier dependency version.`,
+          );
         if (readlinkExists(cache)) {
           if (read(join(cache, 'receipt.json')) !== currentIdentity)
             throw new Error(
@@ -1347,6 +1353,84 @@ function sealInventory(cache) {
   } catch (error) {
     console.warn(`The dependency inventory cannot be sealed (${error.message}).`);
     return false;
+  }
+}
+/**
+ * A new dependency version usually changes a few packages of thousands, yet its
+ * inventory held a full copy of every file: each lockfile change cost the whole
+ * installation again. Before publication, each sealed file of `stage` that is
+ * byte-identical, with the same mode, to the file at the same path of another
+ * sealed inventory becomes a link to it. Top-level receipts and dot entries stay
+ * the inventory's own, as in {@link shareTree}. Root does not seal, so it never
+ * links; a filesystem that refuses a link keeps the copy.
+ */
+function dedupeInventory(stage, cacheRoot, identity) {
+  const reused = { files: 0, bytes: 0 };
+  if (process.getuid?.() === 0 || read(join(stage, 'sealed')) !== 'v1') return reused;
+  const others = readdirSync(cacheRoot)
+    .filter((name) => /^[a-f0-9]{64}$/u.test(name) && name !== identity)
+    .map((name) => join(cacheRoot, name))
+    .filter((directory) => {
+      const stat = lstatSync(directory, { throwIfNoEntry: false });
+      return stat?.isDirectory() && read(join(directory, 'sealed')) === 'v1';
+    });
+  if (others.length === 0) return reused;
+  for (const tree of ownTrees(stage)) {
+    eachFile(
+      tree,
+      (path, stat) => {
+        const name = relative(tree, path);
+        if (dirname(path) === tree || name.startsWith('.') || stat.mode & 0o222) return false;
+        const rel = relative(stage, path);
+        for (const other of others) {
+          const candidate = join(other, rel);
+          const found = lstatSync(candidate, { throwIfNoEntry: false });
+          if (
+            !found?.isFile() ||
+            found.dev !== stat.dev ||
+            found.ino === stat.ino ||
+            found.size !== stat.size ||
+            found.mode & 0o222 ||
+            (found.mode & 0o7777) !== (stat.mode & 0o7777) ||
+            !sameContent(path, candidate)
+          )
+            continue;
+          const temporary = `${path}.verity-dedupe-${randomUUID()}`;
+          try {
+            linkSync(candidate, temporary);
+            renameSync(temporary, path);
+          } catch (error) {
+            rmSync(temporary, { force: true });
+            if (!['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(error.code))
+              throw error;
+            return false;
+          }
+          reused.files++;
+          reused.bytes += stat.blocks * 512;
+          return false;
+        }
+        return false;
+      },
+      true,
+    );
+  }
+  return reused;
+}
+function sameContent(left, right) {
+  const a = openSync(left, 'r');
+  const b = openSync(right, 'r');
+  try {
+    const x = Buffer.alloc(65536);
+    const y = Buffer.alloc(65536);
+    for (;;) {
+      const read = readSync(a, x);
+      if (read !== readSync(b, y)) return false;
+      if (read === 0) return true;
+      if (!x.subarray(0, read).equals(y.subarray(0, read))) return false;
+    }
+  } finally {
+    closeSync(a);
+    closeSync(b);
   }
 }
 /** Rebuilds `source` at `destination`: own directories and receipts, shared files. */

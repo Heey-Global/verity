@@ -60,6 +60,40 @@ describe.skipIf(!enforcesModes)('dependency files shared between sessions', () =
     expect(receipt.nlink).toBe(1);
     expect(receipt.mode & 0o200).toBe(0o200);
   });
+  // Each lockfile change published a full copy of every package, so a busy
+  // repository paid the whole installation again several times a day for a
+  // handful of changed packages. Unchanged files must be stored once.
+  it('stores files unchanged between dependency versions only once', () => {
+    const f = fixture();
+    const versions = (privateVersion: string) =>
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          'node_modules/private': { version: privateVersion },
+          'node_modules/stable': { version: '1.0.0' },
+        },
+      });
+    writeFileSync(join(f.worktree, 'package-lock.json'), versions('1.0.0'));
+    expect(f.run('install').status).toBe(0);
+    const [first] = identities(f.root);
+    writeFileSync(join(f.worktree, 'package-lock.json'), versions('2.0.0'));
+    const second = f.run('install');
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toMatch(/Shared [1-9][0-9]* unchanged dependency files/u);
+    const [next] = identities(f.root).filter((name) => name !== first);
+    const file = (identity: string, path: string) =>
+      statSync(join(f.root, '.git', 'verity-dependencies', identity, 'node_modules', path));
+    expect(file(next!, 'stable/package.json').ino).toBe(file(first!, 'stable/package.json').ino);
+    // A changed package keeps its own file, and the new version reads correctly.
+    expect(file(next!, 'private/package.json').ino).not.toBe(
+      file(first!, 'private/package.json').ino,
+    );
+    expect(
+      readFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), 'utf8'),
+    ).toContain('2.0.0');
+    // Receipts stay each inventory's own.
+    expect(file(next!, '.package-lock.json').nlink).toBe(1);
+  });
   it('keeps a session working after its central inventory is retired', () => {
     const f = fixture();
     writeFileSync(join(f.worktree, 'package-lock.json'), lock('1.0.0'));
