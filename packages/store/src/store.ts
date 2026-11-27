@@ -2186,7 +2186,7 @@ export class EventStore implements EventSink {
 
   async setSessionAutomation(
     input: SessionAutomationInput,
-    now: Date = new Date(),
+    now?: Date,
     checkedWorkspace?: Pick<SessionRecord, 'projectId' | 'worktree'>,
   ): Promise<SessionAutomationRecord> {
     return this.sessionAutomations.setSessionAutomation(input, now, checkedWorkspace);
@@ -2199,7 +2199,7 @@ export class EventStore implements EventSink {
   async setSessionAutomationStatus(
     sessionId: string,
     status: SessionAutomationStatus,
-    now: Date = new Date(),
+    now?: Date,
   ): Promise<SessionAutomationRecord | undefined> {
     return this.sessionAutomations.setSessionAutomationStatus(sessionId, status, now);
   }

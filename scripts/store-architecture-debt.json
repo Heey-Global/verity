@@ -39,8 +39,6 @@
     "runningTurnInitiator": "5f0caf0c 12e5a1d2 b0860e73 0c0a91a8 4456f22e c6226be5 47f305b7 cb23d9cf",
     "confirmTurnSettled": "56e23096 f20324a8 03944213 ed1db3b0 b280a1c7 3a3c7387 7eaef8de d641c77f",
     "updateProjectState": "a757ca0b 4d2da1ca d6de5ceb 1e7f9b95 551a918f 7eb2e92e ccfac143 c7ea9961",
-    "setSessionAutomation": "0e4e135d 840f5ca3 4273e0ce 0fbbfa17 cad9095b cba10ba9 5740958d 1c018f5c",
-    "setSessionAutomationStatus": "8c186878 f5137abc 1ebfa799 a8ddec98 dad07ac5 5c4a3f2e e4cd2684 3b3a14cf",
     "listDuePushReceipts": "ec5d9c81 b1d006bd 12e15d1a 87d59923 4431de40 e0498a68 b7d65056 eb6a0a52"
   },
   "imports": [
