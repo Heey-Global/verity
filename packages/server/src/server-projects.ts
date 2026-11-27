@@ -116,6 +116,10 @@ export function installProjects(
   }: ProjectsWiring,
 ): InstalledProjects {
   const { deps, conductor } = ctx;
+  // Project states follow their sandbox containers from Docker's event stream
+  // for as long as the server runs.
+  const stopContainerLiveness = deps.containerLiveness?.start();
+  if (stopContainerLiveness !== undefined) ctx.lifecycle.onClose(stopContainerLiveness);
   // A link keeps its original local identity reserved while the DB row
   // temporarily carries the GitHub target. This closes the only interval in
   // which a concurrent local create could steal the slug and block rollback.
