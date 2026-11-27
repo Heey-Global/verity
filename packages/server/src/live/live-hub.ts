@@ -154,6 +154,9 @@ interface SessionSubscription {
 }
 
 class LiveConnection {
+  /** This connection began its user's stay: none of their devices was
+   * connected before it. */
+  beganStay = false;
   foreground = false;
   overview = false;
   readonly subscriptions = new Map<string, SessionSubscription>();
@@ -177,6 +180,9 @@ class LiveConnection {
             bus,
             canRead: (topic) => this.canReadTopic(topic),
             filter: (record) => this.mayReceive(record),
+            // A new stay knows nothing of who held what before it: replayed,
+            // a project that left meanwhile would be withheld from its holder.
+            replayable: (topic) => topic !== PROJECTS_COLLECTION_TOPIC || !this.beganStay,
             send: (frame) => this.send(frame),
             overBudget: () => this.socket.bufferedAmount > hub.maxBufferedBytes,
             logger: hub.deps.logger,
@@ -597,7 +603,10 @@ export class LiveHub {
     this.connections.add(connection);
     const key = connection.userKey;
     this.userConnections.set(key, (this.userConnections.get(key) ?? 0) + 1);
-    if (!this.userStays.has(key)) this.userStays.set(key, ++this.stays);
+    if (!this.userStays.has(key)) {
+      this.userStays.set(key, ++this.stays);
+      connection.beganStay = true;
+    }
     connection.start();
   }
 

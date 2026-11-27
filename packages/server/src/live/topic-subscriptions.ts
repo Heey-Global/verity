@@ -30,6 +30,9 @@ export interface TopicSubscriptionsOptions {
   /** Whether this connection may read the topic now — the policy of the HTTP
    * read that serves the same state. */
   canRead(topic: DomainTopic): Promise<boolean>;
+  /** Whether missed records of a topic may be replayed from a cursor; when
+   * not, the client reads its snapshot instead. Defaults to true. */
+  replayable?: ((topic: DomainTopic) => boolean) | undefined;
   send(frame: LiveServerFrame): boolean;
   /** True while the socket holds more unsent bytes than it should. */
   overBudget(): boolean;
@@ -92,7 +95,7 @@ export class TopicSubscriptions {
     // Without a cursor the client holds no position, and with a gap its
     // position is lost: either way it reads its snapshot now that the
     // subscription is live, so nothing published before this point is missed.
-    if (cursor === undefined || replay.kind === 'gap') {
+    if (cursor === undefined || replay.kind === 'gap' || this.opts.replayable?.(topic) === false) {
       this.opts.send({ k: 'resync', topic, cursor: replay.head });
       return;
     }

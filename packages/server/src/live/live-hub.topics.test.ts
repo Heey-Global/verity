@@ -282,6 +282,8 @@ describe('LiveHub domain-event topics', () => {
   // a scope read after the event already shows that, without another read.
   it('reads no scope again when the cached one began after the event', async () => {
     const w = world();
+    // Another device keeps the stay open, so this one resumes by replay.
+    w.connect('alice');
     const alice = w.connect('alice');
     const read = vi.spyOn(w.hub.deps.access, 'overviewScope');
     const before = w.bus!.head;
@@ -430,6 +432,38 @@ describe('LiveHub domain-event topics', () => {
       gone: true,
     });
     await vi.waitFor(() => expect(tablet.of('domain')).toHaveLength(1));
+    w.hub.close();
+  });
+
+  // Who held what is forgotten when a user's last device leaves; replaying
+  // to a new stay would withhold a project that left meanwhile.
+  it('answers a new stay resuming the collection with a resync, not a replay', async () => {
+    const w = world();
+    const phone = w.connect('bob');
+    await phone.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    const cursor = w.bus!.head;
+    phone.close();
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    const back = w.connect('bob');
+    await back.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects', cursor }] });
+    expect(back.of('resync').map(({ topic }) => topic)).toEqual(['collection:projects']);
+    expect(back.of('domain')).toEqual([]);
+
+    // A device that joins a stay another one keeps open resumes as before.
+    const tablet = w.connect('bob');
+    const resumeAt = w.bus!.head;
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 2 });
+    await tablet.client({
+      k: 'topics.sub',
+      topics: [{ topic: 'collection:projects', cursor: resumeAt }],
+    });
+    await vi.waitFor(() => expect(tablet.of('domain')).toHaveLength(1));
+    expect(tablet.of('resync')).toEqual([]);
     w.hub.close();
   });
 
