@@ -49,7 +49,7 @@ it.each(['', fixture + ',' + fixture, fixture.replace('trust_level', 'renamed_tr
   },
 );
 
-it.each(['2.5.0', '2.6.0', '2.6.1', '2.7.1', '99.0.0'])(
+it.each(['2.6.1', '2.7.0', '2.9.0', '2.10.1', '99.0.0'])(
   'requires the pinned adapter to match the audited security version (rejects %s)',
   (version) => {
     const manifest = JSON.parse(
