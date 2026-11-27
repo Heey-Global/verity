@@ -271,6 +271,7 @@ describe('session.summary', () => {
         w.ctx.deps.eventStore as { listSessions: () => Promise<SessionRecord[]> },
         'listSessions',
       )
+      .mockRejectedValueOnce(new Error('store unavailable'))
       .mockRejectedValueOnce(new Error('store unavailable'));
     w.record('session:s1');
     disconnected.add('p1');
@@ -279,6 +280,14 @@ describe('session.summary', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     w.advance(2_000);
     await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Each failure waits longer, so a store that stays down is not read every
+    // two seconds.
+    w.advance(4_999);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    w.advance(1);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(3));
     await new Promise((resolve) => setTimeout(resolve, 0));
     w.advance(300);
     await vi.waitFor(() => expect(w.published).toHaveLength(1));

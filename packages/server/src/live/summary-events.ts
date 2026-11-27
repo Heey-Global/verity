@@ -150,20 +150,25 @@ export function installSummaryEvents(
   // own; each session of the project names the condition in its row. The
   // projects one pass reclassifies share one read of the sessions.
   let changedProjects: Set<string> | undefined;
-  const noteProjects = (projectIds: Iterable<string>, wait: number): void => {
+  let announceTimer: unknown;
+  const noteProjects = (projectIds: Iterable<string>, attempt: number): void => {
     if (changedProjects === undefined) {
       changedProjects = new Set();
-      timers.setTimeout(announceProjects, wait);
+      const wait =
+        attempt === 0 ? 0 : RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length) - 1]!;
+      announceTimer = timers.setTimeout(() => announceProjects(attempt), wait);
     }
     for (const projectId of projectIds) changedProjects.add(projectId);
   };
-  const announceProjects = (): void => {
+  const announceProjects = (attempt: number): void => {
     const projectIds = changedProjects;
     changedProjects = undefined;
+    announceTimer = undefined;
     if (projectIds === undefined || closed) return;
     void deps.eventStore
       .listSessions()
       .then((sessions) => {
+        if (closed) return;
         for (const session of sessions)
           if (session.projectId !== null && projectIds.has(session.projectId))
             schedule(session.sessionId);
@@ -173,8 +178,9 @@ export function installSummaryEvents(
           { err: error, projectIds: [...projectIds] },
           'verity: sandbox sessions not announced',
         );
-        // Nothing else hints these sessions; read them again shortly.
-        if (!closed) noteProjects(projectIds, RETRY_DELAYS_MS[0]!);
+        // Nothing else hints these sessions: read them again, waiting longer
+        // each time up to the last delay.
+        if (!closed) noteProjects(projectIds, attempt + 1);
       });
   };
   const disconnected = deps.provisioner?.disconnectedSandboxProjects?.();
@@ -188,6 +194,7 @@ export function installSummaryEvents(
     closed = true;
     unsubscribe();
     stopObservingSandboxes?.();
+    if (announceTimer !== undefined) timers.clearTimeout(announceTimer);
     for (const { timer } of scheduled.values()) timers.clearTimeout(timer);
     scheduled.clear();
   });
