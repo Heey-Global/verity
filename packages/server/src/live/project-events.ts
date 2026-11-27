@@ -84,26 +84,33 @@ export function installProjectEvents(
   const serverToolkitIdentity = (): Promise<string | undefined | typeof UNREADABLE> =>
     (deps.toolkitIdentity ?? cachedTrustedToolkitIdentity)().catch(() => UNREADABLE);
 
+  // One change of a person's access at a time, in the order they committed:
+  // an earlier change read before a later one must not publish after it.
+  const accessQueues = new Map<string, Promise<void>>();
   /**
    * What one person may read changed. Their open topics are checked again at
    * once, so a project they lost ends its stream now; and the projects whose
    * place on their overview changed are announced to them alone.
    */
-  // One change of a person's access at a time, in the order they committed:
-  // an earlier change read before a later one must not publish after it.
-  const accessQueues = new Map<string, Promise<void>>();
   const accessChanged = (userId: string, projectId?: string): Promise<void> => {
     const next = (accessQueues.get(userId) ?? Promise.resolve())
       .catch(() => undefined)
       .then(() => publishAccess(userId, projectId));
-    const settled = next.finally(() => {
-      if (accessQueues.get(userId) === settled) accessQueues.delete(userId);
-    });
+    // Held for the next change, never rejecting: the caller handles `next`.
+    const settled = next
+      .catch(() => undefined)
+      .finally(() => {
+        if (accessQueues.get(userId) === settled) accessQueues.delete(userId);
+      });
     accessQueues.set(userId, settled);
     return next;
   };
   const publishAccess = async (userId: string, projectId?: string): Promise<void> => {
     ctx.liveHub.authorizationChanged({ userId, ...(projectId === undefined ? {} : { projectId }) });
+    // The change cleared their cached scope; reading it now, before anything
+    // is announced, lets the hub know they hold a project they just joined, so
+    // its hiding or deletion reaches them too.
+    await ctx.liveHub.overviewScope(userId);
     const store = deps.eventStore;
     const projectIds =
       projectId === undefined ? await store.listReadableProjectIds(userId) : [projectId];
@@ -120,9 +127,6 @@ export function installProjectEvents(
         userId,
       });
     }
-    // Read their scope anew, so the hub knows they hold a project they just
-    // joined: its deletion must reach them too.
-    await ctx.liveHub.overviewScope(userId);
   };
 
   const publish = (projectId: string, event: DomainEvent): void => {
@@ -317,7 +321,7 @@ export function installProjectEvents(
       lifecycle.onClose(
         changes.observeAccess((userId, projectId) => {
           void accessChanged(userId, projectId).catch((error: unknown) => {
-            app.log.warn({ err: error, projectId }, 'verity: access change not published');
+            app.log.warn({ err: error, userId, projectId }, 'verity: access change not published');
           });
         }),
       );

@@ -324,6 +324,29 @@ describe('installProjectEvents', () => {
     expect(w.overviewScope).toHaveBeenCalledWith('bob');
   });
 
+  // A failing check must not take the server down: the queue it leaves for
+  // the next change of that person must not reject unhandled.
+  it('survives an access change it cannot check', async () => {
+    const w = setup();
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      w.setPermission(async () => {
+        throw new Error('store down');
+      });
+      w.projectChanges.announceAccess('bob', 'p1');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+      w.setPermission(async () => true);
+      w.projectChanges.announceAccess('bob', 'p1');
+      await vi.waitFor(() =>
+        expect(w.listing().at(-1)).toMatchObject({ t: 'project.listed', userId: 'bob' }),
+      );
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
   it('publishes renames and setup status as project changes', async () => {
     const w = setup();
     w.write({});
