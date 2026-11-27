@@ -407,9 +407,11 @@ export class EventStore implements EventSink {
     () => this.listSessions(),
     () => this.scheduleMessageProjection(),
   );
-  private get attachments(): AttachmentStore {
-    return new AttachmentStore(this.db);
-  }
+  private readonly attachments: AttachmentStore = new AttachmentStore(
+    () => this.db,
+    (mediaType, data) => this.putAttachment(mediaType, data),
+    (jsonText) => this.putTextBlob(jsonText),
+  );
 
   private eventWriteStore: EventWriteStore | undefined;
   private get eventWrites(): EventWriteStore {
@@ -1590,21 +1592,11 @@ export class EventStore implements EventSink {
     return this.eventWrites.releaseRunningTurnFence(anchor, noticeSeq, fenceSeq);
   }
 
-  /** Rewrite a `tool_result`'s heavy inline payloads to content-addressed refs:
-   * inline images → `id` refs (#115), and a large text output → a truncated preview
-   * plus an `outputRef` to the full body. A no-op (returns the same event) when it
-   * carries neither. Images are externalized first so the stored full-text body
-   * already references images by id rather than re-embedding their base64. */
   private async externalizeToolResult(
     event: Extract<AgentEvent, { t: 'tool_result' }>,
   ): Promise<AgentEvent> {
-    return this.attachments.externalizeToolResult(
-      event,
-      (mediaType, data) => this.putAttachment(mediaType, data),
-      (jsonText) => this.putTextBlob(jsonText),
-    );
+    return this.attachments.externalizeToolResult(event);
   }
-
   /**
    * Store a UTF-8 text blob content-addressed by the SHA-256 of its bytes, reusing
    * the `attachments` table (a generic content-addressed blob store). Idempotent —

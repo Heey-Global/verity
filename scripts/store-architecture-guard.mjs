@@ -129,6 +129,10 @@ function isStoreWiring(initializer) {
         );
       }
       if (!ts.isArrowFunction(argument)) return false;
+      if (initializer.expression.text === 'AttachmentStore') {
+        if (index === 1) return isForwardingCallback(argument, 'putAttachment', 2);
+        if (index === 2) return isForwardingCallback(argument, 'putTextBlob', 1);
+      }
       if (initializer.expression.text === 'TurnRecordStore') {
         if (index === 1) return isForwardingCallback(argument, 'isSessionDeleting', 1);
         if (index === 2) return isForwardingCallback(argument, 'listRunningTurns', 0);
