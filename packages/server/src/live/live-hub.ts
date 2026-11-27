@@ -212,6 +212,13 @@ class LiveConnection {
         if (parsed.id !== 'projects') return false;
         await this.hub.overviewScope(userId);
         return true;
+      case 'server': {
+        // As `GET /sessions?envelope=1`: the administrator's to act on, or the
+        // single operator's without the auth gate.
+        if (parsed.id !== 'attention') return false;
+        const scope = await access.overviewScope(userId);
+        return scope.all || scope.unassigned;
+      }
     }
   }
 
