@@ -113,13 +113,14 @@ describe('createEmbeddedProjectFleetBindings', () => {
       },
     } as unknown as DockerClient;
     let row = project;
+    const updateProjectState = vi.fn(async (_id: string, state: ProjectRecord['state']) => {
+      row = { ...row, state };
+      return row;
+    });
     const eventStore = {
       getProject: async () => row,
       listProjects: async () => [row],
-      updateProjectState: vi.fn(async (_id: string, state: ProjectRecord['state']) => {
-        row = { ...row, state };
-        return row;
-      }),
+      updateProjectState,
     } as unknown as EventStore;
     const projectList = { list: vi.fn(), invalidate: vi.fn() };
     const bindings = createEmbeddedProjectFleetBindings({
@@ -140,7 +141,7 @@ describe('createEmbeddedProjectFleetBindings', () => {
     await stop();
     row = { ...row, state: 'active' };
     await bindings.reconcileProjectState!(row);
-    expect(eventStore.updateProjectState).toHaveBeenCalledTimes(2);
+    expect(updateProjectState).toHaveBeenCalledTimes(2);
     expect(projectList.invalidate).toHaveBeenCalledTimes(1);
   });
 });

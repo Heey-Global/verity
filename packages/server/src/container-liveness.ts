@@ -1,6 +1,6 @@
 import type { EventStore, ProjectRecord } from '@verity/store';
 import type { ContainerEventSource } from './docker-container-events.js';
-import type { DockerClient } from './docker.js';
+import { DockerError, type DockerClient } from './docker.js';
 import type { ProvisionerImpl } from './provisioner.js';
 import { reconcileProjectContainerStates } from './project-state.js';
 
@@ -57,10 +57,28 @@ export function createContainerLiveness(options: {
 }): ContainerLiveness {
   const { eventStore, docker, provisioner, log } = options;
   const written = new Set<() => void>();
-  const reconcile = (projects: ProjectRecord[]): Promise<ProjectRecord[]> =>
+  /** The client, noting each container it could not inspect: the comparison
+   * keeps the row then, which reads may only rely on while it is current. */
+  const noting = (unreadable: Set<string>): DockerClient =>
+    Object.assign(Object.create(docker) as DockerClient, {
+      inspectContainer: async (name: string) => {
+        try {
+          return await docker.inspectContainer(name);
+        } catch (error) {
+          if (!(error instanceof DockerError && error.kind === 'container_not_found')) {
+            unreadable.add(name);
+          }
+          throw error;
+        }
+      },
+    });
+  const reconcile = (
+    projects: ProjectRecord[],
+    unreadable?: Set<string>,
+  ): Promise<ProjectRecord[]> =>
     reconcileProjectContainerStates(
       projects,
-      docker,
+      unreadable === undefined ? docker : noting(unreadable),
       async (id, state, provisionError, provisionWarning) => {
         const row = await eventStore.updateProjectState(
           id,
@@ -124,8 +142,9 @@ export function createContainerLiveness(options: {
             try {
               const project = held ?? (await eventStore.getProject(projectId));
               held = undefined;
-              if (project !== undefined && !stopped) await reconcile([project]);
-              ok = true;
+              const unreadable = new Set<string>();
+              if (project !== undefined && !stopped) await reconcile([project], unreadable);
+              ok = unreadable.size === 0;
             } catch (error) {
               log.warn(`verity: could not compare project ${projectId} with its sandbox`, error);
               ok = false;
@@ -200,7 +219,7 @@ export function createContainerLiveness(options: {
 
   let started: (() => Promise<void>) | undefined;
   return {
-    reconcile,
+    reconcile: (projects) => reconcile(projects),
     following: () => connected,
     onStateWritten: (listener) => {
       written.add(listener);

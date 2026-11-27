@@ -310,6 +310,27 @@ describe('createContainerLiveness', () => {
     await stop();
   });
 
+  // The comparison keeps the row when Docker cannot answer; trusted, it would
+  // hide the death the event reported until the next full comparison.
+  it('hands comparing back to reads when Docker cannot be asked about an event', async () => {
+    const l = setup([project('p1')]);
+    const stop = l.liveness.start();
+    l.handlers().onConnected();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    let release!: () => void;
+    const rows = await l.listProjects();
+    l.listProjects.mockImplementationOnce(
+      () => new Promise((resolve) => (release = () => resolve(rows))),
+    );
+    l.inspectContainer.mockRejectedValueOnce(new Error('daemon busy'));
+    l.handlers().onEvent('p1', 'die');
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(l.liveness.following()).toBe(false);
+    release();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    await stop();
+  });
+
   it('never follows without an event stream, so reads keep comparing', () => {
     const l = setup([project('p1')], { stream: false });
     const stop = l.liveness.start();
