@@ -640,11 +640,15 @@ export function contentVersion(content: Buffer): string {
  */
 function sibling(path: string, kind: 'tmp' | 'old'): string {
   const segments = path.split('/');
-  // SMB names are limited to 255 characters; the prefix, random part and kind take 49.
-  // Cut by code point: half a surrogate pair would make the name invalid.
-  const name = Array.from(segments.at(-1) ?? '')
-    .slice(0, 200)
-    .join('');
+  // NAS file systems limit names to 255 UTF-8 bytes; the prefix, random part
+  // and kind take 49. Cut whole characters, never half of one.
+  let name = '';
+  let bytes = 0;
+  for (const character of segments.at(-1) ?? '') {
+    bytes += Buffer.byteLength(character);
+    if (bytes > 200) break;
+    name += character;
+  }
   return [...segments.slice(0, -1), `.verity-${randomUUID()}.${name}.${kind}`].join('/');
 }
 

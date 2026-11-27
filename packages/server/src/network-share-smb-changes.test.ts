@@ -106,6 +106,15 @@ describe('deleting a file on a share', () => {
     expect(fake.entries()).toEqual({ ...without('notes.md'), old: 'original text\n' });
   });
 
+  // The hidden copy keeps the file's name; a long name in a script of several
+  // bytes per character must still fit the NAS's 255-byte limit.
+  it('handles names close to the length limit', async () => {
+    const long = `${'議'.repeat(80)}.md`;
+    writeFileSync(join(fake.root, long), original);
+    await fake.client().deleteFile(FAKE_TARGET, long, contentVersion(original));
+    expect(fake.entries()).toEqual(untouched);
+  });
+
   it('refuses a folder', async () => {
     expect(
       await code(fake.client().deleteFile(FAKE_TARGET, 'Reviews', contentVersion(original))),
