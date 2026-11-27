@@ -129,6 +129,11 @@ function isStoreWiring(initializer) {
         );
       }
       if (!ts.isArrowFunction(argument)) return false;
+      if (initializer.expression.text === 'PreviewShareStore') {
+        if (index === 1) return isForwardingCallback(argument, 'encryptSecret', 1);
+        if (index === 2) return isForwardingCallback(argument, 'decryptSecret', 1);
+        if (index === 3) return isForwardingCallback(argument, 'getPublicPreviewShare', 1);
+      }
       if (initializer.expression.text === 'ProjectLifecycleStore') {
         if (index === 1) return isForwardingCallback(argument, 'getProject', 1);
         if (index === 3) return isForwardingCallback(argument, 'listProjects', 0);

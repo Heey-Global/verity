@@ -56,6 +56,7 @@ import {
   PreviewShareStore,
   type LocalPreviewShareRecord,
   type PublicPreviewShareState,
+  type PublicPreviewShareTransitionPatch,
   type PublicPreviewShareRecord,
   type PublicPreviewShareCreateInput,
 } from './preview-shares.js';
@@ -387,10 +388,11 @@ export class EventStore implements EventSink {
     (action) => this.egressDestinationMutation(action),
   );
   private readonly devicePushTokens = new DevicePushTokenStore(() => this.db);
-  private readonly previewShares = new PreviewShareStore(
+  private readonly previewShares: PreviewShareStore = new PreviewShareStore(
     () => this.db,
     (value) => this.encryptSecret(value),
     (value) => this.decryptSecret(value),
+    (id) => this.getPublicPreviewShare(id),
   );
   private readonly devServerConfigs = new DevServerConfigStore(() => this.db);
   private readonly sessionBackendState = new SessionBackendStateStore(() => this.db);
@@ -2327,9 +2329,7 @@ export class EventStore implements EventSink {
   async createPublicPreviewShare(
     input: PublicPreviewShareCreateInput,
   ): Promise<PublicPreviewShareRecord> {
-    return this.previewShares.createPublicPreviewShare(input, (id) =>
-      this.getPublicPreviewShare(id),
-    );
+    return this.previewShares.createPublicPreviewShare(input);
   }
 
   /** PIN lockout blocks new authentication, never the active connector or cookies. */
@@ -2363,18 +2363,12 @@ export class EventStore implements EventSink {
     id: string,
     from: readonly PublicPreviewShareState[],
     to: PublicPreviewShareState,
-    patch: {
-      connectorContainerId?: string | null;
-      targetPort?: number;
-      containerGeneration?: string;
-      failure?: string | null;
-      revokedAt?: Date | null;
-    } = {},
+    patch?: PublicPreviewShareTransitionPatch,
   ): Promise<PublicPreviewShareRecord | undefined> {
     return this.previewShares.transitionPublicPreviewShare(id, from, to, patch);
   }
 
-  async listPublicPreviewSharesDue(now = new Date()): Promise<PublicPreviewShareRecord[]> {
+  async listPublicPreviewSharesDue(now?: Date): Promise<PublicPreviewShareRecord[]> {
     return this.previewShares.listPublicPreviewSharesDue(now);
   }
 

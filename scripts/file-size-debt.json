@@ -51,7 +51,7 @@
   "packages/store/src/projects.test.ts": 1766,
   "packages/store/src/schema.ts": 2078,
   "packages/store/src/store.test.ts": 2605,
-  "packages/store/src/store.ts": 2654,
+  "packages/store/src/store.ts": 2648,
   "scripts/ci-workflow.test.ts": 6046,
   "scripts/probes/project-egress/host-smoke.ts": 1523,
   "scripts/release-workflow.test.ts": 1842
