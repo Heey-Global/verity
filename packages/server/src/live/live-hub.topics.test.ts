@@ -298,6 +298,26 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  // Any scope read after a deletion lacks the project; one forced by someone
+  // else's new project must not decide who hears that it is gone.
+  it('tells holders of a deleted project when a later read no longer holds it', async () => {
+    const w = world();
+    const bob = w.connect('bob');
+    await bob.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.readable.get('bob')!.delete('p2');
+    // Someone else's project forces a fresh read, which no longer holds p2.
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p9', rev: 1 });
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 2,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(1));
+    expect(bob.of('domain')[0]!.event).toMatchObject({ projectId: 'p2' });
+    w.hub.close();
+  });
+
   it('refuses a collection it does not know', async () => {
     const w = world();
     const alice = w.connect('alice');

@@ -307,8 +307,11 @@ export function useProjects(client: VerityClient) {
   // Moves on with every announcement for a project: a listing still reading
   // when the project was unlisted again must not bring it back.
   const collectionTurns = useRef(new Map<string, number>());
+  // One counter for all projects: a number is never handed out twice, so a
+  // forgotten entry cannot make an old listing look current.
+  const turns = useRef(0);
   const turn = (projectId: string): number => {
-    const next = (collectionTurns.current.get(projectId) ?? 0) + 1;
+    const next = ++turns.current;
     collectionTurns.current.set(projectId, next);
     return next;
   };
@@ -334,12 +337,17 @@ export function useProjects(client: VerityClient) {
         }
       } finally {
         target.endRead(read);
+        if (collectionTurns.current.get(projectId) === mine) {
+          collectionTurns.current.delete(projectId);
+        }
       }
     },
     [client, readWhenShown],
   );
   const unlistOne = useCallback((projectId: string) => {
+    // Moves on any listing still reading; nothing of its own waits.
     turn(projectId);
+    collectionTurns.current.delete(projectId);
     const target = storeRef.current;
     const read = target.beginRead();
     try {

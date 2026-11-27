@@ -229,8 +229,7 @@ class LiveConnection {
       // Only to those who held the project: its readers may already have lost
       // the right to read it (a deleted project takes its memberships along),
       // and anyone else would learn that it existed.
-      const held = this.hub.lastOverviewScope(userId);
-      if (held !== undefined && scopeAllows(held, event.projectId)) return true;
+      if (this.hub.everHeld(userId, event.projectId)) return true;
       return this.hub.overviewScope(userId).then((scope) => scopeAllows(scope, event.projectId));
     }
     return (async () => {
@@ -566,6 +565,9 @@ export class LiveHub {
     string,
     { scope: LiveOverviewScope; at: number; since: number }
   >();
+  /** Every project a user's scope reads held, by user: bounded by the
+   * projects they could ever read. */
+  private readonly held = new Map<string, Set<string>>();
   private readonly scopeReads = new Map<
     string,
     { since: number; promise: Promise<LiveOverviewScope> }
@@ -731,6 +733,11 @@ export class LiveHub {
         if (held === undefined || held.at <= at) {
           this.scopes.set(key, { scope, at, since: entry.since });
         }
+        if (!scope.all) {
+          const held = this.held.get(key) ?? new Set<string>();
+          for (const projectId of scope.projectIds) held.add(projectId);
+          this.held.set(key, held);
+        }
         return scope;
       })
       .finally(() => {
@@ -740,10 +747,13 @@ export class LiveHub {
     return entry.promise;
   }
 
-  /** The scope last read for a user, however old: who held a project that
-   * has since left their reach. */
-  lastOverviewScope(userId: string | undefined): LiveOverviewScope | undefined {
-    return this.scopes.get(userId ?? '')?.scope;
+  /** Whether any scope read for a user held the project: who held a project
+   * that has since left their reach. A later read only adds to this, so how
+   * reads interleave with a deletion does not decide who hears of it. */
+  everHeld(userId: string | undefined, projectId: string): boolean {
+    const key = userId ?? '';
+    if (this.scopes.get(key)?.scope.all === true) return true;
+    return this.held.get(key)?.has(projectId) === true;
   }
 
   /** A session moved to another project: forget the cached owner. */
