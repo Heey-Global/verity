@@ -239,9 +239,10 @@ FROM node:26.13.1-bookworm-slim@sha256:0042e17d232a87a2cd485be1da7900fca4d10a4ad
 #   configured transcription backend.
 # expect: drives interactive Claude auth through a real PTY for app login.
 # util-linux: provides setpriv for the image's anti-forgery boundary test.
+# smbclient: carries out network share (SMB 3, encrypted) operations for agents.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux systemd jq python3; \
+    apt-get install -y --no-install-recommends git ca-certificates tini openssh-client openssl ffmpeg expect util-linux systemd jq python3 smbclient; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=docker-cli /usr/local/bin/cosign /usr/local/bin/docker /usr/local/bin/docker-compose /usr/local/bin/

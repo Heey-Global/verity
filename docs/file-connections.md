@@ -4,6 +4,9 @@ Google Drive and future file providers use the bounded file-operation contract i
 `packages/events/src/file-operations.ts`. Identifiers are opaque provider IDs,
 not host paths. No complete folder synchronization is performed.
 
+Folders on a NAS or file server (SMB) are described in
+[Network shares](network-shares.md).
+
 ## Google Drive
 
 Connect folders in Project settings → Connections → Google Drive, choosing the

@@ -37,6 +37,7 @@ export const APP_LINK_SETTINGS_ROUTES = [
   '/settings/services/codex',
   '/settings/services/opencode',
   '/settings/services/doppler',
+  '/settings/services/network-shares',
   '/settings/services/attendee',
   '/settings/services/matrix',
   '/settings/services/mcp',

@@ -7,6 +7,8 @@ export type { SecretKeyMetaTable } from './schema-brokered-approvals.js';
 import type { AssistantDatabase } from './schema-assistant.js';
 import type { PeopleDatabase } from './schema-people.js';
 import type { DopplerDatabase } from './schema-doppler.js';
+import type { NetworkShareDatabase } from './schema-network-shares.js';
+import type { GoogleWorkspaceDatabase } from './schema-google-workspace.js';
 import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
 import type { ProjectInquiryDatabase } from './schema-project-inquiries.js';
 import type { SandboxDatabase, SandboxRepairIntentsTable } from './schema-sandbox.js';
@@ -196,13 +198,6 @@ export interface ProjectGoogleDriveFoldersTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
-interface GoogleWorkspaceRecentsTable {
-  account_id: string;
-  file_id: string;
-  kind: 'docs' | 'sheets' | 'slides';
-  last_assigned_at: ColumnType<Date, string | undefined, string | undefined>;
-}
-
 /** Explicit Gmail access grant for one session. */
 interface ProjectGoogleConnectionsTable {
   revision: ColumnType<string | null, string | null | undefined, string | null>;
@@ -233,36 +228,6 @@ interface SessionContactsConnectionsTable {
   session_id: string;
   account_email: string;
   enabled_at: ColumnType<Date, string | undefined, never>;
-}
-
-/** Workspace file ids ordered by their latest explicit assignment. */
-interface RecentGoogleSlideDecksTable {
-  account_id: ColumnType<string | null, string | null | undefined, string | null>;
-  file_id: string;
-  kind: 'slides' | 'docs' | 'sheets';
-  last_assigned_at: ColumnType<Date, string | undefined, string | undefined>;
-}
-
-/** Durable cleanup outbox created before a temporary Drive image becomes public. */
-interface GoogleSlideImageCleanupTable {
-  account_id: ColumnType<string | null, string | null | undefined, string | null>;
-  id: string;
-  session_id: string;
-  file_id: string;
-  permission_id: string | null;
-  ready_at: ColumnType<Date | null, string | null | undefined, string | null>;
-  attempts: ColumnType<number, number | undefined, number>;
-  last_error: string | null;
-  created_at: ColumnType<Date, string | undefined, never>;
-}
-
-/** Durable at-most-once fence for non-idempotent Slides gateway invocations. */
-interface GoogleSlideInvocationsTable {
-  invocation_id: string;
-  session_id: string;
-  turn_id: string;
-  result_json: string | null;
-  created_at: ColumnType<Date, string | undefined, never>;
 }
 
 export interface HttpMcpConnectionsTable {
@@ -1708,6 +1673,8 @@ export interface Database
     AssistantDatabase,
     PeopleDatabase,
     DopplerDatabase,
+    NetworkShareDatabase,
+    GoogleWorkspaceDatabase,
     SandboxDatabase,
     CapacityLeaseDatabase,
     SessionCoordinationDatabase,
@@ -1773,7 +1740,6 @@ export interface Database
   starter_project: StarterProjectTable;
   sessions: SessionsTable;
   session_slide_decks: SessionSlideDecksTable;
-  google_workspace_recents: GoogleWorkspaceRecentsTable;
   google_accounts: GoogleAccountsTable;
   calendar_watch_calendars: CalendarWatchCalendarsTable;
   calendar_watch_events: CalendarWatchEventsTable;
@@ -1783,9 +1749,6 @@ export interface Database
   session_gmail_connections: SessionGmailConnectionsTable;
   session_calendar_connections: SessionCalendarConnectionsTable;
   session_contacts_connections: SessionContactsConnectionsTable;
-  recent_google_slide_decks: RecentGoogleSlideDecksTable;
-  google_slide_image_cleanup: GoogleSlideImageCleanupTable;
-  google_slide_invocations: GoogleSlideInvocationsTable;
   events: EventsTable;
   session_event_stats: SessionEventStatsTable;
   messages: MessagesTable;

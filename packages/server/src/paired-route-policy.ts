@@ -431,6 +431,11 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     routeScopeKey('DELETE', '/projects/:id/doppler/connection'),
     { kind: 'project', parameter: 'id', permission: 'execute' },
   ],
+  // Which network share folders a project's agents may use, and how.
+  [
+    routeScopeKey('GET', '/projects/:id/network-shares/folders'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
   // Which Doppler configs a project reads from (ADR 0031); members see them next
   // to their own tokens. Changing them stays with administrators, see below.
   [
@@ -814,6 +819,11 @@ export const ADMINISTRATOR_ONLY_RESOURCE_ROUTES: ReadonlySet<string> = new Set([
   routeScopeKey('POST', '/projects/:id/doppler/bindings'),
   routeScopeKey('PATCH', '/projects/:id/doppler/bindings/:bindingId'),
   routeScopeKey('DELETE', '/projects/:id/doppler/bindings/:bindingId'),
+  // Granting a network share folder browses the share with its stored account;
+  // the access level decides what every agent of the project may write there.
+  routeScopeKey('POST', '/projects/:id/network-shares/folders'),
+  routeScopeKey('PATCH', '/projects/:id/network-shares/folders/:folderId'),
+  routeScopeKey('DELETE', '/projects/:id/network-shares/folders/:folderId'),
   routeScopeKey('POST', '/projects'),
   routeScopeKey('POST', '/projects/:id/link'),
   routeScopeKey('POST', '/projects/:id/link-github'),

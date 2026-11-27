@@ -1,4 +1,5 @@
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
+import type { NetworkShareClient } from './network-share-smb.js';
 import type { DependencyCapacity } from './dependency-capacity.js';
 import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { SessionStorage } from './session-storage.js';
@@ -536,6 +537,8 @@ export interface ServerDeps {
    *  connection holding one. */
   dopplerCredentialReader?:
     ((connectionId?: string) => Promise<Uint8Array | undefined>) | undefined;
+  /** SMB access for network shares; tests substitute a fake for Samba's smbclient. */
+  networkShareClient?: NetworkShareClient | undefined;
   /** The Doppler workplace a token belongs to, best-effort, for labelling connections. */
   dopplerWorkplace?:
     ((token: string) => Promise<{ slug: string | null; name: string | null }>) | undefined;
