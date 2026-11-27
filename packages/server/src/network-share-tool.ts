@@ -85,6 +85,17 @@ interface NetworkSharePresentation {
   content?: { bytes: number; preview?: string };
 }
 
+/** The first `count` characters of `text`, without walking the rest of it. */
+function firstCharacters(text: string, count: number): string {
+  let result = '';
+  let taken = 0;
+  for (const character of text) {
+    if (taken++ === count) break;
+    result += character;
+  }
+  return result;
+}
+
 type NetworkShareLogAction = 'create' | 'update' | 'create_folder' | 'rename' | 'move' | 'delete';
 
 type Input = { projectId: string; sessionId: string; turnId: string; request: unknown };
@@ -349,7 +360,7 @@ export function createNetworkShareTool(deps: {
           // Cut whole characters: half a surrogate pair would end the preview garbled.
           ...(decoded === undefined
             ? {}
-            : { preview: Array.from(decoded).slice(0, PREVIEW_CHARACTERS).join('') }),
+            : { preview: firstCharacters(decoded, PREVIEW_CHARACTERS) }),
         };
       }
       return {
