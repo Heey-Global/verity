@@ -58,4 +58,44 @@ describe('createEmbeddedProjectFleetBindings', () => {
     expect(inspectContainer).toHaveBeenCalledTimes(3);
     await stop();
   });
+
+  // Reopened on the same store, a server must judge its projects with its own
+  // provisioner's guards, and its reads must not trust a stream it never opened.
+  it('builds a new liveness for a new provisioner on the same store', async () => {
+    let handlers: ContainerEventHandlers | undefined;
+    const inspectContainer = vi.fn(async (id: string) => ({ id, running: true }));
+    const docker = {
+      inspectContainer,
+      followContainerEvents: (next: ContainerEventHandlers) => {
+        handlers = next;
+        return async () => undefined;
+      },
+    } as unknown as DockerClient;
+    const eventStore = {
+      getProject: async () => project,
+      listProjects: async () => [project],
+      updateProjectState: vi.fn(),
+    } as unknown as EventStore;
+    const bind = (provisioner: object) =>
+      createEmbeddedProjectFleetBindings({
+        eventStore,
+        installationService: undefined,
+        docker,
+        provisioner: provisioner as never,
+        projectList: undefined,
+        hasMasterPassword: false,
+        secretCipher: { isSealed: () => false },
+        refreshProjectToken: undefined,
+      });
+    const first = bind({ isProjectProvisioning: () => false });
+    const stop = first.containerLiveness!.start();
+    handlers!.onConnected();
+    await vi.waitFor(() => expect(inspectContainer).toHaveBeenCalledTimes(1));
+    await first.reconcileProjectState!(project);
+    expect(inspectContainer).toHaveBeenCalledTimes(1);
+    const second = bind({ isProjectProvisioning: () => false });
+    await second.reconcileProjectState!(project);
+    expect(inspectContainer).toHaveBeenCalledTimes(2);
+    await stop();
+  });
 });

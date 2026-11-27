@@ -109,4 +109,24 @@ describe('createContainerEventSource', () => {
     // would have been reopened about forty times.
     expect(fetch.mock.calls.length).toBeLessThanOrEqual(8);
   });
+
+  // A transport that ignores the signal resolves after the abort; its stream
+  // would otherwise hold the server's close until the next Docker event.
+  it('stops while the request is still on its way', async () => {
+    const late = streamingResponse();
+    let respond!: () => void;
+    const fetch = vi
+      .fn<HttpFetch>()
+      .mockImplementation(() => new Promise((resolve) => (respond = () => resolve(late.response))));
+    const source = createContainerEventSource({ baseUrl: 'http://docker.test', fetch });
+    const stop = source.followContainerEvents({
+      onEvent: () => undefined,
+      onConnected: () => undefined,
+      onDisconnected: () => undefined,
+    });
+    await vi.waitFor(() => expect(respond).toBeDefined());
+    const stopping = stop();
+    respond();
+    await stopping;
+  });
 });

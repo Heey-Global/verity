@@ -92,6 +92,7 @@ export function createContainerEventSource(options: {
         // this, stopping would wait for an event that may never come.
         const cancel = (): void => void reader.cancel().catch(() => undefined);
         controller.signal.addEventListener('abort', cancel, { once: true });
+        if (controller.signal.aborted) cancel();
         const decoder = new TextDecoder();
         let pending = '';
         try {

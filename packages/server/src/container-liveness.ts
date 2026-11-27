@@ -20,6 +20,8 @@ export interface ContainerLiveness {
   following(): boolean;
   /** Follow the event stream and run the periodic comparisons until stopped. */
   start(): () => Promise<void>;
+  /** Called after a comparison wrote a project's state, for caches of rows. */
+  onStateWritten(listener: () => void): void;
 }
 
 /**
@@ -52,12 +54,21 @@ export function createContainerLiveness(options: {
   intervals?: { full: number; transitions: number };
 }): ContainerLiveness {
   const { eventStore, docker, provisioner, log } = options;
+  const written = new Set<() => void>();
   const reconcile = (projects: ProjectRecord[]): Promise<ProjectRecord[]> =>
     reconcileProjectContainerStates(
       projects,
       docker,
-      (id, state, provisionError, provisionWarning) =>
-        eventStore.updateProjectState(id, state, provisionError, provisionWarning),
+      async (id, state, provisionError, provisionWarning) => {
+        const row = await eventStore.updateProjectState(
+          id,
+          state,
+          provisionError,
+          provisionWarning,
+        );
+        for (const listener of written) listener();
+        return row;
+      },
       (id) => provisioner?.isProjectProvisioning?.(id) === true,
       provisioner?.recoverInterruptedSleep?.bind(provisioner),
       provisioner?.recoverInterruptedWake?.bind(provisioner),
@@ -96,6 +107,10 @@ export function createContainerLiveness(options: {
               if (project !== undefined && !stopped) await reconcile([project]);
             } catch (error) {
               log.warn(`verity: could not compare project ${projectId} with its sandbox`, error);
+              // The rows no longer hold everything the stream reported: reads
+              // compare again until a full pass has caught up.
+              connected = false;
+              void sweep();
             }
           } while (entry.again && !stopped);
         } finally {
@@ -147,6 +162,9 @@ export function createContainerLiveness(options: {
   return {
     reconcile,
     following: () => connected,
+    onStateWritten: (listener) => {
+      written.add(listener);
+    },
     start() {
       // One follower at a time; a server reopened on the same store starts
       // afresh after the previous one stopped.
@@ -174,8 +192,7 @@ export function createContainerLiveness(options: {
       );
       full.unref?.();
       transitions.unref?.();
-      started = async () => {
-        started = undefined;
+      const stop = async () => {
         stopped = true;
         clearInterval(full);
         clearInterval(transitions);
@@ -183,8 +200,12 @@ export function createContainerLiveness(options: {
         connected = false;
         await stopStream?.();
         await Promise.all([sweeping, ...inFlight]);
+        // Released only now: a start while this one winds down gets it, rather
+        // than reviving its comparisons.
+        if (started === stop) started = undefined;
       };
-      return started;
+      started = stop;
+      return stop;
     },
   };
 }

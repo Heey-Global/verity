@@ -226,6 +226,32 @@ describe('createContainerLiveness', () => {
     await stop();
   });
 
+  // A reported change the rows never took must not be read as current.
+  it('hands comparing back to reads when an event cannot be compared', async () => {
+    const l = setup([project('p1')]);
+    const written = vi.fn();
+    l.liveness.onStateWritten(written);
+    const stop = l.liveness.start();
+    l.handlers().onConnected();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    let release!: () => void;
+    const rows = await l.listProjects();
+    l.listProjects.mockImplementationOnce(
+      () => new Promise((resolve) => (release = () => resolve(rows))),
+    );
+    l.getProject.mockRejectedValueOnce(new Error('store busy'));
+    l.handlers().onEvent('p1', 'die');
+    await vi.waitFor(() => expect(release).toBeDefined());
+    expect(l.liveness.following()).toBe(false);
+    // The full pass it starts catches up, and a state it writes is announced.
+    l.stopContainer('p1');
+    release();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    expect(l.state('p1')).toBe('failed');
+    expect(written).toHaveBeenCalled();
+    await stop();
+  });
+
   it('never follows without an event stream, so reads keep comparing', () => {
     const l = setup([project('p1')], { stream: false });
     const stop = l.liveness.start();

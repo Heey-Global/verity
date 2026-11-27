@@ -29,20 +29,24 @@ type FleetContext = {
 
 /** One per server: the list cache and the detail route share whether Docker's
  * event stream is open. */
-const livenessByStore = new WeakMap<EventStore, ContainerLiveness>();
+const livenessByStore = new WeakMap<
+  EventStore,
+  { docker: object; provisioner: object | undefined; liveness: ContainerLiveness }
+>();
 function livenessFor(ctx: FleetContext): ContainerLiveness | undefined {
   const { eventStore, docker, provisioner } = ctx;
   if (docker === undefined) return undefined;
-  let liveness = livenessByStore.get(eventStore);
-  if (liveness === undefined) {
-    liveness = createContainerLiveness({
-      eventStore,
-      docker,
-      provisioner,
-      log: { warn: (message, error) => console.warn(message, error) },
-    });
-    livenessByStore.set(eventStore, liveness);
-  }
+  const held = livenessByStore.get(eventStore);
+  // A server reopened on the same store with a new provisioner must not judge
+  // its projects with the previous one's provisioning and recovery hooks.
+  if (held?.docker === docker && held.provisioner === provisioner) return held.liveness;
+  const liveness = createContainerLiveness({
+    eventStore,
+    docker,
+    provisioner,
+    log: { warn: (message, error) => console.warn(message, error) },
+  });
+  livenessByStore.set(eventStore, { docker, provisioner, liveness });
   return liveness;
 }
 
@@ -82,6 +86,9 @@ export function createEmbeddedProjectList(ctx: FleetContext) {
           },
           { ttlMs: 3_000 },
         );
+  // A state the event stream wrote reaches the overview at once, not after the
+  // cached list expires.
+  if (projectList !== undefined) liveness?.onStateWritten(() => projectList.invalidate());
 
   return projectList;
 }
