@@ -418,23 +418,29 @@ export class SmbClient {
         if (outcome === 'unknown' && mayHaveMoved) throw new NetworkShareError('interrupted');
         throw error;
       };
+      // Upload first and check it: a write that cannot land must not move the
+      // original aside (smbclient carries on after a failed command).
+      try {
+        const [upload] = await run(target, [`put "${local}" ${remote(temporary)}`]);
+        const uploadError = statusOf(upload);
+        if (uploadError) throw uploadError;
+      } catch (error) {
+        await run(target, [`del ${remote(temporary)}`]).catch(() => undefined);
+        throw error;
+      }
       let moved: string[];
       try {
         moved = await run(target, [
-          `put "${local}" ${remote(temporary)}`,
           `rename ${remote(path)} ${remote(previous)}`,
           `get ${remote(previous)} "${replacedCopy}"`,
         ]);
       } catch (error) {
-        // The move aside is the second command; before it completed nothing moved.
-        const started =
-          !(error instanceof NetworkShareError) ||
-          error.completed === undefined ||
-          error.completed >= 1;
-        return recover(error, started);
+        // The upload just reached the server, so a failure here may have cut
+        // the rename short after it took effect; the restore finds out which.
+        return recover(error, true);
       }
-      const [upload, moveAside, download] = moved;
-      const failure = statusOf(upload) ?? statusOf(moveAside) ?? statusOf(download);
+      const [moveAside, download] = moved;
+      const failure = statusOf(moveAside) ?? statusOf(download);
       // A copy that cannot be read, or grew past the limit, proves nothing:
       // never let it pass as some version of the original.
       const copy =

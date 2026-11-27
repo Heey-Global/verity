@@ -88,8 +88,11 @@ export function networkSharesClient(request: Request) {
     removeConnection: async (id: string): Promise<void> => {
       await request(connection(id), { method: 'DELETE' });
     },
-    testConnection: async (id: string): Promise<NetworkShareTestResult> => {
-      const res = await request(`${connection(id)}/test`, { method: 'POST' });
+    /** Reuses a recent result unless `fresh`; every real test is a sign-in on the NAS. */
+    testConnection: async (id: string, fresh = false): Promise<NetworkShareTestResult> => {
+      const res = await request(`${connection(id)}/test${fresh ? '?fresh=1' : ''}`, {
+        method: 'POST',
+      });
       return networkShareTestResultSchema.parse(await res.json());
     },
     /** The folders directly inside `path` of a share, for choosing one. */

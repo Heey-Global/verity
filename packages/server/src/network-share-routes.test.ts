@@ -3,7 +3,11 @@ import { EventStore, createSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { installNetworkShares, parseNetworkShareAddress } from './network-share-routes.js';
+import {
+  formatNetworkShareAddress,
+  installNetworkShares,
+  parseNetworkShareAddress,
+} from './network-share-routes.js';
 import { NetworkShareError, type NetworkShareClient, type SmbTarget } from './network-share-smb.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 
@@ -123,6 +127,10 @@ describe('parseNetworkShareAddress', () => {
     expect(parseNetworkShareAddress('smb://192.168.1.20/photo%20archive').share).toBe(
       'photo archive',
     );
+    // `%` is literal outside the URL form, and the shown address reads back unchanged.
+    expect(parseNetworkShareAddress('\\\\nas\\50%').share).toBe('50%');
+    const shown = formatNetworkShareAddress({ host: 'nas', port: null, share: 'Q%31 x' });
+    expect(parseNetworkShareAddress(shown).share).toBe('Q%31 x');
   });
 
   // Credentials in the address would end up in the stored host and in logs.
@@ -345,6 +353,26 @@ describe('network share routes', () => {
     });
     expect(granted.statusCode).toBe(409);
     expect(await store.networkShares.projectFolders('p1')).toEqual([]);
+  });
+
+  // Each real test is a sign-in on the NAS; visiting the settings repeatedly
+  // must not turn a changed NAS password into a lockout of the server's address.
+  it('reuses a recent test result unless a fresh one is asked for', async () => {
+    const { client } = fakeClient();
+    const app = await server(client);
+    const { id } = (await call(app, 'admin', 'POST', '/network-shares', studio)).json<{
+      id: string;
+    }>();
+    vi.mocked(client.test).mockClear();
+    await call(app, 'admin', 'POST', `/network-shares/${id}/test`);
+    await call(app, 'admin', 'POST', `/network-shares/${id}/test`);
+    expect(client.test).toHaveBeenCalledTimes(1);
+    await call(app, 'admin', 'POST', `/network-shares/${id}/test?fresh=1`);
+    expect(client.test).toHaveBeenCalledTimes(2);
+    await call(app, 'admin', 'PATCH', `/network-shares/${id}`, { password: 'pw' });
+    vi.mocked(client.test).mockClear();
+    await call(app, 'admin', 'POST', `/network-shares/${id}/test`);
+    expect(client.test).toHaveBeenCalledTimes(1);
   });
 
   it('removes project access when the share is disconnected', async () => {

@@ -64,8 +64,10 @@ export function parseNetworkShareAddress(input: string): {
   share: string;
 } {
   const trimmed = input.trim();
+  // Only the URL form percent-encodes; in `\\server\share` a `%` is literal.
+  const url = /^smb:\/\//i.test(trimmed);
   let rest: string;
-  if (/^smb:\/\//i.test(trimmed)) rest = trimmed.slice(6);
+  if (url) rest = trimmed.slice(6);
   else if (trimmed.startsWith('\\\\')) rest = trimmed.slice(2).replaceAll('\\', '/');
   else rest = trimmed.replace(/^\/\//, '');
   const [authority, rawShare] = rest.split('/');
@@ -76,7 +78,7 @@ export function parseNetworkShareAddress(input: string): {
   const port = match?.[2] === undefined ? null : Number(match[2]);
   let share: string;
   try {
-    share = decodeURIComponent(rawShare);
+    share = url ? decodeURIComponent(rawShare) : rawShare;
   } catch {
     throw new InvalidNetworkShareAddressError();
   }
@@ -96,7 +98,8 @@ export function formatNetworkShareAddress(connection: {
   port: number | null;
   share: string;
 }): string {
-  return `smb://${connection.host}${connection.port === null ? '' : `:${connection.port}`}/${connection.share}`;
+  // Encoded so the address reads back as the same share (`50%`, `Q%31`).
+  return `smb://${connection.host}${connection.port === null ? '' : `:${connection.port}`}/${encodeURIComponent(connection.share)}`;
 }
 
 function connectionView(connection: NetworkShareConnectionRecord) {
@@ -161,6 +164,9 @@ export function sendNetworkShareError(reply: FastifyReply, error: unknown) {
   throw error;
 }
 
+type TestResult = { ok: true } | { ok: false; code: string; error: string };
+const TEST_REUSE_MS = 5 * 60_000;
+
 export interface NetworkShareRouteContext {
   store: Pick<EventStore, 'getProject' | 'networkShares'>;
   client: NetworkShareClient;
@@ -191,6 +197,10 @@ export async function withNetworkShareTarget<T>(
  */
 export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRouteContext): void {
   const shares = ctx.store.networkShares;
+  // Every test is a real sign-in. Repeating it on each visit to the settings
+  // could trip a NAS's lockout after a password change and cut off every agent,
+  // so results are reused for a while unless a test is asked for explicitly.
+  const tests = new Map<string, { at: number; result: TestResult }>();
 
   app.get('/network-shares', async () => ({
     connections: (await shares.listConnections()).map(connectionView),
@@ -270,6 +280,7 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         });
         if (tested === undefined) return reply.code(404).send({ error: 'network share not found' });
       }
+      tests.delete(connectionId);
       await shares.updateConnection(connectionId, {
         // Save only onto the target the details were tested against.
         ...(tested === undefined ? {} : { expectedTargetRevision: tested }),
@@ -289,6 +300,7 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
   app.delete('/network-shares/:connectionId', async (request, reply) => {
     const params = z.object({ connectionId: id }).strict().safeParse(request.params);
     if (!params.success) return reply.code(400).send({ error: 'invalid network share' });
+    tests.delete(params.data.connectionId);
     if (!(await shares.deleteConnection(params.data.connectionId)))
       return reply.code(404).send({ error: 'network share not found' });
     return reply.code(204).send();
@@ -296,19 +308,30 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
 
   app.post('/network-shares/:connectionId/test', async (request, reply) => {
     const params = z.object({ connectionId: id }).strict().safeParse(request.params);
-    if (!params.success) return reply.code(400).send({ error: 'invalid network share' });
+    const query = z
+      .object({ fresh: z.enum(['1']).optional() })
+      .strict()
+      .safeParse(request.query ?? {});
+    if (!params.success || !query.success)
+      return reply.code(400).send({ error: 'invalid network share' });
+    const connectionId = params.data.connectionId;
+    const cached = tests.get(connectionId);
+    if (query.data.fresh === undefined && cached && Date.now() - cached.at < TEST_REUSE_MS)
+      return cached.result;
+    let result: TestResult;
     try {
-      const tested = await withNetworkShareTarget(ctx, params.data.connectionId, async (target) => {
+      const tested = await withNetworkShareTarget(ctx, connectionId, async (target) => {
         await ctx.client.test(target);
         return true;
       });
       if (!tested) return reply.code(404).send({ error: 'network share not found' });
-      return { ok: true };
+      result = { ok: true };
     } catch (error) {
-      if (error instanceof NetworkShareError)
-        return { ok: false, code: error.code, error: error.message };
-      throw error;
+      if (!(error instanceof NetworkShareError)) throw error;
+      result = { ok: false, code: error.code, error: error.message };
     }
+    tests.set(connectionId, { at: Date.now(), result });
+    return result;
   });
 
   // The folder picker: folders only, browsed on the server with the share's account.

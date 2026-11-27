@@ -70,9 +70,9 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
   const generation = useRef(0);
 
   const test = useCallback(
-    async (connection: NetworkShareConnection, current: number) => {
+    async (connection: NetworkShareConnection, current: number, fresh = false) => {
       const result = await client.networkShares
-        .testConnection(connection.id)
+        .testConnection(connection.id, fresh)
         .catch((): NetworkShareTestResult => ({ ok: false }));
       if (current === generation.current)
         setTests((previous) => ({ ...previous, [connection.id]: result }));
@@ -293,7 +293,7 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
                 delete next[connection.id];
                 return next;
               });
-              void test(connection, generation.current);
+              void test(connection, generation.current, true);
             }}
           />
           <Row
