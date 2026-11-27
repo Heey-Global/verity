@@ -6,6 +6,34 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.110.0](https://github.com/Heey-Global/verity/compare/v4.109.0...v4.110.0) (2026-11-27)
+
+
+### Features
+
+* **dependencies:** share unchanged files between dependency versions ([#3006](https://github.com/Heey-Global/verity/issues/3006)) ([4675d29](https://github.com/Heey-Global/verity/commit/4675d29a58c62d269f5980a1b453020fe073eaec))
+* **live:** announce access changes to the person they concern ([#3004](https://github.com/Heey-Global/verity/issues/3004)) ([e95a74f](https://github.com/Heey-Global/verity/commit/e95a74fb35d21a748601af395b151c6fc7ea18e4))
+* **live:** announce projects entering and leaving the overview on a collection topic ([#3000](https://github.com/Heey-Global/verity/issues/3000)) ([e70a485](https://github.com/Heey-Global/verity/commit/e70a48581c0fa5daa798a96632b3463c87c946ea))
+* **live:** follow Docker's event stream for project sandbox liveness ([#2994](https://github.com/Heey-Global/verity/issues/2994)) ([05322cb](https://github.com/Heey-Global/verity/commit/05322cb5a302535c5c8962bc890af3598b83f766))
+* **live:** publish session rows for self-given names and sandbox disconnects ([#3013](https://github.com/Heey-Global/verity/issues/3013)) ([792c6de](https://github.com/Heey-Global/verity/commit/792c6de3a2d4743080b32e652145d4fbb5fe1706))
+* **live:** publish the full sandbox update state as sandbox.update ([#2989](https://github.com/Heey-Global/verity/issues/2989)) ([3e8fd6a](https://github.com/Heey-Global/verity/commit/3e8fd6a2c82afb3f4de1d839edbc01b72e8a0a52))
+* **server:** warn in the session list when the disk is nearly full ([#3008](https://github.com/Heey-Global/verity/issues/3008)) ([be5eefe](https://github.com/Heey-Global/verity/commit/be5eefe03a165242a8f93ceab39dc83c60482aa5))
+* show the server host's CPU, memory and disk below the Home list ([#3009](https://github.com/Heey-Global/verity/issues/3009)) ([b3f6bba](https://github.com/Heey-Global/verity/commit/b3f6bba435ae7e232290e8ba72dec6b6b51a7e52))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2836](https://github.com/Heey-Global/verity/issues/2836)) ([bdfd3f3](https://github.com/Heey-Global/verity/commit/bdfd3f3555474653f96c7e3aae26e82722c2bfb8))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.9.1 ([#2892](https://github.com/Heey-Global/verity/issues/2892)) ([0817320](https://github.com/Heey-Global/verity/commit/0817320e646b69ba2d3e83b5e5da7dda69092220))
+* **mobile:** verify permission before starting a meeting ([#2998](https://github.com/Heey-Global/verity/issues/2998)) ([3d7be2b](https://github.com/Heey-Global/verity/commit/3d7be2b2efda7e23c5369acafca999fcc6fc4084))
+* **server:** collect sessions of a busy project and retire merged worktrees ([#3005](https://github.com/Heey-Global/verity/issues/3005)) ([0cc36bf](https://github.com/Heey-Global/verity/commit/0cc36bf2819f86d4da34d5cd263762e665fd0ef5))
+* **updater:** start the control-plane database again after a crash ([#3007](https://github.com/Heey-Global/verity/issues/3007)) ([fa556a2](https://github.com/Heey-Global/verity/commit/fa556a293795623aec49b002d68c719cf4c5393c))
+
+
+### Performance Improvements
+
+* **live:** reuse update checker inspections while Docker's event stream vouches for them ([#2996](https://github.com/Heey-Global/verity/issues/2996)) ([ad3d62c](https://github.com/Heey-Global/verity/commit/ad3d62cc185f769d75e3ee0d4ecd559b892bd1bf))
+
 ## [4.109.0](https://github.com/Heey-Global/verity/compare/v4.108.0...v4.109.0) (2026-11-27)
 
 
