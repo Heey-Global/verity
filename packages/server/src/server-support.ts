@@ -482,6 +482,27 @@ export function recordReleaseSummary(project: ProjectRecord): ReleaseSummary | n
   };
 }
 
+/** Whether the project overview may list a project: a repository synced from
+ *  the installation stays `absent` and unlisted until someone adds it. */
+export function appearsInProjectOverview(
+  project: Pick<ProjectRecord, 'state' | 'overviewVisible'>,
+): boolean {
+  return project.state !== 'absent' || project.overviewVisible === true;
+}
+
+/** Whether a project enters the overview through the project collection
+ *  (`project.listed`): shown, not hidden, and not the control plane, which the
+ *  overview adds by a setting of its own. */
+export function listedInProjectCollection(
+  project: Pick<ProjectRecord, 'state' | 'overviewVisible' | 'hiddenAt' | 'kind'>,
+): boolean {
+  return (
+    project.hiddenAt === null &&
+    !isControlPlaneProject(project) &&
+    appearsInProjectOverview(project)
+  );
+}
+
 /** Whether a project can have forge releases to show. Neither the
  *  control-plane workspace nor a project without a GitHub repository has any;
  *  looking them up would just mint tokens and 404. */

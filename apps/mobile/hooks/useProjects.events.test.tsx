@@ -215,3 +215,98 @@ describe('useProjects project events', () => {
     unmount();
   });
 });
+
+describe('useProjects project collection', () => {
+  // A project created or removed on another device used to show only at the
+  // next full list read; now only that project is read, or none at all.
+  it('lists a project another device added and drops one it removed, reading only that project', async () => {
+    const active = { ...starting, state: 'active' as const };
+    const added = { ...active, id: 'p2', name: 'P2' };
+    const client = {
+      listProjects: jest.fn().mockResolvedValue([active]),
+      getProject: jest.fn().mockResolvedValue({ project: added, settings: null, sessions: [] }),
+    };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await waitFor(() => expect(result.current.projects).toHaveLength(1));
+    await waitFor(() => expect(mockSinks.has('collection:projects')).toBe(true));
+    const reads = client.listProjects.mock.calls.length;
+    const collection = mockSinks.get('collection:projects')!;
+
+    // Already listed: nothing to read.
+    act(() => collection.event({ t: 'project.listed', projectId: 'p1', rev: 1 }));
+    expect(client.getProject).not.toHaveBeenCalled();
+
+    await act(async () => collection.event({ t: 'project.listed', projectId: 'p2', rev: 2 }));
+    await waitFor(() =>
+      expect(result.current.projects.map((project) => project.id).sort()).toEqual(['p1', 'p2']),
+    );
+    expect(client.getProject).toHaveBeenCalledWith('p2');
+
+    act(() => collection.event({ t: 'project.unlisted', projectId: 'p1', rev: 3 }));
+    await waitFor(() =>
+      expect(result.current.projects.map((project) => project.id)).toEqual(['p2']),
+    );
+    expect(client.listProjects.mock.calls.length).toBe(reads);
+    unmount();
+  });
+
+  // A listing still reading must not bring back a project unlisted meanwhile.
+  it('keeps a project off the list that was unlisted while its read was out', async () => {
+    const active = { ...starting, state: 'active' as const };
+    let answer!: (detail: object) => void;
+    const client = {
+      listProjects: jest.fn().mockResolvedValue([active]),
+      getProject: jest.fn(() => new Promise((resolve) => (answer = resolve))),
+    };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await waitFor(() => expect(mockSinks.has('collection:projects')).toBe(true));
+    const collection = mockSinks.get('collection:projects')!;
+    act(() => collection.event({ t: 'project.listed', projectId: 'p2', rev: 1 }));
+    await waitFor(() => expect(client.getProject).toHaveBeenCalled());
+    act(() => collection.event({ t: 'project.unlisted', projectId: 'p2', rev: 2 }));
+    await act(async () =>
+      answer({ project: { ...active, id: 'p2' }, settings: null, sessions: [] }),
+    );
+    expect(result.current.projects.map((project) => project.id)).toEqual(['p1']);
+    unmount();
+  });
+
+  // A read that failed for a passing reason must not leave the project off
+  // the list until some unrelated read: the list is read instead.
+  it('reads the list when the listed project could not be read', async () => {
+    const active = { ...starting, state: 'active' as const };
+    const client = {
+      listProjects: jest.fn().mockResolvedValue([active]),
+      getProject: jest.fn().mockRejectedValue(new Error('network down')),
+    };
+    const { unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await waitFor(() => expect(mockSinks.has('collection:projects')).toBe(true));
+    const reads = client.listProjects.mock.calls.length;
+    await act(async () =>
+      mockSinks.get('collection:projects')!.event({ t: 'project.listed', projectId: 'p2', rev: 1 }),
+    );
+    await waitFor(() => expect(client.listProjects.mock.calls.length).toBe(reads + 1));
+    unmount();
+  });
+
+  // A hide and a restore can both arrive before the list renders again; the
+  // restore must not find the project still shown and skip it.
+  it('lists a project restored right after it was hidden', async () => {
+    const active = { ...starting, state: 'active' as const };
+    const client = {
+      listProjects: jest.fn().mockResolvedValue([active]),
+      getProject: jest.fn().mockResolvedValue({ project: active, settings: null, sessions: [] }),
+    };
+    const { result, unmount } = renderHook(() => useProjects(client as unknown as VerityClient));
+    await waitFor(() => expect(result.current.projects).toHaveLength(1));
+    await waitFor(() => expect(mockSinks.has('collection:projects')).toBe(true));
+    const collection = mockSinks.get('collection:projects')!;
+    await act(async () => {
+      collection.event({ t: 'project.unlisted', projectId: 'p1', rev: 1 });
+      collection.event({ t: 'project.listed', projectId: 'p1', rev: 2 });
+    });
+    await waitFor(() => expect(result.current.projects.map((p) => p.id)).toEqual(['p1']));
+    expect(client.getProject).toHaveBeenCalledWith('p1');
+    unmount();
+  });
+});

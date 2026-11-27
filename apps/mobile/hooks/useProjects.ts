@@ -16,6 +16,7 @@ import { liveConnectionFor, subscribeLiveRefresh } from '../lib/liveConnection';
 import { getVerityBaseUrl } from '../lib/client';
 import { listedInOverview } from '../lib/overviewProjects';
 import { useOverviewStore, useOverviewTopics } from '../lib/overviewTopics';
+import { useProjectCollection } from '../lib/projectCollection';
 import { beginClientActivity } from '../lib/sessionSwitchTiming';
 import {
   localPreviewLinks,
@@ -298,6 +299,75 @@ export function useProjects(client: VerityClient) {
     },
     readWhenShown,
   );
+
+  // A project created, restored or removed on another device enters or leaves
+  // the list without reading it whole: only the project that changed is read.
+  const shownRef = useRef(projects);
+  shownRef.current = projects;
+  // Moves on with every announcement for a project: a listing still reading
+  // when the project was unlisted again must not bring it back.
+  const collectionTurns = useRef(new Map<string, number>());
+  // One counter for all projects: a number is never handed out twice, so a
+  // forgotten entry cannot make an old listing look current.
+  const turns = useRef(0);
+  const turn = useCallback((projectId: string): number => {
+    const next = ++turns.current;
+    collectionTurns.current.set(projectId, next);
+    return next;
+  }, []);
+  const listOne = useCallback(
+    async (projectId: string) => {
+      if (shownRef.current.some((project) => project.id === projectId)) return;
+      const mine = turn(projectId);
+      const target = storeRef.current;
+      const read = target.beginRead();
+      try {
+        const { project } = await client.getProject(projectId);
+        if (collectionTurns.current.get(projectId) !== mine) return;
+        if (!listedInOverview(project)) return;
+        target.applyProjects(read, [project], { covers: (p) => p.id === projectId });
+        setListed((current) =>
+          current.some((p) => p.id === projectId) ? current : [...current, project],
+        );
+      } catch (error) {
+        // Not readable after all: nothing to list. A read that failed for
+        // another reason leaves the list to decide, so it reads now.
+        if (!(error instanceof VerityApiError && (error.status === 403 || error.status === 404))) {
+          readWhenShown();
+        }
+      } finally {
+        target.endRead(read);
+        if (collectionTurns.current.get(projectId) === mine) {
+          collectionTurns.current.delete(projectId);
+        }
+      }
+    },
+    [client, readWhenShown, turn],
+  );
+  const unlistOne = useCallback(
+    (projectId: string) => {
+      // Moves on any listing still reading; nothing of its own waits.
+      turn(projectId);
+      collectionTurns.current.delete(projectId);
+      const target = storeRef.current;
+      const read = target.beginRead();
+      try {
+        target.applyProjects(read, [], { covers: (p) => p.id === projectId });
+      } finally {
+        target.endRead(read);
+      }
+      setListed((current) => current.filter((p) => p.id !== projectId));
+      // Before the next render: a `listed` right behind this one (a hide, then
+      // a restore) must not find the project still shown and skip it.
+      shownRef.current = shownRef.current.filter((p) => p.id !== projectId);
+    },
+    [turn],
+  );
+  useProjectCollection(getVerityBaseUrl(), {
+    listed: (projectId) => void listOne(projectId),
+    unlisted: unlistOne,
+    resync: readWhenShown,
+  });
 
   const activeProjectIds = JSON.stringify(
     projects

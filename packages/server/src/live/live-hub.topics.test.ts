@@ -55,7 +55,7 @@ const lifecycle = (projectId: string, rev: number): DomainEvent => ({
   state: 'active',
 });
 
-function world({ topics = true }: { topics?: boolean } = {}) {
+function world({ topics = true, now }: { topics?: boolean; now?: () => number } = {}) {
   const domainEvents = topics ? new DomainEventBus() : undefined;
   const sessions = new Map<string, LiveSessionRef>([
     ['s1', { sessionId: 's1', projectId: 'p1' }],
@@ -86,6 +86,7 @@ function world({ topics = true }: { topics?: boolean } = {}) {
           : { all: false, projectIds: new Set(readable.get(userId) ?? []), unassigned: false },
     },
     domainEvents,
+    ...(now === undefined ? {} : { now }),
   });
   const connect = (userId?: string): FakeSocket => {
     const socket = new FakeSocket();
@@ -147,6 +148,332 @@ describe('LiveHub domain-event topics', () => {
     w.bus!.publish('project:p1', lifecycle('p1', 1));
     w.bus!.publish('project:p2', lifecycle('p2', 1));
     expect(socket.of('domain').map(({ topic }) => topic)).toEqual(['project:p1']);
+    w.hub.close();
+  });
+
+  // The project collection carries every project; a subscriber learning of a
+  // project it may not read would learn that the project exists.
+  it('delivers each project of the collection only to those who may read it', async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    const bob = w.connect('bob');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await bob.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    expect(alice.of('topic_ended')).toEqual([]);
+    const listed = (projectId: string, rev: number): DomainEvent => ({
+      t: 'project.listed',
+      projectId,
+      rev,
+    });
+    w.bus!.publish('collection:projects', listed('p2', 1));
+    w.bus!.publish('collection:projects', listed('p1', 2));
+    w.bus!.publish('collection:projects', { t: 'project.unlisted', projectId: 'p2', rev: 3 });
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p1',
+      rev: 4,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(4));
+    await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(2));
+    // In publication order.
+    expect(alice.of('domain').map(({ event }) => event.rev)).toEqual([2, 4]);
+    expect(bob.of('domain').map(({ event }) => event.rev)).toEqual([1, 2, 3, 4]);
+    w.hub.close();
+  });
+
+  // The scope is cached; a project created a moment ago is not in it yet, and
+  // its creator's other devices must still list it.
+  it('reads the scope anew for a project the cached one does not hold', async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 1 });
+    await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(1));
+    w.readable.get('alice')!.add('p3');
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p3', rev: 2 });
+    await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(2));
+    w.hub.close();
+  });
+
+  // A deleted project takes its memberships along: its former readers must
+  // still drop it, and nobody else may learn that it existed.
+  it('tells who held a project that it left, even after losing access to it', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    const alice = w.connect('alice');
+    const bob = w.connect('bob');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await bob.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p2', rev: 1 });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(1));
+    w.readable.get('bob')!.delete('p2');
+    // Long after the cached scope expired.
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 2,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(alice.of('domain')).toEqual([]);
+    w.hub.close();
+  });
+
+  // Every device of a user receives the same event at once; one scope read
+  // serves them all.
+  it('reads a scope once for all devices of a user', async () => {
+    const w = world();
+    const read = vi.spyOn(w.hub.deps.access, 'overviewScope');
+    const phone = w.connect('alice');
+    const tablet = w.connect('alice');
+    await phone.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await tablet.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    read.mockClear();
+    // A project of someone else: both devices miss it in the cached scope and
+    // ask for a fresh one.
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p2', rev: 1 });
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 2 });
+    await vi.waitFor(() => expect(tablet.of('domain')).toHaveLength(1));
+    await vi.waitFor(() => expect(phone.of('domain')).toHaveLength(1));
+    expect(read).toHaveBeenCalledTimes(1);
+    w.hub.close();
+  });
+
+  // A rights check that fails must not drop a record the client needed
+  // silently: it reads its snapshot again.
+  it('asks for a resync when it cannot decide who receives a record', async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    vi.spyOn(w.hub.deps.access, 'overviewScope').mockRejectedValueOnce(new Error('db down'));
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p9', rev: 1 });
+    await vi.waitFor(() =>
+      expect(
+        alice.of('resync').filter(({ topic }) => topic === 'collection:projects'),
+      ).toHaveLength(2),
+    );
+    expect(alice.of('domain')).toEqual([]);
+    w.hub.close();
+  });
+
+  // The scope read on subscribing is what a later deletion asks who held the
+  // project, when no other event has read it before.
+  it('tells holders of a deleted project without any event before it', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    const bob = w.connect('bob');
+    await bob.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.readable.get('bob')!.delete('p2');
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(1));
+    w.hub.close();
+  });
+
+  // A project of someone else is listed for every user who cannot read it;
+  // a scope read after the event already shows that, without another read.
+  it('reads no scope again when the cached one began after the event', async () => {
+    const w = world();
+    // Another device keeps the stay open, so this one resumes by replay.
+    w.connect('alice');
+    const alice = w.connect('alice');
+    const read = vi.spyOn(w.hub.deps.access, 'overviewScope');
+    const before = w.bus!.head;
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p2', rev: 1 });
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 2 });
+    // Subscribing reads the scope after both were published, then replays them.
+    await alice.client({
+      k: 'topics.sub',
+      topics: [{ topic: 'collection:projects', cursor: before }],
+    });
+    await vi.waitFor(() => expect(alice.of('domain')).toHaveLength(1));
+    expect(alice.of('domain')[0]!.event).toMatchObject({ projectId: 'p1' });
+    expect(read).toHaveBeenCalledTimes(1);
+    w.hub.close();
+  });
+
+  // Any scope read after a deletion lacks the project; one forced by someone
+  // else's new project must not decide who hears that it is gone.
+  it('tells holders of a deleted project when a later read no longer holds it', async () => {
+    const w = world();
+    const bob = w.connect('bob');
+    await bob.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.readable.get('bob')!.delete('p2');
+    // Someone else's project forces a fresh read, which no longer holds p2.
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p9', rev: 1 });
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 2,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(bob.of('domain')).toHaveLength(1));
+    expect(bob.of('domain')[0]!.event).toMatchObject({ projectId: 'p2' });
+    w.hub.close();
+  });
+
+  // Who held what is kept only while the user is connected: a project they
+  // lost access to while away is not announced to them as theirs.
+  it('forgets who held what once the last connection of a user closes', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    const first = w.connect('bob');
+    await first.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    first.close();
+    w.readable.get('bob')!.delete('p2');
+    // Well within the time a scope stays cached.
+    clock += 1_000;
+    const again = w.connect('bob');
+    await again.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(again.of('domain')).toEqual([]);
+    w.hub.close();
+  });
+
+  // A scope read that answers after the user left must not come back from
+  // the cache without telling who held what.
+  it('knows who held what after a reconnect that a late read raced', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    let answer!: () => void;
+    const access = w.hub.deps.access;
+    const readNow = access.overviewScope.bind(access);
+    vi.spyOn(access, 'overviewScope').mockImplementationOnce(
+      (userId) => new Promise((resolve) => (answer = () => void readNow(userId).then(resolve))),
+    );
+    const first = w.connect('bob');
+    void first.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    first.close();
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const again = w.connect('bob');
+    await again.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.readable.get('bob')!.delete('p2');
+    // The deletion comes after the cached scope expired.
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(again.of('domain')).toHaveLength(1));
+    w.hub.close();
+  });
+
+  // A read begun before the user left describes that stay: answering once
+  // they are back, it must not note a project they lost while away.
+  it('ignores a read begun before the user left, even after they returned', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    let answer!: () => void;
+    const access = w.hub.deps.access;
+    const readNow = access.overviewScope.bind(access);
+    vi.spyOn(access, 'overviewScope').mockImplementationOnce(async (userId) => {
+      const stale = await readNow(userId);
+      return new Promise((resolve) => (answer = () => resolve(stale)));
+    });
+    const first = w.connect('bob');
+    void first.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    first.close();
+    w.readable.get('bob')!.delete('p2');
+    const again = w.connect('bob');
+    await again.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(again.of('domain')).toEqual([]);
+    w.hub.close();
+  });
+
+  // Closing a socket can follow a revocation that already detached it; the
+  // user's other device must keep what it held.
+  it('counts a connection leaving only once', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    const phone = w.connect('bob');
+    const tablet = w.connect('bob');
+    await phone.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await tablet.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    // A revocation detaches the phone, and its socket closing detaches it again.
+    const connections = (w.hub as unknown as { connections: Set<{ socket: unknown }> }).connections;
+    const phoneConnection = [...connections].find((connection) => connection.socket === phone)!;
+    w.hub.detach(phoneConnection as never);
+    w.hub.detach(phoneConnection as never);
+    w.readable.get('bob')!.delete('p2');
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await vi.waitFor(() => expect(tablet.of('domain')).toHaveLength(1));
+    w.hub.close();
+  });
+
+  // Who held what is forgotten when a user's last device leaves; replaying
+  // to a new stay would withhold a project that left meanwhile.
+  it('answers a new stay resuming the collection with a resync, not a replay', async () => {
+    const w = world();
+    const phone = w.connect('bob');
+    await phone.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    const cursor = w.bus!.head;
+    phone.close();
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    const back = w.connect('bob');
+    await back.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects', cursor }] });
+    expect(back.of('resync').map(({ topic }) => topic)).toEqual(['collection:projects']);
+    expect(back.of('domain')).toEqual([]);
+
+    // A device that joins a stay another one keeps open resumes as before.
+    const tablet = w.connect('bob');
+    const resumeAt = w.bus!.head;
+    w.bus!.publish('collection:projects', { t: 'project.listed', projectId: 'p1', rev: 2 });
+    await tablet.client({
+      k: 'topics.sub',
+      topics: [{ topic: 'collection:projects', cursor: resumeAt }],
+    });
+    await vi.waitFor(() => expect(tablet.of('domain')).toHaveLength(1));
+    expect(tablet.of('resync')).toEqual([]);
+    w.hub.close();
+  });
+
+  it('refuses a collection it does not know', async () => {
+    const w = world();
+    const alice = w.connect('alice');
+    await alice.client({ k: 'topics.sub', topics: [{ topic: 'collection:sessions' }] });
+    expect(alice.of('topic_ended')).toEqual([
+      expect.objectContaining({ topic: 'collection:sessions', reason: 'forbidden' }),
+    ]);
     w.hub.close();
   });
 
