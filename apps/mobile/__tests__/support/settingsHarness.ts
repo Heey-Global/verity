@@ -13,6 +13,7 @@
 // over.
 import type { ProjectRecord, SecretStatus, VerityClient, VeritySettings } from '@verity/mobile';
 
+import { createAppUpdateState } from '../../lib/appUpdateState';
 import { resetGithubPermissionForTests } from '../../lib/githubPermission';
 import { resetVeritySettingsStore } from '../../lib/settingsStore';
 
@@ -21,7 +22,6 @@ import { resetVeritySettingsStore } from '../../lib/settingsStore';
 export const VERITY_BASE_URL = 'http://verity.test:8082';
 
 export const mockCreateVerityClient = jest.fn<VerityClient | null, []>();
-export const mockCheckForAppUpdate = jest.fn();
 export const mockPush = jest.fn<void, [string]>();
 export const mockReplace = jest.fn<void, [string]>();
 export const mockBack = jest.fn<void, []>();
@@ -121,9 +121,10 @@ export function clientMock(): Record<string, unknown> {
   };
 }
 
-/** `lib/automaticUpdates` — the EAS Update check behind the version footer. */
+/** Keep the real observable contract when Settings reads automatic OTA status. */
 export function automaticUpdatesMock(): Record<string, unknown> {
-  return { checkForAppUpdate: () => mockCheckForAppUpdate() };
+  const appUpdateChecks = createAppUpdateState(async () => 'current');
+  return { appUpdateChecks, downloadAppUpdate: appUpdateChecks.check };
 }
 
 export function clipboardMock(): Record<string, unknown> {
@@ -153,7 +154,6 @@ export function linkingMock(): Record<string, unknown> {
  */
 export function resetSettingsHarness(): void {
   mockCreateVerityClient.mockReset();
-  mockCheckForAppUpdate.mockReset();
   mockPush.mockReset();
   mockReplace.mockReset();
   mockBack.mockReset();

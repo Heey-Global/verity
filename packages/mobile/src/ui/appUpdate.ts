@@ -34,6 +34,8 @@ export interface AppUpdateFacts {
   readonly updatesEnabled: boolean;
   readonly downloaded: boolean;
   readonly checking: boolean;
+  readonly downloading?: boolean;
+  readonly downloadFailed?: boolean;
   readonly checkFailed: boolean;
   /** What the App Store lists; null when it was not asked or did not answer. */
   readonly store: AppStoreRelease | null;
@@ -189,7 +191,11 @@ export function describeAppUpdate(facts: AppUpdateFacts): AppUpdateBox {
     };
   }
 
-  if (facts.checking) return { ...base, tag: { label: 'Checking', intent: 'transient' } };
+  if (facts.checking && !facts.checkFailed)
+    return {
+      ...base,
+      tag: { label: facts.downloading ? 'Downloading' : 'Checking', intent: 'transient' },
+    };
 
   if (facts.checkFailed) {
     return {
@@ -198,9 +204,11 @@ export function describeAppUpdate(facts: AppUpdateFacts): AppUpdateBox {
       attention: true,
       block: {
         key: 'error',
-        title: "Couldn't check for updates",
+        title: facts.downloadFailed ? "Couldn't download update" : "Couldn't check for updates",
         publishedAt: null,
-        detail: 'Verity could not reach the update service. The version you have keeps working.',
+        detail: facts.downloadFailed
+          ? 'The download did not finish. The version you have keeps working. Try again.'
+          : 'Verity could not reach the update service. The version you have keeps working.',
         action: { kind: 'check', label: 'Try again' },
         notes: null,
       },

@@ -17,9 +17,31 @@ jest.mock('react-native/Libraries/Linking/Linking', () =>
 );
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
-const mockAppStoreVersion = jest.fn((_enabled: boolean): string | null => null);
+const mockAppStoreVersion = jest.fn((): string | null => null);
+// A production iOS build on an older native line, so a listed store version is
+// a real store update and appUpdateSummary decides the row as it does in the app.
 jest.mock('../lib/appUpdateFacts', () => ({
-  useAppStoreUpdateVersion: (enabled: boolean) => mockAppStoreVersion(enabled),
+  useAppUpdateFacts: () => {
+    const version = mockAppStoreVersion();
+    return {
+      facts: {
+        variant: 'production',
+        platform: 'ios',
+        runningVersion: '1.75.0',
+        nativeVersion: '1.75.0',
+        nativeBuild: '1',
+        updatesEnabled: true,
+        downloaded: false,
+        checking: false,
+        checkFailed: false,
+        store:
+          version === null
+            ? null
+            : { version, publishedAt: null, notes: null, url: 'https://apps.apple.com' },
+      },
+      check: () => undefined,
+    };
+  },
 }));
 beforeEach(() => mockAppStoreVersion.mockReturnValue(null));
 jest.mock('../lib/automaticUpdates', () =>

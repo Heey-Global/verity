@@ -35,7 +35,8 @@ import {
 } from '../../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../../components/settings/settingsStyles';
 import { backupRowSummary } from '../../components/settings/backup/backupText';
-import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
+import { useAppUpdateFacts } from '../../lib/appUpdateFacts';
+import { appUpdateSummary } from '../../lib/appUpdateSummary';
 import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
 import { logoutBrowser } from '../../lib/browserSession';
@@ -161,7 +162,9 @@ function SettingsIndexView({ client, baseUrl }: { client: VerityClient; baseUrl:
     }
   };
   const updateVersion = useServerUpdateBadge(administrator);
-  const appStoreVersion = useAppStoreUpdateVersion(true);
+  const { facts: appUpdate } = useAppUpdateFacts();
+  // Members never see a Server version, so this summary is app-only for them.
+  const updateSummary = appUpdateSummary(appUpdate, updateVersion);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
   const keyConfigured = settings?.uplinkSubscriptionKeyConfigured === true;
   const [uplinkState, setUplinkState] = useState<'active' | 'rejected' | 'pending'>('pending');
@@ -405,20 +408,8 @@ function SettingsIndexView({ client, baseUrl }: { client: VerityClient; baseUrl:
               <SettingsNavRow
                 icon="download"
                 title="Updates"
-                subtitle={
-                  updateVersion !== null
-                    ? `Server version ${updateVersion} available`
-                    : appStoreVersion !== null
-                      ? `App version ${appStoreVersion} available`
-                      : 'Server and app'
-                }
-                // Only what needs a tap: a downloaded smaller app update applies on
-                // its own the next time the app starts.
-                status={
-                  updateVersion !== null || appStoreVersion !== null
-                    ? { intent: 'needsSetup', label: 'Update' }
-                    : undefined
-                }
+                subtitle={updateSummary.subtitle}
+                status={updateSummary.status}
                 onPress={() => router.push('/settings/server-update')}
               />
               <SettingsNavRow
@@ -440,12 +431,8 @@ function SettingsIndexView({ client, baseUrl }: { client: VerityClient; baseUrl:
             <SettingsNavRow
               icon="download"
               title="App updates"
-              subtitle={
-                appStoreVersion === null ? undefined : `Version ${appStoreVersion} available`
-              }
-              status={
-                appStoreVersion === null ? undefined : { intent: 'needsSetup', label: 'Update' }
-              }
+              subtitle={updateSummary.status ? updateSummary.subtitle : undefined}
+              status={updateSummary.status}
               onPress={() => router.push('/settings/server-update?appOnly=1')}
             />
           )}
