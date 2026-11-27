@@ -47,8 +47,9 @@ export function sharedRow(summary: SessionSummary): Row {
  * ended, a repair, a name the session gave itself. So does the project's
  * sandbox losing or regaining the broker, which every session of the project
  * shows.
- * Home skips its list read for those hints once it follows the project, so
- * none may go without a row. A burst becomes one row after it settles, and a
+ * Home skips its list read for `status` and `events` hints once it follows
+ * the project, so none may go without a row; the others bring a row so the
+ * list read they still cause can go too. A burst becomes one row after it settles, and a
  * long burst one row at least every {@link MAX_WAIT_MS}; a row that could
  * not be computed is tried again.
  * Wiki maintenance sessions, which the lists leave out, reach only their own
