@@ -420,6 +420,32 @@ describe('network share routes', () => {
     expect(client.test).toHaveBeenCalledTimes(1);
   });
 
+  // A test that loaded the old details can finish after a change was saved;
+  // caching its result would show the old outcome for the new details.
+  it('does not cache a test that ran on details changed meanwhile', async () => {
+    const { client } = fakeClient();
+    const app = await server(client);
+    const { id } = (await call(app, 'admin', 'POST', '/network-shares', studio)).json<{
+      id: string;
+    }>();
+    let finish: (() => void) | undefined;
+    vi.mocked(client.test).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+    );
+    const running = call(app, 'admin', 'POST', `/network-shares/${id}/test`);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await call(app, 'admin', 'PATCH', `/network-shares/${id}`, { label: 'Renamed' });
+    finish!();
+    expect((await running).json()).toEqual({ ok: true });
+
+    vi.mocked(client.test).mockClear();
+    vi.mocked(client.test).mockRejectedValueOnce(new NetworkShareError('sign_in_failed'));
+    expect((await call(app, 'admin', 'POST', `/network-shares/${id}/test`)).json()).toMatchObject({
+      ok: false,
+    });
+    expect(client.test).toHaveBeenCalledTimes(1);
+  });
+
   it('removes project access when the share is disconnected', async () => {
     const { client } = fakeClient();
     const app = await server(client);

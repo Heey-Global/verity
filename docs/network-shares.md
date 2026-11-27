@@ -46,12 +46,13 @@ returned by the API or given to agents. Each share shows whether it is currently
 reachable.
 
 A new address needs the password entered again: the saved password is only
-ever sent to the server it was entered for. Changing a share's address ends
-every project's access to it: folders granted
-for one server or shared folder never silently follow it to another. Add the
-folders to the projects again afterwards. Changing only the username or
-password keeps the folders, but agents then act as the new NAS account: what
-that account may read or change inside the granted folders is what agents can.
+ever sent to the server it was entered for. Changing a share's address or
+username ends every project's access to it: folders granted for one server,
+shared folder or NAS account never silently follow it to another, since another
+account may reach different files. The app asks before it saves such a change.
+Add the folders to the projects again afterwards. Names are compared without
+regard to letter case, as SMB servers do, so correcting only the case keeps the
+folders. Changing only the password keeps them too.
 **Disconnect share** removes the share and every project's folders on it; the
 files stay on the NAS.
 

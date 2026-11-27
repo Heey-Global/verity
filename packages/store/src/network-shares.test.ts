@@ -189,6 +189,29 @@ describe('NetworkShareStore', () => {
     expect(await shares.projectsUsingShares()).toBe(0);
   });
 
+  // A grant was checked against what one account could reach on the NAS;
+  // another account's permissions may differ, while a spelling in other case
+  // names the same account and the same share.
+  it('ends grants when the account changes, but not for a change of case', async () => {
+    const shares = ctx.store.networkShares;
+    const id = await shares.createConnection(studio);
+    const folder = (await shares.grantFolder({
+      projectId: 'p1',
+      connectionId: id,
+      path: 'Projects',
+      name: 'Projects',
+      accessMode: 'read-write',
+    }))!;
+    await shares.updateConnection(id, {
+      host: studio.host.toUpperCase(),
+      share: studio.share.toUpperCase(),
+      username: studio.username.toUpperCase(),
+    });
+    expect((await shares.projectFolder('p1', folder))?.stale).toBe(false);
+    await shares.updateConnection(id, { username: 'someone-else' });
+    expect((await shares.projectFolder('p1', folder))?.stale).toBe(true);
+  });
+
   // A folder is checked on one server, then granted; if the connection moved in
   // between, the grant would bind to a target nobody checked.
   it('refuses a grant for a target other than the one that was checked', async () => {
