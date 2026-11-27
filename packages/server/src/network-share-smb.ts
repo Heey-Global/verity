@@ -206,7 +206,13 @@ async function runBatch(
 
 /** The NT status a command's output reports, if any. */
 function statusOf(output: string | undefined): NetworkShareError | undefined {
-  const status = output === undefined ? undefined : STATUS.exec(output)?.[1];
+  if (output === undefined) return undefined;
+  // A listed file may be named like a status; only smbclient's own messages count.
+  const messages = output
+    .split('\n')
+    .filter((line) => !LS_LINE.test(line))
+    .join('\n');
+  const status = STATUS.exec(messages)?.[1];
   return status ? errorFor(status) : undefined;
 }
 
@@ -240,8 +246,12 @@ export function parseListing(output: string): NetworkShareEntry[] {
 
 export function parseInfo(output: string): { kind: 'folder' | 'file'; size: number } {
   const attributes = Number.parseInt(/^attributes:.*\((\w+)\)/m.exec(output)?.[1] ?? '0', 16);
-  const size = Number(/^stream: \[::\$DATA\], (\d+) bytes/m.exec(output)?.[1] ?? 0);
-  return { kind: (attributes & 0x10) !== 0 ? 'folder' : 'file', size };
+  const kind = (attributes & 0x10) !== 0 ? 'folder' : 'file';
+  const stream = /^stream: \[::\$DATA\], (\d+) bytes/m.exec(output)?.[1];
+  // A file without a reported data stream has an unknown size: treat it as
+  // too large rather than download something unbounded.
+  const size = stream !== undefined ? Number(stream) : kind === 'folder' ? 0 : Infinity;
+  return { kind, size };
 }
 
 /** Network share operations against one target, each step one encrypted smbclient run. */
@@ -388,10 +398,17 @@ export class SmbClient {
       }
       const [upload, moveAside, download] = moved;
       const failure = statusOf(upload) ?? statusOf(moveAside) ?? statusOf(download);
-      const replaced =
+      // A copy that cannot be read, or grew past the limit, proves nothing:
+      // never let it pass as some version of the original.
+      const copy =
         failure === undefined
-          ? contentVersion(await readFile(replacedCopy).catch(() => Buffer.alloc(0)))
+          ? await stat(replacedCopy)
+              .then((info) =>
+                info.size > NETWORK_SHARE_MAX_FILE_BYTES ? undefined : readFile(replacedCopy),
+              )
+              .catch(() => undefined)
           : undefined;
+      const replaced = copy === undefined ? undefined : contentVersion(copy);
       if (failure !== undefined || replaced !== expectedVersion) {
         if (!(await restore())) throw new NetworkShareError('restore_failed');
         throw failure ?? new NetworkShareError('conflict');

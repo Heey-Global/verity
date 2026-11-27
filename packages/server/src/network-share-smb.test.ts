@@ -45,5 +45,7 @@ describe('smbclient output', () => {
     expect(parseInfo(FILE_INFO.replace('attributes:  (80)', 'attributes: D (10)')).kind).toBe(
       'folder',
     );
+    // Without a reported size a file must not count as small enough to download.
+    expect(parseInfo(FILE_INFO.replace('stream: [::$DATA], 6 bytes', '')).size).toBe(Infinity);
   });
 });

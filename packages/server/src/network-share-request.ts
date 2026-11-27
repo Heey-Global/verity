@@ -5,7 +5,8 @@ import { z } from 'zod';
 const folderId = z.string().min(1).max(200);
 const path = z.string().max(1024);
 const content = {
-  content: z.string().max(14_000_000),
+  // Agent tool requests are capped at 2 MiB, so a larger content never arrives.
+  content: z.string().max(2_100_000),
   encoding: z.enum(['utf8', 'base64']).optional(),
 };
 

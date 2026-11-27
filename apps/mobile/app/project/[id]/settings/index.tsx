@@ -287,12 +287,16 @@ function ProjectSettingsIndexView({
               icon="hard-drive"
               title="Network shares"
               subtitle="Folders on a NAS or file server"
-              status={{
-                intent: shareFolders?.length ? 'ready' : 'optional',
-                label: shareFolders?.length
-                  ? shareFolders.map((folder) => folder.name).join(', ')
-                  : 'Not selected',
-              }}
+              status={(() => {
+                // A stale folder no longer reaches agents; it must not read as ready.
+                const current = (shareFolders ?? []).filter((folder) => !folder.stale);
+                return {
+                  intent: current.length ? ('ready' as const) : ('optional' as const),
+                  label: current.length
+                    ? current.map((folder) => folder.name).join(', ')
+                    : 'Not selected',
+                };
+              })()}
               onPress={() => toService('shares')}
             />
           ) : null}
