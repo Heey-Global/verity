@@ -151,17 +151,24 @@ export function installSummaryEvents(
   // projects one pass reclassifies share one read of the sessions.
   let changedProjects: Set<string> | undefined;
   let announceTimer: unknown;
+  /** The failed reads the pending batch follows; 0 for a fresh change. */
+  let batchAttempt = 0;
+  const retryDelay = (attempt: number): number =>
+    attempt === 0 ? 0 : RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length) - 1]!;
+  // A fresh change is read at once, even when a retry is waiting; a retry that
+  // joins a fresh batch keeps its place on the backoff ladder.
   const noteProjects = (projectIds: Iterable<string>, attempt: number): void => {
-    if (changedProjects === undefined) {
-      changedProjects = new Set();
-      const wait =
-        attempt === 0 ? 0 : RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length) - 1]!;
-      announceTimer = timers.setTimeout(() => announceProjects(attempt), wait);
+    if (changedProjects === undefined || attempt < batchAttempt) {
+      if (announceTimer !== undefined) timers.clearTimeout(announceTimer);
+      announceTimer = timers.setTimeout(announceProjects, retryDelay(attempt));
     }
+    changedProjects ??= new Set();
+    batchAttempt = changedProjects.size === 0 ? attempt : Math.max(batchAttempt, attempt);
     for (const projectId of projectIds) changedProjects.add(projectId);
   };
-  const announceProjects = (attempt: number): void => {
+  const announceProjects = (): void => {
     const projectIds = changedProjects;
+    const attempt = batchAttempt;
     changedProjects = undefined;
     announceTimer = undefined;
     if (projectIds === undefined || closed) return;

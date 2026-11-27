@@ -261,6 +261,44 @@ describe('session.summary', () => {
     w.close();
   });
 
+  // A store that failed once may be back: a sandbox changing meanwhile must
+  // not wait for the retry's backoff, and the retry must not lose its place.
+  it('reads at once for a change that arrives while a retry waits', async () => {
+    const disconnected = new ObservedSet<string>();
+    const sessions = [
+      { sessionId: 's1', projectId: 'p1' },
+      { sessionId: 's2', projectId: 'p2' },
+    ] as unknown as SessionRecord[];
+    const w = setup([summary()], new Set(), { disconnected, sessions });
+    const listSessions = vi
+      .spyOn(
+        w.ctx.deps.eventStore as { listSessions: () => Promise<SessionRecord[]> },
+        'listSessions',
+      )
+      .mockRejectedValueOnce(new Error('store unavailable'))
+      .mockRejectedValueOnce(new Error('store unavailable'));
+    w.record('session:s1');
+    w.record('session:s2');
+    disconnected.add('p1');
+    w.advance(0);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    disconnected.add('p2');
+    w.advance(0);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // Failed again: the next read waits as the second retry, not the first.
+    w.advance(2_000);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    w.advance(3_000);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(3));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    w.advance(300);
+    await vi.waitFor(() => expect(w.published).toHaveLength(2));
+    w.close();
+  });
+
   // No other hint reaches these sessions: a failed read must be tried again.
   it('reads the sessions again when they could not be read', async () => {
     const disconnected = new ObservedSet<string>();
