@@ -261,6 +261,30 @@ describe('session.summary', () => {
     w.close();
   });
 
+  // No other hint reaches these sessions: a failed read must be tried again.
+  it('reads the sessions again when they could not be read', async () => {
+    const disconnected = new ObservedSet<string>();
+    const sessions = [{ sessionId: 's1', projectId: 'p1' }] as unknown as SessionRecord[];
+    const w = setup([summary()], new Set(), { disconnected, sessions });
+    const listSessions = vi
+      .spyOn(
+        w.ctx.deps.eventStore as { listSessions: () => Promise<SessionRecord[]> },
+        'listSessions',
+      )
+      .mockRejectedValueOnce(new Error('store unavailable'));
+    w.record('session:s1');
+    disconnected.add('p1');
+    w.advance(0);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    w.advance(2_000);
+    await vi.waitFor(() => expect(listSessions).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    w.advance(300);
+    await vi.waitFor(() => expect(w.published).toHaveLength(1));
+    w.close();
+  });
+
   it('keeps Wiki maintenance sessions to their own topic', async () => {
     const w = setup([summary()], new Set(['s1']));
     w.record('session:s1');

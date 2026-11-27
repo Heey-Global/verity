@@ -150,6 +150,13 @@ export function installSummaryEvents(
   // own; each session of the project names the condition in its row. The
   // projects one pass reclassifies share one read of the sessions.
   let changedProjects: Set<string> | undefined;
+  const noteProjects = (projectIds: Iterable<string>, wait: number): void => {
+    if (changedProjects === undefined) {
+      changedProjects = new Set();
+      timers.setTimeout(announceProjects, wait);
+    }
+    for (const projectId of projectIds) changedProjects.add(projectId);
+  };
   const announceProjects = (): void => {
     const projectIds = changedProjects;
     changedProjects = undefined;
@@ -166,17 +173,15 @@ export function installSummaryEvents(
           { err: error, projectIds: [...projectIds] },
           'verity: sandbox sessions not announced',
         );
+        // Nothing else hints these sessions; read them again shortly.
+        if (!closed) noteProjects(projectIds, RETRY_DELAYS_MS[0]!);
       });
   };
   const disconnected = deps.provisioner?.disconnectedSandboxProjects?.();
   const stopObservingSandboxes =
     disconnected instanceof ObservedSet
       ? (disconnected as ObservedSet<string>).observe((projectId) => {
-          if (changedProjects === undefined) {
-            changedProjects = new Set();
-            timers.setTimeout(announceProjects, 0);
-          }
-          changedProjects.add(projectId);
+          noteProjects([projectId], 0);
         })
       : undefined;
   lifecycle.onClose(() => {
