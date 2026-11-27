@@ -8,7 +8,6 @@
     "projectChanges": "f37aa7d7 2663793c b6fe3740 badf7a4c f10613f7 1c9a7b64 06e44ada 06199e81",
     "httpMcpConnections": "33fc7ea2 ca31801a 8948a4b1 f7b898a0 38423e51 f5d23176 dd1c7002 a1fa39eb",
     "messageProjection": "1928225a 7584ec3a eccd1acb cfab89cd 44bb92d4 566d80a6 534a4fcd 459a209b",
-    "attachments": "ebe3274d b333f9a8 37b350c5 4e0591bb 598ab59c 8dd65c45 7839af9c 19386ecd",
     "eventWrites": "bd000f81 451cadfe 98d4947d 15c90673 42d7e4e0 c64e6e18 b7347726 6b9e7bf4",
     "constructor": "83a90758 775a1855 03e0656c 3b9ae587 cffcb084 08faf722 6257e2e5 9a87168e",
     "encryptSecret": "7b3ec667 ba32420a a57b56a3 c8389f63 37a53e6f 90aff935 068e3fcb 26d2a9cb",
@@ -33,8 +32,7 @@
     "commitSessionMove": "7bb04c0c 3ce86880 66fa3b17 c5793864 b6332d62 b7bb9143 66a31b7e 56f163f4",
     "sessionLifecycle": "f523b7d6 267756fb 2c043270 4deed3f4 c0d70ecd d8581455 dd5e3a28 62471bc9",
     "sessionMoves": "a316dca3 9f0d3804 db75340d 017e95cf c72922fb 31359f37 21407131 66d46e10",
-    "finishSessionDeletionCleanup": "f6e98a4d adb2142a ec69ba7f 85562774 0dbfc9bc 7a63cd2a 7922dce3 0adb0cba",
-    "externalizeToolResult": "d9c8e657 473da598 2cf8ba0f 24c1379b 78401a94 6a89369c c72549ff 43c90c01"
+    "finishSessionDeletionCleanup": "f6e98a4d adb2142a ec69ba7f 85562774 0dbfc9bc 7a63cd2a 7922dce3 0adb0cba"
   },
   "imports": [
     "packages/store/src/db.ts -> packages/store/src/migrations.ts",

@@ -15,7 +15,15 @@ export interface AttachmentBlob {
   bytes: Buffer;
 }
 export class AttachmentStore {
-  constructor(private readonly db: Kysely<Database>) {}
+  constructor(
+    private readonly getDb: () => Kysely<Database>,
+    private readonly writeAttachment: AttachmentStore['putAttachment'],
+    private readonly writeTextBlob: AttachmentStore['putTextBlob'],
+  ) {}
+
+  private get db(): Kysely<Database> {
+    return this.getDb();
+  }
 
   /** Rewrite a `tool_result`'s heavy inline payloads to content-addressed refs:
    * inline images → `id` refs (#115), and a large text output → a truncated preview
@@ -24,11 +32,9 @@ export class AttachmentStore {
    * already references images by id rather than re-embedding their base64. */
   async externalizeToolResult(
     event: Extract<AgentEvent, { t: 'tool_result' }>,
-    putAttachment: (mediaType: string, data: string) => Promise<string>,
-    putTextBlob: (jsonText: string) => Promise<string>,
   ): Promise<AgentEvent> {
-    const imaged = await externalizeToolResultImages(event.output, putAttachment);
-    const texted = await externalizeToolResultText(imaged.output, putTextBlob);
+    const imaged = await externalizeToolResultImages(event.output, this.writeAttachment);
+    const texted = await externalizeToolResultText(imaged.output, this.writeTextBlob);
     if (!imaged.changed && texted.ref === undefined) return event;
     return {
       ...event,
