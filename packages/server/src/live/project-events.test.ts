@@ -41,7 +41,10 @@ function status(state: SandboxUpdateStatus['state']): SandboxUpdateStatus {
 
 function setup() {
   const projectChanges = new ProjectChangeFeed();
-  const rows = new Map<string, ProjectRecord>([['p1', projectRecord()]]);
+  const rows = new Map<string, ProjectRecord>([
+    ['p1', projectRecord()],
+    ['p2', projectRecord({ id: 'p2', name: 'P2', state: 'active' })],
+  ]);
   const observers = new Set<(projectId: string, status: SandboxUpdateStatus) => void>();
   let nextStatus = status('current');
   const statusCalls = vi.fn(async (project: ProjectRecord) => {
@@ -84,6 +87,7 @@ function setup() {
   } as unknown as ServerContext;
   installProjectEvents({ log: { warn: () => undefined } }, ctx);
   const published: DomainRecord[] = [];
+  const watchedRecords: DomainRecord[] = [];
   domainEvents.subscribe('project:p1', undefined, (record) => published.push(record));
   const write = (overrides: Partial<ProjectRecord>) => {
     rows.set('p1', { ...rows.get('p1')!, ...overrides });
@@ -105,6 +109,14 @@ function setup() {
     /** Everything but the update state, which these tests do not look at. */
     others: () => published.map((record) => record.event).filter((e) => e.t !== 'sandbox.update'),
     updates: () => published.map((record) => record.event).filter((e) => e.t === 'sandbox.update'),
+    updatesOf: (projectId: string) =>
+      watchedRecords
+        .map((record) => record.event)
+        .filter((e) => e.t === 'sandbox.update' && e.projectId === projectId),
+    watch: (projectId: string) =>
+      domainEvents.subscribe(`project:${projectId}`, undefined, (record) =>
+        watchedRecords.push(record),
+      ),
   };
 }
 
@@ -302,6 +314,48 @@ describe('installProjectEvents', () => {
     expect(w.updates()).toEqual([
       expect.objectContaining({ available: false, update: { state: 'unknown' } }),
     ]);
+  });
+
+  // After a restart the first sweep reports the whole fleet; reading every
+  // project nobody looks at would be a fleet-wide read for no viewer.
+  it('reads a project first reported by the checker only once someone watches it', async () => {
+    const w = setup();
+    for (const observer of w.observers) observer('p2', status('available'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.getProject).not.toHaveBeenCalledWith('p2');
+    // Its viewer arrives: the tick reads it once and publishes its state.
+    w.watch('p2');
+    w.tick();
+    await vi.waitFor(() =>
+      expect(w.updatesOf('p2')[0]).toEqual(expect.objectContaining({ available: true })),
+    );
+  });
+
+  // A status from before the sandbox failed would keep the banner showing an
+  // update the routes no longer report.
+  it('drops a status from before a lifecycle change', async () => {
+    const w = setup();
+    w.setStatus(status('available'));
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(1));
+    w.write({ state: 'failed' });
+    await vi.waitFor(() =>
+      expect(w.events().at(-1)).toEqual(
+        expect.objectContaining({ t: 'sandbox.lifecycle', state: 'failed' }),
+      ),
+    );
+    // A repair failure the tick sees must not be reported on the old image's
+    // `available`, which no read returns any more.
+    w.failures.set('p1', { at: Date.parse('2026-11-27T08:00:00Z'), message: 'pull failed' });
+    w.tick();
+    expect(w.updates()).toHaveLength(1);
+    for (const observer of w.observers) observer('p1', status('unknown'));
+    expect(w.updates().at(-1)).toEqual(
+      expect.objectContaining({
+        available: false,
+        update: expect.objectContaining({ state: 'unknown' }),
+      }),
+    );
   });
 
   // The provisioner changes these without any store write, and a blocked

@@ -94,6 +94,12 @@ export function installProjectEvents(
     const status = lastStatus.get(projectId);
     const project = lastProject.get(projectId);
     if (status === undefined || project === undefined) return;
+    // `unknown` (a stopped sandbox, a failed inspect or registry read) says
+    // nothing about the update, so the last state published stands rather than
+    // every viewer's banner changing whenever the registry stumbles. A failed
+    // sandbox is the exception: `unknown` is its status, and the routes report
+    // it as an update that is not repairing itself.
+    if (status.state === 'unknown' && project.state !== 'failed') return;
     const update = updateView.withSelfRepair(project, status, verdicts);
     const fingerprint = JSON.stringify(update);
     if (publishedUpdate.get(projectId) === fingerprint) return;
@@ -156,6 +162,12 @@ export function installProjectEvents(
         patch,
       });
     }
+    // A status from before a lifecycle change says nothing about the sandbox
+    // now; a running one is checked again just below, a failed one reports
+    // `unknown` at the checker's next look.
+    if (previous !== undefined && previous.lifecycle !== next.lifecycle) {
+      lastStatus.delete(projectId);
+    }
     publishUpdate(projectId);
     // A sandbox that came up or was rebuilt may have changed its update
     // status; checking it here reports through the checker's observer.
@@ -206,18 +218,16 @@ export function installProjectEvents(
 
   const stopObserving = updates?.observe?.((projectId, status) => {
     const project = lastProject.get(projectId);
-    // `unknown` (a stopped sandbox, a failed inspect or registry read) says
-    // nothing about the update, so the last known status stands rather than
-    // every viewer's banner changing whenever the registry stumbles. A failed
-    // sandbox is the exception: `unknown` is its status, and the routes report
-    // it as an update that is not repairing itself.
-    if (status.state === 'unknown' && project?.state !== 'failed') return;
+    // Kept for a project not read yet: whether `unknown` matters depends on
+    // whether it failed.
+    if (status.state === 'unknown' && project !== undefined && project.state !== 'failed') return;
     bounded(lastStatus, projectId, status);
-    // A project seen before is judged with the record its last check read; a
-    // checker sweep over the whole fleet then costs no store read. One not
-    // seen yet is read first, in order with its other events.
-    if (project === undefined) announce(projectId);
-    else publishUpdate(projectId);
+    // A project seen before is judged with the record its last check read, so
+    // a checker sweep over the whole fleet costs no store read. One not seen
+    // yet is read only when someone watches it; the tick catches up one that
+    // gains a viewer later.
+    if (project !== undefined) publishUpdate(projectId);
+    else if (domainEvents.watching(domainTopic('project', projectId))) announce(projectId);
   });
   if (stopObserving !== undefined) lifecycle.onClose(stopObserving);
   if (updates !== undefined) {
@@ -226,7 +236,8 @@ export function installProjectEvents(
       () => {
         const verdicts = updateView.sandboxRepairVerdicts();
         for (const projectId of domainEvents.watched('project')) {
-          publishUpdate(projectId, verdicts);
+          if (lastProject.has(projectId)) publishUpdate(projectId, verdicts);
+          else if (lastStatus.has(projectId)) announce(projectId);
         }
       },
       { startWhenReady: true },
