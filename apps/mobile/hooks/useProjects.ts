@@ -317,8 +317,8 @@ export function useProjects(client: VerityClient) {
   };
   const listOne = useCallback(
     async (projectId: string) => {
-      const mine = turn(projectId);
       if (shownRef.current.some((project) => project.id === projectId)) return;
+      const mine = turn(projectId);
       const target = storeRef.current;
       const read = target.beginRead();
       try {

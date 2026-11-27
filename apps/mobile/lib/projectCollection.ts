@@ -3,9 +3,9 @@ import { useEffect, useRef } from 'react';
 import { liveConnectionFor } from './liveConnection';
 
 export interface ProjectCollectionHandlers {
-  /** The project entered the overview: created, restored, or newly readable. */
+  /** The project entered the overview: created or restored. */
   listed(projectId: string): void;
-  /** The project left the overview: hidden, deleted, or no longer readable. */
+  /** The project left the overview: hidden or deleted. */
   unlisted(projectId: string): void;
   /** Changes were missed: read the whole list again. */
   resync(): void;

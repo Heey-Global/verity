@@ -318,6 +318,29 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  // Who held what is kept only while the user is connected: a project they
+  // lost access to while away is not announced to them as theirs.
+  it('forgets who held what once the last connection of a user closes', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    const first = w.connect('bob');
+    await first.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    first.close();
+    w.readable.get('bob')!.delete('p2');
+    clock += 60_000;
+    const again = w.connect('bob');
+    await again.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(again.of('domain')).toEqual([]);
+    w.hub.close();
+  });
+
   it('refuses a collection it does not know', async () => {
     const w = world();
     const alice = w.connect('alice');

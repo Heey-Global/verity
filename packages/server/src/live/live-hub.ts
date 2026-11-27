@@ -565,8 +565,8 @@ export class LiveHub {
     string,
     { scope: LiveOverviewScope; at: number; since: number }
   >();
-  /** Every project a user's scope reads held, by user: bounded by the
-   * projects they could ever read. */
+  /** Every project a user's scope reads held while they had a connection
+   * open, by user. */
   private readonly held = new Map<string, Set<string>>();
   private readonly scopeReads = new Map<
     string,
@@ -595,6 +595,10 @@ export class LiveHub {
 
   detach(connection: LiveConnection): void {
     this.connections.delete(connection);
+    // Who held what matters only to a user's open connections; subscribing
+    // again reads the scope anew.
+    const key = connection.userKey;
+    if (![...this.connections].some((open) => open.userKey === key)) this.held.delete(key);
   }
 
   /** A device was revoked, logged out or expired: its sockets stop now. */
