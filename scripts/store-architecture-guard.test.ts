@@ -157,6 +157,21 @@ it('allows Google connections to forward their session and project lookups', () 
   ).toEqual(['connections']);
 });
 
+it('requires the turn record store to pass the session and prompt sequence in order', () => {
+  const source = (args: string) => `
+    class EventStore {
+      turns = new TurnRecordStore(
+        () => this.db,
+        (id) => this.isSessionDeleting(id),
+        () => this.listRunningTurns(),
+        (id, seq) => this.promptInitiatorAt(${args}),
+      );
+    }
+  `;
+  expect(facadeImplementations(source('id, seq'))).toEqual({});
+  expect(Object.keys(facadeImplementations(source('seq, id')))).toEqual(['turns']);
+});
+
 it('allows the project lifecycle store to forward reads and receive the change feed', () => {
   const source = (feed: string) => `
     class EventStore {

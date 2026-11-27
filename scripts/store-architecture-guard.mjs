@@ -129,6 +129,11 @@ function isStoreWiring(initializer) {
         );
       }
       if (!ts.isArrowFunction(argument)) return false;
+      if (initializer.expression.text === 'TurnRecordStore') {
+        if (index === 1) return isForwardingCallback(argument, 'isSessionDeleting', 1);
+        if (index === 2) return isForwardingCallback(argument, 'listRunningTurns', 0);
+        if (index === 3) return isForwardingCallback(argument, 'promptInitiatorAt', 2);
+      }
       if (initializer.expression.text === 'PreviewShareStore') {
         if (index === 1) return isForwardingCallback(argument, 'encryptSecret', 1);
         if (index === 2) return isForwardingCallback(argument, 'decryptSecret', 1);
