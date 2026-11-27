@@ -68,6 +68,9 @@ function text(content: Buffer): string | undefined {
   }
 }
 
+/** How long agents leave saved sign-in details alone after the NAS refused them. */
+export const SIGN_IN_PAUSE_MS = 5 * 60_000;
+
 export function createNetworkShareTool(deps: {
   store: Pick<EventStore, 'getSession' | 'getProject' | 'networkShares'>;
   client: NetworkShareClient;
@@ -116,6 +119,39 @@ export function createNetworkShareTool(deps: {
     return { request, folder, sharePath };
   };
 
+  // A NAS counts failed sign-ins and may block the server's address after a
+  // few. Once the saved details are refused, agents stop retrying them for a
+  // while; new details from an administrator form a new key at once.
+  const refusedSignIns = new Map<string, number>();
+  const signInKey = (connectionId: string, target: SmbTarget) =>
+    createHash('sha256')
+      .update(connectionId)
+      .update('\0')
+      .update(`${target.host}:${target.port ?? ''}/${target.share}`)
+      .update('\0')
+      .update(target.username)
+      .update('\0')
+      .update(target.password)
+      .digest('hex');
+  const signIn = async <T>(
+    connectionId: string,
+    target: SmbTarget,
+    work: (target: SmbTarget) => Promise<T>,
+  ): Promise<T> => {
+    const key = signInKey(connectionId, target);
+    const refusedAt = refusedSignIns.get(key);
+    if (refusedAt !== undefined && Date.now() - refusedAt < SIGN_IN_PAUSE_MS)
+      throw new NetworkShareError('sign_in_failed');
+    refusedSignIns.delete(key);
+    try {
+      return await work(target);
+    } catch (error) {
+      if (error instanceof NetworkShareError && error.code === 'sign_in_failed')
+        refusedSignIns.set(key, Date.now());
+      throw error;
+    }
+  };
+
   const run = async <T>(
     folder: ProjectNetworkShareFolderRecord,
     work: (target: SmbTarget) => Promise<T>,
@@ -127,7 +163,7 @@ export function createNetworkShareTool(deps: {
         // The grant must still be the one this call was authorized against; a
         // downgrade between authorization and this point must stop a write.
         if (!current || current.stale || current.revision !== folder.revision) return undefined;
-        return { value: await work(target) };
+        return { value: await signIn(folder.connectionId, target, work) };
       });
       if (result === undefined)
         throw new ControlPlaneSessionAuthorityError(

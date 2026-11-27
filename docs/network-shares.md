@@ -84,6 +84,11 @@ Agents in Claude and Codex sessions use these tools:
 - `verity_share_update`: replaces a file. It needs the version from the agent's
   latest read and an approval card for every update.
 
+If the NAS refuses the saved sign-in details, agents leave the share alone for
+five minutes instead of retrying, so a changed NAS password does not lock out
+the Verity server. Entering the new password in the share's settings ends the
+pause at once.
+
 Deleting, renaming and moving files and creating folders are not available.
 Reads are limited to files of 10 MB; the size is checked before and after the
 transfer, and a file that grows during it is bounded only by the timeout. A write is limited by the 2 MiB size of

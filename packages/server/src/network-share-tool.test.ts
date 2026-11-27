@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 import { connectorToolAvailable } from './agent-tool-availability.js';
 import { NetworkShareError, type NetworkShareClient, type SmbTarget } from './network-share-smb.js';
-import { createNetworkShareTool } from './network-share-tool.js';
+import { SIGN_IN_PAUSE_MS, createNetworkShareTool } from './network-share-tool.js';
 import {
   ControlPlaneSessionAuthorityError,
   ControlPlaneSessionToolError,
@@ -319,5 +319,35 @@ describe('network share agent tool', () => {
     expect(await available('p2')).toBe(false);
     await store.networkShares.updateConnection(connectionId, { share: 'archive' });
     expect(await available('p1')).toBe(false);
+  });
+});
+
+// Without the pause every agent retry is another failed logon, and a NAS that
+// blocks the server's address after a few cuts off every project at once.
+describe('network share sign-in pause', () => {
+  it('stops retrying refused details until they change or the pause ends', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { client } = fakeClient();
+      const tool = createNetworkShareTool({ store, client });
+      const folderId = await grant('read-only');
+      const read = input({ action: 'read', folderId, path: 'kickoff.md' });
+      vi.mocked(client.read).mockRejectedValueOnce(new NetworkShareError('sign_in_failed'));
+      await expect(tool.invoke(read)).rejects.toThrow();
+      await expect(tool.invoke(read)).rejects.toThrow();
+      expect(client.read).toHaveBeenCalledTimes(1);
+
+      await store.networkShares.updateConnection(connectionId, { password: 'new-pw' });
+      await expect(tool.invoke(read)).resolves.toMatchObject({ path: 'kickoff.md' });
+      expect(client.read).toHaveBeenCalledTimes(2);
+
+      vi.mocked(client.read).mockRejectedValueOnce(new NetworkShareError('sign_in_failed'));
+      await expect(tool.invoke(read)).rejects.toThrow();
+      vi.setSystemTime(Date.now() + SIGN_IN_PAUSE_MS);
+      await expect(tool.invoke(read)).resolves.toMatchObject({ path: 'kickoff.md' });
+      expect(client.read).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

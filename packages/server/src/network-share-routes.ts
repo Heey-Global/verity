@@ -419,8 +419,11 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
         targetRevision: verified,
       });
       if (!folderId) return reply.code(404).send({ error: 'network share not found' });
+      // Gone again if the folder or share was removed right after the grant.
+      const granted = await shares.projectFolder(params.data.id, folderId);
+      if (!granted) return reply.code(404).send({ error: 'folder not found' });
       reply.code(201);
-      return networkShareFolderView((await shares.projectFolder(params.data.id, folderId))!);
+      return networkShareFolderView(granted);
     } catch (error) {
       return sendNetworkShareError(reply, error);
     }
@@ -433,9 +436,9 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
       return reply.code(400).send({ error: 'invalid folder access' });
     if (!(await shares.setFolderAccess(params.data.id, params.data.folderId, body.data.accessMode)))
       return reply.code(404).send({ error: 'folder not found' });
-    return networkShareFolderView(
-      (await shares.projectFolder(params.data.id, params.data.folderId))!,
-    );
+    const changed = await shares.projectFolder(params.data.id, params.data.folderId);
+    if (!changed) return reply.code(404).send({ error: 'folder not found' });
+    return networkShareFolderView(changed);
   });
 
   app.delete('/projects/:id/network-shares/folders/:folderId', async (request, reply) => {
