@@ -92,6 +92,26 @@ describe('GET /sessions?envelope=1', () => {
     }
   });
 
+  // The disk filled for weeks with nothing on screen. The list carries the
+  // warning, and measures the disk at most once a minute although every device
+  // polls it every two seconds.
+  it('names a nearly full disk and measures it at most once a minute', async () => {
+    const GiB = 1024 ** 3;
+    const diskSpace = vi.fn(async () => ({ freeBytes: 12 * GiB, totalBytes: 465 * GiB }));
+    const server = buildServer({ eventStore: ctx.store, bus, conductor, diskSpace });
+    try {
+      for (let poll = 0; poll < 3; poll++) {
+        const res = await server.inject({ method: 'GET', url: '/sessions?envelope=1' });
+        expect(res.json().attention).toEqual([
+          { code: 'storage_low', message: expect.stringContaining('12 GB free of 465 GB') },
+        ]);
+      }
+      expect(diskSpace).toHaveBeenCalledOnce();
+    } finally {
+      await server.close();
+    }
+  });
+
   it('names a Codex quota probe that has been failing long enough to matter', async () => {
     const server = buildServer({
       eventStore: ctx.store,

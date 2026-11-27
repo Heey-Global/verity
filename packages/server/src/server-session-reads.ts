@@ -1,4 +1,5 @@
 import { registerAttachmentRoute } from './attachment-route.js';
+import { diskSpaceAt } from './disk-space.js';
 import type { FastifyInstance } from 'fastify';
 import {
   attentionSignals,
@@ -124,6 +125,19 @@ export function installSessionList(
    * unreadable probe degrades to "nothing to report" for that one condition.
    */
   let codexHealthReadFailed = false;
+  // Measured at most once a minute: the list is polled every two seconds per
+  // device, and disk space does not change meaningfully faster than that.
+  let storage: { freeBytes: number; totalBytes: number } | undefined;
+  let storageReadAt = 0;
+  const dataRoot = deps.dataRoot;
+  const diskSpace =
+    deps.diskSpace ?? (dataRoot === undefined ? undefined : () => diskSpaceAt(dataRoot));
+  const readStorage = async () => {
+    if (diskSpace === undefined || Date.now() - storageReadAt < 60_000) return storage;
+    storageReadAt = Date.now();
+    storage = await diskSpace().catch(() => undefined);
+    return storage;
+  };
   const collectAttention = async (): Promise<AttentionSignal[]> => {
     const secretStatus = await readSecretStatus().catch((): SecretStatus => 'unmanaged');
     const controller = deps.serverUpdateController;
@@ -158,7 +172,13 @@ export function installSessionList(
       else app.log.warn({ err }, 'verity: codex usage health read failed; omitting from attention');
       codexHealthReadFailed = true;
     }
-    return attentionSignals({ secretStatus, updater, codexUsage: usage, now: Date.now() });
+    return attentionSignals({
+      secretStatus,
+      updater,
+      codexUsage: usage,
+      storage: await readStorage(),
+      now: Date.now(),
+    });
   };
 
   registerSessionOrderRoute(app, { store: deps.eventStore });

@@ -142,6 +142,14 @@ keeps the other copies or an idle session's private installation in place. A dev
 server or preview holds back only its own session's pass; a project-level
 public share and the orphan pass still hold the project.
 
+## Low-disk warning
+
+When less than 30 GiB are free on the disk holding the Server's data, the
+session list carries the server-level notice `storage_low` ("Disk almost full —
+N GB free of M GB …"), which the app shows above the list. It follows a sealed
+secret store and precedes Updater notices, since a full disk stops the database
+and every session with it. The Server measures the disk at most once a minute.
+
 ## Data volume breakdown
 
 The maintenance pass also measures where the Server's data volume goes. It never
