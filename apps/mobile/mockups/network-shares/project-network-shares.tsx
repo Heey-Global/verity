@@ -9,7 +9,7 @@ import {
 import { Fill, ignore } from './parts';
 
 /** Sample data only: the folders this project was granted. */
-export const PROJECT_FOLDERS = [
+const PROJECT_FOLDERS = [
   { name: 'Briefs', path: 'Studio NAS › Projects › Briefs', access: 'Read and write' },
   { name: 'Guidelines', path: 'Archive › Reference › Guidelines', access: 'Read only' },
 ] as const;
