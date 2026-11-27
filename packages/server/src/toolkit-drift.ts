@@ -159,6 +159,24 @@ export function toolkitDriftEntryOf(
   };
 }
 
+/**
+ * A project's drift verdict as the project routes and events show it, or
+ * `null` when the report declines to judge the row or reaches no verdict.
+ *
+ * Base-image projects are never attested, so `unknown` is their permanent
+ * state, and a failed attestation already surfaces as a provision warning.
+ * Shown, it would be a banner that is always on and nothing clears.
+ */
+export function reportedToolkitDrift(
+  project: ToolkitDriftInput & Parameters<typeof isDriftReportable>[0],
+  current: string | undefined,
+): { verdict: Exclude<ToolkitDriftVerdict, 'unknown'>; carrier: ToolkitCarrier } | null {
+  if (!isDriftReportable(project)) return null;
+  const { verdict, carrier } = toolkitDriftEntryOf(current, project);
+  if (verdict === 'unknown') return null;
+  return { verdict, carrier };
+}
+
 /** Pure comparison of the Server's trust root against what each project recorded. */
 export function toolkitDriftReport(args: {
   readonly current: string | undefined;

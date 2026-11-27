@@ -569,6 +569,8 @@ export class ProjectLifecycleStore {
       await tx.deleteFrom('project_identity_claims').where('project_id', '=', id).execute();
       return updated;
     });
+    // After commit: the cleared release must leave every view showing it.
+    if (row) this.changes?.announce(id);
     return row ? projectRowToRecord(row) : undefined;
   }
 
@@ -989,6 +991,7 @@ export class ProjectLifecycleStore {
       })
       .where('id', '=', id)
       .execute();
+    this.changes?.announce(id);
   }
 
   /**

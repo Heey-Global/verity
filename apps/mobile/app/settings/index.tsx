@@ -10,6 +10,9 @@ import { setNewDesignEnabled, useNewDesign, useNewDesignChoice } from '../../lib
 // unfinished, and each row below it is a destination, not a control.
 import {
   githubRepositoryAccessReady,
+  VerityApiError,
+  type SecretStatus,
+  type VeritySettings,
   settingsChecklist,
   settingsChecklistHeadline,
   type AuditHealth,
@@ -18,10 +21,11 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { router, useFocusEffect, type Href } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
-import { Alert, Pressable, Text, View } from 'react-native';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { Alert, Platform, Pressable, Text, View } from 'react-native';
 
 import {
+  SettingsBanner,
   SettingsGroup,
   SettingsListPanel,
   SettingsMessage,
@@ -34,14 +38,17 @@ import { backupRowSummary } from '../../components/settings/backup/backupText';
 import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
 import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
+import { logoutBrowser } from '../../lib/browserSession';
 import { getOtherServerProfiles } from '../../lib/serverProfile';
+import { serverConnection } from '../../lib/serverConnection';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
 import { enterDemoMode, isDemoMode } from '../../lib/demoMode';
 import {
   retryFailedVeritySettings,
   saveVeritySettings,
-  useLoadVeritySettings,
+  loadVeritySettings,
   useVeritySettings,
+  veritySettingsLoadFailed,
 } from '../../lib/settingsStore';
 
 // Where each unfinished setup step is actually fixed. Exhaustive over the id
@@ -56,7 +63,8 @@ const CHECKLIST_ROUTES: Readonly<Record<SettingsChecklistItemId, Href>> = {
 };
 
 export default function SettingsIndexScreen() {
-  const client = useMemo(() => createVerityClient(), []);
+  const baseUrl = getVerityBaseUrl();
+  const client = useMemo(() => createVerityClient(), [baseUrl]);
 
   if (!client) {
     return (
@@ -66,22 +74,93 @@ export default function SettingsIndexScreen() {
       />
     );
   }
-  return <SettingsIndexView client={client} />;
+  return <SettingsIndexView key={baseUrl} baseUrl={baseUrl} client={client} />;
 }
 
-function SettingsIndexView({ client }: { client: VerityClient }) {
+function SettingsIndexView({ client, baseUrl }: { client: VerityClient; baseUrl: string | null }) {
   const taskPreferences = useTaskPreferences();
   const newDesign = useNewDesign();
   const designChoice = useNewDesignChoice();
-  const reload = useLoadVeritySettings(client);
-  const { settings, secretStatus, loading, failed } = useVeritySettings();
-  const githubConnected = githubRepositoryAccessReady(settings);
+  const { savedAt } = useVeritySettings();
+  const [settings, setSettings] = useState<VeritySettings | null>(null);
+  const [secretStatus, setSecretStatus] = useState<SecretStatus>();
+  const [access, setAccess] = useState<'allowed' | 'denied'>();
+  const [accessError, setAccessError] = useState<string>();
+  const [secretStatusFailed, setSecretStatusFailed] = useState(false);
+  const administrator = access === 'allowed';
+  const [retryAccess, setRetryAccess] = useState(0);
+  const saveRevision = useRef(0);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      let request = 0;
+      const check = () => {
+        const attempt = ++request;
+        const revision = saveRevision.current;
+        const current = () => active && request === attempt && getVerityBaseUrl() === baseUrl;
+        void client.getVeritySettings().then(
+          (next) => {
+            if (!current()) return;
+            if (revision === saveRevision.current) setSettings(next);
+            setAccess('allowed');
+            setAccessError(undefined);
+            void client.getSecretStatus().then(
+              (status) => {
+                if (!current()) return;
+                setSecretStatus(status);
+                setSecretStatusFailed(false);
+              },
+              () => {
+                if (current()) setSecretStatusFailed(true);
+              },
+            );
+          },
+          (error: unknown) => {
+            if (!current()) return;
+            if (error instanceof VerityApiError && error.status === 403) {
+              setAccess('denied');
+              setSettings(null);
+              setSecretStatus(undefined);
+              setSecretStatusFailed(false);
+              setAccessError(undefined);
+            } else {
+              setAccessError(error instanceof Error ? error.message : 'Could not load settings');
+            }
+          },
+        );
+      };
+      check();
+      const stop = serverConnection.onRecovered(check);
+      return () => {
+        active = false;
+        stop();
+      };
+      // A sibling save updates the server settings while this screen remains mounted.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [baseUrl, client, retryAccess, savedAt]),
+  );
+  const githubConnected = administrator && githubRepositoryAccessReady(settings);
   // Surfaced on the Connections row so a grant still owed in GitHub is visible
   // without first opening the connection that needs it.
   const githubPermission = useGithubPermission(client, githubConnected);
   const githubActionPending = githubConnected && githubActionNeeded(githubPermission);
   const [pendingAdvancedMode, setPendingAdvancedMode] = useState<boolean | undefined>(undefined);
-  const updateVersion = useServerUpdateBadge(true);
+  const saveAdvancedMode = async (value: boolean) => {
+    if (!administrator || pendingAdvancedMode !== undefined || getVerityBaseUrl() !== baseUrl)
+      return;
+    setPendingAdvancedMode(value);
+    try {
+      const outcome = await saveVeritySettings(client, { advancedModeEnabled: value });
+      if (outcome !== 'saved' || getVerityBaseUrl() !== baseUrl) return;
+      saveRevision.current++;
+      setSettings((previous) =>
+        previous ? { ...previous, advancedModeEnabled: value } : previous,
+      );
+    } finally {
+      setPendingAdvancedMode(undefined);
+    }
+  };
+  const updateVersion = useServerUpdateBadge(administrator);
   const appStoreVersion = useAppStoreUpdateVersion(true);
   const [connectedCount, setConnectedCount] = useState<number | undefined>(undefined);
   const keyConfigured = settings?.uplinkSubscriptionKeyConfigured === true;
@@ -96,6 +175,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
   // count changes.
   useFocusEffect(
     useCallback(() => {
+      if (!administrator) return;
       let active = true;
       // Only the row's subtitle depends on it, so a failure leaves the row bare
       // rather than raising a banner over the whole screen.
@@ -133,21 +213,40 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       return () => {
         active = false;
       };
-    }, [client, keyConfigured]),
+    }, [administrator, client, keyConfigured]),
   );
 
-  const checklist = settingsChecklist({ settings, secretStatus, failed });
+  const checklist = settingsChecklist({
+    settings,
+    secretStatus,
+    failed: accessError !== undefined || secretStatusFailed,
+  });
+
+  const statusError =
+    accessError ?? (secretStatusFailed ? 'Could not check secret store status.' : undefined);
+  const retryStatus = () => setRetryAccess((current) => current + 1);
 
   return (
     <SettingsScaffold
       title="Settings"
-      onRetry={() =>
-        void retryFailedVeritySettings(client).then((retried) => {
-          if (!retried) reload();
-        })
-      }
+      {...(!administrator ? { state: { error: statusError, saving: false } } : {})}
+      onRetry={() => {
+        if (getVerityBaseUrl() !== baseUrl) return;
+        if (administrator) {
+          void retryFailedVeritySettings(client).then((retried) => {
+            if (retried) return;
+            if (veritySettingsLoadFailed()) void loadVeritySettings(client);
+            retryStatus();
+          });
+        } else {
+          retryStatus();
+        }
+      }}
     >
-      {!loading && checklist.kind === 'ready' && checklist.remaining > 0 ? (
+      {administrator && statusError !== undefined ? (
+        <SettingsBanner message={statusError} onRetry={retryStatus} />
+      ) : null}
+      {administrator && checklist.kind === 'ready' && checklist.remaining > 0 ? (
         <View style={styles.checklistPanel}>
           <Text style={styles.checklistHeadline} accessibilityRole="header">
             {settingsChecklistHeadline(checklist)}
@@ -208,7 +307,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       </SettingsGroup>
       {/* The new design opens Shared knowledge from the end of Home; until the
           stored choice is known the group stays away rather than show and vanish. */}
-      {designChoice !== false ? null : (
+      {!administrator || designChoice !== false ? null : (
         <SettingsGroup title="Knowledge">
           <SettingsListPanel>
             <SettingsNavRow
@@ -222,27 +321,31 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       )}
       <SettingsGroup title="Features">
         <SettingsListPanel>
-          <SettingsNavRow
-            icon="user"
-            title="Assistant"
-            subtitle="Voice notes, mail and calendar, project tasks"
-            onPress={() => router.push('/settings/assistant')}
-          />
-          <SettingsNavRow
-            icon="activity"
-            title="QA"
-            subtitle="Watches and repairs CI in every coding project"
-            onPress={() => router.push('/settings/repairs')}
-          />
-          <SettingsNavRow
-            icon="link"
-            title="Connectors"
-            subtitle="AI, code, documents and other services"
-            status={
-              githubActionPending ? { intent: 'needsSetup', label: 'Action needed' } : undefined
-            }
-            onPress={() => router.push('/settings/services')}
-          />
+          {administrator ? (
+            <>
+              <SettingsNavRow
+                icon="user"
+                title="Assistant"
+                subtitle="Voice notes, mail and calendar, project tasks"
+                onPress={() => router.push('/settings/assistant')}
+              />
+              <SettingsNavRow
+                icon="activity"
+                title="QA"
+                subtitle="Watches and repairs CI in every coding project"
+                onPress={() => router.push('/settings/repairs')}
+              />
+              <SettingsNavRow
+                icon="link"
+                title="Connectors"
+                subtitle="AI, code, documents and other services"
+                status={
+                  githubActionPending ? { intent: 'needsSetup', label: 'Action needed' } : undefined
+                }
+                onPress={() => router.push('/settings/services')}
+              />
+            </>
+          ) : null}
           <SettingsNavRow
             icon="check-square"
             title="Tasks"
@@ -254,83 +357,98 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }
             onPress={() => router.push('/settings/tasks')}
           />
-          <SettingsNavRow
-            icon="mic"
-            title="Meeting transcription"
-            onPress={() => router.push('/settings/transcription')}
-          />
-          <SettingsNavRow
-            icon="shield"
-            title="Vulnerability scan"
-            subtitle="Known vulnerabilities in code projects"
-            onPress={() => router.push('/settings/vulnerability-scan')}
-          />
-          <SettingsNavRow
-            icon="zap"
-            signature
-            title="Verity Premium"
-            subtitle="Online sharing, remote access"
-            status={
-              !settings?.uplinkSubscriptionKeyConfigured
-                ? { intent: 'optional', label: 'Not active' }
-                : uplinkState === 'rejected'
-                  ? { intent: 'needsSetup', label: 'Key rejected' }
-                  : uplinkState === 'active'
-                    ? { intent: 'ready', label: 'Active' }
-                    : { intent: 'optional', label: 'Configured' }
-            }
-            onPress={() => router.push('/settings/premium')}
-          />
-          <SettingsToggleRow
-            label="Verity Control"
-            subtitle="Advanced mode for server administration sessions"
-            value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
-            disabled={loading || settings === null || pendingAdvancedMode !== undefined}
-            onValueChange={(value) => {
-              setPendingAdvancedMode(value);
-              void saveVeritySettings(client, { advancedModeEnabled: value }).finally(() =>
-                setPendingAdvancedMode(undefined),
-              );
-            }}
-          />
+          {administrator ? (
+            <>
+              <SettingsNavRow
+                icon="mic"
+                title="Meeting transcription"
+                onPress={() => router.push('/settings/transcription')}
+              />
+              <SettingsNavRow
+                icon="shield"
+                title="Vulnerability scan"
+                subtitle="Known vulnerabilities in code projects"
+                onPress={() => router.push('/settings/vulnerability-scan')}
+              />
+              <SettingsNavRow
+                icon="zap"
+                signature
+                title="Verity Premium"
+                subtitle="Online sharing, remote access"
+                status={
+                  !settings?.uplinkSubscriptionKeyConfigured
+                    ? { intent: 'optional', label: 'Not active' }
+                    : uplinkState === 'rejected'
+                      ? { intent: 'needsSetup', label: 'Key rejected' }
+                      : uplinkState === 'active'
+                        ? { intent: 'ready', label: 'Active' }
+                        : { intent: 'optional', label: 'Configured' }
+                }
+                onPress={() => router.push('/settings/premium')}
+              />
+              <SettingsToggleRow
+                label="Verity Control"
+                subtitle="Advanced mode for server administration sessions"
+                value={pendingAdvancedMode ?? settings?.advancedModeEnabled ?? false}
+                disabled={settings === null || pendingAdvancedMode !== undefined}
+                onValueChange={(value) => void saveAdvancedMode(value)}
+              />
+            </>
+          ) : null}
         </SettingsListPanel>
       </SettingsGroup>
 
       <SettingsGroup title="App & Server">
         <SettingsListPanel>
-          <SettingsNavRow
-            icon="download"
-            title="Updates"
-            subtitle={
-              updateVersion !== null
-                ? `Server version ${updateVersion} available`
-                : appStoreVersion !== null
-                  ? `App version ${appStoreVersion} available`
-                  : 'Server and app'
-            }
-            // Only what needs a tap: a downloaded smaller app update applies on
-            // its own the next time the app starts.
-            status={
-              updateVersion !== null || appStoreVersion !== null
-                ? { intent: 'needsSetup', label: 'Update' }
-                : undefined
-            }
-            onPress={() => router.push('/settings/server-update')}
-          />
-          <SettingsNavRow
-            icon="shield"
-            title="Network protection"
-            subtitle={networkProtectionStatus(settings)}
-            onPress={() => router.push('/settings/network-protection' as Href)}
-          />
-          {backup !== null ? (
+          {administrator ? (
+            <>
+              <SettingsNavRow
+                icon="download"
+                title="Updates"
+                subtitle={
+                  updateVersion !== null
+                    ? `Server version ${updateVersion} available`
+                    : appStoreVersion !== null
+                      ? `App version ${appStoreVersion} available`
+                      : 'Server and app'
+                }
+                // Only what needs a tap: a downloaded smaller app update applies on
+                // its own the next time the app starts.
+                status={
+                  updateVersion !== null || appStoreVersion !== null
+                    ? { intent: 'needsSetup', label: 'Update' }
+                    : undefined
+                }
+                onPress={() => router.push('/settings/server-update')}
+              />
+              <SettingsNavRow
+                icon="shield"
+                title="Network protection"
+                subtitle={networkProtectionStatus(settings)}
+                onPress={() => router.push('/settings/network-protection' as Href)}
+              />
+              {backup !== null ? (
+                <SettingsNavRow
+                  icon="hard-drive"
+                  title="Backup"
+                  {...backupRowSummary(backup)}
+                  onPress={() => router.push('/settings/backup' as Href)}
+                />
+              ) : null}
+            </>
+          ) : (
             <SettingsNavRow
-              icon="hard-drive"
-              title="Backup"
-              {...backupRowSummary(backup)}
-              onPress={() => router.push('/settings/backup' as Href)}
+              icon="download"
+              title="App updates"
+              subtitle={
+                appStoreVersion === null ? undefined : `Version ${appStoreVersion} available`
+              }
+              status={
+                appStoreVersion === null ? undefined : { intent: 'needsSetup', label: 'Update' }
+              }
+              onPress={() => router.push('/settings/server-update?appOnly=1')}
             />
-          ) : null}
+          )}
           <SettingsNavRow
             icon="server"
             title="Server address"
@@ -356,14 +474,16 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               onPress={() => router.push('/settings/servers' as Href)}
             />
           ) : null}
-          <SettingsNavRow
-            icon="monitor"
-            title="Devices & Web Browsers"
-            subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
-            onPress={() => router.push('/devices')}
-            accessibilityLabel="Manage devices and web browsers"
-          />
-          {auditHealth !== null ? (
+          {administrator ? (
+            <SettingsNavRow
+              icon="monitor"
+              title="Devices & Web Browsers"
+              subtitle={connectedCount !== undefined ? `${connectedCount} connected` : undefined}
+              onPress={() => router.push('/devices')}
+              accessibilityLabel="Manage devices and web browsers"
+            />
+          ) : null}
+          {administrator && auditHealth !== null ? (
             <SettingsNavRow
               icon="file-text"
               title="Logs"
@@ -381,6 +501,17 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
 
       <SettingsGroup title="This app">
         <SettingsListPanel>
+          {!administrator && Platform.OS === 'web' && !isDemoMode() ? (
+            <SettingsNavRow
+              icon="arrow-right"
+              title="Sign out"
+              onPress={() => {
+                void logoutBrowser()
+                  .then(() => router.replace('/web-connect'))
+                  .catch(() => Alert.alert('Could not sign out', 'Try again.'));
+              }}
+            />
+          ) : null}
           <SettingsToggleRow
             label="New design (preview)"
             subtitle="Home with everything that needs you, a compact project list and a page per project"
@@ -406,11 +537,13 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               }}
             />
           ) : null}
-          <SettingsNavRow
-            icon="activity"
-            title="Diagnostics"
-            onPress={() => router.push('/settings/diagnostics')}
-          />
+          {administrator || (access !== 'denied' && accessError !== undefined) ? (
+            <SettingsNavRow
+              icon="activity"
+              title="Diagnostics"
+              onPress={() => router.push('/settings/diagnostics')}
+            />
+          ) : null}
           {!isDemoMode() ? (
             <SettingsNavRow
               icon="play"

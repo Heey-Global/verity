@@ -1,4 +1,9 @@
-import type { DomainEvent, DomainTopic } from '@verity/events';
+import {
+  parseDomainTopic,
+  type DomainEvent,
+  type DomainTopic,
+  type DomainTopicKind,
+} from '@verity/events';
 import { randomUUID } from 'node:crypto';
 
 /** One published event and its position. */
@@ -92,6 +97,23 @@ export class DomainEventBus {
       }
     }
     return record;
+  }
+
+  /** Ids of the topics of `kind` someone subscribes to right now: what a
+   * server-side checker of an outside source needs to look at. */
+  watched(kind: DomainTopicKind): string[] {
+    const ids: string[] = [];
+    for (const [topic, log] of this.topics) {
+      if (log.listeners.size === 0) continue;
+      const parsed = parseDomainTopic(topic);
+      if (parsed?.kind === kind) ids.push(parsed.id);
+    }
+    return ids;
+  }
+
+  /** Whether someone subscribes to `topic` right now. */
+  watching(topic: DomainTopic): boolean {
+    return (this.topics.get(topic)?.listeners.size ?? 0) > 0;
   }
 
   /**

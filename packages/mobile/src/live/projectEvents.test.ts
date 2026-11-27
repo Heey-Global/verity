@@ -58,7 +58,48 @@ describe('projectEventUpdate', () => {
     expect(update.reload).toBe(true);
   });
 
-  it('reads an update hint, whose detail the event does not carry', () => {
+  // The update banner, its repair failure and its blocked-turn notice change
+  // only through this event once nothing re-reads the project for them.
+  it('applies the whole update state, and leaves one it cannot read to the read', () => {
+    const sandboxUpdate = {
+      state: 'available' as const,
+      kind: 'normal' as const,
+      category: 'software' as const,
+      reason: 'image',
+      current: 'img:1',
+      target: 'img:2',
+      currentVersion: '1.0.0',
+      currentRevision: null,
+      targetVersion: '1.1.0',
+      targetRevision: null,
+      selfRepair: 'stalled' as const,
+      turnBlocked: true,
+      blockedBy: ['turn' as const],
+      lastRepairFailure: { at: '2026-11-27T08:00:00.000Z', message: 'pull failed' },
+    };
+    const applied = projectEventUpdate({
+      t: 'sandbox.update',
+      projectId: 'p1',
+      rev: 2,
+      available: true,
+      update: sandboxUpdate,
+    })!;
+    expect(applied.patch(project)).toEqual({ ...project, sandboxUpdate });
+    // Carried whole, it needs no read; a read per event would cost more than
+    // the availability hint it replaces.
+    expect(applied.reload).toBe(false);
+    const unreadable = projectEventUpdate({
+      t: 'sandbox.update',
+      projectId: 'p1',
+      rev: 3,
+      available: true,
+      update: { state: 42 },
+    })!;
+    expect(unreadable.patch(project)).toBe(project);
+    expect(unreadable.reload).toBe(true);
+  });
+
+  it('reads an update hint from a server that sends only availability', () => {
     const update = projectEventUpdate({
       t: 'sandbox.update',
       projectId: 'p1',
@@ -78,6 +119,42 @@ describe('projectEventUpdate', () => {
     })!;
     expect(update.reload).toBe(true);
     expect(update.patch(project)).toEqual({ ...project, name: 'Renamed' });
+  });
+
+  // The release badge and the drift banner change only through this event
+  // once nothing re-reads the project for them.
+  it('applies the latest release and toolkit drift, and skips values it cannot read', () => {
+    const release = projectEventUpdate({
+      t: 'project.changed',
+      projectId: 'p1',
+      rev: 2,
+      patch: {
+        latestReleaseTag: 'v2.0.0',
+        latestReleaseName: null,
+        latestReleaseUrl: 'https://github.com/o/r/releases/tag/v2.0.0',
+        latestReleasePublishedAt: '2026-11-26T10:00:00Z',
+        toolkitDrift: { verdict: 'drifted', carrier: 'devcontainer' },
+      },
+    })!;
+    expect(release.patch(project)).toEqual({
+      ...project,
+      latestReleaseTag: 'v2.0.0',
+      latestReleaseName: null,
+      latestReleaseUrl: 'https://github.com/o/r/releases/tag/v2.0.0',
+      latestReleasePublishedAt: '2026-11-26T10:00:00Z',
+      toolkitDrift: { verdict: 'drifted', carrier: 'devcontainer' },
+    });
+    const cleared = projectEventUpdate({
+      t: 'project.changed',
+      projectId: 'p1',
+      rev: 3,
+      patch: { toolkitDrift: null, latestReleaseTag: 7 },
+    })!;
+    expect(cleared.patch({ ...project, latestReleaseTag: 'v1' })).toEqual({
+      ...project,
+      latestReleaseTag: 'v1',
+      toolkitDrift: null,
+    });
   });
 
   it('ignores events about sessions', () => {

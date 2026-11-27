@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.109.0](https://github.com/Heey-Global/verity/compare/v4.108.0...v4.109.0) (2026-11-27)
+
+
+### Features
+
+* **assistant:** decide Verity's handoffs on their card in the panel ([#2976](https://github.com/Heey-Global/verity/issues/2976)) ([b80cef1](https://github.com/Heey-Global/verity/commit/b80cef198a7ffbe3d5511a1f4fbf258d9f217afb))
+* **live:** publish release and toolkit drift changes as project events ([#2985](https://github.com/Heey-Global/verity/issues/2985)) ([591b8da](https://github.com/Heey-Global/verity/commit/591b8da67707177a5c8843598bbdbd32c177ffc5))
+* **live:** read a pull request fresh when its session is opened ([#2978](https://github.com/Heey-Global/verity/issues/2978)) ([373f2b3](https://github.com/Heey-Global/verity/commit/373f2b323bac523e9cecffe1ce56cc8372750587))
+
+
+### Bug Fixes
+
+* **lint:** retry memory-exhausted single files without optimized code ([#2980](https://github.com/Heey-Global/verity/issues/2980)) ([19edd26](https://github.com/Heey-Global/verity/commit/19edd26c4e591c8aae2cdff6b247c87815744535))
+
 ## [4.108.0](https://github.com/Heey-Global/verity/compare/v4.107.0...v4.108.0) (2026-11-26)
 
 

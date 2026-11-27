@@ -11,7 +11,7 @@ import {
 } from '@verity/events';
 import { isCodexModel } from '@verity/session';
 import type { EventStore, VeritySettingsRecord } from '@verity/store';
-import { measureLatencyPhase, type ProjectRecord } from '@verity/store';
+import { isLocalProject, measureLatencyPhase, type ProjectRecord } from '@verity/store';
 import { type FastifyBaseLogger } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { z, ZodError } from 'zod';
@@ -480,6 +480,13 @@ export function recordReleaseSummary(project: ProjectRecord): ReleaseSummary | n
     url: project.latestReleaseUrl ?? '',
     publishedAt: project.latestReleasePublishedAt,
   };
+}
+
+/** Whether a project can have forge releases to show. Neither the
+ *  control-plane workspace nor a project without a GitHub repository has any;
+ *  looking them up would just mint tokens and 404. */
+export function projectHasReleases(project: Pick<ProjectRecord, 'kind'>): boolean {
+  return !isControlPlaneProject(project) && !isLocalProject(project) && project.kind !== 'forgejo';
 }
 
 /** Whether a settled release lookup (`ReleaseSummary`, or `null` for a confirmed
