@@ -6,6 +6,23 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.111.0](https://github.com/Heey-Global/verity/compare/v4.110.0...v4.111.0) (2026-11-27)
+
+
+### Features
+
+* **live:** announce branch changes of open sessions in their session row ([#3022](https://github.com/Heey-Global/verity/issues/3022)) ([b265c2a](https://github.com/Heey-Global/verity/commit/b265c2a8baef386a85367ffeed46445c61200e40))
+* **live:** announce changes that reach the overview only as invalidations ([#3028](https://github.com/Heey-Global/verity/issues/3028)) ([4f05bb9](https://github.com/Heey-Global/verity/commit/4f05bb97e1f19a41542b4fa34a413b421d00785f))
+* **live:** announce server attention to administrators on a server topic ([#3016](https://github.com/Heey-Global/verity/issues/3016)) ([04f6e3c](https://github.com/Heey-Global/verity/commit/04f6e3c65ee7802af54a9bb4c80e094ab6e73c3b))
+* **mcp-apps:** queue app calls and let one approval cover read-only repeats ([#3023](https://github.com/Heey-Global/verity/issues/3023)) ([741be08](https://github.com/Heey-Global/verity/commit/741be0879dd33287c308e05a334ba91a0c67ee36))
+* **network-shares:** give agents SMB folders granted per project ([#3015](https://github.com/Heey-Global/verity/issues/3015)) ([9e36826](https://github.com/Heey-Global/verity/commit/9e368263b01bd8b2aa829b9dee915ba7eda169c4))
+
+
+### Bug Fixes
+
+* **network-shares:** treat a new account as a new target and harden the follow-ups ([#3027](https://github.com/Heey-Global/verity/issues/3027)) ([d917906](https://github.com/Heey-Global/verity/commit/d917906a82c34bd1b069baa10c2c470b45a49cd5))
+* **release:** close undeliverable OTA release PRs and surface OTA update status ([#3025](https://github.com/Heey-Global/verity/issues/3025)) ([f336eee](https://github.com/Heey-Global/verity/commit/f336eee52b0dd90384ad20aaf74aa01d21c944d8))
+
 ## [4.110.0](https://github.com/Heey-Global/verity/compare/v4.109.0...v4.110.0) (2026-11-27)
 
 
