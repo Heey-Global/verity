@@ -1,4 +1,9 @@
 import { reconcileInstalledProjectEgressHost } from './self-update/project-egress-provisioning.js';
+import {
+  freeBytesAt,
+  recoverStoppedControlPlanePostgres,
+  type PostgresRecoveryOutcome,
+} from './self-update/postgres-recovery.js';
 import { hostRuntimePreparationReady } from './self-update/host-runtimes.js';
 import { lstat, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -183,8 +188,37 @@ export async function startManagedUpdaterMain(): Promise<void> {
     .catch((error: unknown) => {
       console.error('Automatic backup preparation could not be scheduled', error);
     });
+  // A crashed database whose own restart failed stays down until someone starts
+  // it; through the exclusive queue this never races a cutover's deliberate stop.
+  let postgresCheckPending = false;
+  let lastPostgresOutcome: PostgresRecoveryOutcome | undefined;
+  const postgresWatch = setInterval(() => {
+    if (stopping || postgresCheckPending) return;
+    postgresCheckPending = true;
+    void runner
+      .enqueueExclusive(async () => {
+        const state = await readManagedDeployment(MANAGED_DEPLOYMENT_ROOT);
+        if (!state.managed) return;
+        const outcome = await recoverStoppedControlPlanePostgres({
+          docker,
+          network: state.spec.network,
+          freeBytes: () => freeBytesAt(MANAGED_DEPLOYMENT_ROOT),
+        });
+        if (outcome !== lastPostgresOutcome && outcome !== 'running')
+          console.warn(`[self-update] control-plane PostgreSQL: ${outcome}`);
+        lastPostgresOutcome = outcome;
+      })
+      .catch((error: unknown) => {
+        console.error('Control-plane PostgreSQL check failed', error);
+      })
+      .finally(() => {
+        postgresCheckPending = false;
+      });
+  }, 60_000);
+  postgresWatch.unref?.();
   const stop = async (): Promise<void> => {
     stopping = true;
+    clearInterval(postgresWatch);
     if (matrixRetry !== undefined) clearTimeout(matrixRetry);
     await updater.close();
     // Every step is journalled before it runs, so being killed here is safe —

@@ -20,6 +20,7 @@ it does not resolve itself, or when the host was set up by hand.
 - [Network protection preparation](#network-protection-preparation)
 - [When an update fails](#when-an-update-fails)
 - [When the Updater is crash-looping](#when-the-updater-is-crash-looping)
+- [When the database stopped after a crash](#when-the-database-stopped-after-a-crash)
 - [The control-plane generation](#the-control-plane-generation)
 
 ## Network protection preparation
@@ -317,6 +318,28 @@ If the Updater still exits after the container is gone, the refusal is not about
 the container: read its log again. An authority that cannot be read, a deployment
 ID that does not match the seal, or two containers on one name are separate
 faults, and each says so by name.
+
+## When the database stopped after a crash
+
+PostgreSQL can stop with an error such as `No space left on device` when the
+host disk fills up. Docker restarts it once under its restart policy, but stops
+trying when that restart fails as well, and the Server then logs
+`control-plane database not reachable yet (… ENOTFOUND postgres)` and restarts
+in a loop.
+
+The Updater checks the deployment's PostgreSQL once a minute and starts it again
+only when all of these hold: no PostgreSQL of the deployment is running, exactly
+one stopped one is on the deployment's network and it is not a predecessor kept
+by an image replacement, it exited with a non-zero code (a deliberate
+`docker stop` exits with 0 and is left alone), it has been down for at least a
+minute, and at least 2 GiB are free on the disk holding the deployment. The
+check runs in the Updater's exclusive queue, so it never overlaps an update.
+Each change of its finding is logged as `[self-update] control-plane PostgreSQL:
+<outcome>`; `insufficient-space` means space must be freed first.
+
+PostgreSQL recovers from such a stop on its own when it starts, replaying its
+write-ahead log; the writes that failed when the disk was full are lost, and
+earlier data is kept.
 
 ## The control-plane generation
 
