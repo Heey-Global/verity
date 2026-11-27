@@ -139,7 +139,8 @@ export function sendNetworkShareError(reply: FastifyReply, error: unknown) {
         ? 404
         : error.code === 'conflict' ||
             error.code === 'already_exists' ||
-            error.code === 'restore_failed'
+            error.code === 'restore_failed' ||
+            error.code === 'interrupted'
           ? 409
           : error.code === 'access_denied'
             ? 403

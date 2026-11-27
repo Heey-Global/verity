@@ -85,7 +85,8 @@ Agents in Claude and Codex sessions use these tools:
   latest read and an approval card for every update.
 
 Deleting, renaming and moving files and creating folders are not available.
-Reads are limited to files of 10 MB. A write is limited by the 2 MiB size of
+Reads are limited to files of 10 MB; the size is checked before and after the
+transfer, and a file that grows during it is bounded only by the timeout. A write is limited by the 2 MiB size of
 an agent tool request, so about 2 MB of text or 1.5 MB of base64-encoded
 content per create or update. Each step of an operation times out after 30
 seconds.
@@ -109,7 +110,9 @@ place. If someone changed the file in the meantime, the original is put back and
 the agent gets a conflict instead of overwriting the change. If the original
 cannot be put back because a new file took its name in the meantime, both are
 kept: the new file under the name, the original under a hidden
-`.verity-….old` name next to it, and the agent is told so. Creating a file
+`.verity-….old` name next to it, and the agent is told so. If the connection drops while the original is moved aside and
+Verity cannot reach the NAS to put it back, the agent is told to check the
+folder: the original then remains under its hidden name. Creating a file
 fails instead of replacing one that appeared in the meantime. A program that
 keeps the file open and writes to it during those few moments is not detected.
 

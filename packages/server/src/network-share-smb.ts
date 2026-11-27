@@ -46,6 +46,7 @@ export type NetworkShareErrorCode =
   | 'not_a_file'
   | 'timeout'
   | 'restore_failed'
+  | 'interrupted'
   | 'failed';
 
 const MESSAGES: Record<NetworkShareErrorCode, string> = {
@@ -64,6 +65,8 @@ const MESSAGES: Record<NetworkShareErrorCode, string> = {
   timeout: 'The NAS did not answer in time.',
   restore_failed:
     'The file changed during the write and could not be put back automatically. The previous version is kept next to it under a hidden .verity-….old name.',
+  interrupted:
+    'The connection to the NAS dropped during the write. The file may be missing from its name; its previous version is then kept next to it under a hidden .verity-….old name. Check the folder before writing again.',
   failed: 'The network share operation failed.',
 };
 
@@ -76,6 +79,9 @@ export class NetworkShareError extends Error {
     super(MESSAGES[code]);
     this.name = 'NetworkShareError';
   }
+
+  /** For a session that ended early: how many commands of its batch had completed. */
+  completed?: number;
 }
 
 function errorFor(status: string): NetworkShareError {
@@ -153,38 +159,39 @@ async function runBatch(
     '--client-protection=encrypt',
     '-E',
   ];
-  const output = await new Promise<string>((resolve, reject) => {
-    const child = spawn(options.binary ?? 'smbclient', args, {
-      env: {
-        PATH: process.env.PATH,
-        ...options.env,
-        USER: target.username,
-        PASSWD: target.password.toString('utf8'),
-      },
-      stdio: ['pipe', 'ignore', 'pipe'],
-    });
-    let text = '';
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => {
-      text += chunk;
-    });
-    child.on('error', () => {
-      clearTimeout(timer);
-      reject(new NetworkShareError('failed', 'spawn'));
-    });
-    child.on('close', () => {
-      clearTimeout(timer);
-      if (timedOut) reject(new NetworkShareError('timeout'));
-      else resolve(text);
-    });
-    child.stdin.on('error', () => undefined);
-    child.stdin.end(`${input}quit\n`);
-  });
+  const { output, timedOut } = await new Promise<{ output: string; timedOut: boolean }>(
+    (resolve, reject) => {
+      const child = spawn(options.binary ?? 'smbclient', args, {
+        env: {
+          PATH: process.env.PATH,
+          ...options.env,
+          USER: target.username,
+          PASSWD: target.password.toString('utf8'),
+        },
+        stdio: ['pipe', 'ignore', 'pipe'],
+      });
+      let text = '';
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGKILL');
+      }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        text += chunk;
+      });
+      child.on('error', () => {
+        clearTimeout(timer);
+        reject(new NetworkShareError('failed', 'spawn'));
+      });
+      child.on('close', () => {
+        clearTimeout(timer);
+        resolve({ output: text, timedOut });
+      });
+      child.stdin.on('error', () => undefined);
+      child.stdin.end(`${input}quit\n`);
+    },
+  );
   const outputs: string[] = [];
   let current: string[] = [];
   for (const line of output.split('\n')) {
@@ -193,16 +200,22 @@ async function runBatch(
       current = [];
     } else current.push(line);
   }
-  if (outputs.length < commands.length) {
-    // The session ended early: no connection, sign-in or encryption. smbclient
-    // reports a server without encryption in words, not as an NT status.
-    // Only what followed the last completed command explains the end; the
-    // markers before it carry their own not-found status.
+  if (timedOut || outputs.length < commands.length) {
+    // The session ended early: no connection, sign-in or encryption, or a
+    // timeout. smbclient reports a server without encryption in words, not as
+    // an NT status. Only what followed the last completed command explains the
+    // end; the markers before it carry their own not-found status.
     const ending = current.join('\n');
-    if (/doesn't support SMB3 encryption|encryption required/i.test(ending))
-      throw new NetworkShareError('encryption_unavailable');
     const status = STATUS.exec(ending)?.[1];
-    throw status ? errorFor(status) : new NetworkShareError('unreachable');
+    const error = timedOut
+      ? new NetworkShareError('timeout')
+      : /doesn't support SMB3 encryption|encryption required/i.test(ending)
+        ? new NetworkShareError('encryption_unavailable')
+        : status
+          ? errorFor(status)
+          : new NetworkShareError('unreachable');
+    error.completed = outputs.length;
+    throw error;
   }
   return outputs;
 }
@@ -394,8 +407,15 @@ export class SmbClient {
         // Not found: nothing was moved aside, the original never left its name.
         return error === undefined || error.code === 'not_found' ? 'restored' : 'aside';
       };
-      const recover = async (error: unknown): Promise<never> => {
-        if ((await restore()) === 'aside') throw new NetworkShareError('restore_failed');
+      /**
+       * Restores after `error`. If the server cannot be asked and the original
+       * may already be under its hidden name, say so instead of a plain
+       * connection error that would invite writing a fresh file over the gap.
+       */
+      const recover = async (error: unknown, mayHaveMoved: boolean): Promise<never> => {
+        const outcome = await restore();
+        if (outcome === 'aside') throw new NetworkShareError('restore_failed');
+        if (outcome === 'unknown' && mayHaveMoved) throw new NetworkShareError('interrupted');
         throw error;
       };
       let moved: string[];
@@ -406,7 +426,12 @@ export class SmbClient {
           `get ${remote(previous)} "${replacedCopy}"`,
         ]);
       } catch (error) {
-        return recover(error);
+        // The move aside is the second command; before it completed nothing moved.
+        const started =
+          !(error instanceof NetworkShareError) ||
+          error.completed === undefined ||
+          error.completed >= 1;
+        return recover(error, started);
       }
       const [upload, moveAside, download] = moved;
       const failure = statusOf(upload) ?? statusOf(moveAside) ?? statusOf(download);
@@ -422,12 +447,15 @@ export class SmbClient {
           : undefined;
       const replaced = copy === undefined ? undefined : contentVersion(copy);
       if (failure !== undefined || replaced !== expectedVersion)
-        return recover(failure ?? new NetworkShareError('conflict'));
+        return recover(
+          failure ?? new NetworkShareError('conflict'),
+          statusOf(moveAside) === undefined,
+        );
       let published: string[];
       try {
         published = await run(target, [`rename ${remote(temporary)} ${remote(path)}`]);
       } catch (error) {
-        return recover(error);
+        return recover(error, true);
       }
       const publishError = statusOf(published[0]);
       if (publishError?.code === 'already_exists') {
@@ -436,7 +464,7 @@ export class SmbClient {
         await run(target, [`del ${remote(temporary)}`]).catch(() => undefined);
         throw new NetworkShareError('restore_failed');
       }
-      if (publishError) return recover(publishError);
+      if (publishError) return recover(publishError, true);
       await run(target, [`del ${remote(previous)}`]).catch(() => undefined);
       return { kind: 'file', size: content.byteLength, version: contentVersion(content) };
     });
