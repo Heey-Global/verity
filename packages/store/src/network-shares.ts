@@ -100,9 +100,17 @@ export function networkSharePathWithin(folder: string, path: string): boolean {
  */
 export class NetworkShareStore {
   constructor(
-    private readonly db: Kysely<Database>,
-    private readonly cipher: SecretCipher,
+    private readonly getDb: () => Kysely<Database>,
+    private readonly getCipher: () => SecretCipher,
   ) {}
+
+  private get db(): Kysely<Database> {
+    return this.getDb();
+  }
+
+  private get cipher(): SecretCipher {
+    return this.getCipher();
+  }
 
   async listConnections(): Promise<NetworkShareConnectionRecord[]> {
     const rows = await this.db

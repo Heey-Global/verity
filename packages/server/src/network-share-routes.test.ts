@@ -1,3 +1,4 @@
+import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { EventStore, createSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
@@ -67,6 +68,9 @@ function fakeClient() {
 
 async function server(client: NetworkShareClient, sealed = false): Promise<FastifyInstance> {
   const app = Fastify();
+  // Without a limiter CodeQL reports the authorizing test hook as an
+  // unthrottled route handler (as in user-context-routes.test.ts).
+  await app.register(rateLimit, { max: 1000, timeWindow: 60_000 });
   app.decorateRequest('localUserId', null);
   app.addHook('onRequest', async (request) => {
     request.localUserId = String(request.headers['x-test-user']);

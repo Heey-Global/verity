@@ -79,7 +79,6 @@ export {
   InvalidProjectNameError,
   PROJECT_NAME_MAX_CHARS,
   SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS,
-  type EventSink,
   type PlanningConsent,
   RUNNER_FRAME_PROTOCOL_VERSION,
   type RunnerFrameIngest,
@@ -98,7 +97,6 @@ export {
   type SessionContactsConnection,
   type GoogleWorkspaceFileKind,
   type GoogleSlideImageCleanupRecord,
-  type SessionInput,
   type RunningTurnRecord,
   type RunnerTurnOwnership,
   type RunnerTurnOwnershipRequest,
@@ -148,6 +146,7 @@ export {
   type DevicePushTokenRecord,
   type PushReceiptRecord,
 } from './store.js';
+export type { EventSink, SessionInput } from './event-sink.js';
 export { TranscriptStore } from './transcript.js';
 export {
   ManagedDevServerStore,

@@ -66,7 +66,11 @@ describe('normalizeNetworkSharePath', () => {
 
 describe('NetworkShareStore', () => {
   it('never lists the password and stores it encrypted', async () => {
-    const shares = new NetworkShareStore(ctx.db, createSecretCipher('cd'.repeat(32)));
+    const cipher = createSecretCipher('cd'.repeat(32));
+    const shares = new NetworkShareStore(
+      () => ctx.db,
+      () => cipher,
+    );
     const id = await shares.createConnection(studio);
     const [listed] = await shares.listConnections();
     expect(listed).toMatchObject({

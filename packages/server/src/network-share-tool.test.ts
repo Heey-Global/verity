@@ -326,7 +326,10 @@ describe('network share agent tool', () => {
 // blocks the server's address after a few cuts off every project at once.
 describe('network share sign-in pause', () => {
   it('stops retrying refused details until they change or the pause ends', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
+    // The pause reads Date.now(); fake timers are kept off this file because it
+    // runs on the shared PostgreSQL harness (scripts/test-db-harness.test.ts).
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
     try {
       const { client } = fakeClient();
       const tool = createNetworkShareTool({ store, client });
@@ -343,11 +346,11 @@ describe('network share sign-in pause', () => {
 
       vi.mocked(client.read).mockRejectedValueOnce(new NetworkShareError('sign_in_failed'));
       await expect(tool.invoke(read)).rejects.toThrow();
-      vi.setSystemTime(Date.now() + SIGN_IN_PAUSE_MS);
+      now += SIGN_IN_PAUSE_MS;
       await expect(tool.invoke(read)).resolves.toMatchObject({ path: 'kickoff.md' });
       expect(client.read).toHaveBeenCalledTimes(4);
     } finally {
-      vi.useRealTimers();
+      clock.mockRestore();
     }
   });
 });

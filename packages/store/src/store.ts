@@ -270,8 +270,6 @@ export type {
   PendingSessionLinkMessage,
 } from './session-links.js';
 
-export type { EventSink, SessionInput } from './event-sink.js';
-
 export type { SessionBackendStateRecord } from './session-backend-state.js';
 export type { SessionPlanning } from './session-planning.js';
 
@@ -461,7 +459,6 @@ export class EventStore implements EventSink {
     this.managedDevServers = new ManagedDevServerStore(db);
     this.vulnerabilityScans = new VulnerabilityScanStore(db);
     this.tasks = new TaskStore(db, cipher);
-    this.networkShares = new NetworkShareStore(db, cipher);
     this.repairs = new RepairSupervisionStore(db);
     this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
@@ -499,7 +496,10 @@ export class EventStore implements EventSink {
   readonly integrations: IntegrationStore;
   readonly liveMeetings: LiveMeetingStore;
   readonly tasks: TaskStore;
-  readonly networkShares: NetworkShareStore;
+  readonly networkShares = new NetworkShareStore(
+    () => this.db,
+    () => this.cipher,
+  );
   readonly repairs: RepairSupervisionStore;
   readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
