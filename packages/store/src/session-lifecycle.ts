@@ -477,4 +477,35 @@ export class SessionLifecycleStore {
       .executeTakeFirst();
     return result.numUpdatedRows > 0n;
   }
+
+  /**
+   * Append a server-authored note for the agent to see on its NEXT turn (see
+   * {@link SessionPendingNoteTable}). Not a chat message and not a turn — the
+   * conductor folds pending notes into the next backend turn's model prompt and
+   * consumes them. Used by the post-merge worktree reset so the agent learns its
+   * branch moved without a visible transcript line.
+   */
+  async appendPendingNote(sessionId: string, note: string): Promise<void> {
+    await this.db
+      .insertInto('session_pending_note')
+      .values({ session_id: sessionId, note })
+      .execute();
+  }
+
+  /**
+   * Read and DELETE all pending notes for a session (consume-once), oldest first.
+   * Single `DELETE … RETURNING` so a note can't be double-consumed by a concurrent
+   * turn. Returns the note texts in insert order; empty when there are none.
+   */
+  async consumePendingNotes(sessionId: string): Promise<string[]> {
+    const rows = await this.db
+      .deleteFrom('session_pending_note')
+      .where('session_id', '=', sessionId)
+      .returning(['id', 'note'])
+      .execute();
+    // `execute()` returns a fresh array, so sort it in place. Postgres does not
+    // guarantee RETURNING order (and DELETE takes no ORDER BY), so sort by the
+    // serial `id` to restore insert order.
+    return rows.sort((a, b) => Number(a.id) - Number(b.id)).map((r) => r.note);
+  }
 }

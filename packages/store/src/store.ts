@@ -1315,10 +1315,7 @@ export class EventStore implements EventSink {
    * branch moved without a visible transcript line.
    */
   async appendPendingNote(sessionId: string, note: string): Promise<void> {
-    await this.db
-      .insertInto('session_pending_note')
-      .values({ session_id: sessionId, note })
-      .execute();
+    return this.sessionLifecycle.appendPendingNote(sessionId, note);
   }
 
   /**
@@ -1327,15 +1324,7 @@ export class EventStore implements EventSink {
    * turn. Returns the note texts in insert order; empty when there are none.
    */
   async consumePendingNotes(sessionId: string): Promise<string[]> {
-    const rows = await this.db
-      .deleteFrom('session_pending_note')
-      .where('session_id', '=', sessionId)
-      .returning(['id', 'note'])
-      .execute();
-    // `execute()` returns a fresh array, so sort it in place. Postgres does not
-    // guarantee RETURNING order (and DELETE takes no ORDER BY), so sort by the
-    // serial `id` to restore insert order.
-    return rows.sort((a, b) => Number(a.id) - Number(b.id)).map((r) => r.note);
+    return this.sessionLifecycle.consumePendingNotes(sessionId);
   }
 
   /**
