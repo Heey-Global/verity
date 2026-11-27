@@ -225,25 +225,6 @@ export function installProjects(
     current: string | undefined,
   ): ProjectToolkitDrift | null => reportedToolkitDrift(project, current);
 
-  /**
-   * Qualify an update status with whether Verity's own repair is still working on it.
-   *
-   * The checker compares images and knows nothing about the reconciler, so it
-   * always reports `converging`. Only the provisioner knows which projects the
-   * automatic repair has given up on or will never pick up, and only that
-   * distinction makes `state: 'available'` worth showing. A Server restart resumes
-   * the existing Sandbox generation and queues its stale image until the project is
-   * idle, so that waiting period is genuinely an in-flight automatic repair. Optional throughout —
-   * a deployment whose provisioner does not reconcile (tests, non-relay setups)
-   * keeps `converging`.
-   *
-   * Normally applied only to an `available` status. The deliberate exception is
-   * a failed project the provisioner itself still owes a repair: its recreate may
-   * already have removed the old container, so the image checker honestly says
-   * `unknown` while the reconciler can still say, independently, that rebuilding
-   * has stalled. Other unknowns (custom image, registry failure) remain unknown
-   * and converging rather than acquiring a verdict nobody established.
-   */
   const { withSelfRepair, sandboxRepairVerdicts } = createSandboxUpdateView(deps);
 
   // What this person may do in a project, so the app offers only that. The

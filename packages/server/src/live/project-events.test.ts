@@ -358,6 +358,22 @@ describe('installProjectEvents', () => {
     );
   });
 
+  // Views saw the sandbox fail in between; the same status after it came back
+  // is news to them again.
+  it('publishes the update state again after the sandbox came back', async () => {
+    const w = setup();
+    w.setStatus(status('available'));
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(1));
+    w.write({ state: 'failed' });
+    await vi.waitFor(() =>
+      expect(w.events().at(-1)).toEqual(expect.objectContaining({ state: 'failed' })),
+    );
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(2));
+    expect(w.updates()[1]).toEqual(expect.objectContaining({ available: true }));
+  });
+
   // The provisioner changes these without any store write, and a blocked
   // update turns overdue by time alone: without the tick a view would show
   // them only on its next read.

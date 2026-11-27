@@ -165,8 +165,11 @@ export function installProjectEvents(
     // A status from before a lifecycle change says nothing about the sandbox
     // now; a running one is checked again just below, a failed one reports
     // `unknown` at the checker's next look.
+    // Forgetting what was published too lets the next status go out even when
+    // it repeats one from before the change.
     if (previous !== undefined && previous.lifecycle !== next.lifecycle) {
       lastStatus.delete(projectId);
+      publishedUpdate.delete(projectId);
     }
     publishUpdate(projectId);
     // A sandbox that came up or was rebuilt may have changed its update
