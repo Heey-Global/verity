@@ -128,8 +128,12 @@ export function installProjectEvents(
     // lets the next status go out even when it repeats one from before. In the
     // same step as holding the new record, so that no tick or checker report
     // judges the new record by the old status in between.
+    // Keyed on the state alone: a new provision warning changes nothing about
+    // the image. A status the checker reported while this read was out is
+    // dropped as well; the check below asks again for the state read.
     const held = lastProject.get(projectId);
-    if (held !== undefined && lifecycleOf(held) !== lifecycleOf(project)) {
+    const stateChanged = held !== undefined && held.state !== project.state;
+    if (stateChanged) {
       lastStatus.delete(projectId);
       publishedUpdate.delete(projectId);
     }
@@ -175,11 +179,13 @@ export function installProjectEvents(
     }
     publishUpdate(projectId);
     // A sandbox that came up or was rebuilt may have changed its update
-    // status; checking it here reports through the checker's observer.
+    // status, and one whose state changed has just lost its last status;
+    // checking it here reports through the checker's observer.
     if (
       updates !== undefined &&
-      project.state === 'active' &&
-      (previous?.lifecycle !== next.lifecycle || previous.image !== next.image)
+      (stateChanged ||
+        (project.state === 'active' &&
+          (previous?.lifecycle !== next.lifecycle || previous.image !== next.image)))
     ) {
       // Not awaited: a slow registry must not hold back this project's next
       // lifecycle event.

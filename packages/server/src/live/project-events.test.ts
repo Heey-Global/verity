@@ -47,9 +47,12 @@ function setup() {
   ]);
   const observers = new Set<(projectId: string, status: SandboxUpdateStatus) => void>();
   let nextStatus = status('current');
+  // Like the real checker, which inspects the running container: a sandbox
+  // that is not running cannot be judged.
   const statusCalls = vi.fn(async (project: ProjectRecord) => {
-    for (const observer of observers) observer(project.id, nextStatus);
-    return nextStatus;
+    const reported = project.state === 'active' ? nextStatus : status('unknown');
+    for (const observer of observers) observer(project.id, reported);
+    return reported;
   });
   const sandboxUpdates: SandboxUpdateChecker = {
     status: statusCalls,
@@ -101,7 +104,9 @@ function setup() {
     observers,
     closers,
     setStatus: (next: SandboxUpdateStatus) => (nextStatus = next),
-    setIdentity: (next: string | Error | undefined | Promise<string>) => (identity = next),
+    setIdentity: (next: string | Error | undefined | Promise<string>) => {
+      identity = next;
+    },
     failures,
     turnBlocked,
     getProject,
@@ -259,7 +264,7 @@ describe('installProjectEvents', () => {
     w.write({ state: 'container_starting' });
     w.write({ state: 'failed', provisionError: 'x' });
     await vi.waitFor(() =>
-      expect(w.events().at(-1)).toEqual(
+      expect(w.others().at(-1)).toEqual(
         expect.objectContaining({ t: 'sandbox.lifecycle', state: 'failed' }),
       ),
     );
@@ -338,24 +343,18 @@ describe('installProjectEvents', () => {
     w.setStatus(status('available'));
     w.write({ state: 'active' });
     await vi.waitFor(() => expect(w.updates()).toHaveLength(1));
+    w.failures.set('p1', { at: Date.parse('2026-11-27T08:00:00Z'), message: 'pull failed' });
     w.write({ state: 'failed' });
-    await vi.waitFor(() =>
-      expect(w.events().at(-1)).toEqual(
-        expect.objectContaining({ t: 'sandbox.lifecycle', state: 'failed' }),
-      ),
-    );
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(2));
     // A repair failure the tick sees must not be reported on the old image's
     // `available`, which no read returns any more.
-    w.failures.set('p1', { at: Date.parse('2026-11-27T08:00:00Z'), message: 'pull failed' });
     w.tick();
-    expect(w.updates()).toHaveLength(1);
-    for (const observer of w.observers) observer('p1', status('unknown'));
-    expect(w.updates().at(-1)).toEqual(
+    expect(w.updates().slice(1)).toEqual([
       expect.objectContaining({
         available: false,
         update: expect.objectContaining({ state: 'unknown' }),
       }),
-    );
+    ]);
   });
 
   // The toolkit lookup inside a check can be slow; a tick in that window must
@@ -374,10 +373,11 @@ describe('installProjectEvents', () => {
     await new Promise((resolve) => setImmediate(resolve));
     w.tick();
     release('toolkit-a');
-    await vi.waitFor(() =>
-      expect(w.events().at(-1)).toEqual(expect.objectContaining({ state: 'failed' })),
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(2));
+    // Only the failed sandbox's own status went out, never the old `available`.
+    expect(w.updates()[1]).toEqual(
+      expect.objectContaining({ update: expect.objectContaining({ state: 'unknown' }) }),
     );
-    expect(w.updates()).toHaveLength(1);
   });
 
   // Views saw the sandbox fail in between; the same status after it came back
@@ -388,12 +388,10 @@ describe('installProjectEvents', () => {
     w.write({ state: 'active' });
     await vi.waitFor(() => expect(w.updates()).toHaveLength(1));
     w.write({ state: 'failed' });
-    await vi.waitFor(() =>
-      expect(w.events().at(-1)).toEqual(expect.objectContaining({ state: 'failed' })),
-    );
-    w.write({ state: 'active' });
     await vi.waitFor(() => expect(w.updates()).toHaveLength(2));
-    expect(w.updates()[1]).toEqual(expect.objectContaining({ available: true }));
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(3));
+    expect(w.updates()[2]).toEqual(expect.objectContaining({ available: true }));
   });
 
   // The provisioner changes these without any store write, and a blocked
