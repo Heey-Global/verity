@@ -179,4 +179,22 @@ describe('project network share folders', () => {
     await act(async () => finish({ path: '', folders: [] }));
     expect(screen.queryByText('Use this folder')).toBeNull();
   });
+
+  it('does not reopen the sheet when an access change answers after it was closed', async () => {
+    let finish: (folder: unknown) => void = () => undefined;
+    const client = shareClient({
+      setProjectFolderAccess: jest.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      ),
+    });
+    render(<ProjectNetworkShares client={client} projectId="p" />);
+    fireEvent.press(await screen.findByText('Briefs'));
+    fireEvent.press(await screen.findByText('Read only'));
+    fireEvent.press(screen.getAllByLabelText('Close').at(-1)!);
+    await act(async () => finish({ ...briefs, accessMode: 'read-only' }));
+    expect(screen.queryByText('Remove from project')).toBeNull();
+  });
 });

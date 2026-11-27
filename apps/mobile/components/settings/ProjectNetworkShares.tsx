@@ -130,12 +130,16 @@ export function ProjectNetworkShares({
     try {
       await action();
       after?.();
-      await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not change folder access.');
+      return;
     } finally {
       setBusy(false);
     }
+    // The change is done; a failed refresh must not read as a failed change.
+    await load().catch((cause: unknown) =>
+      setError(cause instanceof Error ? cause.message : 'Could not load network shares.'),
+    );
   };
 
   /** Bumped on every navigation and on close, so a late listing cannot take over the sheet. */
@@ -312,12 +316,14 @@ export function ProjectNetworkShares({
             disabled={busy}
             onChange={(accessMode) =>
               void perform(async () => {
+                const opened = navigation.current;
                 const updated = await client.networkShares.setProjectFolderAccess(
                   projectId,
                   folder.id,
                   accessMode,
                 );
-                setStep({ kind: 'manage', folder: updated });
+                // A sheet closed meanwhile stays closed.
+                if (opened === navigation.current) setStep({ kind: 'manage', folder: updated });
               })
             }
           />

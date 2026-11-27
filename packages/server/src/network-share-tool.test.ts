@@ -240,11 +240,22 @@ describe('network share agent tool', () => {
     expect(
       await tool.invoke({ ...update, approvedByCard: true, authorizationSnapshot: fresh! }),
     ).toEqual({ path: 'kickoff.md', version: 'v2', size: 3 });
+    // The card covers these exact bytes and the version they replace; other
+    // arguments under the same approval must not run.
+    for (const changed of [{ expectedVersion: 'old' }, { content: 'other bytes' }])
+      await expect(
+        tool.invoke({
+          ...input({ ...update.request, ...changed }),
+          approvedByCard: true,
+          authorizationSnapshot: fresh!,
+        }),
+      ).rejects.toThrow('Ask again');
+    const stale = input({ ...update.request, expectedVersion: 'old' });
     await expect(
       tool.invoke({
-        ...input({ ...update.request, expectedVersion: 'old' }),
+        ...stale,
         approvedByCard: true,
-        authorizationSnapshot: fresh!,
+        authorizationSnapshot: (await tool.snapshot(stale))!,
       }),
     ).rejects.toThrow('changed on the share');
   });

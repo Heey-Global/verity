@@ -14,12 +14,35 @@ import {
   type NetworkShareRequest,
 } from './network-share-request.js';
 
+import { createHash } from 'node:crypto';
+
 import { withNetworkShareTarget } from './network-share-routes.js';
 import { NetworkShareError, type NetworkShareClient, type SmbTarget } from './network-share-smb.js';
 import {
   ControlPlaneSessionAuthorityError,
   ControlPlaneSessionToolError,
 } from './session-handoff-tool.js';
+
+/**
+ * What an approval for a replace covers: the folder's grant as the user saw it,
+ * the file, the version it replaces and the exact new bytes. Any other request
+ * under the same card no longer matches.
+ */
+function approvalBinding(
+  request: Extract<NetworkShareRequest, { action: 'update' }>,
+  folder: ProjectNetworkShareFolderRecord,
+  sharePath: string,
+): string {
+  return JSON.stringify({
+    folderId: folder.id,
+    revision: folder.revision,
+    path: sharePath,
+    expectedVersion: request.expectedVersion,
+    content: createHash('sha256')
+      .update(`${request.encoding ?? 'utf8'}:${request.content}`)
+      .digest('hex'),
+  });
+}
 
 type Input = { projectId: string; sessionId: string; turnId: string; request: unknown };
 
@@ -133,7 +156,7 @@ export function createNetworkShareTool(deps: {
     async snapshot(input: Input): Promise<string | undefined> {
       const { request, folder, sharePath } = await resolve(input);
       if (request.action !== 'update' || !folder) return undefined;
-      return JSON.stringify({ folderId: folder.id, revision: folder.revision, path: sharePath });
+      return approvalBinding(request, folder, sharePath);
     },
 
     async invoke(
@@ -159,11 +182,7 @@ export function createNetworkShareTool(deps: {
         throw new ControlPlaneSessionToolError('folder required');
       if (request.action === 'update') {
         // The approval covered this grant; a changed grant needs a new approval.
-        const expected = JSON.stringify({
-          folderId: folder.id,
-          revision: folder.revision,
-          path: sharePath,
-        });
+        const expected = approvalBinding(request, folder, sharePath);
         if (input.approvedByCard !== true || input.authorizationSnapshot !== expected)
           throw new ControlPlaneSessionAuthorityError(
             'Folder access changed since the approval. Ask again.',
