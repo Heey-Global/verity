@@ -39,6 +39,7 @@ import {
   FALLBACK_SANDBOX_MEMORY_BYTES,
 } from './sandbox-memory-policy.js';
 import { stripTrailingSlashes } from './path-text.js';
+import { ObservedSet } from './observed-set.js';
 import { currentGitHubUrl, followGitHubOrigin } from './clone-origin.js';
 import {
   type CloneConfigGit,
@@ -3117,20 +3118,19 @@ export class ProvisionerImpl implements Provisioner {
     this.envDriftRecreates.set(projectId, (this.envDriftRecreates.get(projectId) ?? 0) + 1);
   }
 
-  /** Projects whose sandbox the last reconcile pass classified `orphaned`: it is
-   *  running and intact but cut off from the broker, so every brokered call from
-   *  inside it — signing, GitHub token, secrets, egress — is refused. Either its
-   *  `verity.container-generation` is no longer the one this process serves, or
-   *  that generation's relay container has exited; the two are the same failure
-   *  from inside the sandbox. Written by the reconciler that already computes the
+  /** Projects whose sandbox the last reconcile pass classified `orphaned`: it is running and
+   *  intact but cut off from the broker, so every brokered call from inside it — signing, GitHub
+   *  token, secrets, egress — is refused. Either its `verity.container-generation` is no longer
+   *  the one this process serves, or that generation's relay container has exited; the two are
+   *  the same failure from inside the sandbox. Written by the reconciler that already computes the
    *  classification, so reading it costs a `Set.has` and never touches Docker.
    *
-   *  Kept so the condition can be REPORTED, not only acted on. Acting on it is
-   *  deferrable — a turn in flight holds the recreate off — and it is exactly
-   *  then that an operator is staring at a session whose every brokered call
-   *  fails for no visible reason. In-memory for the same reason as
-   *  {@link orphanDeferrals}: the next process reclassifies from Docker. */
-  private readonly disconnectedSandboxes = new Set<string>();
+   *  Kept so the condition can be REPORTED, not only acted on; observed, so the project's sessions
+   *  announce their row at once. Acting on it is deferrable — a turn in flight holds the recreate
+   *  off — and it is exactly then that an operator is staring at a session whose every brokered
+   *  call fails for no visible reason. In-memory for the same reason as {@link orphanDeferrals}:
+   *  the next process reclassifies from Docker. */
+  private readonly disconnectedSandboxes = new ObservedSet<string>();
 
   /** Per project, how many CONSECUTIVE reconcile passes have tried to recreate its
    *  sandbox and failed. Past {@link SANDBOX_SELF_REPAIR_FAILURE_LIMIT} the

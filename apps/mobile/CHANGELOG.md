@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.97.0](https://github.com/Heey-Global/verity/compare/mobile-v1.96.0...mobile-v1.97.0) (2026-11-27)
+
+
+### Features
+
+* **assistant:** decide Verity's handoffs on their card in the panel ([#2976](https://github.com/Heey-Global/verity/issues/2976)) ([b80cef1](https://github.com/Heey-Global/verity/commit/b80cef198a7ffbe3d5511a1f4fbf258d9f217afb))
+* **live:** announce projects entering and leaving the overview on a collection topic ([#3000](https://github.com/Heey-Global/verity/issues/3000)) ([e70a485](https://github.com/Heey-Global/verity/commit/e70a48581c0fa5daa798a96632b3463c87c946ea))
+* **live:** publish session status as session.summary events ([#2972](https://github.com/Heey-Global/verity/issues/2972)) ([5d958b7](https://github.com/Heey-Global/verity/commit/5d958b7a6a3f0b0c8b880d346d93145fc2677efd))
+* **live:** read a pull request fresh when its session is opened ([#2978](https://github.com/Heey-Global/verity/issues/2978)) ([373f2b3](https://github.com/Heey-Global/verity/commit/373f2b323bac523e9cecffe1ce56cc8372750587))
+* show the server host's CPU, memory and disk below the Home list ([#3009](https://github.com/Heey-Global/verity/issues/3009)) ([b3f6bba](https://github.com/Heey-Global/verity/commit/b3f6bba435ae7e232290e8ba72dec6b6b51a7e52))
+
+
+### Bug Fixes
+
+* **mobile:** hide administrator actions in member settings ([#2991](https://github.com/Heey-Global/verity/issues/2991)) ([e7e1e80](https://github.com/Heey-Global/verity/commit/e7e1e80309860e19e28d1eaacd134c58f65cd3ad))
+* **mobile:** verify permission before starting a meeting ([#2998](https://github.com/Heey-Global/verity/issues/2998)) ([3d7be2b](https://github.com/Heey-Global/verity/commit/3d7be2b2efda7e23c5369acafca999fcc6fc4084))
+
+
+### Performance Improvements
+
+* **server:** reuse unchanged session projections and measure overview revalidation ([#2957](https://github.com/Heey-Global/verity/issues/2957)) ([6169a5a](https://github.com/Heey-Global/verity/commit/6169a5ad1d511fb690e989dfb5f35ff8458ca18f))
+
 ## [1.96.0](https://github.com/Heey-Global/verity/compare/mobile-v1.95.0...mobile-v1.96.0) (2026-11-26)
 
 
