@@ -359,6 +359,8 @@ describe('GET /sessions — a session whose sandbox is cut off from the broker',
       provisioner: { provision: vi.fn(), disconnectedSandboxProjects },
     });
     try {
+      // The summary publisher takes the set once when the server starts.
+      disconnectedSandboxProjects.mockClear();
       await server.inject({ method: 'GET', url: '/sessions' });
       // One synchronous, already-computed read per session, and nothing else —
       // no Docker call, no query, nothing that can block or throw.

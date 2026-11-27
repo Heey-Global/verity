@@ -1,8 +1,14 @@
-import { SESSION_SUMMARY_FIELDS, domainTopic, type DomainTopic } from '@verity/events';
+import {
+  SESSION_SUMMARY_FIELDS,
+  domainTopic,
+  type DomainTopic,
+  type LiveHintTopic,
+} from '@verity/events';
 import type { SessionRecord } from '@verity/store';
 import type { ServerContext } from '../server-context.js';
 import type { SessionSummary } from '../server-types.js';
 import { planningPresented } from '../session-row.js';
+import { ObservedSet } from '../observed-set.js';
 import { isMaintenanceSession } from './pr-events.js';
 import { createRevisions } from './revisions.js';
 
@@ -16,6 +22,8 @@ const MAX_REMEMBERED_SESSIONS = 4_096;
 const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000];
 
 type Row = Record<string, unknown>;
+/** The hints a changed row raises; `activity` and `permission` come with one of them. */
+const ROW_TOPICS: ReadonlySet<LiveHintTopic> = new Set(['session', 'status', 'events']);
 
 /** The row every viewer's list shows alike ({@link SESSION_SUMMARY_FIELDS}),
  * with `planningPresented` derived as `/sessions` derives it. */
@@ -34,10 +42,14 @@ export function sharedRow(summary: SessionSummary): Row {
  * alike, whole. Home and the project page then follow a session without
  * reading the whole list again for each status change or burst of transcript.
  *
- * Every change hinted to the overview as `status` or `events` schedules the
- * row, whatever raised it: a session event, a process that ended, a repair.
- * Home skips its list read for those hints once it follows the project, so
- * none may go without a row. A burst becomes one row after it settles, and a
+ * Every change hinted to the overview as `session`, `status` or `events`
+ * schedules the row, whatever raised it: a session event, a process that
+ * ended, a repair, a name the session gave itself. So does the project's
+ * sandbox losing or regaining the broker, which every session of the project
+ * shows.
+ * Home skips its list read for `status` and `events` hints once it follows
+ * the project, so none may go without a row; the others bring a row so the
+ * list read they still cause can go too. A burst becomes one row after it settles, and a
  * long burst one row at least every {@link MAX_WAIT_MS}; a row that could
  * not be computed is tried again.
  * Wiki maintenance sessions, which the lists leave out, reach only their own
@@ -133,12 +145,65 @@ export function installSummaryEvents(
       lastRevisions.delete(change.sessionId);
       return;
     }
-    if (change.topics.some((topic) => topic === 'status' || topic === 'events'))
-      schedule(change.sessionId);
+    if (change.topics.some((topic) => ROW_TOPICS.has(topic))) schedule(change.sessionId);
   });
+  // The provisioner's reconciler classifies sandboxes without a hint of its
+  // own; each session of the project names the condition in its row. The
+  // projects one pass reclassifies share one read of the sessions.
+  let changedProjects: Set<string> | undefined;
+  let announceTimer: unknown;
+  /** The failed reads the pending batch follows; 0 for a fresh change. */
+  let batchAttempt = 0;
+  const retryDelay = (attempt: number): number =>
+    attempt === 0 ? 0 : RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length) - 1]!;
+  // A fresh change is read at once, even when a retry is waiting; a retry that
+  // joins a fresh batch keeps its place on the backoff ladder.
+  const noteProjects = (projectIds: Iterable<string>, attempt: number): void => {
+    if (changedProjects === undefined || attempt < batchAttempt) {
+      if (announceTimer !== undefined) timers.clearTimeout(announceTimer);
+      announceTimer = timers.setTimeout(announceProjects, retryDelay(attempt));
+    }
+    changedProjects ??= new Set();
+    batchAttempt = changedProjects.size === 0 ? attempt : Math.max(batchAttempt, attempt);
+    for (const projectId of projectIds) changedProjects.add(projectId);
+  };
+  const announceProjects = (): void => {
+    const projectIds = changedProjects;
+    const attempt = batchAttempt;
+    changedProjects = undefined;
+    announceTimer = undefined;
+    if (projectIds === undefined || closed) return;
+    void deps.eventStore.listSessions().then(
+      (sessions) => {
+        if (closed) return;
+        for (const session of sessions)
+          if (session.projectId !== null && projectIds.has(session.projectId))
+            schedule(session.sessionId);
+      },
+      // Only a failed read is tried again.
+      (error: unknown) => {
+        app.log.warn(
+          { err: error, projectIds: [...projectIds] },
+          'verity: sandbox sessions not announced',
+        );
+        // Nothing else hints these sessions: read them again, waiting longer
+        // each time up to the last delay.
+        if (!closed) noteProjects(projectIds, attempt + 1);
+      },
+    );
+  };
+  const disconnected = deps.provisioner?.disconnectedSandboxProjects?.();
+  const stopObservingSandboxes =
+    disconnected instanceof ObservedSet
+      ? (disconnected as ObservedSet<string>).observe((projectId) => {
+          noteProjects([projectId], 0);
+        })
+      : undefined;
   lifecycle.onClose(() => {
     closed = true;
     unsubscribe();
+    stopObservingSandboxes?.();
+    if (announceTimer !== undefined) timers.clearTimeout(announceTimer);
     for (const { timer } of scheduled.values()) timers.clearTimeout(timer);
     scheduled.clear();
   });
