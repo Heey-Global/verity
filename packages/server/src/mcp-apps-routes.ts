@@ -16,6 +16,77 @@ import {
 } from './mcp-apps.js';
 import { forwardHttpMcp, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
 
+/** Calls of one session run one at a time; later calls wait instead of failing. */
+const MAX_QUEUED_PER_SESSION = 8;
+const MAX_ACTIVE_SESSIONS = 64;
+const QUEUE_WAIT_MS = 120_000;
+/** How long one approval covers repeated calls of the same read-only tool from one app card. */
+export const READ_ONLY_GRANT_MS = 30 * 60_000;
+const MAX_GRANTS = 4096;
+
+/** The server's own declaration; write tools and undeclared tools always ask again. */
+const readOnly = (tool: Record<string, unknown>) => object(tool.annotations).readOnlyHint === true;
+
+/**
+ * One lane per session: an app call holds it from approval to result. Waiting calls are
+ * bounded per session and in total, and give up after their deadline.
+ */
+function createCallLanes() {
+  const lanes = new Map<string, { tail: Promise<void>; size: number }>();
+  return {
+    async acquire(sessionId: string, signal: AbortSignal): Promise<(() => void) | undefined> {
+      let lane = lanes.get(sessionId);
+      if (lane === undefined) {
+        if (lanes.size >= MAX_ACTIVE_SESSIONS) return undefined;
+        lane = { tail: Promise.resolve(), size: 0 };
+        lanes.set(sessionId, lane);
+      }
+      if (lane.size >= MAX_QUEUED_PER_SESSION) return undefined;
+      const current = lane;
+      current.size++;
+      let open!: () => void;
+      const mine = new Promise<void>((resolve) => (open = resolve));
+      const previous = current.tail;
+      // A caller that gives up still lets its successors wait for everything before it.
+      current.tail = previous.then(() => mine);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        open();
+        current.size--;
+        if (current.size === 0 && lanes.get(sessionId) === current) lanes.delete(sessionId);
+      };
+      const aborted = new Promise<false>((resolve) => {
+        if (signal.aborted) resolve(false);
+        else signal.addEventListener('abort', () => resolve(false), { once: true });
+      });
+      if (!(await Promise.race([previous.then(() => true as const), aborted]))) {
+        release();
+        return undefined;
+      }
+      return release;
+    },
+  };
+}
+
+/** Approvals of read-only tools, scoped to one person, one app card and one tool. */
+function createReadOnlyGrants(now: () => number) {
+  const grants = new Map<string, number>();
+  const key = (sessionId: string, appId: string, userId: string | undefined, tool: string) =>
+    JSON.stringify([sessionId, appId, userId ?? null, tool]);
+  return {
+    covers: (...args: Parameters<typeof key>) => (grants.get(key(...args)) ?? 0) > now(),
+    grant(...args: Parameters<typeof key>) {
+      for (const [k, expires] of grants) if (expires <= now()) grants.delete(k);
+      if (grants.size >= MAX_GRANTS) grants.delete(grants.keys().next().value!);
+      grants.set(key(...args), now() + READ_ONLY_GRANT_MS);
+    },
+    revoke: (...args: Parameters<typeof key>) => grants.delete(key(...args)),
+    clear: () => grants.clear(),
+  };
+}
+
 const paramsSchema = z.object({ id: z.string().min(1), appId: z.string().uuid() });
 const callSchema = z
   .object({
@@ -68,14 +139,17 @@ export interface McpAppsRouteDeps {
   settled(sessionId: string, callId: string): Promise<void>;
   rpc?: McpRpc;
   closeSession?: (connection: Parameters<McpRpc>[0], sessionId: string) => Promise<void>;
+  now?: () => number;
 }
 
 export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDeps): void {
   const rpc = deps.rpc ?? mcpRpc;
-  const pending = new Set<string>();
+  const lanes = createCallLanes();
+  const grants = createReadOnlyGrants(deps.now ?? Date.now);
   const tickets = createMcpAppDocumentTickets();
   app.addHook('onClose', (_instance, done) => {
     tickets.clear();
+    grants.clear();
     done();
   });
   // An app runs on the connection of the person using it, not of whoever's turn
@@ -222,10 +296,11 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
       const call = callSchema.parse(request.body);
       const resolved = await resolve(id, appId, request.localUserId ?? undefined);
       if (resolved === undefined) return reply.code(404).send({ error: 'MCP app unavailable' });
-      if (pending.has(id) || pending.size >= 64)
-        return reply.code(409).send({ error: 'An app action is already pending' });
-      pending.add(id);
+      const release = await lanes.acquire(id, AbortSignal.timeout(QUEUE_WAIT_MS));
+      if (release === undefined)
+        return reply.code(409).send({ error: 'Too many app actions are waiting' });
       const signal = AbortSignal.timeout(120_000);
+      const userId = request.localUserId ?? undefined;
       let permissionId: string | undefined;
       try {
         return await withSession(resolved.connection, async (sessionId, version) => {
@@ -238,17 +313,31 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
             uiMetadata(ownerTool ?? {}).resourceUri !== resolved.event.resourceUri
           )
             return reply.code(403).send({ error: 'Tool unavailable to this app' });
-          permissionId = randomUUID();
-          const allowed = await deps.approve({
-            sessionId: id,
-            callId: permissionId,
-            toolName: `mcp_app:${resolved.event.connectionId}:${call.name}`,
-            input: { appId, tool: call.name, arguments: call.arguments },
-            signal,
-          });
-          if (!allowed || signal.aborted)
-            return reply.code(403).send({ error: 'MCP app action denied' });
-          if ((await resolve(id, appId, request.localUserId ?? undefined)) === undefined)
+          const repeatable = readOnly(tool);
+          const granted = repeatable && grants.covers(id, appId, userId, call.name);
+          if (!granted) {
+            permissionId = randomUUID();
+            const allowed = await deps.approve({
+              sessionId: id,
+              callId: permissionId,
+              toolName: `mcp_app:${resolved.event.connectionId}:${call.name}`,
+              input: {
+                appId,
+                tool: call.name,
+                arguments: call.arguments,
+                // Shown on the approval card, so the scope of the answer is visible.
+                ...(repeatable
+                  ? {
+                      approvalCovers: `Further calls of this read-only tool from this app for ${READ_ONLY_GRANT_MS / 60_000} minutes`,
+                    }
+                  : {}),
+              },
+              signal,
+            });
+            if (!allowed || signal.aborted)
+              return reply.code(403).send({ error: 'MCP app action denied' });
+          }
+          if ((await resolve(id, appId, userId)) === undefined)
             return reply.code(404).send({ error: 'MCP app access changed' });
           const currentTools = await listAppTools(rpc, resolved.connection, sessionId, version);
           const currentTool = currentTools.find((candidate) => candidate.name === call.name);
@@ -258,14 +347,20 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
           if (
             currentTool === undefined ||
             !visibleTo(currentTool, 'app') ||
-            uiMetadata(currentOwner ?? {}).resourceUri !== resolved.event.resourceUri
-          )
+            uiMetadata(currentOwner ?? {}).resourceUri !== resolved.event.resourceUri ||
+            (repeatable && !readOnly(currentTool))
+          ) {
+            grants.revoke(id, appId, userId, call.name);
             return reply.code(403).send({ error: 'Tool access changed' });
+          }
           // Approval can outlive the caller's login or project execute grant.
-          if (!(await deps.authorizeRequest(request)))
+          if (!(await deps.authorizeRequest(request))) {
+            grants.revoke(id, appId, userId, call.name);
             return reply.code(403).send({ error: 'MCP app access changed' });
+          }
+          if (repeatable && !granted) grants.grant(id, appId, userId, call.name);
           const { result } = await rpc(resolved.connection, 'tools/call', call, sessionId, version);
-          if ((await resolve(id, appId, request.localUserId ?? undefined)) === undefined)
+          if ((await resolve(id, appId, userId)) === undefined)
             return reply.code(404).send({ error: 'MCP app access changed' });
           if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024)
             throw new Error('MCP app result too large');
@@ -275,7 +370,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
       } catch {
         return reply.code(502).send({ error: 'MCP app action failed' });
       } finally {
-        pending.delete(id);
+        release();
         if (permissionId !== undefined) await deps.settled(id, permissionId);
       }
     },

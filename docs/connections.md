@@ -62,8 +62,13 @@ Native clients display the text fallback.
 
 The first implementation supports inline HTML views and app-to-server tool calls.
 Each action uses the app's original MCP connection, checks current project access
-and tool visibility, and requires a fresh permission decision. App-only tools are
-hidden from the agent. Views cannot call tools on another connection or access
+and tool visibility, and requires a permission decision. When the server declares a
+tool read-only (`annotations.readOnlyHint`), one approval also covers further
+calls of that tool from the same app card by the same person for 30 minutes; the
+approval card says so. Other tools ask every time, and every call still rechecks
+current access. Calls from one session run one at a time: a call made while
+another is pending waits for it (up to eight waiting calls per session) instead
+of failing. App-only tools are hidden from the agent. Views cannot call tools on another connection or access
 Verity credentials, page storage, or the parent document.
 
 Views run in sandboxed iframes. CSP blocks resource loads and fetch connections
