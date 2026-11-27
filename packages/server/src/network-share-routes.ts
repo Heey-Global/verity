@@ -259,17 +259,25 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
     try {
       const target =
         body.data.address === undefined ? undefined : parseNetworkShareAddress(body.data.address);
-      // The stored password is only ever sent to the server it was entered for;
-      // a new server needs it entered again.
-      const movesSavedPassword = (saved: { host: string; port: number | null; share: string }) =>
-        target !== undefined &&
+      // The stored password is only ever sent to the server and account it was
+      // entered for; a new server or account needs it entered again. Trying it
+      // with another account would also count as a failed sign-in on the NAS.
+      const movesSavedPassword = (saved: {
+        host: string;
+        port: number | null;
+        share: string;
+        username: string;
+      }) =>
         body.data.password === undefined &&
-        (target.host !== saved.host.toLowerCase() ||
-          target.port !== saved.port ||
-          target.share.toLowerCase() !== saved.share.toLowerCase());
+        ((target !== undefined &&
+          (target.host !== saved.host.toLowerCase() ||
+            target.port !== saved.port ||
+            target.share.toLowerCase() !== saved.share.toLowerCase())) ||
+          (body.data.username !== undefined &&
+            body.data.username.toLowerCase() !== saved.username.toLowerCase()));
       const passwordRequired = () =>
         reply.code(400).send({
-          error: 'Enter the password again for a new address.',
+          error: 'Enter the password again for a new address or account.',
           code: 'password_required',
         });
       if (movesSavedPassword(existing)) return passwordRequired();

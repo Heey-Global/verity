@@ -351,8 +351,17 @@ describe('network share routes', () => {
       );
     expect((await folders())[0]?.stale).toBe(false);
 
+    // The saved password belongs to the old account; it is never tried with another.
+    const attempts = seen.length;
+    const withoutPassword = await call(app, 'admin', 'PATCH', `/network-shares/${id}`, {
+      username: 'backup',
+    });
+    expect(withoutPassword.json()).toMatchObject({ code: 'password_required' });
+    expect(seen).toHaveLength(attempts);
+    expect((await folders())[0]?.stale).toBe(false);
     const otherAccount = await call(app, 'admin', 'PATCH', `/network-shares/${id}`, {
       username: 'backup',
+      password: 'pw',
     });
     expect(otherAccount.statusCode).toBe(200);
     expect((await folders())[0]?.stale).toBe(true);

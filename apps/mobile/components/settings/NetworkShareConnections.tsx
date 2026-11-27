@@ -222,8 +222,10 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
   let footer: ReactNode = null;
   if (mode?.kind === 'add' || mode?.kind === 'edit') {
     const adding = mode.kind === 'add';
-    // The saved password is never sent to a new server.
+    // The saved password is never sent to a new server or tried with another account.
     const addressChanged = mode.kind === 'edit' && changesAddress(mode.connection, form);
+    const accountChanged = mode.kind === 'edit' && changesAccount(mode.connection, form);
+    const needsPassword = adding || addressChanged || accountChanged;
     title = adding ? 'Add network share' : `Edit ${mode.connection.label}`;
     body = (
       <View style={styles.fields}>
@@ -263,7 +265,9 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
             <Text variant="bodySmall" tone="muted">
               {addressChanged
                 ? 'Enter the password again for the new address.'
-                : 'Leave empty to keep the saved password.'}
+                : accountChanged
+                  ? 'Enter the password of the new account.'
+                  : 'Leave empty to keep the saved password.'}
             </Text>
           )}
         </View>
@@ -284,7 +288,7 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
           !form.label.trim() ||
           !form.address.trim() ||
           !form.username.trim() ||
-          ((adding || addressChanged) && !form.password)
+          (needsPassword && !form.password)
         }
         onPress={requestSave}
       />
@@ -320,7 +324,7 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
           />
         </Group>
         <Text variant="bodySmall" tone="muted">
-          A new address ends project access to this share; folders must be added again.
+          A new address or account ends project access to this share; folders must be added again.
         </Text>
       </View>
     );

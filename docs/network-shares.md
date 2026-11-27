@@ -45,8 +45,8 @@ The password is stored encrypted on the Verity server and is never shown again,
 returned by the API or given to agents. Each share shows whether it is currently
 reachable.
 
-A new address needs the password entered again: the saved password is only
-ever sent to the server it was entered for. Changing a share's address or
+A new address or username needs the password entered again: the saved
+password is only ever sent to the server and account it was entered for. Changing a share's address or
 username ends every project's access to it: folders granted for one server,
 shared folder or NAS account never silently follow it to another, since another
 account may reach different files. The app asks before it saves such a change.

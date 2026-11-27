@@ -116,6 +116,8 @@ describe('changing a share account', () => {
     fireEvent.press(await screen.findByText('Studio NAS'));
     fireEvent.press(await screen.findByText('Edit'));
     fireEvent.changeText(screen.getByLabelText('Username'), 'backup');
+    expect(screen.getByText('Enter the password of the new account.')).toBeTruthy();
+    fireEvent.changeText(screen.getByLabelText('Password'), 'backup-pw');
     fireEvent.press(screen.getByText('Test and save'));
     expect(await screen.findByText('Change the account of Studio NAS?')).toBeTruthy();
     expect(client.networkShares.updateConnection).not.toHaveBeenCalled();
@@ -123,6 +125,7 @@ describe('changing a share account', () => {
     await waitFor(() =>
       expect(client.networkShares.updateConnection).toHaveBeenCalledWith('studio', {
         username: 'backup',
+        password: 'backup-pw',
       }),
     );
   });
