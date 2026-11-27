@@ -86,6 +86,11 @@ describe('branch changes reach the session row', () => {
       branchSvc.current.mockResolvedValue('');
       await o.refreshBranch(s);
       expect(changed).not.toHaveBeenCalled();
+
+      // Back from a detached HEAD: the row showed no branch meanwhile.
+      branchSvc.current.mockResolvedValue('feat/b');
+      await o.refreshBranch(s);
+      expect(changed).toHaveBeenCalledTimes(1);
     } finally {
       await o.app.close();
     }

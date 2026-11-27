@@ -15,18 +15,16 @@ function setup(sessions: SessionRecord[] = [record('s1'), record('s2')]) {
   const refresh = vi.fn<(session: SessionRecord) => Promise<undefined>>(async () => undefined);
   const announce = vi.fn();
   const byId = new Map(sessions.map((s) => [s.sessionId, s]));
+  const store = {
+    getSession: async (id: string): Promise<SessionRecord | undefined> => byId.get(id),
+    getSessionByWorktree: async (worktree: string) => sessions.find((s) => s.worktree === worktree),
+  };
   const changed = installBranchEvents(
     { log: { warn } },
     {
       domainEvents,
       lifecycle: { onClose: (fn: () => void) => closers.push(fn) },
-      deps: {
-        eventStore: {
-          getSession: async (id: string) => byId.get(id),
-          getSessionByWorktree: async (worktree: string) =>
-            sessions.find((s) => s.worktree === worktree),
-        },
-      },
+      deps: { eventStore: store },
     } as unknown as Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle'>,
     refresh,
     announce,
@@ -41,6 +39,7 @@ function setup(sessions: SessionRecord[] = [record('s1'), record('s2')]) {
   );
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   return {
+    store,
     domainEvents,
     refresh,
     announce,
@@ -89,6 +88,21 @@ describe('open session branch checks', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await b.check();
     expect(b.refresh).toHaveBeenCalledTimes(2);
+    b.close();
+  });
+
+  it('reports a store that cannot be read, and keeps checking', async () => {
+    const b = setup();
+    b.watch('session:s1');
+    b.store.getSession = async () => {
+      throw new Error('store down');
+    };
+    await b.check();
+    expect(b.warn).toHaveBeenCalledTimes(1);
+    expect(b.refresh).not.toHaveBeenCalled();
+    b.store.getSession = async () => record('s1');
+    await b.check();
+    expect(b.refresh).toHaveBeenCalledTimes(1);
     b.close();
   });
 

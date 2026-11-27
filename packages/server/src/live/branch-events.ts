@@ -50,9 +50,16 @@ export function installBranchEvents(
       checking.add(sessionId);
       void deps.eventStore
         .getSession(sessionId)
-        .then((session) => (session === undefined || closed ? undefined : refreshBranch(session)))
-        // A sandbox that is asleep or gone declines; the next check asks again.
-        .catch(() => undefined)
+        .then(
+          (session) =>
+            session === undefined || closed
+              ? undefined
+              : // A sandbox that is asleep or gone declines; the next check asks again.
+                refreshBranch(session).catch(() => undefined),
+          (error: unknown) => {
+            app.log.warn({ err: error, sessionId }, 'verity: open session branch not checked');
+          },
+        )
         .finally(() => checking.delete(sessionId));
     }
   };

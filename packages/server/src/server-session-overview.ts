@@ -254,12 +254,23 @@ export function createServerSessionOverview({
    * an invalidation empties: reading the same branch again is no change. */
   const announcedBranch = new Map<string, string>();
   /** Stores a branch git answered and announces it when it differs from the
-   * one announced last. Empty answers (no branch, a failed read) are not. */
+   * one announced last. The first after a start counts: list reads gave no
+   * branch until it. No branch (a detached HEAD) is not announced, but the
+   * branch checked out after it is. */
   const rememberBranch = (worktree: string, branch: string): void => {
     branchCache.set(worktree, { branch, at: Date.now() });
-    if (branch === '' || announcedBranch.get(worktree) === branch) return;
+    if (branch === '') {
+      announcedBranch.delete(worktree);
+      return;
+    }
+    if (announcedBranch.get(worktree) === branch) return;
     announcedBranch.set(worktree, branch);
-    onBranchChange?.(worktree);
+    try {
+      onBranchChange?.(worktree);
+    } catch (err) {
+      // The read succeeded; a failed announcement must not count as its failure.
+      app.log.warn({ err, worktree }, 'branch change not announced');
+    }
   };
   // A fleet-wide list must not launch one Docker exec per retained worktree at once:
   // each lane runs at most two git reads. The list's speculative refreshes get their

@@ -25,6 +25,9 @@ import { getVerityBaseUrl } from '../lib/client';
 import { hasLocalSaveChanges } from '../lib/localSaveVisibility';
 import { useOverviewSelection, useOverviewTopics } from '../lib/overviewTopics';
 
+/** How often one branch a session row names may read the branch lists. */
+const ANNOUNCED_BRANCH_READ_MS = 30_000;
+
 export type BranchPullRequest = NonNullable<BranchList['pullRequest']> & {
   repository?: SessionPullRequestStatus['repository'];
 };
@@ -397,12 +400,14 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
   // The session topic (ADR 0033). Following it tells the server the session is
   // open, so it reads the branch every few seconds and sees a checkout in the
   // terminal; the session row it publishes then names the branch. A row whose
-  // branch differs from the one shown reads the switcher's lists again, once
-  // per branch: rows arrive with every status change, and a label the row
-  // spells differently (a previewed branch) must not read again each time.
+  // branch differs from the one shown reads the switcher's lists again, the
+  // same branch at most every {@link ANNOUNCED_BRANCH_READ_MS}: rows arrive
+  // with every status change, and a label the row spells differently (a
+  // previewed branch) must not read each time, while a read that failed is
+  // still tried again.
   const currentRef = useRef(current);
   currentRef.current = current;
-  const announcedBranch = useRef<string | undefined>(undefined);
+  const announcedBranch = useRef<{ branch: string; at: number } | undefined>(undefined);
   useEffect(() => {
     if (!focused || !appActive || !enabled || baseUrl === null) return undefined;
     announcedBranch.current = undefined;
@@ -411,8 +416,11 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
         if (event.t !== 'session.summary' || event.sessionId !== sessionId) return;
         const branch = event.patch.branch;
         if (typeof branch !== 'string' || branch === '') return;
-        if (branch === currentRef.current || branch === announcedBranch.current) return;
-        announcedBranch.current = branch;
+        if (branch === currentRef.current) return;
+        const last = announcedBranch.current;
+        const now = Date.now();
+        if (last?.branch === branch && now - last.at < ANNOUNCED_BRANCH_READ_MS) return;
+        announcedBranch.current = { branch, at: now };
         void load({ silent: true });
       },
       // Missed rows: read unless a read already runs (the one focus started).

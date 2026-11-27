@@ -90,6 +90,28 @@ describe('useBranches on the session topic', () => {
     unmount();
   });
 
+  // A read that failed leaves the old branch shown; the branch is read again
+  // once its pause passed, or the header would wait for the next focus.
+  it('reads an announced branch again after a pause when the read did not show it', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const getBranches = jest
+      .fn()
+      .mockResolvedValueOnce(list('main'))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue(list('feat/terminal'));
+    const client = { getBranches } as unknown as VerityClient;
+    const { result, unmount } = renderHook(() => useBranches(client, 's1'));
+    await waitFor(() => expect(result.current.current).toBe('main'));
+    const sink = mockSinks.get('session:s1')!;
+    act(() => sink.event(row('feat/terminal', 1)));
+    await waitFor(() => expect(getBranches).toHaveBeenCalledTimes(2));
+    expect(result.current.current).toBe('main');
+    now.mockReturnValue(1_031_000);
+    act(() => sink.event(row('feat/terminal', 2)));
+    await waitFor(() => expect(result.current.current).toBe('feat/terminal'));
+    unmount();
+  });
+
   it('reads again after missed rows', async () => {
     const getBranches = jest.fn().mockResolvedValue(list('main'));
     const client = { getBranches } as unknown as VerityClient;
