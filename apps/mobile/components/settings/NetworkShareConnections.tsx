@@ -122,32 +122,36 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
   const fieldError = (field: Field) =>
     error?.field === field ? { title: 'Could not connect', message: error.message } : undefined;
 
-  const save = async () => {
-    if (!mode || mode.kind === 'menu') return;
+  const save = async (current = mode, values = form) => {
+    if (!current || current.kind === 'menu') return;
     setBusy(true);
     setError(undefined);
     try {
-      if (mode.kind === 'add')
+      if (current.kind === 'add')
         await client.networkShares.addConnection({
-          label: form.label.trim(),
-          address: form.address.trim(),
-          username: form.username.trim(),
-          password: form.password,
+          label: values.label.trim(),
+          address: values.address.trim(),
+          username: values.username.trim(),
+          password: values.password,
         });
       else {
-        const { connection } = mode;
+        const { connection } = current;
         await client.networkShares.updateConnection(connection.id, {
-          ...(form.label.trim() !== connection.label ? { label: form.label.trim() } : {}),
-          ...(form.address.trim() !== connection.address ? { address: form.address.trim() } : {}),
-          ...(form.username.trim() !== connection.username
-            ? { username: form.username.trim() }
+          ...(values.label.trim() !== connection.label ? { label: values.label.trim() } : {}),
+          ...(values.address.trim() !== connection.address
+            ? { address: values.address.trim() }
             : {}),
-          ...(form.password ? { password: form.password } : {}),
+          ...(values.username.trim() !== connection.username
+            ? { username: values.username.trim() }
+            : {}),
+          ...(values.password ? { password: values.password } : {}),
         });
       }
       close();
       await load();
     } catch (cause) {
+      // A save confirmed outside the sheet reopens it with the error.
+      setMode(current);
       const code = cause instanceof VerityApiError ? cause.code : undefined;
       setError({
         ...(code && ERROR_FIELDS[code] ? { field: ERROR_FIELDS[code] } : {}),
@@ -156,6 +160,29 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  /** A new address ends every project's folders on the share; ask first. */
+  const requestSave = () => {
+    if (
+      mode?.kind === 'edit' &&
+      mode.connection.projectCount > 0 &&
+      form.address.trim() !== mode.connection.address
+    ) {
+      const current = mode;
+      const values = form;
+      setMode(undefined);
+      confirm({
+        title: `Change the address of ${current.connection.label}?`,
+        message: `${projects(current.connection.projectCount)}. Those projects lose their folders on this share and need them added again.`,
+        confirmLabel: 'Change address',
+        destructive: true,
+        afterSheet: true,
+        onConfirm: () => save(current, values),
+      });
+      return;
+    }
+    void save();
   };
 
   const disconnect = (connection: NetworkShareConnection) =>
@@ -239,7 +266,7 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
           !form.username.trim() ||
           (adding && !form.password)
         }
-        onPress={() => void save()}
+        onPress={requestSave}
       />
     );
   } else if (mode?.kind === 'menu') {

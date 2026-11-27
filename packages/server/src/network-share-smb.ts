@@ -196,9 +196,12 @@ async function runBatch(
   if (outputs.length < commands.length) {
     // The session ended early: no connection, sign-in or encryption. smbclient
     // reports a server without encryption in words, not as an NT status.
-    if (/doesn't support SMB3 encryption|encryption required/i.test(output))
+    // Only what followed the last completed command explains the end; the
+    // markers before it carry their own not-found status.
+    const ending = current.join('\n');
+    if (/doesn't support SMB3 encryption|encryption required/i.test(ending))
       throw new NetworkShareError('encryption_unavailable');
-    const status = STATUS.exec(output)?.[1];
+    const status = STATUS.exec(ending)?.[1];
     throw status ? errorFor(status) : new NetworkShareError('unreachable');
   }
   return outputs;

@@ -83,6 +83,27 @@ describe('network share settings', () => {
   });
 });
 
+describe('changing a share address', () => {
+  // A new address ends every project's folders on the share; a hostname typo
+  // fix must not do that without asking.
+  it('asks before a new address ends project access', async () => {
+    const client = shareClient();
+    render(<NetworkShareConnections client={client} />);
+    fireEvent.press(await screen.findByText('Studio NAS'));
+    fireEvent.press(await screen.findByText('Edit'));
+    fireEvent.changeText(screen.getByLabelText('Address'), 'smb://nas2.studio.lan/team');
+    fireEvent.press(screen.getByText('Test and save'));
+    expect(await screen.findByText('Change the address of Studio NAS?')).toBeTruthy();
+    expect(client.networkShares.updateConnection).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByText('Change address'));
+    await waitFor(() =>
+      expect(client.networkShares.updateConnection).toHaveBeenCalledWith('studio', {
+        address: 'smb://nas2.studio.lan/team',
+      }),
+    );
+  });
+});
+
 describe('project network share folders', () => {
   it('adds a folder read only unless write access is chosen', async () => {
     const client = shareClient({ listProjectFolders: jest.fn().mockResolvedValue([]) });
