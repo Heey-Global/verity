@@ -22,6 +22,7 @@ function projectRecord(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
     latestReleaseName: null,
     latestReleaseUrl: null,
     latestReleasePublishedAt: null,
+    hiddenAt: null,
     ...overrides,
   } as ProjectRecord;
 }
@@ -92,12 +93,19 @@ function setup() {
   const published: DomainRecord[] = [];
   const watchedRecords: DomainRecord[] = [];
   domainEvents.subscribe('project:p1', undefined, (record) => published.push(record));
+  const listing: DomainRecord[] = [];
+  domainEvents.subscribe('collection:projects', undefined, (record) => listing.push(record));
   const write = (overrides: Partial<ProjectRecord>) => {
     rows.set('p1', { ...rows.get('p1')!, ...overrides });
     projectChanges.announce('p1');
   };
   const events = () => published.map((record) => record.event);
   return {
+    listing: () => listing.map((record) => record.event),
+    remove: () => {
+      rows.delete('p1');
+      projectChanges.announce('p1');
+    },
     write,
     events,
     statusCalls,
@@ -160,6 +168,77 @@ describe('installProjectEvents', () => {
     await vi.waitFor(() => expect(w.events()).toHaveLength(2));
     w.write({ state: 'failed', provisionError: 'container stopped' });
     await vi.waitFor(() => expect(w.events()).toHaveLength(3));
+  });
+
+  // Home lists a project created, restored or hidden on another device only
+  // through these; without them it waits for its next full read.
+  it('announces a project entering and leaving the overview on the collection', async () => {
+    const w = setup();
+    w.write({});
+    await vi.waitFor(() =>
+      expect(w.listing()).toEqual([
+        expect.objectContaining({ t: 'project.listed', projectId: 'p1' }),
+      ]),
+    );
+    // Unchanged visibility announces nothing more.
+    w.write({ name: 'Renamed' });
+    await vi.waitFor(() => expect(w.events().at(-1)).toMatchObject({ patch: { name: 'Renamed' } }));
+    expect(w.listing()).toHaveLength(1);
+    w.write({ hiddenAt: new Date('2026-11-27T10:00:00Z') });
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual(
+        expect.objectContaining({ t: 'project.unlisted', projectId: 'p1' }),
+      ),
+    );
+    expect(w.listing().at(-1)).not.toHaveProperty('gone');
+    w.write({ hiddenAt: null });
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual(expect.objectContaining({ t: 'project.listed' })),
+    );
+    w.remove();
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual(
+        expect.objectContaining({ t: 'project.unlisted', projectId: 'p1', gone: true }),
+      ),
+    );
+  });
+
+  // A repository the installation sync adds stays `absent` and off the
+  // overview until someone adds it; announcing it would list the whole
+  // installation on every device.
+  it('does not list a synced repository nobody added', async () => {
+    const w = setup();
+    w.write({ state: 'absent' });
+    await vi.waitFor(() => expect(w.events().length).toBeGreaterThan(0));
+    // Never on a view, so nothing to leave.
+    expect(w.listing()).toEqual([]);
+    w.write({ overviewVisible: true });
+    await vi.waitFor(() =>
+      expect(w.listing().at(-1)).toEqual(expect.objectContaining({ t: 'project.listed' })),
+    );
+  });
+
+  // The overview adds the control plane by a setting of its own; an
+  // `unlisted` for it would take it off Home after every server restart.
+  it('announces nothing for a project first seen off the overview', async () => {
+    const w = setup();
+    w.write({ kind: 'control_plane', state: 'active' });
+    await vi.waitFor(() => expect(w.events().length).toBeGreaterThan(0));
+    w.write({ name: 'Renamed' });
+    await vi.waitFor(() => expect(w.events().at(-1)).toMatchObject({ patch: { name: 'Renamed' } }));
+    expect(w.listing()).toEqual([]);
+  });
+
+  // After a restart nothing is remembered; hiding a project nobody touched
+  // since must still take it off every other device's Home.
+  it('announces the first hide of a project seen for the first time', async () => {
+    const w = setup();
+    w.write({ state: 'active', hiddenAt: new Date('2026-11-27T10:00:00Z') });
+    await vi.waitFor(() =>
+      expect(w.listing()).toEqual([
+        expect.objectContaining({ t: 'project.unlisted', projectId: 'p1' }),
+      ]),
+    );
   });
 
   it('publishes renames and setup status as project changes', async () => {
@@ -553,6 +632,32 @@ describe('project state writers', () => {
         ) {
           continue;
         }
+        writers += 1;
+        if (!/\b(?:changes|projectChanges)\??\.announce\(/u.test(method.body)) {
+          silent.push(`${file} ${method.name}`);
+        }
+      }
+    }
+    expect(writers).toBeGreaterThan(1);
+    expect(silent).toEqual([]);
+  });
+
+  // The overview drops a hidden or deleted project only through the change
+  // feed; a silent writer would leave it on every other device's Home.
+  it('announces every store method that hides or deletes a project', () => {
+    const silent: string[] = [];
+    let writers = 0;
+    for (const { file, text } of sources) {
+      for (const method of methodsOf(text)) {
+        const hides =
+          /updateTable\('projects'\)\s*\.set\(\{(?:(?!\}\))[\s\S])*?\bhidden_at\s*:\s*sql`now\(\)`/u.test(
+            method.body,
+          );
+        const deletes = /deleteFrom\('projects'\)/u.test(method.body);
+        if (!hides && !deletes) continue;
+        // Deletes only the installation sync's placeholder, which is `absent`
+        // and never on the overview: there is nothing for a view to drop.
+        if (method.name === 'retireInstallationPlaceholder') continue;
         writers += 1;
         if (!/\b(?:changes|projectChanges)\??\.announce\(/u.test(method.body)) {
           silent.push(`${file} ${method.name}`);

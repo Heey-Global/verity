@@ -54,6 +54,7 @@ import {
   isUniqueViolation,
   isControlPlaneProject,
   projectHasReleases,
+  appearsInProjectOverview,
   recordReleaseSummary,
   releaseDiffers,
   projectWithRelease,
@@ -329,9 +330,6 @@ export function installProjects(
       ...withoutControl,
     ];
   };
-
-  const appearsInProjectOverview = (project: ProjectRecord): boolean =>
-    project.state !== 'absent' || project.overviewVisible === true;
 
   registerProjectGitHubIssueRoutes(app, {
     store: deps.eventStore,
