@@ -197,7 +197,14 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
       destructive: true,
       afterSheet: true,
       onConfirm: async () => {
-        await client.networkShares.removeConnection(connection.id);
+        try {
+          await client.networkShares.removeConnection(connection.id);
+        } catch (cause) {
+          setLoadError(cause instanceof Error ? cause.message : 'Could not disconnect the share.');
+          // Keeps the confirmation open for another try.
+          throw cause;
+        }
+        setLoadError(undefined);
         await load();
       },
     });

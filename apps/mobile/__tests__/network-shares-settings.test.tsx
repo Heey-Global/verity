@@ -107,6 +107,22 @@ describe('changing a share address', () => {
   });
 });
 
+describe('disconnecting a share', () => {
+  // The confirmation stays open on failure and leaves the reporting to the
+  // screen; without it a refused disconnect looks like nothing happened.
+  it('says why a disconnect failed', async () => {
+    const client = shareClient({
+      removeConnection: jest.fn().mockRejectedValue(new Error('The server is not reachable.')),
+    });
+    render(<NetworkShareConnections client={client} />);
+    fireEvent.press(await screen.findByText('Studio NAS'));
+    fireEvent.press(await screen.findByText('Disconnect share'));
+    expect(await screen.findByText('Disconnect Studio NAS?')).toBeTruthy();
+    fireEvent.press(screen.getByText('Disconnect'));
+    expect(await screen.findByText('The server is not reachable.')).toBeTruthy();
+  });
+});
+
 describe('project network share folders', () => {
   it('adds a folder read only unless write access is chosen', async () => {
     const client = shareClient({ listProjectFolders: jest.fn().mockResolvedValue([]) });
