@@ -115,7 +115,7 @@ export function createContainerLiveness(options: {
     entry.done = track(
       (async () => {
         let held = row;
-        let ok = true;
+        let ok: boolean;
         try {
           do {
             entry.again = false;

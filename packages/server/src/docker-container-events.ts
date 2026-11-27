@@ -124,6 +124,9 @@ export function createContainerEventSource(options: {
             openedAt = undefined;
             handlers.onDisconnected(error);
           }
+          // A request answered after the stop returns without an error; its
+          // delay would hold the server's close for up to half a minute.
+          if (controller.signal.aborted) return;
           await new Promise<void>((resolve) => {
             wake = resolve;
             timer = setTimeout(resolve, delay);

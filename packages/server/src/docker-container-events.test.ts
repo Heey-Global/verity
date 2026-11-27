@@ -125,8 +125,11 @@ describe('createContainerEventSource', () => {
       onDisconnected: () => undefined,
     });
     await vi.waitFor(() => expect(respond).toBeDefined());
+    const began = Date.now();
     const stopping = stop();
     respond();
     await stopping;
+    // Well below the one-second reconnect delay it must not wait out.
+    expect(Date.now() - began).toBeLessThan(500);
   });
 });
