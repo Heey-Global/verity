@@ -60,11 +60,12 @@ function setup() {
   const domainEvents = new DomainEventBus();
   const closers: (() => unknown)[] = [];
   const ticks: (() => void)[] = [];
+  const getProject = vi.fn(async (id: string) => rows.get(id));
   const failures = new Map<string, { at: number; message: string }>();
   const turnBlocked = new Set<string>();
   const ctx = {
     deps: {
-      eventStore: { projectChanges, getProject: async (id: string) => rows.get(id) },
+      eventStore: { projectChanges, getProject },
       sandboxUpdates,
       provisioner: {
         sandboxRepairLastFailures: () => failures,
@@ -99,6 +100,7 @@ function setup() {
     setIdentity: (next: string | Error | undefined) => (identity = next),
     failures,
     turnBlocked,
+    getProject,
     tick: () => ticks.forEach((tick) => tick()),
     /** Everything but the update state, which these tests do not look at. */
     others: () => published.map((record) => record.event).filter((e) => e.t !== 'sandbox.update'),
@@ -265,8 +267,6 @@ describe('installProjectEvents', () => {
     for (const observer of w.observers) observer('p1', status('available'));
     // A failed registry read says nothing about the update.
     for (const observer of w.observers) observer('p1', status('unknown'));
-    await vi.waitFor(() => expect(w.updates()).toHaveLength(2));
-    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(w.updates()).toEqual([
       expect.objectContaining({ available: false }),
       expect.objectContaining({ available: true, update: { state: 'available' } }),
@@ -277,6 +277,31 @@ describe('installProjectEvents', () => {
     await vi.waitFor(() =>
       expect(w.updates().at(-1)).toEqual(expect.objectContaining({ available: false })),
     );
+  });
+
+  // A checker sweep reports every project; reading each from the store would
+  // put a fleet-wide read behind every reconciler tick.
+  it('judges a reported status with the record it already holds', async () => {
+    const w = setup();
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(1));
+    const reads = w.getProject.mock.calls.length;
+    for (const observer of w.observers) observer('p1', status('available'));
+    expect(w.updates()).toHaveLength(2);
+    expect(w.getProject).toHaveBeenCalledTimes(reads);
+  });
+
+  // `unknown` is what the checker reports for a failed sandbox; ignored, the
+  // event would never show what the routes show for it: an update that is
+  // not repairing itself.
+  it('reports a failed sandbox the checker cannot judge as the routes do', async () => {
+    const w = setup();
+    w.write({ state: 'failed' });
+    await vi.waitFor(() => expect(w.events().length).toBeGreaterThan(0));
+    for (const observer of w.observers) observer('p1', status('unknown'));
+    expect(w.updates()).toEqual([
+      expect.objectContaining({ available: false, update: { state: 'unknown' } }),
+    ]);
   });
 
   // The provisioner changes these without any store write, and a blocked

@@ -85,6 +85,9 @@ describe('projectEventUpdate', () => {
       update: sandboxUpdate,
     })!;
     expect(applied.patch(project)).toEqual({ ...project, sandboxUpdate });
+    // Carried whole, it needs no read; a read per event would cost more than
+    // the availability hint it replaces.
+    expect(applied.reload).toBe(false);
     const unreadable = projectEventUpdate({
       t: 'sandbox.update',
       projectId: 'p1',

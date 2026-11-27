@@ -68,14 +68,14 @@ export function projectEventUpdate(event: DomainEvent): ProjectEventUpdate | und
     case 'sandbox.update': {
       // An older server sends only availability; a state this app cannot read
       // is left to the read.
-      const update = sandboxUpdateSchema.safeParse(event.update);
+      const parsed =
+        event.update === undefined ? undefined : sandboxUpdateSchema.safeParse(event.update);
+      const sandboxUpdate = parsed?.success === true ? parsed.data : undefined;
       return {
         projectId: event.projectId,
-        patch: (project) =>
-          event.update !== undefined && update.success && update.data !== undefined
-            ? { ...project, sandboxUpdate: update.data }
-            : project,
-        reload: true,
+        patch: (project) => (sandboxUpdate === undefined ? project : { ...project, sandboxUpdate }),
+        // The whole state needs no read; only availability does.
+        reload: sandboxUpdate === undefined,
       };
     }
     case 'project.changed': {

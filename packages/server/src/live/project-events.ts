@@ -87,11 +87,14 @@ export function installProjectEvents(
   };
 
   /** Publish the project's update state if it differs from the last one. */
-  const publishUpdate = (projectId: string): void => {
+  const publishUpdate = (
+    projectId: string,
+    verdicts = updateView.sandboxRepairVerdicts(),
+  ): void => {
     const status = lastStatus.get(projectId);
     const project = lastProject.get(projectId);
     if (status === undefined || project === undefined) return;
-    const update = updateView.withSelfRepair(project, status, updateView.sandboxRepairVerdicts());
+    const update = updateView.withSelfRepair(project, status, verdicts);
     const fingerprint = JSON.stringify(update);
     if (publishedUpdate.get(projectId) === fingerprint) return;
     bounded(publishedUpdate, projectId, fingerprint);
@@ -202,21 +205,29 @@ export function installProjectEvents(
   }
 
   const stopObserving = updates?.observe?.((projectId, status) => {
+    const project = lastProject.get(projectId);
     // `unknown` (a stopped sandbox, a failed inspect or registry read) says
-    // nothing about the update; publishing it would make every viewer read
-    // again whenever the registry stumbles.
-    if (status.state === 'unknown') return;
+    // nothing about the update, so the last known status stands rather than
+    // every viewer's banner changing whenever the registry stumbles. A failed
+    // sandbox is the exception: `unknown` is its status, and the routes report
+    // it as an update that is not repairing itself.
+    if (status.state === 'unknown' && project?.state !== 'failed') return;
     bounded(lastStatus, projectId, status);
-    // Through the project's check, so that it is seen with its current record
-    // and in order with its other events.
-    announce(projectId);
+    // A project seen before is judged with the record its last check read; a
+    // checker sweep over the whole fleet then costs no store read. One not
+    // seen yet is read first, in order with its other events.
+    if (project === undefined) announce(projectId);
+    else publishUpdate(projectId);
   });
   if (stopObserving !== undefined) lifecycle.onClose(stopObserving);
   if (updates !== undefined) {
     lifecycle.every(
       UPDATE_RECHECK_INTERVAL_MS,
       () => {
-        for (const projectId of domainEvents.watched('project')) publishUpdate(projectId);
+        const verdicts = updateView.sandboxRepairVerdicts();
+        for (const projectId of domainEvents.watched('project')) {
+          publishUpdate(projectId, verdicts);
+        }
       },
       { startWhenReady: true },
     );
