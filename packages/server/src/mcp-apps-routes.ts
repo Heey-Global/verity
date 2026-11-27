@@ -34,14 +34,17 @@ const readOnly = (tool: Record<string, unknown>) => object(tool.annotations).rea
 function createCallLanes() {
   const lanes = new Map<string, { tail: Promise<void>; size: number }>();
   return {
-    async acquire(sessionId: string, signal: AbortSignal): Promise<(() => void) | undefined> {
+    async acquire(
+      sessionId: string,
+      signal: AbortSignal,
+    ): Promise<(() => void) | 'full' | 'gave_up'> {
       let lane = lanes.get(sessionId);
       if (lane === undefined) {
-        if (lanes.size >= MAX_ACTIVE_SESSIONS) return undefined;
+        if (lanes.size >= MAX_ACTIVE_SESSIONS) return 'full';
         lane = { tail: Promise.resolve(), size: 0 };
         lanes.set(sessionId, lane);
       }
-      if (lane.size >= MAX_QUEUED_PER_SESSION) return undefined;
+      if (lane.size >= MAX_QUEUED_PER_SESSION) return 'full';
       const current = lane;
       current.size++;
       let open!: () => void;
@@ -67,7 +70,7 @@ function createCallLanes() {
       signal.removeEventListener('abort', onAbort!);
       if (!ready) {
         release();
-        return undefined;
+        return 'gave_up';
       }
       return release;
     },
@@ -309,8 +312,10 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
         id,
         AbortSignal.any([AbortSignal.timeout(QUEUE_WAIT_MS), gone.signal]),
       );
-      if (release === undefined)
+      if (release === 'full')
         return reply.code(409).send({ error: 'Too many app actions are waiting' });
+      if (release === 'gave_up')
+        return reply.code(409).send({ error: 'Earlier app actions did not finish in time' });
       const signal = AbortSignal.any([AbortSignal.timeout(120_000), gone.signal]);
       const userId = request.localUserId ?? undefined;
       let permissionId: string | undefined;
@@ -350,8 +355,10 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
             if (!allowed || signal.aborted)
               return reply.code(403).send({ error: 'MCP app action denied' });
           }
-          if ((await resolve(id, appId, userId)) === undefined)
+          if ((await resolve(id, appId, userId)) === undefined) {
+            grants.revoke(id, appId, userId, call.name);
             return reply.code(404).send({ error: 'MCP app access changed' });
+          }
           const currentTools = await listAppTools(rpc, resolved.connection, sessionId, version);
           const currentTool = currentTools.find((candidate) => candidate.name === call.name);
           const currentOwner = currentTools.find(
@@ -374,8 +381,10 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
           if (repeatable && !granted) grants.grant(id, appId, userId, call.name);
           if (gone.signal.aborted) return reply.code(409).send({ error: 'Caller went away' });
           const { result } = await rpc(resolved.connection, 'tools/call', call, sessionId, version);
-          if ((await resolve(id, appId, userId)) === undefined)
+          if ((await resolve(id, appId, userId)) === undefined) {
+            grants.revoke(id, appId, userId, call.name);
             return reply.code(404).send({ error: 'MCP app access changed' });
+          }
           if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024)
             throw new Error('MCP app result too large');
           await deps.emit(id, { ...resolved.event, result });

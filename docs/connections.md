@@ -70,7 +70,8 @@ from the MCP server itself, like the app and the tool. Other tools, and callers
 without a known user, ask every time, and every call still rechecks current
 access. Calls from one session run one at a time: a call made while another is
 pending waits for it instead of failing, with at most eight calls per session
-including the running one. A waiting call is dropped when its caller disconnects.
+including the running one. A call gives up after waiting two minutes, and is
+dropped when its caller disconnects.
 App-only tools are hidden from the agent. Views cannot call tools on another
 connection or access Verity credentials, page storage, or the parent document.
 
