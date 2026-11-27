@@ -511,7 +511,7 @@ export class EventStore implements EventSink {
     this.sessionLinks = new SessionLinkStore(db);
     this.capacityLeases = new CapacityLeaseStore(db);
     this.userContext = new UserContextStore(db);
-    this.userProfiles = new UserProfileStore(db);
+    this.userProfiles = new UserProfileStore(() => db);
     this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
@@ -2104,8 +2104,10 @@ export class EventStore implements EventSink {
   }
 
   /** The names people chose to be shown under in shared projects (ADR 0023). */
+  private readonly currentUserProfiles = new UserProfileStore(() => this.db);
+
   async userDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
-    return new UserProfileStore(this.db).nonBlankDisplayNames(userIds);
+    return this.currentUserProfiles.nonBlankDisplayNames(userIds);
   }
 
   /** Active users holding a project permission — the notification audience
