@@ -113,6 +113,10 @@ folder that is granted to any project or contains one, nor can something be
 created, moved or renamed onto such a path, also when the granted folder is
 missing on the share at the moment: folder grants are paths, and the change would
 otherwise leave a project without its folder or point the grant at other files.
+This covers grants made through any connection with the same address, port
+and shared folder. Verity cannot tell that two different addresses, such as an
+IP address and a host name, reach the same NAS, so connect each shared folder
+only once.
 
 If the NAS refuses the saved sign-in details, agents leave the share alone for
 five minutes instead of retrying, so a changed NAS password does not lock out
