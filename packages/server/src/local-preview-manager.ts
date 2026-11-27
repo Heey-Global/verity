@@ -500,6 +500,25 @@ export class LocalPreviewManager {
       )
       .map(([promise]) => promise);
   }
+  /**
+   * Fences preview creation for one session while storage collection works on
+   * its worktree, and refuses while that session has a preview. Previews of the
+   * project's other sessions neither block nor are blocked, unlike
+   * {@link withProjectStorageMutation}.
+   */
+  async withSessionStorageMutation<T>(sessionId: string, mutation: () => Promise<T>): Promise<T> {
+    if (this.blockedSessions.has(sessionId))
+      throw new PreviewShareConflictError('Session preview is already changing');
+    this.blockedSessions.add(sessionId);
+    try {
+      await Promise.allSettled(this.pendingCreations({ sessionId }));
+      if (this.list(sessionId).length > 0)
+        throw new PreviewShareConflictError('Session has an active preview');
+      return await mutation();
+    } finally {
+      this.blockedSessions.delete(sessionId);
+    }
+  }
   async stopSession(sessionId: string): Promise<void> {
     this.blockedSessions.add(sessionId);
     try {

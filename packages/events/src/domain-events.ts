@@ -35,6 +35,8 @@ export function domainTopic(kind: DomainTopicKind, id: string): DomainTopic {
  * The projects the overview lists. It announces a project entering or leaving
  * that list — created, restored, hidden, deleted — as `project.listed` and
  * `project.unlisted`; each subscriber receives only the projects it may read.
+ * One that carries `userId` concerns that person alone: they joined the
+ * project, or were removed from it.
  */
 export const PROJECTS_COLLECTION_TOPIC: DomainTopic = 'collection:projects';
 
@@ -106,13 +108,14 @@ export const domainEventSchema = z.discriminatedUnion('t', [
   z.object({ t: z.literal('pr.status'), sessionId: id, rev, pr: patch.nullable() }),
   z.object({ t: z.literal('project.changed'), projectId: id, rev, patch }),
   /** The project entered the overview: views read it and list it. */
-  z.object({ t: z.literal('project.listed'), projectId: id, rev }),
+  z.object({ t: z.literal('project.listed'), projectId: id, rev, userId: id.optional() }),
   /** The project left the overview. `gone` marks one that no longer exists.
    * Delivered to the subscribers that held the project. */
   z.object({
     t: z.literal('project.unlisted'),
     projectId: id,
     rev,
+    userId: id.optional(),
     gone: z.boolean().optional(),
   }),
   z.object({

@@ -764,11 +764,6 @@ export class EventStore implements EventSink {
   private get projectAccess(): ProjectAccessStore {
     return new ProjectAccessStore(this.db);
   }
-
-  get projectTeam(): ProjectTeamStore {
-    return new ProjectTeamStore(this.db, this.cipher);
-  }
-
   get projectSandboxes(): ProjectSandboxStore {
     return new ProjectSandboxStore(this.db);
   }
@@ -818,6 +813,11 @@ export class EventStore implements EventSink {
   );
   private readonly eventSnapshots = new EventSnapshotStore(() => this.db);
   private readonly starterProjects = new StarterProjectStore(() => this.db);
+  readonly projectTeam = new ProjectTeamStore(
+    () => this.db,
+    () => this.cipher,
+    () => this.projectChanges,
+  );
   private readonly projectLifecycle = new ProjectLifecycleStore(
     () => this.db,
     (id) => this.getProject(id),

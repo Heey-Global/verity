@@ -25205,13 +25205,14 @@ var domainEventSchema = import_zod9.z.discriminatedUnion("t", [
   import_zod9.z.object({ t: import_zod9.z.literal("pr.status"), sessionId: id2, rev, pr: patch.nullable() }),
   import_zod9.z.object({ t: import_zod9.z.literal("project.changed"), projectId: id2, rev, patch }),
   /** The project entered the overview: views read it and list it. */
-  import_zod9.z.object({ t: import_zod9.z.literal("project.listed"), projectId: id2, rev }),
+  import_zod9.z.object({ t: import_zod9.z.literal("project.listed"), projectId: id2, rev, userId: id2.optional() }),
   /** The project left the overview. `gone` marks one that no longer exists.
    * Delivered to the subscribers that held the project. */
   import_zod9.z.object({
     t: import_zod9.z.literal("project.unlisted"),
     projectId: id2,
     rev,
+    userId: id2.optional(),
     gone: import_zod9.z.boolean().optional()
   }),
   import_zod9.z.object({

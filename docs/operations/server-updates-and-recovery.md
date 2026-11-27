@@ -20,6 +20,7 @@ it does not resolve itself, or when the host was set up by hand.
 - [Network protection preparation](#network-protection-preparation)
 - [When an update fails](#when-an-update-fails)
 - [When the Updater is crash-looping](#when-the-updater-is-crash-looping)
+- [When the database stopped after a crash](#when-the-database-stopped-after-a-crash)
 - [The control-plane generation](#the-control-plane-generation)
 
 ## Network protection preparation
@@ -317,6 +318,39 @@ If the Updater still exits after the container is gone, the refusal is not about
 the container: read its log again. An authority that cannot be read, a deployment
 ID that does not match the seal, or two containers on one name are separate
 faults, and each says so by name.
+
+## When the database stopped after a crash
+
+PostgreSQL can stop with an error such as `No space left on device` when the
+host disk fills up. Docker restarts it once under its restart policy, but stops
+trying when that restart fails as well, and the Server then logs
+`control-plane database not reachable yet (… ENOTFOUND postgres)` and restarts
+in a loop.
+
+The Updater checks the deployment's PostgreSQL once a minute and starts it again
+only when all of these hold:
+
+- no PostgreSQL of the deployment is running;
+- exactly one stopped one is on the deployment's network, and it is not a
+  predecessor that an image replacement keeps as `<name>-predecessor-<id>`;
+- it exited on its own with a code from 1 to 127. A deliberate `docker stop`
+  exits with 0, and one that runs out of time kills it with a signal (137), as
+  does the out-of-memory killer; those are left alone;
+- it has been down for at least a minute;
+- at least 2 GiB are free for its data volume. The Updater can verify this only
+  when that volume is a named volume in the same Docker volume directory as the
+  deployment volume it mounts; otherwise it reports `unverified-space` and
+  starts nothing.
+
+The check runs in the Updater's exclusive queue, so it never overlaps an update.
+Each change of its finding is logged as `[self-update] control-plane PostgreSQL:
+<outcome>`; `insufficient-space` means space must be freed first, and
+`unverified-space` that PostgreSQL has to be started by hand
+(`docker start <postgres container>`) once space is available.
+
+PostgreSQL recovers from such a stop on its own when it starts, replaying its
+write-ahead log; the writes that failed when the disk was full are lost, and
+earlier data is kept.
 
 ## The control-plane generation
 

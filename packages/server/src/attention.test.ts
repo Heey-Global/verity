@@ -5,6 +5,7 @@ import {
   sessionAttentionSignals,
   SANDBOX_DISCONNECTED_MESSAGE,
   SIGN_IN_REJECTED_STALL_MS,
+  STORAGE_LOW_BYTES,
   UPDATER_STALL_MS,
   USAGE_PROBE_STALL_MS,
   type AttentionInputs,
@@ -128,6 +129,41 @@ describe('attentionSignals', () => {
       now: NOW,
     });
     expect(signals.map((signal) => signal.code)).toEqual(['secret_sealed', 'updater_unhealthy']);
+  });
+
+  // Observed: the data volume filled for two weeks with nothing on screen, until
+  // the database stopped with "No space left on device" and the Server with it.
+  it('warns about a nearly full disk ahead of the Updater, after a sealed store', () => {
+    const GiB = 1024 ** 3;
+    const at = (freeBytes: number) =>
+      attentionSignals({
+        secretStatus: 'sealed',
+        updater: { kind: 'unreachable' },
+        storage: { freeBytes, totalBytes: 465 * GiB },
+        now: NOW,
+      });
+    const low = at(22 * GiB);
+    expect(low.map((signal) => signal.code)).toEqual([
+      'secret_sealed',
+      'storage_low',
+      'updater_unhealthy',
+    ]);
+    expect(low[1]?.message).toBe(
+      'Disk almost full — 22 GB free of 465 GB; sandbox builds and the database fail when it runs out',
+    );
+    expect(at(STORAGE_LOW_BYTES).map((signal) => signal.code)).not.toContain('storage_low');
+    expect(at(STORAGE_LOW_BYTES - 1).map((signal) => signal.code)).toContain('storage_low');
+  });
+
+  it('says nothing about disk space it could not measure', () => {
+    for (const storage of [
+      undefined,
+      { freeBytes: Number.NaN, totalBytes: 1 },
+      { freeBytes: 0, totalBytes: 0 },
+    ])
+      expect(
+        attentionSignals({ secretStatus: 'unlocked', updater: healthy, storage, now: NOW }),
+      ).toEqual([]);
   });
 
   it('flags a Codex quota probe that has been failing long enough to matter', () => {
