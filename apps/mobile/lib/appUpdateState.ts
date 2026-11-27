@@ -46,10 +46,26 @@ export function createAppUpdateState(
       // including a synchronous subscriber that requests another check.
       pending = Promise.resolve()
         .then(() => download((phase) => publish({ ...state, phase })))
-        .then((result) => {
-          record(result);
-          return result;
-        })
+        .then(
+          (result) => {
+            record(result);
+            return result;
+          },
+          // The download reports its own failures; anything that still throws
+          // would otherwise leave the phase on Checking/Downloading for good.
+          (error: unknown): SerialUpdateResult => {
+            const phase = state.phase === 'download' ? 'download' : 'check';
+            const reason = error instanceof Error ? error.message : 'Unknown error';
+            const failure = {
+              status: 'failed',
+              phase,
+              timedOut: false,
+              message: `Update ${phase} failed.\n\n${reason || 'Unknown error'}\n\nTry again later.`,
+            } as const;
+            record(failure);
+            return failure;
+          },
+        )
         .finally(() => {
           pending = undefined;
         });

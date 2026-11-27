@@ -52,3 +52,15 @@ it('retains a failed check during retry, clears it on success and retains a read
   await state.check();
   expect(state.getSnapshot().downloaded).toBe(true);
 });
+
+it('reports an unexpected download error instead of staying in progress', async () => {
+  const state = createAppUpdateState((onPhase) => {
+    onPhase('download');
+    return Promise.reject(new Error('native module gone'));
+  });
+  await expect(state.check()).resolves.toMatchObject({ status: 'failed', phase: 'download' });
+  expect(state.getSnapshot()).toMatchObject({
+    phase: 'idle',
+    failure: { status: 'failed', message: expect.stringContaining('native module gone') },
+  });
+});
