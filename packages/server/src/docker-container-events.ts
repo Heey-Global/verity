@@ -19,6 +19,10 @@ const ACTIONS = [
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+/** A stream must stay open this long before the reconnect delay starts over:
+ * one that a proxy cuts right after opening would otherwise be reopened, and
+ * the whole fleet compared, every second. */
+const STABLE_MS = 60_000;
 
 export interface ContainerEventHandlers {
   /** A project's sandbox container changed. */
@@ -44,7 +48,7 @@ export function createContainerEventSource(options: {
   baseUrl: string;
   fetch?: HttpFetch;
   /** Delays between reconnects, for tests. */
-  reconnectMs?: { min: number; max: number };
+  reconnectMs?: { min: number; max: number; stable?: number };
 }): ContainerEventSource {
   // Built on first use: a client that is never followed opens nothing.
   let transport: HttpFetch | undefined;
@@ -65,6 +69,7 @@ export function createContainerEventSource(options: {
   const url = `${base}/events?${new URLSearchParams({ filters }).toString()}`;
   const minMs = options.reconnectMs?.min ?? RECONNECT_MIN_MS;
   const maxMs = options.reconnectMs?.max ?? RECONNECT_MAX_MS;
+  const stableMs = options.reconnectMs?.stable ?? STABLE_MS;
 
   return {
     followContainerEvents(handlers) {
@@ -72,6 +77,7 @@ export function createContainerEventSource(options: {
       let delay = minMs;
       let timer: ReturnType<typeof setTimeout> | undefined;
       let wake: (() => void) | undefined;
+      let openedAt: number | undefined;
 
       const readOnce = async (): Promise<void> => {
         const res = await doFetch(url, { method: 'GET', signal: controller.signal, stream: true });
@@ -79,8 +85,8 @@ export function createContainerEventSource(options: {
           await res.body?.cancel().catch(() => undefined);
           throw new Error(`docker events responded ${String(res.status)}`);
         }
+        openedAt = Date.now();
         handlers.onConnected();
-        delay = minMs;
         const reader = res.body.getReader();
         // Not every transport ties the body to the request's signal; without
         // this, stopping would wait for an event that may never come.
@@ -108,6 +114,8 @@ export function createContainerEventSource(options: {
             await readOnce();
           } catch (error) {
             if (controller.signal.aborted) return;
+            if (openedAt !== undefined && Date.now() - openedAt >= stableMs) delay = minMs;
+            openedAt = undefined;
             handlers.onDisconnected(error);
           }
           await new Promise<void>((resolve) => {

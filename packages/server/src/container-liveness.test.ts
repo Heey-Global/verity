@@ -45,10 +45,11 @@ function setup(rows: ProjectRecord[], options: { stream?: boolean } = {}) {
     return next;
   });
   const getProject = vi.fn(async (id: string) => projects.get(id));
+  const listProjects = vi.fn(async () => [...projects.values()]);
   const liveness = createContainerLiveness({
     eventStore: {
       getProject,
-      listProjects: async () => [...projects.values()],
+      listProjects,
       updateProjectState,
     },
     docker,
@@ -61,6 +62,7 @@ function setup(rows: ProjectRecord[], options: { stream?: boolean } = {}) {
     inspectContainer,
     updateProjectState,
     getProject,
+    listProjects,
     stopStream,
     handlers: () => handlers!,
     stopContainer: (projectId: string) => running.set(`dev-${projectId}`, false),
@@ -196,6 +198,32 @@ describe('createContainerLiveness', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(l.getProject).not.toHaveBeenCalled();
     expect(l.inspectContainer).not.toHaveBeenCalled();
+  });
+
+  // Trusting rows whose catch-up failed would leave a sandbox that died while
+  // the stream was down unnoticed until the next full comparison.
+  it('lets reads rely on the rows only after a catch-up that succeeded', async () => {
+    vi.useFakeTimers();
+    const l = setup([project('p1')]);
+    l.listProjects.mockRejectedValueOnce(new Error('store busy'));
+    const stop = l.liveness.start();
+    l.handlers().onConnected();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(l.liveness.following()).toBe(false);
+    await vi.advanceTimersByTimeAsync(300_000);
+    expect(l.liveness.following()).toBe(true);
+    await stop();
+  });
+
+  it('starts afresh after it was stopped', async () => {
+    const l = setup([project('p1')]);
+    await l.liveness.start()();
+    const stop = l.liveness.start();
+    l.stopContainer('p1');
+    l.handlers().onEvent('p1', 'die');
+    await vi.waitFor(() => expect(l.state('p1')).toBe('failed'));
+    expect(l.liveness.start()).toBe(stop);
+    await stop();
   });
 
   it('never follows without an event stream, so reads keep comparing', () => {

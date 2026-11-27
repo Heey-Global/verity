@@ -120,10 +120,17 @@ export function createContainerLiveness(options: {
       try {
         do {
           fullQueued = false;
+          // A full pass that read the projects while the current stream was
+          // open has caught up on everything before it; only then may reads
+          // rely on the rows. A failed one leaves them comparing.
+          const catchesUp = filter === undefined && open ? connections : undefined;
           try {
             const projects = await eventStore.listProjects();
             if (stopped) return;
             await reconcile(filter === undefined ? projects : projects.filter(filter));
+            if (catchesUp !== undefined && catchesUp === connections && open && !stopped) {
+              connected = true;
+            }
           } catch (error) {
             log.warn('verity: could not compare projects with their sandboxes', error);
           }
@@ -136,20 +143,23 @@ export function createContainerLiveness(options: {
     return sweeping;
   };
 
+  let started: (() => Promise<void>) | undefined;
   return {
     reconcile,
     following: () => connected,
     start() {
+      // One follower at a time; a server reopened on the same store starts
+      // afresh after the previous one stopped.
+      if (started !== undefined) return started;
+      stopped = false;
       const stopStream = docker.followContainerEvents?.({
         onEvent: reconcileProject,
         onConnected: () => {
           open = true;
-          const connection = ++connections;
+          connections += 1;
           // Events from before the stream opened are not replayed: reads keep
-          // comparing until every project has been compared once.
-          void sweep().then(() => {
-            if (open && connection === connections && !stopped) connected = true;
-          });
+          // comparing until a full pass after it has compared every project.
+          void sweep();
         },
         onDisconnected: (error) => {
           if (connected) log.warn('verity: Docker event stream ended; reads compare again', error);
@@ -164,7 +174,8 @@ export function createContainerLiveness(options: {
       );
       full.unref?.();
       transitions.unref?.();
-      return async () => {
+      started = async () => {
+        started = undefined;
         stopped = true;
         clearInterval(full);
         clearInterval(transitions);
@@ -173,6 +184,7 @@ export function createContainerLiveness(options: {
         await stopStream?.();
         await Promise.all([sweeping, ...inFlight]);
       };
+      return started;
     },
   };
 }

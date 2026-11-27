@@ -84,4 +84,29 @@ describe('createContainerEventSource', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(fetch).toHaveBeenCalledTimes(3);
   });
+
+  // A proxy that cuts the stream right after it opens must not have it
+  // reopened, and the whole fleet compared, every second.
+  it('keeps backing off while the stream never stays open', async () => {
+    const fetch = vi.fn<HttpFetch>().mockImplementation(async () => {
+      const response = streamingResponse();
+      response.end();
+      return response.response;
+    });
+    const source = createContainerEventSource({
+      baseUrl: 'http://docker.test',
+      fetch,
+      reconnectMs: { min: 5, max: 1_000, stable: 10_000 },
+    });
+    const stop = source.followContainerEvents({
+      onEvent: () => undefined,
+      onConnected: () => undefined,
+      onDisconnected: () => undefined,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await stop();
+    // 5 + 10 + 20 + 40 + 80 ms of delay fit into 200 ms; at a constant 5 ms it
+    // would have been reopened about forty times.
+    expect(fetch.mock.calls.length).toBeLessThanOrEqual(8);
+  });
 });
