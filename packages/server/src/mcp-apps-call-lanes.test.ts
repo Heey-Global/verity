@@ -38,7 +38,7 @@ function setup() {
   });
   const events = [card(APP_A), card(APP_B)];
   let clock = 1_000_000;
-  let user = 'user-a';
+  let user: string | null = 'user-a';
   const authorizeRequest = vi.fn(async () => true);
   const approve = vi.fn(async (_input: { input: Record<string, unknown> }) => true);
   const settled = vi.fn(async () => undefined);
@@ -76,7 +76,7 @@ function setup() {
     preview,
     executed,
     advance: (ms: number) => (clock += ms),
-    actAs: (id: string) => (user = id),
+    actAs: (id: string | null) => (user = id),
   };
 }
 
@@ -112,6 +112,15 @@ describe('MCP Apps read-only grants', () => {
     await f.call('refresh');
     expect(f.approve).toHaveBeenCalledTimes(6);
     expect(f.approve.mock.calls[4]![0].input).not.toHaveProperty('approvalCovers');
+  });
+
+  it('never covers repeats for a caller without a known person', async () => {
+    const f = setup();
+    f.actAs(null);
+    await f.call('preview');
+    await f.call('preview');
+    expect(f.approve).toHaveBeenCalledTimes(2);
+    expect(f.approve.mock.calls[0]![0].input).not.toHaveProperty('approvalCovers');
   });
 
   it('drops the grant when the tool stops declaring itself read-only', async () => {

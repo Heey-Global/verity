@@ -74,7 +74,7 @@ function createCallLanes() {
 function createReadOnlyGrants(now: () => number) {
   const grants = new Map<string, number>();
   const key = (sessionId: string, appId: string, userId: string | undefined, tool: string) =>
-    JSON.stringify([sessionId, appId, userId ?? null, tool]);
+    JSON.stringify([sessionId, appId, userId, tool]);
   return {
     covers: (...args: Parameters<typeof key>) => (grants.get(key(...args)) ?? 0) > now(),
     grant(...args: Parameters<typeof key>) {
@@ -296,10 +296,18 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
       const call = callSchema.parse(request.body);
       const resolved = await resolve(id, appId, request.localUserId ?? undefined);
       if (resolved === undefined) return reply.code(404).send({ error: 'MCP app unavailable' });
-      const release = await lanes.acquire(id, AbortSignal.timeout(QUEUE_WAIT_MS));
+      // A caller that went away must not raise an approval card or run its call later.
+      const gone = new AbortController();
+      reply.raw.once('close', () => {
+        if (!reply.raw.writableFinished) gone.abort();
+      });
+      const release = await lanes.acquire(
+        id,
+        AbortSignal.any([AbortSignal.timeout(QUEUE_WAIT_MS), gone.signal]),
+      );
       if (release === undefined)
         return reply.code(409).send({ error: 'Too many app actions are waiting' });
-      const signal = AbortSignal.timeout(120_000);
+      const signal = AbortSignal.any([AbortSignal.timeout(120_000), gone.signal]);
       const userId = request.localUserId ?? undefined;
       let permissionId: string | undefined;
       try {
@@ -313,7 +321,8 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
             uiMetadata(ownerTool ?? {}).resourceUri !== resolved.event.resourceUri
           )
             return reply.code(403).send({ error: 'Tool unavailable to this app' });
-          const repeatable = readOnly(tool);
+          // Without a known person there is nobody to scope the grant to: always ask.
+          const repeatable = readOnly(tool) && userId !== undefined;
           const granted = repeatable && grants.covers(id, appId, userId, call.name);
           if (!granted) {
             permissionId = randomUUID();
@@ -328,7 +337,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
                 // Shown on the approval card, so the scope of the answer is visible.
                 ...(repeatable
                   ? {
-                      approvalCovers: `Further calls of this read-only tool from this app for ${READ_ONLY_GRANT_MS / 60_000} minutes`,
+                      approvalCovers: `Further calls of this read-only tool, with any arguments, from this app for ${READ_ONLY_GRANT_MS / 60_000} minutes`,
                     }
                   : {}),
               },
@@ -359,6 +368,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
             return reply.code(403).send({ error: 'MCP app access changed' });
           }
           if (repeatable && !granted) grants.grant(id, appId, userId, call.name);
+          if (gone.signal.aborted) return reply.code(409).send({ error: 'Caller went away' });
           const { result } = await rpc(resolved.connection, 'tools/call', call, sessionId, version);
           if ((await resolve(id, appId, userId)) === undefined)
             return reply.code(404).send({ error: 'MCP app access changed' });
