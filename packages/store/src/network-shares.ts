@@ -312,7 +312,7 @@ export class NetworkShareStore {
       // One grant per folder whatever its case; granting it again replaces it.
       const existing = await tx
         .selectFrom('project_network_share_folders')
-        .select('id')
+        .select(['id', 'connection_target_revision'])
         .where('project_id', '=', input.projectId)
         .where('connection_id', '=', input.connectionId)
         .where(sql<string>`lower(path)`, '=', path.toLowerCase())
@@ -324,7 +324,12 @@ export class NetworkShareStore {
           .set({
             path,
             name: input.name,
-            ...(input.accessMode === undefined ? {} : { access_mode: input.accessMode }),
+            // A grant from an earlier target carries no access over to this one.
+            ...(input.accessMode !== undefined
+              ? { access_mode: input.accessMode }
+              : existing.connection_target_revision !== connection.target_revision
+                ? { access_mode: 'read-only' as const }
+                : {}),
             connection_target_revision: connection.target_revision,
             revision: randomUUID(),
           })

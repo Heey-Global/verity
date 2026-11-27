@@ -136,6 +136,12 @@ describe('NetworkShareStore', () => {
     expect(await shares.projectFolders('p1')).toEqual([
       expect.objectContaining({ accessMode: 'read-write' }),
     ]);
+    // A stale grant was made for another server: granting it again starts read only.
+    await shares.updateConnection(id, { host: 'other-nas.lan' });
+    await shares.grantFolder({ projectId: 'p1', connectionId: id, path: 'Projects', name: 'P' });
+    expect(await shares.projectFolders('p1')).toEqual([
+      expect.objectContaining({ accessMode: 'read-only', stale: false }),
+    ]);
     await shares.grantFolder({ projectId: 'p1', connectionId: id, path: 'Other', name: 'Other' });
     expect(await shares.projectFolders('p1')).toContainEqual(
       expect.objectContaining({ path: 'Other', accessMode: 'read-only' }),
