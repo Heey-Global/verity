@@ -19,7 +19,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord, SessionRecord } from '@verity/store';
 import { WORKTREE_SIDECAR } from './worktree.js';
-import { SessionStorage, compareDependencyTrees, storageHold } from './session-storage.js';
+import {
+  SessionStorage,
+  compareDependencyTrees,
+  regenerableOutput,
+  storageHold,
+} from './session-storage.js';
 import type { GitOutput } from './branches.js';
 
 const dirs: string[] = [];
@@ -282,6 +287,7 @@ describe('safe session storage reclamation', () => {
   });
   it('does not follow dependency-input or sidecar symlinks', async () => {
     const f = fixture();
+    f.idleDays(1);
     const outside = join(f.dir, 'outside');
     writeFileSync(outside, 'private marker');
     rmSync(join(f.path, 'package.json'));
@@ -333,6 +339,7 @@ describe('safe session storage reclamation', () => {
   });
   it('retains nested dependencies outside ancestor resolution', async () => {
     const f = fixture();
+    f.idleDays(1);
     for (const root of [f.root, f.path]) {
       mkdirSync(join(root, 'apps', 'example', 'node_modules', 'nested'), { recursive: true });
       writeFileSync(join(root, 'apps', 'example', 'node_modules', 'nested', 'index.js'), 'nested');
@@ -830,6 +837,60 @@ describe('safe session storage reclamation', () => {
       ]),
     });
   });
+  // Observed: every session pass in a busy project reported "has a turn in
+  // flight" and removed nothing for weeks, because the dependency steps waited
+  // for the project-wide barrier, which needs every session idle. An idle
+  // session's installation must go even while another session works.
+  it('frees an idle session while another session of the project runs a turn', async () => {
+    const f = fixture();
+    f.idleDays(4);
+    const mutate = vi.fn(async () => {
+      throw new Error('project p has a turn in flight — cancel it or wait, then recreate');
+    });
+    const mutateSession = vi.fn(
+      async (_project: string, _session: string, operation: () => Promise<void>) => operation(),
+    );
+    const service = new SessionStorage({ ...f.deps, mutate, mutateSession });
+    service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      () => false,
+    );
+    await service.runOnce();
+    expect(mutateSession).toHaveBeenCalledWith('p', 's', expect.any(Function), expect.anything());
+    expect(existsSync(join(f.path, 'node_modules', 'dep'))).toBe(false);
+    expect(existsSync(join(f.path, 'package.json'))).toBe(true);
+    // A running project's session never waits on the project-wide barrier;
+    // only the orphan pass, which belongs to no session, still takes it.
+    expect(mutate.mock.calls.map((call) => (call as unknown[])[1])).toEqual([undefined]);
+  });
+  // Retiring a merged session's worktree used to stop at the base-checkout
+  // comparison whenever its lockfile differed, even with no installation left,
+  // and at any ignored build output. Neither is data a retirement could lose.
+  it('retires a merged session with another lockfile and only regenerable output left', async () => {
+    const f = fixture();
+    writeFileSync(join(f.root, '.git', 'info', 'exclude'), 'dist/\n*.tsbuildinfo\n');
+    writeFileSync(join(f.path, 'package-lock.json'), '{"lockfileVersion":3,"packages":{"":{}}}');
+    f.run(['-C', f.path, 'commit', '-qam', 'other lockfile']);
+    f.run(['-C', f.path, 'push', '-q', 'origin', 'session']);
+    mkdirSync(join(f.path, 'packages', 'a', 'dist'), { recursive: true });
+    writeFileSync(join(f.path, 'packages', 'a', 'dist', 'index.js'), 'built');
+    writeFileSync(join(f.path, 'tsconfig.tsbuildinfo'), '{}');
+    await f.service.runOnce();
+    expect(f.service.lastReport?.worktreesRetired).toEqual([f.path]);
+    expect(existsSync(f.path)).toBe(false);
+  });
+  it('keeps a merged session whose ignored files are not build output', async () => {
+    const f = fixture();
+    writeFileSync(join(f.path, 'package-lock.json'), '{"lockfileVersion":3,"packages":{"":{}}}');
+    f.run(['-C', f.path, 'commit', '-qam', 'other lockfile']);
+    f.run(['-C', f.path, 'push', '-q', 'origin', 'session']);
+    writeFileSync(join(f.path, 'secret.txt'), 'local-only data');
+    await f.service.runOnce();
+    expect(existsSync(join(f.path, 'secret.txt'))).toBe(true);
+    expect(f.service.lastReport?.blockers.map((b) => b.reason)).toContain(
+      'Unknown ignored files remain',
+    );
+  });
   it('requires a persistent orphan grace period', async () => {
     const f = fixture();
     f.orphan();
@@ -1002,5 +1063,19 @@ describe('storage hold', () => {
     expect(hold('idle', [{ state: 'revoked', sessionId: null }])).toBeUndefined();
     expect(hold('idle', [{ state: 'active', sessionId: null }])).toBe('Public preview is active');
     expect(hold(undefined)).toBe('Managed dev server is active');
+  });
+});
+
+describe('regenerable output', () => {
+  it('accepts build and install output and nothing else', () => {
+    for (const path of [
+      'packages/a/dist/x.js',
+      'node_modules/.bin/x',
+      '.turbo/log',
+      'a/b.tsbuildinfo',
+    ])
+      expect(regenerableOutput(path)).toBe(true);
+    for (const path of ['.env', 'secret.txt', 'notes/dist', 'data/build.json'])
+      expect(regenerableOutput(path)).toBe(false);
   });
 });
