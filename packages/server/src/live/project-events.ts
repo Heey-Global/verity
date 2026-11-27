@@ -95,7 +95,15 @@ export function installProjectEvents(
   const accessChanged = (userId: string, projectId?: string): Promise<void> => {
     // Before waiting for anything: a project they lost ends its stream now,
     // even behind an earlier change still being checked.
-    ctx.liveHub.authorizationChanged({ userId, ...(projectId === undefined ? {} : { projectId }) });
+    try {
+      ctx.liveHub.authorizationChanged({
+        userId,
+        ...(projectId === undefined ? {} : { projectId }),
+      });
+    } catch (error) {
+      // The announcement below still tells their devices what changed.
+      app.log.warn({ err: error, userId, projectId }, 'verity: live topics not rechecked');
+    }
     const next = (accessQueues.get(userId) ?? Promise.resolve())
       .catch(() => undefined)
       .then(() => publishAccess(userId, projectId));
