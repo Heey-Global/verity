@@ -173,15 +173,15 @@ export function installSummaryEvents(
     changedProjects = undefined;
     announceTimer = undefined;
     if (projectIds === undefined || closed) return;
-    void deps.eventStore
-      .listSessions()
-      .then((sessions) => {
+    void deps.eventStore.listSessions().then(
+      (sessions) => {
         if (closed) return;
         for (const session of sessions)
           if (session.projectId !== null && projectIds.has(session.projectId))
             schedule(session.sessionId);
-      })
-      .catch((error: unknown) => {
+      },
+      // Only a failed read is tried again.
+      (error: unknown) => {
         app.log.warn(
           { err: error, projectIds: [...projectIds] },
           'verity: sandbox sessions not announced',
@@ -189,7 +189,8 @@ export function installSummaryEvents(
         // Nothing else hints these sessions: read them again, waiting longer
         // each time up to the last delay.
         if (!closed) noteProjects(projectIds, attempt + 1);
-      });
+      },
+    );
   };
   const disconnected = deps.provisioner?.disconnectedSandboxProjects?.();
   const stopObservingSandboxes =
