@@ -114,6 +114,30 @@ it('watches a read only while the topics do not cover it, asking with every read
   detach();
 });
 
+it('watches again when coverage ends without a read', async () => {
+  let covered = true;
+  const detach = subscribeLiveRefresh(
+    client,
+    jest.fn(),
+    (path) => path.split('?')[0] === '/projects',
+    [],
+    { covered: () => covered },
+  );
+  read({ path: '/projects?view=home' });
+  expect(sent.filter((frame) => frame.k === 'watch')).toEqual([]);
+  // A topic past the limit, failing or released: the connection reports it.
+  covered = false;
+  const release = liveConnectionFor(baseUrl).subscribeTopic('project:p1', {
+    event: () => undefined,
+    resync: () => undefined,
+  });
+  expect(sent.filter((frame) => frame.k === 'watch')).toEqual([
+    { k: 'watch', resource: { path: '/projects?view=home' } },
+  ]);
+  release();
+  detach();
+});
+
 it('keeps one refresh pending when changes arrive during a slow request', async () => {
   let resolve!: () => void;
   const refresh = jest.fn(

@@ -115,16 +115,15 @@ describe('live coverage of the overview views', () => {
     unmount();
   });
 
-  it('the session list is covered only while every listed project is followed', () => {
+  it('the session list is covered only while every listed session has a followed project', () => {
     jest.spyOn(SessionListModel.prototype, 'start').mockImplementation(() => {});
     jest.spyOn(SessionListModel.prototype, 'stop').mockImplementation(() => {});
-    const sessions = [
+    let sessions: { sessionId: string; projectId: string | null }[] = [
       { sessionId: 's1', projectId: 'p1' },
-      { sessionId: 's2', projectId: null },
     ];
     jest
       .spyOn(SessionListModel.prototype, 'state', 'get')
-      .mockReturnValue({ sessions } as unknown as SessionListState);
+      .mockImplementation(() => ({ sessions }) as unknown as SessionListState);
     const client = {} as VerityClient;
     const { unmount } = renderHook(() => useSessionList(client));
     const covered = coverageOf('/sessions');
@@ -134,6 +133,13 @@ describe('live coverage of the overview views', () => {
     expect(covered('/sessions', connection(['project:p1'], false))).toBe(false);
     // Provider limits are no overview event.
     expect(covered('/provider-limits', connection(['project:p1']))).toBe(false);
+    // A session without a project announces its pull request only on its
+    // own topic, which the list does not follow.
+    sessions = [...sessions, { sessionId: 's2', projectId: null }];
+    expect(covered('/sessions', connection(['project:p1']))).toBe(false);
+    // Nothing listed: sessions that appear arrive as hints.
+    sessions = [];
+    expect(covered('/sessions', connection([]))).toBe(true);
     unmount();
   });
 });

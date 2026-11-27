@@ -140,16 +140,17 @@ export function useSessionList(client: VerityClient): UseSessionList {
         (path) => path.split('?')[0] === '/sessions' || path === '/provider-limits',
         [],
         // Every listed session's row, requests, questions and pull request
-        // arrive on its project's topic (ADR 0033); sessions without a project
-        // and the list's membership follow hints. A project past the topic
-        // limit is not followed, and the list keeps watching for it.
+        // arrive on its project's topic (ADR 0033), and sessions entering or
+        // leaving the list follow hints. A session without a project announces
+        // its pull request and branch only on its own topic, and a project
+        // past the topic limit is not followed: the list keeps watching then.
         {
           covered: (path, connection) =>
             path === '/sessions' &&
             connection.topicsSupported &&
             model.state.sessions.every(
               (session) =>
-                !session.projectId || connection.followsTopic(`project:${session.projectId}`),
+                !!session.projectId && connection.followsTopic(`project:${session.projectId}`),
             ),
         },
       ),

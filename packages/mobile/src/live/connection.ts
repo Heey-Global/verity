@@ -279,6 +279,11 @@ export class LiveConnection implements LiveSessionTransport {
     return this.topics.follows(topic);
   }
 
+  /** Told whenever {@link followsTopic} may answer differently. */
+  onTopicsChanged(listener: () => void): () => void {
+    return this.topics.onChange(listener);
+  }
+
   onAlert(listener: (alert: LiveAlert) => void): () => void {
     this.alertListeners.add(listener);
     return () => this.alertListeners.delete(listener);

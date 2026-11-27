@@ -186,14 +186,15 @@ detection and no read after each change the topics already announced.
 - the project page by `project:<id>`;
 - the project list by `collection:projects` and the topic of every project
   it shows;
-- the session list by the topic of every project it shows; sessions without
-  a project and the list's membership follow hints.
+- the session list by the topic of every project it shows, while each listed
+  session has a project; sessions entering or leaving the list follow hints.
 
 A topic counts as followed once the server answered its subscription and
 while it is not retrying after an error. A project past the topic limit is
-not followed, so a long list keeps watching for it; a view that loses
-coverage watches again with its next read, which the `resync` or reconnect
-that ended it brings. The routes stay observable for version 1 clients and
+not followed, so a long list keeps watching for it. The connection reports
+every change of what it follows — a topic subscribed, answered, ended,
+failed or dropped with the socket — and the views ask again then, so one
+that loses coverage watches again without waiting for a read. The routes stay observable for version 1 clients and
 for these fallbacks.
 
 ## Consequences

@@ -72,8 +72,9 @@ export function subscribeLiveRefresh(
      * Whether the view follows the resource live on domain-event topics (ADR
      * 0033), asked again with every read. A covered resource is not watched:
      * the server stops sampling it, and the topics announce every change. A
-     * view that loses coverage watches it again with its next read, which
-     * the topic's `resync` or a reconnect brings.
+     * view that loses coverage — a topic ended, failed or was dropped — is
+     * asked again when the connection reports that change, and watches the
+     * resource it last read again.
      */
     covered?: (path: string, connection: LiveConnection) => boolean;
   } = {},
@@ -121,9 +122,12 @@ export function subscribeLiveRefresh(
       if (!disposed) void run();
     }, 50);
   };
+  /** The resource last read per path, so a change of coverage can watch it. */
+  const observed = new Map<string, LiveResource>();
   const observe = (resource: LiveResource): void => {
     if (!filter(resource.path)) return;
     const path = resource.path.split('?')[0]!;
+    if (options.covered !== undefined) observed.set(path, resource);
     const key = JSON.stringify(resource);
     const previous = subscriptions.get(path);
     if (options.covered?.(path, connection) === true) {
@@ -137,6 +141,15 @@ export function subscribeLiveRefresh(
   };
   for (const resource of resources) observe(resource);
   const detachReads = client.observeReads(observe);
+  // Coverage can end without a read: a topic past the limit, one that fails
+  // or that its last view released.
+  const detachCoverage =
+    options.covered === undefined
+      ? undefined
+      : connection.onTopicsChanged(() => {
+          if (disposed) return;
+          for (const resource of [...observed.values()]) observe(resource);
+        });
   const detachHints = connection.onHints((hints) => {
     if (
       hints.some(({ sessionId, topics }) => {
@@ -181,6 +194,7 @@ export function subscribeLiveRefresh(
     clearTimeout(timer);
     clearInterval(fallback);
     detachReads();
+    detachCoverage?.();
     detachHints();
     detachState();
     for (const subscription of subscriptions.values()) subscription.detach();
