@@ -1,7 +1,10 @@
 import { domainTopic, type DomainEvent } from '@verity/events';
 import type { ProjectChangeFeed, ProjectRecord } from '@verity/store';
+import { cachedTrustedToolkitIdentity } from '../runner-boundary-attestation.js';
 import type { SandboxUpdateChecker } from '../sandbox-updates.js';
 import type { ServerContext } from '../server-context.js';
+import { reportedToolkitDrift } from '../toolkit-drift.js';
+import { installReleaseChecker } from './release-checker.js';
 import { createRevisions } from './revisions.js';
 
 /** Projects whose last published state is remembered. A forgotten project
@@ -9,12 +12,25 @@ import { createRevisions } from './revisions.js';
  * like any other. */
 const MAX_REMEMBERED_PROJECTS = 4_096;
 
+/** The server's own toolkit identity could not be read. */
+const UNREADABLE = Symbol('unreadable');
+
 interface Remembered {
   lifecycle: string;
   name: string;
   setupStatus: string | null;
   image: string;
+  release: string;
+  drift: string;
 }
+
+/** The release fields as the project routes show them. */
+const RELEASE_FIELDS = [
+  'latestReleaseTag',
+  'latestReleaseName',
+  'latestReleaseUrl',
+  'latestReleasePublishedAt',
+] as const;
 
 /**
  * Publishes sandbox and project changes on `project:<id>` (ADR 0033), so Home,
@@ -30,9 +46,12 @@ interface Remembered {
  * - the sandbox update checker: every status it computes, for a read or for
  *   the reconciler's tick, is compared with the last one seen for the project.
  *
- * `sandbox.lifecycle` carries the state the project routes show; the fields
- * those routes derive at read time (update detail, repair verdicts, toolkit
- * drift) stay behind the read, which views repeat when an event arrives.
+ * `sandbox.lifecycle` carries the state the project routes show.
+ * `project.changed` carries the name, setup status, latest release and toolkit
+ * drift. The release changes when a read or the release checker stores a new
+ * one; the drift when the image or the lifecycle does. The fields the routes
+ * derive from the provisioner at read time (update detail, repair verdicts)
+ * stay behind the read, which views repeat when an event arrives.
  */
 export function installProjectEvents(
   app: { log: { warn(obj: object, msg: string): void } },
@@ -44,6 +63,11 @@ export function installProjectEvents(
   const revisions = createRevisions();
   const remembered = new Map<string, Remembered>();
   const updateAvailable = new Map<string, boolean>();
+  // Cached process-wide on success. A failed lookup is a fault of this server,
+  // not news about the project: the verdict last published stands, rather than
+  // a banner that disappears and returns with every hiccup.
+  const serverToolkitIdentity = (): Promise<string | undefined | typeof UNREADABLE> =>
+    (deps.toolkitIdentity ?? cachedTrustedToolkitIdentity)().catch(() => UNREADABLE);
 
   const publish = (projectId: string, event: DomainEvent): void => {
     domainEvents.publish(domainTopic('project', projectId), event);
@@ -56,8 +80,13 @@ export function installProjectEvents(
       updateAvailable.delete(projectId);
       return;
     }
-    const next = rememberedOf(project);
+    const identity = await serverToolkitIdentity();
+    const drift = identity === UNREADABLE ? undefined : reportedToolkitDrift(project, identity);
     const previous = remembered.get(projectId);
+    const next = rememberedOf(
+      project,
+      drift === undefined ? (previous?.drift ?? '') : JSON.stringify(drift),
+    );
     remember(remembered, projectId, next);
     if (previous?.lifecycle !== next.lifecycle) {
       const { state, lifecycleState } = publicLifecycle(project);
@@ -75,6 +104,13 @@ export function installProjectEvents(
     if (previous?.setupStatus !== next.setupStatus && next.setupStatus !== null) {
       patch['setupStatus'] = next.setupStatus;
     }
+    // Published on first sight too, like the lifecycle: after a restart the
+    // first change of a project a view already shows is seen for the first
+    // time. The values are absolute, so repeating one a view holds is harmless.
+    if (previous?.release !== next.release) {
+      for (const field of RELEASE_FIELDS) patch[field] = project[field];
+    }
+    if (drift !== undefined && previous?.drift !== next.drift) patch['toolkitDrift'] = drift;
     if (Object.keys(patch).length > 0) {
       publish(projectId, {
         t: 'project.changed',
@@ -123,7 +159,12 @@ export function installProjectEvents(
     })();
   };
 
-  if (changes !== undefined) lifecycle.onClose(changes.observe(announce));
+  if (changes !== undefined) {
+    lifecycle.onClose(changes.observe(announce));
+    // Releases reach the store through it; without a feed nothing would carry
+    // them on to views.
+    installReleaseChecker(app, ctx);
+  }
 
   const stopObserving = updates?.observe?.((projectId, status) => {
     // `unknown` (a stopped sandbox, a failed inspect or registry read) says
@@ -167,12 +208,14 @@ function publicLifecycle(project: ProjectRecord): { state: string; lifecycleStat
   return sleeping ? { state: 'active', lifecycleState: project.state } : { state: project.state };
 }
 
-function rememberedOf(project: ProjectRecord): Remembered {
+function rememberedOf(project: ProjectRecord, drift: string): Remembered {
   return {
     lifecycle: JSON.stringify([project.state, project.provisionError, project.provisionWarning]),
     name: project.name,
     setupStatus: project.setupStatus ?? null,
     image: JSON.stringify([project.imageRef, project.toolkitIdentity]),
+    release: JSON.stringify(RELEASE_FIELDS.map((field) => project[field])),
+    drift,
   };
 }
 

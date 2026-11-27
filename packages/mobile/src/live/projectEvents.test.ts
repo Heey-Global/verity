@@ -80,6 +80,42 @@ describe('projectEventUpdate', () => {
     expect(update.patch(project)).toEqual({ ...project, name: 'Renamed' });
   });
 
+  // The release badge and the drift banner change only through this event
+  // once nothing re-reads the project for them.
+  it('applies the latest release and toolkit drift, and skips values it cannot read', () => {
+    const release = projectEventUpdate({
+      t: 'project.changed',
+      projectId: 'p1',
+      rev: 2,
+      patch: {
+        latestReleaseTag: 'v2.0.0',
+        latestReleaseName: null,
+        latestReleaseUrl: 'https://github.com/o/r/releases/tag/v2.0.0',
+        latestReleasePublishedAt: '2026-11-26T10:00:00Z',
+        toolkitDrift: { verdict: 'drifted', carrier: 'devcontainer' },
+      },
+    })!;
+    expect(release.patch(project)).toEqual({
+      ...project,
+      latestReleaseTag: 'v2.0.0',
+      latestReleaseName: null,
+      latestReleaseUrl: 'https://github.com/o/r/releases/tag/v2.0.0',
+      latestReleasePublishedAt: '2026-11-26T10:00:00Z',
+      toolkitDrift: { verdict: 'drifted', carrier: 'devcontainer' },
+    });
+    const cleared = projectEventUpdate({
+      t: 'project.changed',
+      projectId: 'p1',
+      rev: 3,
+      patch: { toolkitDrift: null, latestReleaseTag: 7 },
+    })!;
+    expect(cleared.patch({ ...project, latestReleaseTag: 'v1' })).toEqual({
+      ...project,
+      latestReleaseTag: 'v1',
+      toolkitDrift: null,
+    });
+  });
+
   it('ignores events about sessions', () => {
     expect(projectEventUpdate({ t: 'choices.opened', sessionId: 's1', rev: 1 })).toBeUndefined();
   });

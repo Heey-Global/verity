@@ -12,6 +12,8 @@ export function measureLintHeap(directory) {
   return runLint(['packages/server/src/server.ts'], {
     cache: false,
     ambientCache: false,
+    // Measure the default worker only; a retry would overwrite its OOM evidence.
+    liteRetry: false,
     execute(files, heapMiB, ambientCache) {
       const stdoutPath = join(directory, 'worker-gc.log');
       const stderrPath = join(directory, 'worker-stderr.log');
