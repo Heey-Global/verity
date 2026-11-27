@@ -2125,8 +2125,8 @@ export class EventStore implements EventSink {
   async updateProjectState(
     id: string,
     state: ProjectState,
-    provisionError: string | null = null,
-    provisionWarning: string | null = null,
+    provisionError?: string | null,
+    provisionWarning?: string | null,
   ): Promise<ProjectRecord | undefined> {
     return this.projectLifecycle.updateProjectState(id, state, provisionError, provisionWarning);
   }
@@ -2597,7 +2597,7 @@ export class EventStore implements EventSink {
     return this.devicePushTokens.enqueuePushReceipt(record);
   }
 
-  async listDuePushReceipts(now: number, limit = 1_000): Promise<PushReceiptRecord[]> {
+  async listDuePushReceipts(now: number, limit?: number): Promise<PushReceiptRecord[]> {
     return this.devicePushTokens.listDuePushReceipts(now, limit);
   }
 
