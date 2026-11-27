@@ -70,6 +70,8 @@ function setup() {
   const getProject = vi.fn(async (id: string) => rows.get(id));
   const readers = new Map<string, Set<string>>([['p1', new Set(['bob'])]]);
   const authorizationChanged = vi.fn();
+  const overviewScope = vi.fn(async () => ({ all: true as const }));
+  let permission: ((userId: string, projectId: string) => Promise<boolean>) | undefined;
   const failures = new Map<string, { at: number; message: string }>();
   const turnBlocked = new Set<string>();
   const ctx = {
@@ -78,7 +80,7 @@ function setup() {
         projectChanges,
         getProject,
         hasProjectPermission: async (userId: string, projectId: string) =>
-          readers.get(projectId)?.has(userId) === true,
+          permission?.(userId, projectId) ?? readers.get(projectId)?.has(userId) === true,
         listReadableProjectIds: async (userId: string) =>
           [...readers].filter(([, users]) => users.has(userId)).map(([id]) => id),
       },
@@ -93,7 +95,7 @@ function setup() {
       },
     },
     domainEvents,
-    liveHub: { authorizationChanged },
+    liveHub: { authorizationChanged, overviewScope },
     lifecycle: {
       onClose: (stop: () => unknown) => closers.push(stop),
       every: (_ms: number, tick: () => void) => ticks.push(tick),
@@ -115,6 +117,10 @@ function setup() {
     projectChanges,
     readers,
     authorizationChanged,
+    overviewScope,
+    setPermission: (next: typeof permission) => {
+      permission = next;
+    },
     remove: () => {
       rows.delete('p1');
       projectChanges.announce('p1');
@@ -288,6 +294,34 @@ describe('installProjectEvents', () => {
       }),
     );
     expect(w.authorizationChanged).toHaveBeenLastCalledWith({ userId: 'carol' });
+  });
+
+  // A removal right behind a join must end with the project off the
+  // person's overview, however long the join's own check takes.
+  it('publishes the access changes of one person in the order they committed', async () => {
+    const w = setup();
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.listing()).toHaveLength(1));
+    let answer!: (readable: boolean) => void;
+    w.setPermission(() => new Promise((resolve) => (answer = resolve)));
+    w.projectChanges.announceAccess('bob', 'p1');
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    w.setPermission(async () => false);
+    w.projectChanges.announceAccess('bob', 'p1');
+    // Long enough for the removal to publish, were it not waiting its turn.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    answer(true);
+    await vi.waitFor(() =>
+      expect(w.listing().filter((event) => 'userId' in event)).toHaveLength(2),
+    );
+    expect(
+      w
+        .listing()
+        .filter((event) => 'userId' in event)
+        .map((event) => event.t),
+    ).toEqual(['project.listed', 'project.unlisted']);
+    // Their scope is read anew, so the hub knows what they hold now.
+    expect(w.overviewScope).toHaveBeenCalledWith('bob');
   });
 
   it('publishes renames and setup status as project changes', async () => {
@@ -709,8 +743,8 @@ describe('project state writers', () => {
     let writers = 0;
     for (const method of methodsOf(team.text)) {
       const grants =
-        /(?:updateTable|deleteFrom)\('project_memberships'\)/u.test(method.body) ||
-        /updateTable\('users'\)\s*\.set\(\{\s*status:\s*'active'/u.test(method.body);
+        /(?:updateTable|deleteFrom|insertInto)\('project_memberships'\)/u.test(method.body) ||
+        /updateTable\('users'\)\s*\.set\(\{(?:(?!\}\))[\s\S])*?\bstatus\s*:/u.test(method.body);
       if (!grants || pending.has(method.name)) continue;
       writers += 1;
       if (!/\bchanges\??\.announceAccess\(/u.test(method.body)) silent.push(method.name);

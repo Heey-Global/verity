@@ -89,7 +89,20 @@ export function installProjectEvents(
    * once, so a project they lost ends its stream now; and the projects whose
    * place on their overview changed are announced to them alone.
    */
-  const accessChanged = async (userId: string, projectId?: string): Promise<void> => {
+  // One change of a person's access at a time, in the order they committed:
+  // an earlier change read before a later one must not publish after it.
+  const accessQueues = new Map<string, Promise<void>>();
+  const accessChanged = (userId: string, projectId?: string): Promise<void> => {
+    const next = (accessQueues.get(userId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => publishAccess(userId, projectId));
+    const settled = next.finally(() => {
+      if (accessQueues.get(userId) === settled) accessQueues.delete(userId);
+    });
+    accessQueues.set(userId, settled);
+    return next;
+  };
+  const publishAccess = async (userId: string, projectId?: string): Promise<void> => {
     ctx.liveHub.authorizationChanged({ userId, ...(projectId === undefined ? {} : { projectId }) });
     const store = deps.eventStore;
     const projectIds =
@@ -107,6 +120,9 @@ export function installProjectEvents(
         userId,
       });
     }
+    // Read their scope anew, so the hub knows they hold a project they just
+    // joined: its deletion must reach them too.
+    await ctx.liveHub.overviewScope(userId);
   };
 
   const publish = (projectId: string, event: DomainEvent): void => {
