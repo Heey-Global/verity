@@ -40,7 +40,9 @@ function setup() {
   let clock = 1_000_000;
   let user: string | null = 'user-a';
   const authorizeRequest = vi.fn(async () => true);
-  const approve = vi.fn(async (_input: { input: Record<string, unknown> }) => true);
+  const approve = vi.fn<(input: { input: Record<string, unknown> }) => Promise<boolean>>(
+    async () => true,
+  );
   const settled = vi.fn(async () => undefined);
   const app = Fastify();
   apps.push(app);
