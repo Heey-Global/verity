@@ -2,6 +2,7 @@ import { installOverviewEvents } from './live/overview-events.js';
 import { installProjectEvents } from './live/project-events.js';
 import { createPrEvents } from './live/pr-events.js';
 import { installSummaryEvents } from './live/summary-events.js';
+import { installBranchEvents } from './live/branch-events.js';
 import { DomainEventBus } from './live/domain-events.js';
 import { installAssistantHandoffNotices } from './assistant-handoff-notify.js';
 import { installChangeSubmissions } from './change-submissions.js';
@@ -266,6 +267,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     branchesForSession,
     currentBranchCached,
     summarizeSession,
+    refreshBranch,
     readBranchMetadata,
     localMergeTarget,
     prCleanupPending,
@@ -286,8 +288,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     describePushSession,
     vulnerabilitySessions,
     onPrStatus: createPrEvents(app, ctx),
+    // Bound below, once the session rows it announces are installed.
+    onBranchChange: (worktree) => branchChanged(worktree),
   });
-  const { summaryRevision } = installSummaryEvents(app, ctx, summarizeSessions);
+  const { summaryRevision, announce } = installSummaryEvents(app, ctx, summarizeSessions);
+  const branchChanged = installBranchEvents(app, ctx, refreshBranch, announce);
 
   const { readSecretStatus, listSessionsAs } = installSessionList(app, ctx, {
     codexUsage,

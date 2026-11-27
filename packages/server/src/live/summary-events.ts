@@ -68,7 +68,11 @@ export function installSummaryEvents(
     clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
     now: Date.now,
   },
-): { summaryRevision: (sessionId: string) => number | undefined } {
+): {
+  summaryRevision: (sessionId: string) => number | undefined;
+  /** Schedules the session's row for a change no hint announces. */
+  announce: (sessionId: string) => void;
+} {
   const { deps, domainEvents, lifecycle } = ctx;
   const revisions = createRevisions();
   /** The revision each session's latest row took when its computation began;
@@ -207,5 +211,5 @@ export function installSummaryEvents(
     for (const { timer } of scheduled.values()) timers.clearTimeout(timer);
     scheduled.clear();
   });
-  return { summaryRevision: (sessionId) => lastRevisions.get(sessionId) };
+  return { summaryRevision: (sessionId) => lastRevisions.get(sessionId), announce: schedule };
 }
