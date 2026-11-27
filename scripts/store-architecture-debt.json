@@ -34,9 +34,7 @@
     "sessionLifecycle": "f523b7d6 267756fb 2c043270 4deed3f4 c0d70ecd d8581455 dd5e3a28 62471bc9",
     "sessionMoves": "a316dca3 9f0d3804 db75340d 017e95cf c72922fb 31359f37 21407131 66d46e10",
     "finishSessionDeletionCleanup": "f6e98a4d adb2142a ec69ba7f 85562774 0dbfc9bc 7a63cd2a 7922dce3 0adb0cba",
-    "externalizeToolResult": "d9c8e657 473da598 2cf8ba0f 24c1379b 78401a94 6a89369c c72549ff 43c90c01",
-    "updateProjectState": "a757ca0b 4d2da1ca d6de5ceb 1e7f9b95 551a918f 7eb2e92e ccfac143 c7ea9961",
-    "listDuePushReceipts": "ec5d9c81 b1d006bd 12e15d1a 87d59923 4431de40 e0498a68 b7d65056 eb6a0a52"
+    "externalizeToolResult": "d9c8e657 473da598 2cf8ba0f 24c1379b 78401a94 6a89369c c72549ff 43c90c01"
   },
   "imports": [
     "packages/store/src/db.ts -> packages/store/src/migrations.ts",
