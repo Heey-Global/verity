@@ -38,6 +38,9 @@ export class GoogleConnectionStore {
       projectId: string,
       service: GoogleService,
     ) => Promise<{ accountEmail: string; enabledAt: Date } | undefined>,
+    private readonly readGmailConnection: GoogleConnectionStore['getSessionGmailConnection'],
+    private readonly readCalendarConnection: GoogleConnectionStore['getSessionCalendarConnection'],
+    private readonly readContactsConnection: GoogleConnectionStore['getSessionContactsConnection'],
   ) {}
 
   private get db(): Kysely<Database> {
@@ -198,10 +201,6 @@ export class GoogleConnectionStore {
     sessionId: string,
     accountEmail: string,
     userId: string,
-    getConnection: (
-      sessionId: string,
-      userId: string,
-    ) => Promise<SessionGmailConnection | undefined>,
   ): Promise<SessionGmailConnection> {
     const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
     const account = (await this.googleAccounts.list(userId)).find(
@@ -222,7 +221,7 @@ export class GoogleConnectionStore {
       .returningAll()
       .executeTakeFirst();
     return (
-      (await getConnection(sessionId, userId)) ?? {
+      (await this.readGmailConnection(sessionId, userId)) ?? {
         sessionId,
         accountEmail,
         enabledAt: row!.enabled_at,
@@ -279,10 +278,6 @@ export class GoogleConnectionStore {
     sessionId: string,
     accountEmail: string,
     userId: string,
-    getConnection: (
-      sessionId: string,
-      userId: string,
-    ) => Promise<SessionCalendarConnection | undefined>,
   ): Promise<SessionCalendarConnection> {
     const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
     const account = (await this.googleAccounts.list(userId)).find(
@@ -303,7 +298,7 @@ export class GoogleConnectionStore {
       .returningAll()
       .executeTakeFirst();
     return (
-      (await getConnection(sessionId, userId)) ?? {
+      (await this.readCalendarConnection(sessionId, userId)) ?? {
         sessionId,
         accountEmail,
         enabledAt: row!.enabled_at,
@@ -363,10 +358,6 @@ export class GoogleConnectionStore {
     sessionId: string,
     accountEmail: string,
     userId: string,
-    getConnection: (
-      sessionId: string,
-      userId: string,
-    ) => Promise<SessionContactsConnection | undefined>,
   ): Promise<SessionContactsConnection> {
     const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
     const account = (await this.googleAccounts.list(userId)).find(
@@ -387,7 +378,7 @@ export class GoogleConnectionStore {
       .returningAll()
       .executeTakeFirst();
     return (
-      (await getConnection(sessionId, userId)) ?? {
+      (await this.readContactsConnection(sessionId, userId)) ?? {
         sessionId,
         accountEmail,
         enabledAt: row!.enabled_at,
