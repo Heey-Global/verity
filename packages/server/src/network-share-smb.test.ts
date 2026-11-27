@@ -97,3 +97,23 @@ describe('downloads', () => {
     }
   });
 });
+
+describe('credentials', () => {
+  // Node rejects a NUL in the environment with a message that quotes the
+  // value; uncaught, the password would end up in the server log.
+  it('never lets a refused password reach an error message', async () => {
+    const client = new SmbClient({ binary: '/nonexistent/smbclient' });
+    const error = await client
+      .test({
+        host: 'nas',
+        port: null,
+        share: 'team',
+        username: 'u',
+        password: Buffer.from('secret\0pw'),
+      })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(NetworkShareError);
+    expect(String((error as Error).message)).not.toContain('secret');
+    expect(JSON.stringify(error)).not.toContain('secret');
+  });
+});

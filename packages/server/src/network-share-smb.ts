@@ -2,11 +2,12 @@
 // demands transport encryption (`--client-protection=encrypt`), so a server
 // that cannot encrypt is refused rather than spoken to in the clear. The
 // password reaches smbclient through its environment, never its arguments.
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Readable, Writable } from 'node:stream';
 
 export const NETWORK_SHARE_MAX_FILE_BYTES = 10_000_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -166,15 +167,23 @@ async function runBatch(
     timedOut: boolean;
     tooLarge: boolean;
   }>((resolve, reject) => {
-    const child = spawn(options.binary ?? 'smbclient', args, {
-      env: {
-        PATH: process.env.PATH,
-        ...options.env,
-        USER: target.username,
-        PASSWD: target.password.toString('utf8'),
-      },
-      stdio: ['pipe', 'ignore', 'pipe'],
-    });
+    let child: ChildProcessByStdio<Writable, null, Readable>;
+    try {
+      child = spawn(options.binary ?? 'smbclient', args, {
+        env: {
+          PATH: process.env.PATH,
+          ...options.env,
+          USER: target.username,
+          PASSWD: target.password.toString('utf8'),
+        },
+        stdio: ['pipe', 'ignore', 'pipe'],
+      });
+    } catch {
+      // Node names the offending environment value in its message; that
+      // value can be the password, so none of it may reach a log.
+      reject(new NetworkShareError('failed', 'spawn'));
+      return;
+    }
     let text = '';
     let timedOut = false;
     let tooLarge = false;

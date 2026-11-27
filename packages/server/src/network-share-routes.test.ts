@@ -346,6 +346,24 @@ describe('network share routes', () => {
     expect((await store.networkShares.getConnection(id))?.host).toBe('nas.studio.lan');
   });
 
+  // Credentials reach smbclient through its environment, which cannot carry a
+  // NUL; refused up front, they never reach the spawn that would echo them.
+  it('refuses credentials the environment cannot carry', async () => {
+    const { client, seen } = fakeClient();
+    const app = await server(client);
+    const nul = await call(app, 'admin', 'POST', '/network-shares', {
+      ...studio,
+      password: 'pw\u0000x',
+    });
+    expect(nul.statusCode).toBe(400);
+    const control = await call(app, 'admin', 'POST', '/network-shares', {
+      ...studio,
+      username: 'ver\u0001ity',
+    });
+    expect(control.statusCode).toBe(400);
+    expect(seen).toEqual([]);
+  });
+
   it('reports a failed connection test without failing the request', async () => {
     const { client } = fakeClient();
     const app = await server(client);

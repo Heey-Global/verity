@@ -20,8 +20,14 @@ const username = z
   .trim()
   .min(1)
   .max(256)
-  .refine((value) => !value.includes('%'), 'Usernames cannot contain %.');
-const password = z.string().min(1).max(1024);
+  .refine((value) => !value.includes('%'), 'Usernames cannot contain %.')
+  .refine((value) => !hasControlCharacter(value), 'Usernames cannot contain control characters.');
+// Both reach smbclient through its environment, which cannot carry a NUL byte.
+const password = z
+  .string()
+  .min(1)
+  .max(1024)
+  .refine((value) => !value.includes('\0'), 'Passwords cannot contain a NUL character.');
 const accessMode = z.enum(['read-only', 'read-write']);
 const address = z.string().trim().min(3).max(600);
 
