@@ -19,7 +19,8 @@ export interface ContainerLiveness {
    * opened has succeeded: only then does the store hold what a read would
    * find by inspecting the containers. */
   following(): boolean;
-  /** Follow the event stream and run the periodic comparisons until stopped. */
+  /** Follow the event stream and run the periodic comparisons until every
+   * caller that started it has stopped. */
   start(): () => Promise<void>;
   /** Called after a comparison wrote a project's state, for caches of rows;
    * returns the call that removes the listener. */
@@ -59,19 +60,19 @@ export function createContainerLiveness(options: {
   const written = new Set<() => void>();
   /** The client, noting each container it could not inspect: the comparison
    * keeps the row then, which reads may only rely on while it is current. */
-  const noting = (unreadable: Set<string>): DockerClient =>
-    Object.assign(Object.create(docker) as DockerClient, {
-      inspectContainer: async (name: string) => {
-        try {
-          return await docker.inspectContainer(name);
-        } catch (error) {
-          if (!(error instanceof DockerError && error.kind === 'container_not_found')) {
-            unreadable.add(name);
-          }
-          throw error;
+  const noting = (unreadable: Set<string>): DockerClient => ({
+    ...docker,
+    inspectContainer: async (name: string) => {
+      try {
+        return await docker.inspectContainer(name);
+      } catch (error) {
+        if (!(error instanceof DockerError && error.kind === 'container_not_found')) {
+          unreadable.add(name);
         }
-      },
-    });
+        throw error;
+      }
+    },
+  });
   /** `unreadable` marks the follower's own comparisons: they note containers
    * Docker could not inspect, and their writes are announced. A read's
    * comparison is its own business, and its caller already holds the rows. */
@@ -228,7 +229,56 @@ export function createContainerLiveness(options: {
     return sweeping;
   };
 
-  let started: (() => Promise<void>) | undefined;
+  /** Start the stream and the periodic comparisons; returns their stop. */
+  const run = (): (() => Promise<void>) => {
+    stopped = false;
+    open = false;
+    connected = false;
+    epoch += 1;
+    const stopStream = docker.followContainerEvents?.({
+      onEvent,
+      onConnected: () => {
+        if (stopped) return;
+        open = true;
+        lose();
+        // Events from before the stream opened are not replayed: reads keep
+        // comparing until a full pass after it has compared every project.
+        void sweep();
+      },
+      onDisconnected: (error) => {
+        if (stopped) return;
+        if (connected) log.warn('verity: Docker event stream ended; reads compare again', error);
+        open = false;
+        lose();
+      },
+    });
+    const full = setInterval(() => void sweep(), options.intervals?.full ?? FULL_RECONCILE_MS);
+    const transitions = setInterval(
+      () => void sweep((project) => TRANSITIONS.has(project.state)),
+      options.intervals?.transitions ?? TRANSITION_RECONCILE_MS,
+    );
+    full.unref?.();
+    transitions.unref?.();
+    return async () => {
+      stopped = true;
+      clearInterval(full);
+      clearInterval(transitions);
+      open = false;
+      lose();
+      await stopStream?.();
+      await Promise.all([sweeping, ...inFlight]);
+    };
+  };
+
+  // Every server that starts the follower holds it until it stops; the stream
+  // ends with the last. A start while a stop winds down follows it afresh once
+  // the stop is done, rather than reviving or inheriting it.
+  let users = 0;
+  let running: (() => Promise<void>) | undefined;
+  let stopping: Promise<void> | undefined;
+  const begin = (): void => {
+    if (users > 0 && running === undefined && stopping === undefined) running = run();
+  };
   return {
     reconcile: (projects) => reconcile(projects),
     following: () => connected,
@@ -239,58 +289,26 @@ export function createContainerLiveness(options: {
       };
     },
     start() {
-      // One follower at a time; a server reopened on the same store starts
-      // afresh after the previous one stopped.
-      if (started !== undefined) {
-        if (stopped) {
-          log.warn(
-            'verity: Docker event stream not followed: the previous follower is still stopping',
-          );
+      users += 1;
+      begin();
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        users -= 1;
+        if (users > 0) return;
+        const current = running;
+        running = undefined;
+        if (current === undefined) {
+          await stopping;
+          return;
         }
-        return started;
-      }
-      stopped = false;
-      open = false;
-      connected = false;
-      epoch += 1;
-      const stopStream = docker.followContainerEvents?.({
-        onEvent,
-        onConnected: () => {
-          if (stopped) return;
-          open = true;
-          lose();
-          // Events from before the stream opened are not replayed: reads keep
-          // comparing until a full pass after it has compared every project.
-          void sweep();
-        },
-        onDisconnected: (error) => {
-          if (stopped) return;
-          if (connected) log.warn('verity: Docker event stream ended; reads compare again', error);
-          open = false;
-          lose();
-        },
-      });
-      const full = setInterval(() => void sweep(), options.intervals?.full ?? FULL_RECONCILE_MS);
-      const transitions = setInterval(
-        () => void sweep((project) => TRANSITIONS.has(project.state)),
-        options.intervals?.transitions ?? TRANSITION_RECONCILE_MS,
-      );
-      full.unref?.();
-      transitions.unref?.();
-      const stop = async () => {
-        stopped = true;
-        clearInterval(full);
-        clearInterval(transitions);
-        open = false;
-        lose();
-        await stopStream?.();
-        await Promise.all([sweeping, ...inFlight]);
-        // Released only now: a start while this one winds down gets it, rather
-        // than reviving its comparisons.
-        if (started === stop) started = undefined;
+        stopping = current().finally(() => {
+          stopping = undefined;
+          begin();
+        });
+        await stopping;
       };
-      started = stop;
-      return stop;
     },
   };
 }

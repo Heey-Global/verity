@@ -222,8 +222,46 @@ describe('createContainerLiveness', () => {
     l.stopContainer('p1');
     l.handlers().onEvent('p1', 'die');
     await vi.waitFor(() => expect(l.state('p1')).toBe('failed'));
-    expect(l.liveness.start()).toBe(stop);
     await stop();
+  });
+
+  // Two servers on one store share the follower; the one closing first must
+  // not take the stream from the other.
+  it('follows until the last caller that started it stops', async () => {
+    const l = setup([project('p1')]);
+    const first = l.liveness.start();
+    const second = l.liveness.start();
+    l.handlers().onConnected();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    await first();
+    await first();
+    expect(l.stopStream).not.toHaveBeenCalled();
+    expect(l.liveness.following()).toBe(true);
+    await second();
+    expect(l.stopStream).toHaveBeenCalledTimes(1);
+    expect(l.liveness.following()).toBe(false);
+  });
+
+  // Inheriting the stopping follower would leave the new server without a
+  // stream for its whole life.
+  it('follows afresh when started while the last stop winds down', async () => {
+    const l = setup([project('p1')]);
+    let finish!: () => void;
+    l.stopStream.mockImplementationOnce(
+      () => new Promise<undefined>((resolve) => (finish = () => resolve(undefined))),
+    );
+    const old = l.liveness.start();
+    const oldHandlers = l.handlers();
+    const stopping = old();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const fresh = l.liveness.start();
+    expect(l.handlers()).toBe(oldHandlers);
+    finish();
+    await stopping;
+    await vi.waitFor(() => expect(l.handlers()).not.toBe(oldHandlers));
+    l.handlers().onConnected();
+    await vi.waitFor(() => expect(l.liveness.following()).toBe(true));
+    await fresh();
   });
 
   // A reported change the rows never took must not be read as current.
