@@ -76,6 +76,10 @@ export function installProjectEvents(
   const lastStatus = new Map<string, SandboxUpdateStatus>();
   const lastProject = new Map<string, ProjectRecord>();
   const publishedUpdate = new Map<string, string>();
+  /** Projects waiting for the status asked after a change of their state,
+   * with the request that answers; other reports meanwhile may predate it. */
+  const rechecks = new Map<string, number>();
+  let recheckRequests = 0;
   // Cached process-wide on success. A failed lookup is a fault of this server,
   // not news about the project: the verdict last published stands, rather than
   // a banner that disappears and returns with every hiccup.
@@ -120,6 +124,7 @@ export function installProjectEvents(
       lastStatus.delete(projectId);
       lastProject.delete(projectId);
       publishedUpdate.delete(projectId);
+      rechecks.delete(projectId);
       return;
     }
     // A status from before a lifecycle change says nothing about the sandbox
@@ -136,6 +141,7 @@ export function installProjectEvents(
     if (stateChanged) {
       lastStatus.delete(projectId);
       publishedUpdate.delete(projectId);
+      rechecks.set(projectId, ++recheckRequests);
     }
     bounded(lastProject, projectId, project);
     const identity = await serverToolkitIdentity();
@@ -179,19 +185,37 @@ export function installProjectEvents(
     }
     publishUpdate(projectId);
     // A sandbox that came up or was rebuilt may have changed its update
-    // status, and one whose state changed has just lost its last status;
-    // checking it here reports through the checker's observer.
+    // status, and one whose state changed has just lost its last status. Only
+    // a running or failed one can be judged; for the others the checker can
+    // only answer `unknown`.
+    const judged = project.state === 'active' || project.state === 'failed';
     if (
       updates !== undefined &&
+      judged &&
       (stateChanged ||
         (project.state === 'active' &&
           (previous?.lifecycle !== next.lifecycle || previous.image !== next.image)))
     ) {
+      const request = rechecks.get(projectId) ?? ++recheckRequests;
+      rechecks.set(projectId, request);
+      const settle = (): boolean => {
+        if (rechecks.get(projectId) !== request) return false;
+        rechecks.delete(projectId);
+        return true;
+      };
       // Not awaited: a slow registry must not hold back this project's next
       // lifecycle event.
-      void updates.status(project).catch((error: unknown) => {
-        app.log.warn({ err: error, projectId }, 'verity: sandbox update check failed');
-      });
+      void updates.status(project).then(
+        (status) => {
+          if (settle()) accept(projectId, status);
+        },
+        (error: unknown) => {
+          settle();
+          app.log.warn({ err: error, projectId }, 'verity: sandbox update check failed');
+        },
+      );
+    } else if (stateChanged) {
+      rechecks.delete(projectId);
     }
   };
 
@@ -227,7 +251,8 @@ export function installProjectEvents(
     installReleaseChecker(app, ctx);
   }
 
-  const stopObserving = updates?.observe?.((projectId, status) => {
+  /** Take a status the checker reported for the project. */
+  const accept = (projectId: string, status: SandboxUpdateStatus): void => {
     const project = lastProject.get(projectId);
     // Kept for a project not read yet: whether `unknown` matters depends on
     // whether it failed.
@@ -239,6 +264,12 @@ export function installProjectEvents(
     // gains a viewer later.
     if (project !== undefined) publishUpdate(projectId);
     else if (domainEvents.watching(domainTopic('project', projectId))) announce(projectId);
+  };
+  const stopObserving = updates?.observe?.((projectId, status) => {
+    // A read that started before the state changed can land after it; only
+    // the status asked for the new state counts until that one is back.
+    if (rechecks.has(projectId)) return;
+    accept(projectId, status);
   });
   if (stopObserving !== undefined) lifecycle.onClose(stopObserving);
   if (updates !== undefined) {

@@ -146,6 +146,9 @@ describe('installProjectEvents', () => {
     ]);
     const revs = w.events().map((event) => event.rev);
     expect(revs).toEqual([...revs].sort((a, b) => a - b));
+    // Neither a starting nor a sleeping sandbox can be judged: no Docker
+    // inspect is spent on asking.
+    expect(w.statusCalls).not.toHaveBeenCalled();
   });
 
   it('publishes a failure whose message changed while the state stayed failed', async () => {
@@ -375,6 +378,30 @@ describe('installProjectEvents', () => {
     release('toolkit-a');
     await vi.waitFor(() => expect(w.updates()).toHaveLength(2));
     // Only the failed sandbox's own status went out, never the old `available`.
+    expect(w.updates()[1]).toEqual(
+      expect.objectContaining({ update: expect.objectContaining({ state: 'unknown' }) }),
+    );
+  });
+
+  // A slow registry read that began while the sandbox ran can land after it
+  // failed; published, it would show an update the routes no longer report.
+  it('takes only the status asked for a new state until it is back', async () => {
+    const w = setup();
+    w.setStatus(status('available'));
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(1));
+    let answer!: (status: SandboxUpdateStatus) => void;
+    w.statusCalls.mockImplementationOnce(
+      () => new Promise<SandboxUpdateStatus>((resolve) => (answer = resolve)),
+    );
+    w.failures.set('p1', { at: Date.parse('2026-11-27T08:00:00Z'), message: 'pull failed' });
+    w.write({ state: 'failed' });
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    // The late answer to the earlier read.
+    for (const observer of w.observers) observer('p1', status('available'));
+    expect(w.updates()).toHaveLength(1);
+    answer(status('unknown'));
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(2));
     expect(w.updates()[1]).toEqual(
       expect.objectContaining({ update: expect.objectContaining({ state: 'unknown' }) }),
     );
