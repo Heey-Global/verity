@@ -122,6 +122,15 @@ export function networkShareFolderView(folder: ProjectNetworkShareFolderRecord) 
   };
 }
 
+function addressable(parent: string, name: string): boolean {
+  try {
+    normalizeNetworkSharePath(parent ? `${parent}/${name}` : name);
+    return !name.includes('"');
+  } catch {
+    return false;
+  }
+}
+
 /** The reply for an adapter failure: a stable code and a message without NAS internals. */
 export function sendNetworkShareError(reply: FastifyReply, error: unknown) {
   if (error instanceof NetworkShareError) {
@@ -298,7 +307,8 @@ export function installNetworkShares(app: FastifyInstance, ctx: NetworkShareRout
       return {
         path,
         folders: entries
-          .filter((entry) => entry.kind === 'folder')
+          // Only folders Verity can address; others would fail once chosen.
+          .filter((entry) => entry.kind === 'folder' && addressable(path, entry.name))
           .map((entry) => ({
             name: entry.name,
             path: path ? `${path}/${entry.name}` : entry.name,

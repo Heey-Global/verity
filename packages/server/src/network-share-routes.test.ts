@@ -162,27 +162,57 @@ describe('network share routes', () => {
     expect(listed.json().connections).toHaveLength(1);
   });
 
+  // Every route but reading a project's folders reaches the NAS with the stored
+  // account or changes what agents may do; a missing policy entry must fail here.
   it('keeps connections and folder grants with administrators', async () => {
     const { client } = fakeClient();
     const app = await server(client);
     const { id } = (await call(app, 'admin', 'POST', '/network-shares', studio)).json<{
       id: string;
     }>();
-    for (const user of ['manager', 'reader']) {
-      expect((await call(app, user, 'GET', '/network-shares')).statusCode).toBe(403);
-      expect((await call(app, user, 'POST', '/network-shares', studio)).statusCode).toBe(403);
-      expect(
-        (
-          await call(app, user, 'POST', '/projects/p1/network-shares/folders', {
-            connectionId: id,
-            path: 'Projects',
-          })
-        ).statusCode,
-      ).toBe(403);
-    }
+    const folder = (
+      await call(app, 'admin', 'POST', '/projects/p1/network-shares/folders', {
+        connectionId: id,
+        path: 'Projects',
+      })
+    ).json<{ id: string }>().id;
+    const adminOnly: [Parameters<typeof call>[2], string, object?][] = [
+      ['GET', '/network-shares'],
+      ['POST', '/network-shares', studio],
+      ['PATCH', `/network-shares/${id}`, { label: 'Renamed' }],
+      ['DELETE', `/network-shares/${id}`],
+      ['POST', `/network-shares/${id}/test`],
+      ['GET', `/network-shares/${id}/folders`],
+      ['POST', '/projects/p1/network-shares/folders', { connectionId: id, path: 'Projects' }],
+      ['PATCH', `/projects/p1/network-shares/folders/${folder}`, { accessMode: 'read-write' }],
+      ['DELETE', `/projects/p1/network-shares/folders/${folder}`],
+    ];
+    for (const user of ['manager', 'reader'])
+      for (const [method, url, payload] of adminOnly)
+        expect(
+          (await call(app, user, method, url, payload)).statusCode,
+          `${user} ${method} ${url}`,
+        ).toBe(403);
     expect(
       (await call(app, 'reader', 'GET', '/projects/p1/network-shares/folders')).statusCode,
     ).toBe(200);
+  });
+
+  it('offers only folders that can be granted', async () => {
+    const { client } = fakeClient();
+    client.list = vi.fn(async () => [
+      { name: 'Projects', kind: 'folder' as const, size: 0 },
+      { name: 'Old.', kind: 'folder' as const, size: 0 },
+      { name: 'a:b', kind: 'folder' as const, size: 0 },
+    ]);
+    const app = await server(client);
+    const { id } = (await call(app, 'admin', 'POST', '/network-shares', studio)).json<{
+      id: string;
+    }>();
+    expect((await call(app, 'admin', 'GET', `/network-shares/${id}/folders`)).json()).toEqual({
+      path: '',
+      folders: [{ name: 'Projects', path: 'Projects' }],
+    });
   });
 
   it('browses folders only and grants read only by default', async () => {

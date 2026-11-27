@@ -329,19 +329,20 @@ export class SmbClient {
       const local = join(dir, 'upload');
       await writeFile(local, content, { mode: 0o600 });
       const temporary = sibling(path, 'tmp');
-      let results: string[];
+      // Publish only a complete upload: smbclient carries on after a failed
+      // command, so a partial `put` must not reach the rename in one batch.
+      const discard = () => run(target, [`del ${remote(temporary)}`]).catch(() => undefined);
       try {
-        results = await run(target, [
-          `put "${local}" ${remote(temporary)}`,
-          `rename ${remote(temporary)} ${remote(path)}`,
-          `del ${remote(temporary)}`,
-        ]);
+        const [upload] = await run(target, [`put "${local}" ${remote(temporary)}`]);
+        const uploadError = statusOf(upload);
+        if (uploadError) throw uploadError;
+        const [publish] = await run(target, [`rename ${remote(temporary)} ${remote(path)}`]);
+        const publishError = statusOf(publish);
+        if (publishError) throw publishError;
       } catch (error) {
-        await run(target, [`del ${remote(temporary)}`]).catch(() => undefined);
+        await discard();
         throw error;
       }
-      succeeded(results[0]);
-      succeeded(results[1]);
       return { kind: 'file', size: content.byteLength, version: contentVersion(content) };
     });
   }
