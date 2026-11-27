@@ -20,6 +20,8 @@ it('keeps the disconnected sandboxes in a set the server can observe', () => {
     isDirectory: () => false,
   });
   expect(provisioner.disconnectedSandboxProjects()).toBeInstanceOf(ObservedSet);
+  // The server takes it once: a copy per call would leave it observing none.
+  expect(provisioner.disconnectedSandboxProjects()).toBe(provisioner.disconnectedSandboxProjects());
 });
 
 // Every change of the set makes the server read the project's sessions and
@@ -27,7 +29,9 @@ it('keeps the disconnected sandboxes in a set the server can observe', () => {
 // reconcile tick for every cut-off sandbox, though nothing changed.
 it('changes the disconnected sandboxes one project at a time', () => {
   const source = readFileSync(new URL('./provisioner.ts', import.meta.url), 'utf8');
-  const writes = [...source.matchAll(/this\.disconnectedSandboxes\.(\w+)\(/gu)].map((m) => m[1]);
+  const writes = [...source.matchAll(/this\.disconnectedSandboxes\.(add|delete|clear)\(/gu)].map(
+    (m) => m[1],
+  );
   expect(writes.length).toBeGreaterThan(0);
   expect(new Set(writes)).toEqual(new Set(['add', 'delete']));
   expect(source).not.toMatch(/this\.disconnectedSandboxes\s*=(?!\s*new ObservedSet)/u);
