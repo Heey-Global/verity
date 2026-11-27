@@ -281,3 +281,78 @@ describe('LiveConnection.followsTopic', () => {
     expect(h.connection.followsTopic('project:p1')).toBe(true);
   });
 });
+
+describe('LiveConnection.onTopicsChanged', () => {
+  // Views stop watching their routes while their topics are followed. A topic
+  // that stops being followed without a read following it (the limit, an
+  // error, a view releasing it, a dropped socket) must be reported, or the
+  // view would hear of nothing until it happens to read again.
+  it('reports every change of what a topic follows, and nothing for plain events', async () => {
+    const h = await harness();
+    let calls = 0;
+    h.connection.onTopicsChanged(() => (calls += 1));
+    const step = (run: () => void) => {
+      const before = h.connection.followsTopic('project:p1');
+      calls = 0;
+      run();
+      const after = h.connection.followsTopic('project:p1');
+      if (after !== before) expect(calls).toBeGreaterThan(0);
+      return after;
+    };
+    const summary = (cursor: number) =>
+      h.socket().serve({
+        k: 'domain',
+        topic: 'project:p1',
+        cursor,
+        event: { t: 'session.summary', sessionId: 's1', rev: cursor, patch: {} },
+      });
+    step(() => h.socket().ready(true));
+    const { sink } = recorder();
+    let release = () => undefined as void;
+    step(() => (release = h.connection.subscribeTopic('project:p1', sink)));
+    expect(calls).toBeGreaterThan(0);
+    expect(step(() => summary(1))).toBe(true);
+    // Followed already: an event changes nothing a view decides on.
+    step(() => summary(2));
+    expect(calls).toBe(0);
+    expect(step(() => h.socket().drop())).toBe(false);
+    await h.reconnect();
+    step(() => h.socket().ready(true));
+    expect(step(() => summary(3))).toBe(true);
+    expect(
+      step(() => h.socket().serve({ k: 'topic_ended', topic: 'project:p1', reason: 'error' })),
+    ).toBe(false);
+    expect(step(() => summary(4))).toBe(true);
+    expect(
+      step(() => h.socket().serve({ k: 'topic_ended', topic: 'project:p1', reason: 'limit' })),
+    ).toBe(false);
+    step(() => (release = h.connection.subscribeTopic('project:p1', sink)));
+    expect(step(() => summary(5))).toBe(true);
+    step(() => release());
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  // A topic answered with `resync` counts as followed only once this server
+  // has sent any session row, which may arrive on another topic.
+  it('reports topics the first session row makes followed', async () => {
+    const h = await harness();
+    h.socket().ready(true);
+    const { sink } = recorder();
+    h.connection.subscribeTopic('project:p1', sink);
+    h.connection.subscribeTopic('project:p2', sink);
+    h.socket().serve({ k: 'resync', topic: 'project:p2', cursor: 1 });
+    expect(h.connection.followsTopic('project:p2')).toBe(false);
+    const changed = vi.fn();
+    h.connection.onTopicsChanged(changed);
+    h.socket().serve({ k: 'resync', topic: 'project:p1', cursor: 2 });
+    changed.mockClear();
+    h.socket().serve({
+      k: 'domain',
+      topic: 'project:p1',
+      cursor: 3,
+      event: { t: 'session.summary', sessionId: 's1', rev: 1, patch: {} },
+    });
+    expect(h.connection.followsTopic('project:p2')).toBe(true);
+    expect(changed).toHaveBeenCalled();
+  });
+});

@@ -5,6 +5,7 @@ import { readContextProjects } from '../lib/sharedTaskContext';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
+  PROJECTS_COLLECTION_TOPIC,
   VerityApiError,
   projectEventUpdate,
   type VerityClient,
@@ -12,6 +13,7 @@ import {
   type DevServer,
   type DevServerDetection,
 } from '@verity/mobile';
+import { createCoverageRechecks } from '../lib/coverageRechecks';
 import { liveConnectionFor, subscribeLiveRefresh } from '../lib/liveConnection';
 import { getVerityBaseUrl } from '../lib/client';
 import { listedInOverview } from '../lib/overviewProjects';
@@ -264,20 +266,39 @@ export function useProjects(client: VerityClient) {
     }, [load, activatePreviews, previewReads]),
   );
 
+  /** The projects the list shows, for the coverage check below; it is asked
+   * again whenever they change. */
+  const shownProjectIds = useRef<readonly string[]>([]);
+  const coverageRechecks = useMemo(createCoverageRechecks, []);
   useEffect(
     () =>
       subscribeLiveRefresh(
         client,
         () => load({ silent: true }),
         (path) => path.split('?')[0] === '/projects',
+        [],
+        // Projects entering and leaving the list, and every change of each
+        // listed one, arrive on topics (ADR 0033). A project past the topic
+        // limit is not followed, and the list keeps watching for it.
+        {
+          coverageChanged: coverageRechecks.register,
+          covered: (_path, connection) =>
+            connection.followsTopic(PROJECTS_COLLECTION_TOPIC) &&
+            shownProjectIds.current.every((id) => connection.followsTopic(`project:${id}`)),
+        },
       ),
-    [client, load],
+    [client, load, coverageRechecks],
   );
 
   // A sandbox that starts, fails, sleeps or needs an update shows at once
   // (ADR 0033); the read that follows adds what the event does not carry. A
   // hidden list keeps the change and reads again when it is shown.
   const listedProjectIds = useMemo(() => projects.map((project) => project.id), [projects]);
+  useEffect(() => {
+    // Committed ids only: a render React discards must not decide coverage.
+    shownProjectIds.current = listedProjectIds;
+    coverageRechecks.run();
+  }, [coverageRechecks, listedProjectIds]);
   const readWhenShown = useCallback(() => {
     if (focused.current) void load({ silent: true });
     else projectsDirty.current = true;

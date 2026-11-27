@@ -1,5 +1,6 @@
 import { AppState } from 'react-native';
 import type { LiveResource, LiveServerFrame, VerityClient } from '@verity/mobile';
+import { createCoverageRechecks } from './coverageRechecks';
 import { liveConnectionFor, stopLiveConnection, subscribeLiveRefresh } from './liveConnection';
 import { createWebSocket } from './socket';
 
@@ -86,6 +87,77 @@ it('refreshes on hints rather than a clock, filters resources and detaches on un
   deliver({ k: 'invalidate', path: '/projects' });
   await advance();
   expect(refresh).toHaveBeenCalledTimes(1);
+});
+
+// A view its topics cover live must not keep the server sampling its read
+// (ADR 0033): that sampling is the polling this coverage exists to end. One
+// that loses coverage must watch again, or it would hear of nothing.
+it('watches a read only while the topics do not cover it, asking with every read', async () => {
+  let covered = false;
+  const refresh = jest.fn();
+  const detach = subscribeLiveRefresh(client, refresh, (path) => path === '/projects', [], {
+    covered: (path) => path === '/projects' && covered,
+  });
+  const frames = () => sent.filter((frame) => frame.k === 'watch' || frame.k === 'unwatch');
+  read({ path: '/projects' });
+  expect(frames()).toEqual([{ k: 'watch', resource: { path: '/projects' } }]);
+  covered = true;
+  read({ path: '/projects' });
+  expect(frames()).toEqual([
+    { k: 'watch', resource: { path: '/projects' } },
+    { k: 'unwatch', resource: { path: '/projects' } },
+  ]);
+  read({ path: '/projects' });
+  expect(frames()).toHaveLength(2);
+  covered = false;
+  read({ path: '/projects' });
+  expect(frames().at(-1)).toEqual({ k: 'watch', resource: { path: '/projects' } });
+  detach();
+});
+
+it('watches again when coverage ends without a read', async () => {
+  let covered = true;
+  const detach = subscribeLiveRefresh(
+    client,
+    jest.fn(),
+    (path) => path.split('?')[0] === '/projects',
+    [],
+    { covered: () => covered },
+  );
+  read({ path: '/projects?view=home' });
+  expect(sent.filter((frame) => frame.k === 'watch')).toEqual([]);
+  // A topic past the limit, failing or released: the connection reports it.
+  covered = false;
+  const release = liveConnectionFor(baseUrl).subscribeTopic('project:p1', {
+    event: () => undefined,
+    resync: () => undefined,
+  });
+  expect(sent.filter((frame) => frame.k === 'watch')).toEqual([
+    { k: 'watch', resource: { path: '/projects?view=home' } },
+  ]);
+  release();
+  detach();
+});
+
+it('asks again when what the view shows changes', async () => {
+  let covered = true;
+  const rechecks = createCoverageRechecks();
+  const detach = subscribeLiveRefresh(client, jest.fn(), (path) => path === '/sessions', [], {
+    covered: () => covered,
+    coverageChanged: rechecks.register,
+  });
+  read({ path: '/sessions' });
+  expect(sent.filter((frame) => frame.k === 'watch')).toEqual([]);
+  // A session without a project was listed: no topic changed.
+  covered = false;
+  rechecks.run();
+  expect(sent.filter((frame) => frame.k === 'watch')).toEqual([
+    { k: 'watch', resource: { path: '/sessions' } },
+  ]);
+  detach();
+  covered = true;
+  rechecks.run();
+  expect(sent.filter((frame) => frame.k === 'unwatch')).toHaveLength(1);
 });
 
 it('keeps one refresh pending when changes arrive during a slow request', async () => {

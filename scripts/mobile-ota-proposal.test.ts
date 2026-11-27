@@ -9,6 +9,7 @@ import type { Commit } from 'release-please/build/src/commit.js';
 import type { PullRequest } from 'release-please/build/src/pull-request.js';
 import type { Update } from 'release-please/build/src/update.js';
 import {
+  closeUndeliverableOtaReleasePrs,
   createOtaManifest,
   hasOtaProductionProposal,
   otaConfigPath,
@@ -215,6 +216,7 @@ else if (endpoint.endsWith('/pulls')) response=${options.missingAssociation ? '[
 else if (endpoint.includes('/pulls?') && endpoint.includes('automation')) response=[[]];
 else if (endpoint.includes('/pulls?')) response=[[${JSON.stringify(pr)}]];
 else if (endpoint.includes('/contents/')) response={content: ${JSON.stringify(Buffer.from(options.reviewedVersion ?? '1.52.4').toString('base64'))}};
+else if (endpoint.endsWith('/pulls/2992')) response={state:'closed',merged_at:null};
 else throw new Error('Unexpected gh invocation: '+args.join(' '));
 process.stdout.write(JSON.stringify(response));
 `;
@@ -513,4 +515,194 @@ it('checks exact Production proposal ownership and candidate at its immutable he
   expect(() => check([pull, pull])).toThrow('Ambiguous');
   expect(() => check([{ ...pull, user: { login: 'unknown[bot]' } }])).toThrow('workflow-owned');
   vi.unstubAllEnvs();
+});
+
+function planFixture(options: { nativeChange: boolean; author?: string }) {
+  const cwd = mkdtempSync(join(tmpdir(), 'verity-ota-plan-'));
+  mkdirSync(join(cwd, 'bin'));
+  const head = 'a'.repeat(40);
+  const calls = join(cwd, 'calls');
+  writeFileSync(calls, '');
+  const pull = {
+    number: 2992,
+    base: { ref: 'main' },
+    head: { ref: 'release-please--branches--main--components--mobile-ota', sha: 'b'.repeat(40) },
+    user: { login: options.author ?? 'verity-release-bot-2[bot]' },
+  };
+  const gh = `#!${process.execPath}
+const fs=require('node:fs');
+const args=process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args)+'\\n');
+const endpoint=args.at(-1);
+let response;
+if (args[0] === 'pr') response={};
+else if (endpoint.endsWith('/git/ref/heads/main')) response={object:{sha:'${head}'}};
+else if (endpoint.includes('/releases?')) response=[[{tag_name:'mobile-v1.96.0',draft:false,prerelease:true},{tag_name:'mobile-v1.96.2',draft:false,prerelease:true}]];
+else if (endpoint.includes('/pulls?state=all')) response=[[${JSON.stringify(pull)}]];
+else if (endpoint.endsWith('/pulls/2992')) response={state:'closed',merged_at:null};
+else throw new Error('Unexpected gh invocation: '+args.join(' '));
+process.stdout.write(JSON.stringify(response));
+`;
+  const git = `#!${process.execPath}
+process.stdout.write(process.argv[2] === 'rev-parse' || process.argv[2] === 'rev-list' ? '${head}' : '');
+`;
+  // The compatibility check is the only node child plan spawns.
+  const node = `#!${process.execPath}
+process.stdout.write(${JSON.stringify(options.nativeChange ? 'Native input changed: apps/mobile/native/VerityLiveSTT.swift' : '')});
+`;
+  for (const [name, source] of Object.entries({ gh, git, node })) {
+    writeFileSync(join(cwd, 'bin', name), source);
+    chmodSync(join(cwd, 'bin', name), 0o755);
+  }
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [resolve('scripts/mobile-ota-proposal.mjs'), 'plan', '1.96.0'],
+      {
+        cwd,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          // Past the gate planning reaches Release Please; it must not hold a real token.
+          GH_TOKEN: '',
+          GITHUB_TOKEN: '',
+          GH_ENTERPRISE_TOKEN: '',
+          PATH: `${join(cwd, 'bin')}:${process.env.PATH}`,
+          GITHUB_REPOSITORY: 'example/verity',
+          RELEASE_BOT_LOGINS: 'verity-release-bot-2[bot]',
+        },
+      },
+    );
+    const invocations = readFileSync(calls, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+    return {
+      ...result,
+      prCommands: invocations.filter((args) => args[0] === 'pr'),
+      listings: invocations.filter((args) => args.at(-1)?.includes('/pulls?')),
+    };
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}
+
+// #2992: a native change merged while the OTA release PR was open. Planning
+// skipped it, the stale PR stayed green, and its merge consumed 1.96.3 on main
+// as an OTA version publication could only refuse.
+it('closes the open OTA release PR when main gains native changes', () => {
+  const result = planFixture({ nativeChange: true });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.prCommands).toEqual([
+    [
+      'pr',
+      'close',
+      '2992',
+      '--repo',
+      'example/verity',
+      '--comment',
+      expect.stringContaining('native mobile changes'),
+    ],
+    [
+      'pr',
+      'edit',
+      '2992',
+      '--repo',
+      'example/verity',
+      '--remove-label',
+      'autorelease: pending-mobile-ota',
+    ],
+  ]);
+  expect(result.stdout).toContain('Closed undeliverable Staging OTA release PR #2992.');
+  // A wrong head/base filter would list nothing and close nothing: the #2992 failure.
+  expect(result.listings).toEqual([
+    [
+      'api',
+      '--paginate',
+      '--slurp',
+      'repos/example/verity/pulls?state=all&base=main&head=example%3Arelease-please--branches--main--components--mobile-ota&per_page=100',
+    ],
+  ]);
+});
+
+it('leaves an OTA release PR it does not own open', () => {
+  const result = planFixture({ nativeChange: true, author: 'someone' });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.prCommands).toEqual([]);
+  expect(result.stdout).toContain('Leaving OTA release PR #2992 open');
+});
+
+it('keeps the OTA release PR open while main stays OTA-compatible', () => {
+  const result = planFixture({ nativeChange: false });
+  // Planning passed the native gate and stopped at the OTA marker this fixture
+  // omits, so an earlier crash cannot pass for "nothing closed".
+  expect(result.stderr).toContain('apps/mobile/ota/version.txt');
+  expect(result.listings).toEqual([]);
+  expect(result.prCommands).toEqual([]);
+});
+
+it.each([false, true])(
+  'preserves publication labels if merge wins closure (merged=%s)',
+  (merged) => {
+    vi.stubEnv('GITHUB_REPOSITORY', 'example/verity');
+    const calls: string[][] = [];
+    try {
+      const result = closeUndeliverableOtaReleasePrs((_command, args) => {
+        calls.push(args);
+        if (args.includes('--paginate'))
+          return JSON.stringify([
+            [
+              {
+                number: 2992,
+                state: 'open',
+                merged_at: null,
+                base: { ref: 'main' },
+                head: { ref: 'release-please--branches--main--components--mobile-ota' },
+                user: { login: 'github-actions[bot]' },
+              },
+            ],
+          ]);
+        if (args[0] === 'api')
+          return JSON.stringify({
+            state: 'closed',
+            merged_at: merged ? '2026-11-27T00:00:00Z' : null,
+          });
+        return '';
+      });
+      expect(calls.some((args) => args.includes('--remove-label'))).toBe(!merged);
+      expect(result).toEqual(merged ? [] : [2992]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  },
+);
+
+it('retries pending label cleanup on a closed unmerged OTA PR', () => {
+  vi.stubEnv('GITHUB_REPOSITORY', 'example/verity');
+  const calls: string[][] = [];
+  try {
+    closeUndeliverableOtaReleasePrs((_command, args) => {
+      calls.push(args);
+      if (args.includes('--paginate'))
+        return JSON.stringify([
+          [
+            {
+              number: 2992,
+              state: 'closed',
+              merged_at: null,
+              base: { ref: 'main' },
+              head: { ref: 'release-please--branches--main--components--mobile-ota' },
+              user: { login: 'github-actions[bot]' },
+              labels: [{ name: 'autorelease: pending-mobile-ota' }],
+            },
+          ],
+        ]);
+      if (args[0] === 'api') return JSON.stringify({ state: 'closed', merged_at: null });
+      return '';
+    });
+    expect(calls.some((args) => args[1] === 'close')).toBe(false);
+    expect(calls.some((args) => args.includes('--remove-label'))).toBe(true);
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });

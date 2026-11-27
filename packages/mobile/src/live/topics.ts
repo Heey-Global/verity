@@ -56,7 +56,28 @@ export class LiveTopics {
    * shows; an older server announces status only as hints. */
   private summaries = false;
 
+  private readonly changeListeners = new Set<() => void>();
+
   constructor(private readonly send: (frame: LiveClientFrame) => void) {}
+
+  /** Told whenever what {@link follows} answers may have changed: a topic
+   * was subscribed, answered, ended, failed or dropped with the connection. */
+  onChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  private changed(): void {
+    for (const listener of [...this.changeListeners]) {
+      try {
+        listener();
+      } catch {
+        // A listener's failure must not keep the others from hearing.
+      }
+    }
+  }
 
   subscribe(topic: DomainTopic, sink: LiveTopicSink): () => void {
     let entry = this.topics.get(topic);
@@ -64,6 +85,7 @@ export class LiveTopics {
       entry = { cursor: undefined, sinks: new Set(), failures: 0, answered: false };
       this.topics.set(topic, entry);
       if (this.supported) this.send({ k: 'topics.sub', topics: [{ topic }] });
+      this.changed();
     }
     entry.sinks.add(sink);
     const owner = entry;
@@ -72,6 +94,7 @@ export class LiveTopics {
       if (this.topics.get(topic) !== owner) return;
       this.topics.delete(topic);
       if (this.supported) this.send({ k: 'topics.unsub', topics: [topic] });
+      this.changed();
     };
   }
 
@@ -92,6 +115,7 @@ export class LiveTopics {
       // Resubscribed; until the server answers, the topic may yet fail.
       entry.answered = false;
     }
+    this.changed();
     if (!supported || this.topics.size === 0) return;
     const requests: TopicSubscription[] = [...this.topics].map(([topic, { cursor }]) =>
       cursor === undefined ? { topic } : { topic, cursor },
@@ -121,6 +145,7 @@ export class LiveTopics {
   /** The connection dropped; nothing arrives until the next {@link ready}. */
   disconnected(): void {
     this.supported = false;
+    this.changed();
   }
 
   domain(topic: DomainTopic, cursor: number, event: DomainEvent): void {
@@ -128,20 +153,26 @@ export class LiveTopics {
     if (entry === undefined) return;
     // A replay overlapping what was already applied must not apply twice.
     if (entry.cursor !== undefined && cursor <= entry.cursor) return;
+    const before = this.follows(topic);
+    const summariesBefore = this.summaries;
     entry.cursor = cursor;
     entry.failures = 0;
     entry.answered = true;
     if (event.t === 'session.summary') this.summaries = true;
     for (const sink of [...entry.sinks]) sink.event(event);
+    // The first row from this server makes every answered topic followed.
+    if (this.summaries !== summariesBefore || this.follows(topic) !== before) this.changed();
   }
 
   resync(topic: DomainTopic, cursor: number): void {
     const entry = this.topics.get(topic);
     if (entry === undefined) return;
+    const before = this.follows(topic);
     entry.cursor = cursor;
     entry.failures = 0;
     entry.answered = true;
     for (const sink of [...entry.sinks]) sink.resync();
+    if (this.follows(topic) !== before) this.changed();
   }
 
   /** The server ended a topic. Returns the delay after which the caller
@@ -153,10 +184,12 @@ export class LiveTopics {
     if (reason === 'error') {
       const delay = Math.min(RETRY_BASE_MS * 2 ** entry.failures, RETRY_MAX_MS);
       entry.failures += 1;
+      this.changed();
       return delay;
     }
     this.topics.delete(topic);
     for (const sink of [...entry.sinks]) sink.ended?.(reason);
+    this.changed();
     return undefined;
   }
 

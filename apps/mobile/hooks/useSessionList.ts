@@ -1,5 +1,6 @@
 import { contextOverviewClient } from '../lib/sharedTaskContext';
 import { beginClientActivity } from '../lib/sessionSwitchTiming';
+import { createCoverageRechecks } from '../lib/coverageRechecks';
 import { subscribeLiveRefresh } from '../lib/liveConnection';
 import {
   type VerityClient,
@@ -132,15 +133,35 @@ export function useSessionList(client: VerityClient): UseSessionList {
       resync: () => model.applyHints([]),
     });
   }, [model]);
+  // A session listed without a project changes no topic; the list's coverage
+  // is asked again whenever the list changes.
+  const coverageRechecks = useMemo(createCoverageRechecks, []);
   useEffect(
     () =>
       subscribeLiveRefresh(
         client,
         () => model.applyHints([]),
         (path) => path.split('?')[0] === '/sessions' || path === '/provider-limits',
+        [],
+        // Every listed session's row, requests, questions and pull request
+        // arrive on its project's topic (ADR 0033), and sessions entering or
+        // leaving the list follow hints. A session without a project announces
+        // its pull request and branch only on its own topic, and a project
+        // past the topic limit is not followed: the list keeps watching then.
+        {
+          coverageChanged: coverageRechecks.register,
+          covered: (path, connection) =>
+            path === '/sessions' &&
+            connection.topicsSupported &&
+            model.state.sessions.every(
+              (session) =>
+                !!session.projectId && connection.followsTopic(`project:${session.projectId}`),
+            ),
+        },
       ),
-    [client, model],
+    [client, model, coverageRechecks],
   );
+  useEffect(() => coverageRechecks.run(), [coverageRechecks, state.sessions]);
 
   // Focus only gates background requests; React state would redraw the entire
   // overview and embedded transcript during each navigation transition.
