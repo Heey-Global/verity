@@ -87,10 +87,20 @@ export function installProjectEvents(
   };
 
   /** Publish the project's update state if it differs from the last one. */
-  const publishUpdate = (
-    projectId: string,
-    verdicts = updateView.sandboxRepairVerdicts(),
-  ): void => {
+  // A checker sweep reports the whole fleet in one go; the provisioner's
+  // verdicts are read once for it rather than once per project.
+  let sweepVerdicts: ReturnType<typeof updateView.sandboxRepairVerdicts> | undefined;
+  const currentVerdicts = () => {
+    if (sweepVerdicts === undefined) {
+      sweepVerdicts = updateView.sandboxRepairVerdicts();
+      queueMicrotask(() => {
+        sweepVerdicts = undefined;
+      });
+    }
+    return sweepVerdicts;
+  };
+
+  const publishUpdate = (projectId: string, verdicts = currentVerdicts()): void => {
     const status = lastStatus.get(projectId);
     const project = lastProject.get(projectId);
     if (status === undefined || project === undefined) return;
@@ -130,8 +140,9 @@ export function installProjectEvents(
     // same step as holding the new record, so that no tick or checker report
     // judges the new record by the old status in between.
     // Keyed on the state alone: a new provision warning changes nothing about
-    // the image. A status the checker reported while this read was out is
-    // dropped as well; the check below asks again for the state read.
+    // the image. A status the checker reported while this read was out may
+    // already have been published for the old record; it is dropped here, and
+    // the check below asks again for the state read.
     const held = lastProject.get(projectId);
     const stateChanged = held !== undefined && held.state !== project.state;
     if (stateChanged) {

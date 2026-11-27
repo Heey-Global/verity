@@ -74,7 +74,7 @@ function setup() {
       eventStore: { projectChanges, getProject },
       sandboxUpdates,
       provisioner: {
-        sandboxRepairLastFailures: () => failures,
+        sandboxRepairLastFailures: vi.fn(() => failures),
         turnBlockedSandboxes: () => turnBlocked,
       },
       toolkitIdentity: async () => {
@@ -110,6 +110,9 @@ function setup() {
     failures,
     turnBlocked,
     getProject,
+    provisionerReads: () =>
+      (ctx.deps.provisioner!.sandboxRepairLastFailures as ReturnType<typeof vi.fn>).mock.calls
+        .length,
     tick: () => ticks.forEach((tick) => tick()),
     /** Everything but the update state, which these tests do not look at. */
     others: () => published.map((record) => record.event).filter((e) => e.t !== 'sandbox.update'),
@@ -429,6 +432,21 @@ describe('installProjectEvents', () => {
     w.write({ state: 'active' });
     await vi.waitFor(() => expect(w.updates()).toHaveLength(3));
     expect(w.updates()[2]).toEqual(expect.objectContaining({ available: true }));
+  });
+
+  // The verdicts cover the whole fleet; read per reported project, a sweep
+  // would cost the square of the fleet.
+  it('reads the provisioner once for a sweep of reports', async () => {
+    const w = setup();
+    w.write({ state: 'active' });
+    await vi.waitFor(() => expect(w.updates()).toHaveLength(1));
+    await Promise.resolve();
+    const reads = w.provisionerReads();
+    for (const report of ['available', 'current', 'available'] as const) {
+      for (const observer of w.observers) observer('p1', status(report));
+    }
+    expect(w.updates()).toHaveLength(4);
+    expect(w.provisionerReads()).toBe(reads + 1);
   });
 
   // The provisioner changes these without any store write, and a blocked
