@@ -586,6 +586,25 @@ it('storage maintenance preserves active previews and does not remove their conn
   expect(docker.removeContainer).not.toHaveBeenCalled();
 });
 
+// Storage collection of one session used the project-wide fence, which refuses
+// while any session of the project has a preview: one previewing session kept
+// every idle sibling's worktree in place.
+it('fences storage work per session, leaving sibling previews alone', async () => {
+  const { manager } = fixture();
+  await manager.create('s1', { targetPort: 3000 });
+  const sibling = vi.fn(async () => {
+    // While the fence holds, no preview of this session may start.
+    await expect(manager.create('s2', { targetPort: 4000 })).rejects.toThrow();
+    return 'collected';
+  });
+  await expect(manager.withSessionStorageMutation('s2', sibling)).resolves.toBe('collected');
+  const own = vi.fn(async () => {});
+  await expect(manager.withSessionStorageMutation('s1', own)).rejects.toThrow('active preview');
+  expect(own).not.toHaveBeenCalled();
+  // The fence is lifted afterwards.
+  await expect(manager.create('s2', { targetPort: 4000 })).resolves.toBeDefined();
+});
+
 it('rejects protected local preview creation before opening an edge or connector', async () => {
   const f = fixture();
   const listen = vi.spyOn(PreviewEdge.prototype, 'listen').mockResolvedValue(18100);

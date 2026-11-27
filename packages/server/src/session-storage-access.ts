@@ -30,7 +30,11 @@ export function sessionStorageAccess(deps: {
   withStorageProjectMutation: <T>(projectId: string, run: () => Promise<T>) => Promise<T>;
   /** Read on use: the dev server manager is created after session storage. */
   devServers: () => HoldInput['devServers'];
-  localPreviews: HoldInput['localPreviews'];
+  localPreviews:
+    | (NonNullable<HoldInput['localPreviews']> & {
+        withSessionStorageMutation?<T>(sessionId: string, run: () => Promise<T>): Promise<T>;
+      })
+    | undefined;
   preparedWorktreeImages: Map<string, string>;
   defaultProjectImage: ProjectImageRefSource;
   maintenanceImages: MaintenanceImages | undefined;
@@ -63,7 +67,12 @@ export function sessionStorageAccess(deps: {
     mutateSession: async (projectId, sessionId, operation, signal) => {
       if ((await eventStore.getProject(projectId))?.state !== 'active')
         throw new Error('Project sandbox is not running');
-      await withStorageProjectMutation(projectId, async () => {
+      // Not the project storage mutation: its preview wrappers refuse while any
+      // session of the project has a preview, which kept every idle sibling of a
+      // previewing session in place. This fence covers this session's local
+      // previews; the hold below covers its own and project-level public shares.
+      const fenced = deps.localPreviews?.withSessionStorageMutation?.bind(deps.localPreviews);
+      const run = async () => {
         const hold = storageHold({
           projectId,
           sessionId,
@@ -74,7 +83,8 @@ export function sessionStorageAccess(deps: {
         if (hold) throw new Error(hold);
         signal?.throwIfAborted();
         await operation();
-      });
+      };
+      await (fenced ? fenced(sessionId, run) : run());
     },
     mutate: async (projectId, sessionId, operation, signal) => {
       const run = (imageId?: string, recheck?: () => Promise<void>) =>
