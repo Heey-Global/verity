@@ -25,9 +25,12 @@ export const networkSharesMigration: Migration = {
       name text not null,
       access_mode text not null check (access_mode in ('read-only', 'read-write')),
       revision text not null,
-      created_at timestamptz not null default now(),
-      unique (project_id, connection_id, path)
+      created_at timestamptz not null default now()
     )`.execute(db);
+    // SMB names are case-insensitive: "Projects" and "projects" are one folder
+    // and must be one grant, or revoking one would leave the other in force.
+    await sql`create unique index project_network_share_folders_path
+      on project_network_share_folders(project_id, connection_id, lower(path))`.execute(db);
     await sql`create index project_network_share_folders_connection
       on project_network_share_folders(connection_id)`.execute(db);
   },

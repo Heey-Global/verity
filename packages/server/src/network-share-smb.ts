@@ -146,6 +146,8 @@ async function runBatch(
   commands: readonly string[],
   options: SmbClientOptions,
   configDir: string,
+  /** A local download to keep under the file limit while it is written. */
+  download?: string,
 ): Promise<string[]> {
   const mark = `.verity-mark-${randomUUID()}`;
   const input = commands
@@ -159,39 +161,57 @@ async function runBatch(
     '--client-protection=encrypt',
     '-E',
   ];
-  const { output, timedOut } = await new Promise<{ output: string; timedOut: boolean }>(
-    (resolve, reject) => {
-      const child = spawn(options.binary ?? 'smbclient', args, {
-        env: {
-          PATH: process.env.PATH,
-          ...options.env,
-          USER: target.username,
-          PASSWD: target.password.toString('utf8'),
-        },
-        stdio: ['pipe', 'ignore', 'pipe'],
-      });
-      let text = '';
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill('SIGKILL');
-      }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', (chunk: string) => {
-        text += chunk;
-      });
-      child.on('error', () => {
-        clearTimeout(timer);
-        reject(new NetworkShareError('failed', 'spawn'));
-      });
-      child.on('close', () => {
-        clearTimeout(timer);
-        resolve({ output: text, timedOut });
-      });
-      child.stdin.on('error', () => undefined);
-      child.stdin.end(`${input}quit\n`);
-    },
-  );
+  const { output, timedOut, tooLarge } = await new Promise<{
+    output: string;
+    timedOut: boolean;
+    tooLarge: boolean;
+  }>((resolve, reject) => {
+    const child = spawn(options.binary ?? 'smbclient', args, {
+      env: {
+        PATH: process.env.PATH,
+        ...options.env,
+        USER: target.username,
+        PASSWD: target.password.toString('utf8'),
+      },
+      stdio: ['pipe', 'ignore', 'pipe'],
+    });
+    let text = '';
+    let timedOut = false;
+    let tooLarge = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    // The size checked before a download is only the server's word; a file
+    // that grows meanwhile must not fill the server's disk.
+    const watchdog =
+      download === undefined
+        ? undefined
+        : setInterval(() => {
+            void stat(download)
+              .then((info) => {
+                if (info.size <= NETWORK_SHARE_MAX_FILE_BYTES) return;
+                tooLarge = true;
+                child.kill('SIGKILL');
+              })
+              .catch(() => undefined);
+          }, 100);
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      text += chunk;
+    });
+    child.on('error', () => {
+      clearTimeout(timer);
+      reject(new NetworkShareError('failed', 'spawn'));
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      clearInterval(watchdog);
+      resolve({ output: text, timedOut, tooLarge });
+    });
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(`${input}quit\n`);
+  });
   const outputs: string[] = [];
   let current: string[] = [];
   for (const line of output.split('\n')) {
@@ -200,20 +220,22 @@ async function runBatch(
       current = [];
     } else current.push(line);
   }
-  if (timedOut || outputs.length < commands.length) {
+  if (tooLarge || timedOut || outputs.length < commands.length) {
     // The session ended early: no connection, sign-in or encryption, or a
     // timeout. smbclient reports a server without encryption in words, not as
     // an NT status. Only what followed the last completed command explains the
     // end; the markers before it carry their own not-found status.
     const ending = current.join('\n');
     const status = STATUS.exec(ending)?.[1];
-    const error = timedOut
-      ? new NetworkShareError('timeout')
-      : /doesn't support SMB3 encryption|encryption required/i.test(ending)
-        ? new NetworkShareError('encryption_unavailable')
-        : status
-          ? errorFor(status)
-          : new NetworkShareError('unreachable');
+    const error = tooLarge
+      ? new NetworkShareError('too_large')
+      : timedOut
+        ? new NetworkShareError('timeout')
+        : /doesn't support SMB3 encryption|encryption required/i.test(ending)
+          ? new NetworkShareError('encryption_unavailable')
+          : status
+            ? errorFor(status)
+            : new NetworkShareError('unreachable');
     error.completed = outputs.length;
     throw error;
   }
@@ -276,7 +298,7 @@ export class SmbClient {
 
   private async batches<T>(
     work: (
-      run: (target: SmbTarget, commands: readonly string[]) => Promise<string[]>,
+      run: (target: SmbTarget, commands: readonly string[], download?: string) => Promise<string[]>,
       dir: string,
     ) => Promise<T>,
   ): Promise<T> {
@@ -286,7 +308,10 @@ export class SmbClient {
       await writeFile(join(dir, 'smb.conf'), '[global]\n  client min protocol = SMB3\n', {
         mode: 0o600,
       });
-      return await work((target, commands) => runBatch(target, commands, this.options, dir), dir);
+      return await work(
+        (target, commands, download) => runBatch(target, commands, this.options, dir, download),
+        dir,
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -323,7 +348,7 @@ export class SmbClient {
       if (info.kind !== 'file') throw new NetworkShareError('not_a_file');
       if (info.size > NETWORK_SHARE_MAX_FILE_BYTES) throw new NetworkShareError('too_large');
       const local = join(dir, 'download');
-      succeeded((await run(target, [`get ${remote(path)} "${local}"`]))[0]);
+      succeeded((await run(target, [`get ${remote(path)} "${local}"`], local))[0]);
       if ((await stat(local)).size > NETWORK_SHARE_MAX_FILE_BYTES)
         throw new NetworkShareError('too_large');
       const content = await readFile(local);
@@ -430,10 +455,14 @@ export class SmbClient {
       }
       let moved: string[];
       try {
-        moved = await run(target, [
-          `rename ${remote(path)} ${remote(previous)}`,
-          `get ${remote(previous)} "${replacedCopy}"`,
-        ]);
+        moved = await run(
+          target,
+          [
+            `rename ${remote(path)} ${remote(previous)}`,
+            `get ${remote(previous)} "${replacedCopy}"`,
+          ],
+          replacedCopy,
+        );
       } catch (error) {
         // The upload just reached the server, so a failure here may have cut
         // the rename short after it took effect; the restore finds out which.

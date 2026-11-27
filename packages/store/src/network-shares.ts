@@ -308,10 +308,34 @@ export class NetworkShareStore {
       if (!connection) return undefined;
       if (input.targetRevision !== undefined && input.targetRevision !== connection.target_revision)
         throw new NetworkShareTargetChangedError();
-      const row = await tx
+      // One grant per folder whatever its case; granting it again replaces it.
+      const existing = await tx
+        .selectFrom('project_network_share_folders')
+        .select('id')
+        .where('project_id', '=', input.projectId)
+        .where('connection_id', '=', input.connectionId)
+        .where(sql<string>`lower(path)`, '=', path.toLowerCase())
+        .forUpdate()
+        .executeTakeFirst();
+      if (existing) {
+        await tx
+          .updateTable('project_network_share_folders')
+          .set({
+            path,
+            name: input.name,
+            access_mode: input.accessMode,
+            connection_target_revision: connection.target_revision,
+            revision: randomUUID(),
+          })
+          .where('id', '=', existing.id)
+          .execute();
+        return existing.id;
+      }
+      const id = randomUUID();
+      await tx
         .insertInto('project_network_share_folders')
         .values({
-          id: randomUUID(),
+          id,
           project_id: input.projectId,
           connection_id: input.connectionId,
           connection_target_revision: connection.target_revision,
@@ -320,17 +344,8 @@ export class NetworkShareStore {
           access_mode: input.accessMode,
           revision: randomUUID(),
         })
-        .onConflict((conflict) =>
-          conflict.columns(['project_id', 'connection_id', 'path']).doUpdateSet({
-            name: input.name,
-            access_mode: input.accessMode,
-            connection_target_revision: connection.target_revision,
-            revision: randomUUID(),
-          }),
-        )
-        .returning('id')
-        .executeTakeFirstOrThrow();
-      return row.id;
+        .execute();
+      return id;
     });
   }
 

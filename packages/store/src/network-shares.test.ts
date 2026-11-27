@@ -107,6 +107,31 @@ describe('NetworkShareStore', () => {
     expect(await shares.projectsUsingShares()).toBe(1);
   });
 
+  // SMB does not tell "Projects" from "projects"; two grants for one folder
+  // would let revoking one leave the other in force.
+  it('keeps one grant per folder regardless of case', async () => {
+    const shares = ctx.store.networkShares;
+    const id = await shares.createConnection(studio);
+    const first = await shares.grantFolder({
+      projectId: 'p1',
+      connectionId: id,
+      path: 'Projects',
+      name: 'Projects',
+      accessMode: 'read-write',
+    });
+    const second = await shares.grantFolder({
+      projectId: 'p1',
+      connectionId: id,
+      path: 'projects',
+      name: 'projects',
+      accessMode: 'read-only',
+    });
+    expect(second).toBe(first);
+    expect(await shares.projectFolders('p1')).toEqual([
+      expect.objectContaining({ path: 'projects', accessMode: 'read-only' }),
+    ]);
+  });
+
   it('changes the grant revision with every access change', async () => {
     const shares = ctx.store.networkShares;
     const id = await shares.createConnection(studio);
