@@ -20,6 +20,7 @@ import { forwardHttpMcp, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
 const MAX_QUEUED_PER_SESSION = 8;
 const MAX_ACTIVE_SESSIONS = 64;
 const QUEUE_WAIT_MS = 120_000;
+const SETTLE_WAIT_MS = 5_000;
 /** How long one approval covers repeated calls of the same read-only tool from one app card. */
 export const READ_ONLY_GRANT_MS = 30 * 60_000;
 const MAX_GRANTS = 4096;
@@ -396,9 +397,14 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
       } catch {
         return reply.code(502).send({ error: 'MCP app action failed' });
       } finally {
-        // The lane covers the approval's settlement too: the next call asks only after it.
+        // The lane covers the approval's settlement too, so the next call asks only after it,
+        // but a stuck settlement must not block the session's later calls for good.
         try {
-          if (permissionId !== undefined) await deps.settled(id, permissionId);
+          if (permissionId !== undefined)
+            await Promise.race([
+              deps.settled(id, permissionId),
+              new Promise((resolve) => setTimeout(resolve, SETTLE_WAIT_MS).unref()),
+            ]);
         } finally {
           release();
         }
