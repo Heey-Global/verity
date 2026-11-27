@@ -129,11 +129,25 @@ function invitation(row: Row, now: Date): ProjectInvitation {
  * the team outbox, so it is delivered even after a restart.
  */
 export class ProjectTeamStore {
+  /** Each collaborator is read when used, so the store follows the facade's
+   * current database and cipher. */
   constructor(
-    private readonly db: Kysely<Database>,
-    private readonly cipher: SecretCipher,
-    private readonly changes?: ProjectChangeFeed,
+    private readonly dbOf: () => Kysely<Database>,
+    private readonly cipherOf: () => SecretCipher,
+    private readonly changesOf: () => ProjectChangeFeed | undefined = () => undefined,
   ) {}
+
+  private get db(): Kysely<Database> {
+    return this.dbOf();
+  }
+
+  private get cipher(): SecretCipher {
+    return this.cipherOf();
+  }
+
+  private get changes(): ProjectChangeFeed | undefined {
+    return this.changesOf();
+  }
 
   /**
    * Create an invitation and return it with its link secret, which is never

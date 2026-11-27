@@ -30,7 +30,11 @@ beforeEach(async () => {
 });
 
 // A real cipher: the test store's passthrough would store the secret in clear.
-const team = () => new ProjectTeamStore(ctx.db, createSecretCipher('cd'.repeat(32)));
+const team = () =>
+  new ProjectTeamStore(
+    () => ctx.db,
+    () => createSecretCipher('cd'.repeat(32)),
+  );
 const invite = async (canExecute = true) => {
   const created = await team().createInvitation({
     projectId: 'p1',
@@ -514,8 +518,8 @@ it.skipIf(!process.env.VERITY_TEST_SHARED_POSTGRES_URL)(
       },
     });
     const redemption = new ProjectTeamStore(
-      db,
-      createSecretCipher('cd'.repeat(32)),
+      () => db,
+      () => createSecretCipher('cd'.repeat(32)),
     ).redeemInvitation({
       invitationId: 'inv-1',
       secret: created.secret,
