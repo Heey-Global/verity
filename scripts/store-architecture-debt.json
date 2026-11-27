@@ -1,13 +1,5 @@
 {
   "methods": {
-    "listProjectRepositories": "6054f996 857862e8 5473bc9c d34098ec 5cb9d525 64881c71 792d99f7 b0083330",
-    "getProjectRepository": "f75c2136 0bc0dd2d c8227877 44d3e1eb e7efe467 662d5ba1 e0ab517b e50a21e1",
-    "addProjectRepository": "db597f8b 78f9faa6 543c5697 cb78b6ca b65cc603 9f23484d f8d3ca86 da042f28",
-    "removeProjectRepository": "9e684301 9214198a 9e0aa529 8f5423f9 def75168 1303fea2 d5149664 d1169854",
-    "recordRepositoryPullRequest": "a31eeacc 763bb41a 79dea425 307357a0 822bac15 6763446b 2f476134 fecce670",
-    "sessionRepositoryWorkspaceSessionId": "34f01c2a 966835af c3e35735 88a21a87 a7781977 f41baa8f dd11cbe8 6d120dc4",
-    "listSessionRepositoryWorkspaces": "a452b13c e1204220 d9acb9b4 da62c254 bd2ed6a0 32dc6e71 afa32669 b3a0150e",
-    "upsertSessionRepositoryWorkspace": "c7b03c7d 8a88db96 fb5c6e15 638647fe e3f1a13c 3f4c0cbc ed6d5e2c e0ac7d41",
     "egressDestinationMutation": "d2f37b18 94e5937b f718b025 48bbfa8a 762047c5 68353aa9 125057aa a5bbb3a5",
     "setEgressDestinationMutation": "2a15970c 0f9ee657 763d9cd1 ad6c081f 0d11e491 405b1e48 e72dfa68 dd05ef13",
     "readEgressDestinationUrls": "8f4c1623 a4a82f1c 0ef8a805 8366c99e 333e28a4 221c3f78 3d8bed31 1f6c1c49",

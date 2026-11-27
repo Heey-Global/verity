@@ -102,9 +102,13 @@ function record(row: Selectable<ProjectRepositoriesTable>): ProjectRepositoryRec
 
 export class ProjectRepositoryStore {
   constructor(
-    private readonly db: Kysely<Database>,
+    private readonly database: Kysely<Database> | (() => Kysely<Database>),
     private readonly getProject: (id: string) => Promise<ProjectRecord | undefined>,
   ) {}
+
+  private get db(): Kysely<Database> {
+    return typeof this.database === 'function' ? this.database() : this.database;
+  }
 
   async list(
     projectId: string,

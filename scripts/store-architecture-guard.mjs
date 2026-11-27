@@ -120,9 +120,28 @@ function isStoreWiring(initializer) {
     ts.isNewExpression(initializer) &&
     ts.isIdentifier(initializer.expression) &&
     initializer.expression.text.endsWith('Store') &&
-    (initializer.arguments ?? []).every(
-      (argument) =>
-        ts.isArrowFunction(argument) &&
+    (initializer.arguments ?? []).every((argument, index) => {
+      if (!ts.isArrowFunction(argument)) return false;
+      if (initializer.expression.text === 'ProjectRepositoryStore' && index === 1) {
+        const [parameter] = argument.parameters;
+        const body = argument.body;
+        return (
+          argument.parameters.length === 1 &&
+          parameter &&
+          ts.isIdentifier(parameter.name) &&
+          !parameter.initializer &&
+          !parameter.dotDotDotToken &&
+          ts.isCallExpression(body) &&
+          !ts.isOptionalChain(body) &&
+          ts.isPropertyAccessExpression(body.expression) &&
+          body.expression.expression.kind === ts.SyntaxKind.ThisKeyword &&
+          body.expression.name.text === 'getProject' &&
+          body.arguments.length === 1 &&
+          ts.isIdentifier(body.arguments[0]) &&
+          body.arguments[0].text === parameter.name.text
+        );
+      }
+      return (
         argument.parameters.length === 0 &&
         ts.isPropertyAccessExpression(argument.body) &&
         argument.body.expression.kind === ts.SyntaxKind.ThisKeyword &&
@@ -132,8 +151,9 @@ function isStoreWiring(initializer) {
           (initializer.expression.text === 'AttendeeStateStore' &&
             argument.body.name.text === 'cipher') ||
           (initializer.expression.text === 'PlanImplementationStore' &&
-            ['cipher', 'eventWrites', 'messageProjection'].includes(argument.body.name.text))),
-    )
+            ['cipher', 'eventWrites', 'messageProjection'].includes(argument.body.name.text)))
+      );
+    })
   );
 }
 
