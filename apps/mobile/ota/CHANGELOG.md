@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.2](https://github.com/Heey-Global/verity/compare/mobile-v1.97.1...mobile-v1.97.2) (2026-11-27)
+
+
+### Features
+
+* **network-shares:** let agents create folders and rename, move and delete items ([#3032](https://github.com/Heey-Global/verity/issues/3032)) ([955aaaf](https://github.com/Heey-Global/verity/commit/955aaafae88e1e8d9872c8d30bcd2a4c9adccbfe))
+
 ## [1.97.1](https://github.com/Heey-Global/verity/compare/mobile-v1.97.0...mobile-v1.97.1) (2026-11-27)
 
 
