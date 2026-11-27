@@ -112,7 +112,9 @@ cannot be put back because a new file took its name in the meantime, both are
 kept: the new file under the name, the original under a hidden
 `.verity-….old` name next to it, and the agent is told so. If the connection drops while the original is moved aside and
 Verity cannot reach the NAS to put it back, the agent is told to check the
-folder: the original then remains under its hidden name. Creating a file
+folder: the original then remains under its hidden name. The same applies if the Verity server stops during
+those moments: look for a hidden `.verity-….old` file next to the file and
+rename it back. Creating a file
 fails instead of replacing one that appeared in the meantime. A program that
 keeps the file open and writes to it during those few moments is not detected.
 

@@ -202,6 +202,7 @@ async function runBatch(
     });
     child.on('error', () => {
       clearTimeout(timer);
+      clearInterval(watchdog);
       reject(new NetworkShareError('failed', 'spawn'));
     });
     child.on('close', () => {
