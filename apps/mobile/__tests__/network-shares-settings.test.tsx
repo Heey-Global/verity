@@ -107,6 +107,48 @@ describe('changing a share address', () => {
   });
 });
 
+describe('changing a share account', () => {
+  // Another account may reach different folders, so its grants end like on a
+  // new address; a fix of letter case names the same account and share.
+  it('asks before a new account ends project access', async () => {
+    const client = shareClient();
+    render(<NetworkShareConnections client={client} />);
+    fireEvent.press(await screen.findByText('Studio NAS'));
+    fireEvent.press(await screen.findByText('Edit'));
+    fireEvent.changeText(screen.getByLabelText('Username'), 'backup');
+    expect(screen.getByText('Enter the password of the new account.')).toBeTruthy();
+    fireEvent.changeText(screen.getByLabelText('Password'), 'backup-pw');
+    fireEvent.press(screen.getByText('Test and save'));
+    expect(await screen.findByText('Change the account of Studio NAS?')).toBeTruthy();
+    expect(client.networkShares.updateConnection).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByText('Change account'));
+    await waitFor(() =>
+      expect(client.networkShares.updateConnection).toHaveBeenCalledWith('studio', {
+        username: 'backup',
+        password: 'backup-pw',
+      }),
+    );
+  });
+
+  it('saves a change of letter case without asking or a password', async () => {
+    const client = shareClient();
+    render(<NetworkShareConnections client={client} />);
+    fireEvent.press(await screen.findByText('Studio NAS'));
+    fireEvent.press(await screen.findByText('Edit'));
+    fireEvent.changeText(screen.getByLabelText('Address'), 'smb://NAS.studio.lan/Team');
+    fireEvent.changeText(screen.getByLabelText('Username'), 'Verity');
+    expect(screen.getByText('Leave empty to keep the saved password.')).toBeTruthy();
+    fireEvent.press(screen.getByText('Test and save'));
+    await waitFor(() =>
+      expect(client.networkShares.updateConnection).toHaveBeenCalledWith('studio', {
+        address: 'smb://NAS.studio.lan/Team',
+        username: 'Verity',
+      }),
+    );
+    expect(screen.queryByText('Change the address of Studio NAS?')).toBeNull();
+  });
+});
+
 describe('disconnecting a share', () => {
   // The confirmation stays open on failure and leaves the reporting to the
   // screen; without it a refused disconnect looks like nothing happened.
@@ -175,6 +217,35 @@ describe('project network share folders', () => {
     expect(screen.queryByText('Add folder')).toBeNull();
     fireEvent.press(screen.getByText('Briefs'));
     expect(screen.queryByText('Remove from project')).toBeNull();
+  });
+
+  // The combined connectors screen lists every service; a server without
+  // shares must not show an empty folder group there, as its index hides the row.
+  it('stays out of the combined screen while nothing is shared', async () => {
+    const client = shareClient({
+      listConnections: jest.fn().mockResolvedValue([]),
+      listProjectFolders: jest.fn().mockResolvedValue([]),
+    });
+    render(<ProjectNetworkShares client={client} projectId="p" onlyWhenUsed />);
+    await waitFor(() => expect(client.networkShares.listConnections).toHaveBeenCalled());
+    await act(async () => {});
+    expect(screen.queryByText('Folders for this project')).toBeNull();
+    expect(screen.queryByText('Add folder')).toBeNull();
+  });
+
+  it('still reports a failed load on the combined screen', async () => {
+    const client = shareClient({
+      listConnections: jest.fn().mockRejectedValue(new Error('The server is not reachable.')),
+      listProjectFolders: jest.fn().mockResolvedValue([]),
+    });
+    render(<ProjectNetworkShares client={client} projectId="p" onlyWhenUsed />);
+    expect(await screen.findByText('The server is not reachable.')).toBeTruthy();
+  });
+
+  it('shows on the combined screen once a share can be used', async () => {
+    const client = shareClient({ listProjectFolders: jest.fn().mockResolvedValue([]) });
+    render(<ProjectNetworkShares client={client} projectId="p" onlyWhenUsed />);
+    expect(await screen.findByText('Add folder')).toBeTruthy();
   });
 
   it('does not reopen the sheet when a folder loads after it was closed', async () => {

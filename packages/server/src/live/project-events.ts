@@ -6,6 +6,7 @@ import type { SandboxUpdateChecker, SandboxUpdateStatus } from '../sandbox-updat
 import type { ServerContext } from '../server-context.js';
 import { listedInProjectCollection } from '../server-support.js';
 import { reportedToolkitDrift } from '../toolkit-drift.js';
+import { ALL_PROJECTS, invalidatedProject } from './invalidation-targets.js';
 import { installReleaseChecker } from './release-checker.js';
 import { createRevisions } from './revisions.js';
 
@@ -19,6 +20,9 @@ const MAX_REMEMBERED_PROJECTS = 4_096;
  * change without a store write, and `turnBlocked` and `overdue` turn true by
  * time alone; recomputing costs no Docker, registry or forge call. */
 const UPDATE_RECHECK_INTERVAL_MS = 10_000;
+
+/** How long invalidations of one project gather into one `project.changed`. */
+const TOUCH_SETTLE_MS = 100;
 
 /** The server's own toolkit identity could not be read. */
 const UNREADABLE = Symbol('unreadable');
@@ -346,6 +350,38 @@ export function installProjectEvents(
     // them on to views.
     installReleaseChecker(app, ctx);
   }
+
+  // A change the project routes show that no event above describes: a write
+  // through the routes (settings, members, QA, secrets, the order), QA and
+  // repair state, vulnerability findings. They announce themselves as
+  // invalidations; views read the project again on an empty `project.changed`.
+  // A burst of them is one event per project.
+  const touched = new Set<string>();
+  let touchTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushTouched = (): void => {
+    touchTimer = undefined;
+    for (const projectId of touched) {
+      publish(projectId, { t: 'project.changed', projectId, rev: revisions.next(), patch: {} });
+    }
+    touched.clear();
+  };
+  const touch = (projectId: string): void => {
+    touched.add(projectId);
+    if (touchTimer !== undefined) return;
+    touchTimer = setTimeout(flushTouched, TOUCH_SETTLE_MS);
+    touchTimer.unref();
+  };
+  lifecycle.onClose(
+    ctx.resources.onInvalidate((path) => {
+      const target = invalidatedProject(path);
+      if (target === ALL_PROJECTS)
+        for (const projectId of domainEvents.watched('project')) touch(projectId);
+      else if (target !== undefined) touch(target);
+    }),
+  );
+  lifecycle.onClose(() => {
+    if (touchTimer !== undefined) clearTimeout(touchTimer);
+  });
 
   const stopObserving = updates?.observe?.((projectId, status) => {
     const project = lastProject.get(projectId);

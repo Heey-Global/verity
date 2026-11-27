@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { DomainEvent } from '@verity/events';
 import { ProjectChangeFeed, type ProjectRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 import type { SandboxUpdateChecker, SandboxUpdateStatus } from '../sandbox-updates.js';
@@ -74,6 +75,13 @@ function setup() {
   let permission: ((userId: string, projectId: string) => Promise<boolean>) | undefined;
   const failures = new Map<string, { at: number; message: string }>();
   const turnBlocked = new Set<string>();
+  const invalidationListeners = new Set<(path: string) => void>();
+  const resources = {
+    onInvalidate: (listener: (path: string) => void) => {
+      invalidationListeners.add(listener);
+      return () => invalidationListeners.delete(listener);
+    },
+  };
   const ctx = {
     deps: {
       eventStore: {
@@ -95,6 +103,7 @@ function setup() {
       },
     },
     domainEvents,
+    resources,
     liveHub: { authorizationChanged, overviewScope },
     lifecycle: {
       onClose: (stop: () => unknown) => closers.push(stop),
@@ -113,6 +122,10 @@ function setup() {
   };
   const events = () => published.map((record) => record.event);
   return {
+    invalidate: (path: string) => {
+      for (const listener of invalidationListeners) listener(path);
+    },
+    domainEvents,
     listing: () => listing.map((record) => record.event),
     projectChanges,
     readers,
@@ -703,6 +716,7 @@ describe('installProjectEvents', () => {
     const ctx = {
       deps: { eventStore: {} },
       domainEvents: new DomainEventBus(),
+      resources: { onInvalidate: () => () => undefined },
       lifecycle: { onClose: () => undefined, every: () => undefined },
     } as unknown as ServerContext;
     expect(() => installProjectEvents({ log: { warn: () => undefined } }, ctx)).not.toThrow();
@@ -868,3 +882,43 @@ function methodsOf(text: string): { name: string; body: string }[] {
     body: text.slice(match.index, starts[index + 1]?.index ?? text.length),
   }));
 }
+
+describe('project changes announced only as invalidations', () => {
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+  const touches = (events: readonly DomainEvent[]) =>
+    events.filter(
+      (event) => event.t === 'project.changed' && Object.keys(event.patch).length === 0,
+    );
+
+  // Settings, members, QA and vulnerability summaries change what the project
+  // routes show without a store write the change feed sees. Unless the
+  // invalidation they raise reaches the topic, a client that no longer
+  // watches the routes keeps showing the old value.
+  it('asks the views of the project to read it again, once per burst', async () => {
+    const w = setup();
+    w.invalidate('/projects/p1/settings');
+    w.invalidate('/projects/p1/qa');
+    w.invalidate('/projects/p1');
+    await settle();
+    expect(touches(w.events())).toHaveLength(1);
+  });
+
+  it('reads nothing again for what the project routes do not show', async () => {
+    const w = setup();
+    w.invalidate('/projects/p1/knowledge/proposals');
+    w.invalidate('/projects/p1/vulnerability-scan');
+    w.invalidate('/sessions');
+    await settle();
+    expect(w.events()).toEqual([]);
+  });
+
+  it('reads every followed project again when the list as a whole changed', async () => {
+    const w = setup();
+    const p2: DomainRecord[] = [];
+    w.domainEvents.subscribe('project:p2', undefined, (record) => p2.push(record));
+    w.invalidate('/projects/order');
+    await settle();
+    expect(touches(w.events())).toHaveLength(1);
+    expect(touches(p2.map((record) => record.event))).toHaveLength(1);
+  });
+});

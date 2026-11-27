@@ -204,6 +204,7 @@ function entityKey(event: DomainEvent): string {
       return `choices:${event.sessionId}`;
     case 'session.summary':
     case 'pr.status':
+    case 'branches.changed':
       return `${event.t}:${event.sessionId}`;
     case 'project.changed':
     case 'sandbox.lifecycle':

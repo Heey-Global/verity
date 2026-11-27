@@ -53,6 +53,15 @@ const projects = (count: number) =>
   count === 1 ? 'Used in 1 project' : `Used in ${count} projects`;
 const shortAddress = (address: string) => address.replace(/^smb:\/\//, '');
 
+// SMB servers treat names without case, and so does the server when it decides
+// whether a change moves the share to a new target; a case-only edit keeps the
+// projects' folders and the saved password.
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+const changesAddress = (connection: NetworkShareConnection, form: { address: string }) =>
+  !sameName(form.address, connection.address);
+const changesAccount = (connection: NetworkShareConnection, form: { username: string }) =>
+  !sameName(form.username, connection.username);
+
 export function NetworkShareConnections({ client }: { client: VerityClient }) {
   const [connections, setConnections] = useState<NetworkShareConnection[]>();
   const [tests, setTests] = useState<Record<string, NetworkShareTestResult>>({});
@@ -163,20 +172,19 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
     }
   };
 
-  /** A new address ends every project's folders on the share; ask first. */
+  /** A new address or account ends every project's folders on the share; ask first. */
   const requestSave = () => {
-    if (
-      mode?.kind === 'edit' &&
-      mode.connection.projectCount > 0 &&
-      form.address.trim() !== mode.connection.address
-    ) {
+    const address = mode?.kind === 'edit' && changesAddress(mode.connection, form);
+    const account = mode?.kind === 'edit' && changesAccount(mode.connection, form);
+    if (mode?.kind === 'edit' && mode.connection.projectCount > 0 && (address || account)) {
       const current = mode;
       const values = form;
+      const what = address ? 'address' : 'account';
       setMode(undefined);
       confirm({
-        title: `Change the address of ${current.connection.label}?`,
+        title: `Change the ${what} of ${current.connection.label}?`,
         message: `${projects(current.connection.projectCount)}. Those projects lose their folders on this share and need them added again.`,
-        confirmLabel: 'Change address',
+        confirmLabel: `Change ${what}`,
         destructive: true,
         afterSheet: true,
         onConfirm: () => save(current, values),
@@ -214,8 +222,10 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
   let footer: ReactNode = null;
   if (mode?.kind === 'add' || mode?.kind === 'edit') {
     const adding = mode.kind === 'add';
-    // The saved password is never sent to a new server.
-    const addressChanged = mode.kind === 'edit' && form.address.trim() !== mode.connection.address;
+    // The saved password is never sent to a new server or tried with another account.
+    const addressChanged = mode.kind === 'edit' && changesAddress(mode.connection, form);
+    const accountChanged = mode.kind === 'edit' && changesAccount(mode.connection, form);
+    const needsPassword = adding || addressChanged || accountChanged;
     title = adding ? 'Add network share' : `Edit ${mode.connection.label}`;
     body = (
       <View style={styles.fields}>
@@ -255,7 +265,9 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
             <Text variant="bodySmall" tone="muted">
               {addressChanged
                 ? 'Enter the password again for the new address.'
-                : 'Leave empty to keep the saved password.'}
+                : accountChanged
+                  ? 'Enter the password of the new account.'
+                  : 'Leave empty to keep the saved password.'}
             </Text>
           )}
         </View>
@@ -276,7 +288,7 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
           !form.label.trim() ||
           !form.address.trim() ||
           !form.username.trim() ||
-          ((adding || addressChanged) && !form.password)
+          (needsPassword && !form.password)
         }
         onPress={requestSave}
       />
@@ -312,7 +324,7 @@ export function NetworkShareConnections({ client }: { client: VerityClient }) {
           />
         </Group>
         <Text variant="bodySmall" tone="muted">
-          A new address ends project access to this share; folders must be added again.
+          A new address or account ends project access to this share; folders must be added again.
         </Text>
       </View>
     );

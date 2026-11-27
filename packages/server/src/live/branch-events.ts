@@ -1,6 +1,14 @@
 import { domainTopic } from '@verity/events';
 import type { SessionRecord } from '@verity/store';
 import type { ServerContext } from '../server-context.js';
+import { invalidatedBranches } from './invalidation-targets.js';
+import { createRevisions } from './revisions.js';
+
+/** How long invalidations of session branch lists gather into one
+ * `branches.changed` each. Writes through the broker can arrive steadily
+ * while an agent works; every event costs each device showing the session a
+ * read, so a session announces at most one per window. */
+export const BRANCHES_SETTLE_MS = 1_000;
 
 /** How often the branch of an open session is read from git. A branch moved
  * by the agent or a switch in the app is seen at once; this bounds how long a
@@ -24,11 +32,18 @@ export const OPEN_SESSION_BRANCH_CHECK_MS = 10_000;
  * session, however many devices show it. These reads never wake a sleeping
  * sandbox, where nothing can change the branch.
  *
+ * The branch list shows more than the branch: local commits not yet saved,
+ * pull requests of the session's other repositories. What changes them —
+ * tool activity, a merge or push through the routes, a pull request read that
+ * finished — announces itself as an invalidation of the list; it reaches the
+ * session topic as `branches.changed`, and the open session reads its list
+ * again.
+ *
  * Returns the handler the branch cache reports changed worktrees to.
  */
 export function installBranchEvents(
   app: { log: { warn(obj: object, msg: string): void } },
-  ctx: Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle'>,
+  ctx: Pick<ServerContext, 'deps' | 'domainEvents' | 'lifecycle' | 'resources'>,
   refreshBranch: (session: SessionRecord) => Promise<void>,
   announce: (sessionId: string) => void,
   timers: {
@@ -65,9 +80,34 @@ export function installBranchEvents(
   };
 
   const timer = timers.setInterval(check, OPEN_SESSION_BRANCH_CHECK_MS);
+
+  const revisions = createRevisions();
+  const invalidated = new Set<string>();
+  let settle: ReturnType<typeof setTimeout> | undefined;
+  const stopInvalidations = ctx.resources.onInvalidate((path) => {
+    const sessionId = invalidatedBranches(path);
+    if (sessionId === undefined || closed) return;
+    invalidated.add(sessionId);
+    if (settle !== undefined) return;
+    settle = setTimeout(() => {
+      settle = undefined;
+      for (const id of invalidated) {
+        domainEvents.publish(domainTopic('session', id), {
+          t: 'branches.changed',
+          sessionId: id,
+          rev: revisions.next(),
+        });
+      }
+      invalidated.clear();
+    }, BRANCHES_SETTLE_MS);
+    settle.unref();
+  });
+
   lifecycle.onClose(() => {
     closed = true;
     timers.clearInterval(timer);
+    stopInvalidations();
+    if (settle !== undefined) clearTimeout(settle);
   });
 
   return (worktree) => {
