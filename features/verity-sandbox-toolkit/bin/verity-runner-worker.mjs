@@ -25212,7 +25212,16 @@ var domainEventSchema = import_zod9.z.discriminatedUnion("t", [
     lifecycleState: import_zod9.z.string().min(1).max(64).optional(),
     warning: import_zod9.z.string().max(2e3).nullable().optional()
   }),
-  import_zod9.z.object({ t: import_zod9.z.literal("sandbox.update"), projectId: id2, rev, available: import_zod9.z.boolean() })
+  import_zod9.z.object({
+    t: import_zod9.z.literal("sandbox.update"),
+    projectId: id2,
+    rev,
+    available: import_zod9.z.boolean(),
+    /** The project's whole `sandboxUpdate` as the project routes show it:
+     * repairs, deferrals, recovery and the last repair failure included.
+     * Absent from servers that announce only availability. */
+    update: patch.optional()
+  })
 ]);
 var topicSubscriptionSchema = import_zod9.z.object({
   topic: domainTopicSchema,
