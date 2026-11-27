@@ -9,6 +9,7 @@ import type { Commit } from 'release-please/build/src/commit.js';
 import type { PullRequest } from 'release-please/build/src/pull-request.js';
 import type { Update } from 'release-please/build/src/update.js';
 import {
+  closeUndeliverableOtaReleasePrs,
   createOtaManifest,
   hasOtaProductionProposal,
   otaConfigPath,
@@ -215,6 +216,7 @@ else if (endpoint.endsWith('/pulls')) response=${options.missingAssociation ? '[
 else if (endpoint.includes('/pulls?') && endpoint.includes('automation')) response=[[]];
 else if (endpoint.includes('/pulls?')) response=[[${JSON.stringify(pr)}]];
 else if (endpoint.includes('/contents/')) response={content: ${JSON.stringify(Buffer.from(options.reviewedVersion ?? '1.52.4').toString('base64'))}};
+else if (endpoint.endsWith('/pulls/2992')) response={state:'closed',merged_at:null};
 else throw new Error('Unexpected gh invocation: '+args.join(' '));
 process.stdout.write(JSON.stringify(response));
 `;
@@ -536,7 +538,8 @@ let response;
 if (args[0] === 'pr') response={};
 else if (endpoint.endsWith('/git/ref/heads/main')) response={object:{sha:'${head}'}};
 else if (endpoint.includes('/releases?')) response=[[{tag_name:'mobile-v1.96.0',draft:false,prerelease:true},{tag_name:'mobile-v1.96.2',draft:false,prerelease:true}]];
-else if (endpoint.includes('/pulls?state=open')) response=[[${JSON.stringify(pull)}]];
+else if (endpoint.includes('/pulls?state=all')) response=[[${JSON.stringify(pull)}]];
+else if (endpoint.endsWith('/pulls/2992')) response={state:'closed',merged_at:null};
 else throw new Error('Unexpected gh invocation: '+args.join(' '));
 process.stdout.write(JSON.stringify(response));
 `;
@@ -593,21 +596,21 @@ it('closes the open OTA release PR when main gains native changes', () => {
   expect(result.prCommands).toEqual([
     [
       'pr',
-      'edit',
-      '2992',
-      '--repo',
-      'example/verity',
-      '--remove-label',
-      'autorelease: pending-mobile-ota',
-    ],
-    [
-      'pr',
       'close',
       '2992',
       '--repo',
       'example/verity',
       '--comment',
       expect.stringContaining('native mobile changes'),
+    ],
+    [
+      'pr',
+      'edit',
+      '2992',
+      '--repo',
+      'example/verity',
+      '--remove-label',
+      'autorelease: pending-mobile-ota',
     ],
   ]);
   expect(result.stdout).toContain('Closed undeliverable Staging OTA release PR #2992.');
@@ -617,7 +620,7 @@ it('closes the open OTA release PR when main gains native changes', () => {
       'api',
       '--paginate',
       '--slurp',
-      'repos/example/verity/pulls?state=open&base=main&head=example%3Arelease-please--branches--main--components--mobile-ota&per_page=100',
+      'repos/example/verity/pulls?state=all&base=main&head=example%3Arelease-please--branches--main--components--mobile-ota&per_page=100',
     ],
   ]);
 });
@@ -636,4 +639,70 @@ it('keeps the OTA release PR open while main stays OTA-compatible', () => {
   expect(result.stderr).toContain('apps/mobile/ota/version.txt');
   expect(result.listings).toEqual([]);
   expect(result.prCommands).toEqual([]);
+});
+
+it.each([false, true])(
+  'preserves publication labels if merge wins closure (merged=%s)',
+  (merged) => {
+    vi.stubEnv('GITHUB_REPOSITORY', 'example/verity');
+    const calls: string[][] = [];
+    try {
+      const result = closeUndeliverableOtaReleasePrs((_command, args) => {
+        calls.push(args);
+        if (args.includes('--paginate'))
+          return JSON.stringify([
+            [
+              {
+                number: 2992,
+                state: 'open',
+                merged_at: null,
+                base: { ref: 'main' },
+                head: { ref: 'release-please--branches--main--components--mobile-ota' },
+                user: { login: 'github-actions[bot]' },
+              },
+            ],
+          ]);
+        if (args[0] === 'api')
+          return JSON.stringify({
+            state: 'closed',
+            merged_at: merged ? '2026-11-27T00:00:00Z' : null,
+          });
+        return '';
+      });
+      expect(calls.some((args) => args.includes('--remove-label'))).toBe(!merged);
+      expect(result).toEqual(merged ? [] : [2992]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  },
+);
+
+it('retries pending label cleanup on a closed unmerged OTA PR', () => {
+  vi.stubEnv('GITHUB_REPOSITORY', 'example/verity');
+  const calls: string[][] = [];
+  try {
+    closeUndeliverableOtaReleasePrs((_command, args) => {
+      calls.push(args);
+      if (args.includes('--paginate'))
+        return JSON.stringify([
+          [
+            {
+              number: 2992,
+              state: 'closed',
+              merged_at: null,
+              base: { ref: 'main' },
+              head: { ref: 'release-please--branches--main--components--mobile-ota' },
+              user: { login: 'github-actions[bot]' },
+              labels: [{ name: 'autorelease: pending-mobile-ota' }],
+            },
+          ],
+        ]);
+      if (args[0] === 'api') return JSON.stringify({ state: 'closed', merged_at: null });
+      return '';
+    });
+    expect(calls.some((args) => args[1] === 'close')).toBe(false);
+    expect(calls.some((args) => args.includes('--remove-label'))).toBe(true);
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });

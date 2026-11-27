@@ -55,7 +55,7 @@ const repository = () => {
 /** @template T @param {string[]} args @returns {T} */
 const api = (...args) => /** @type {T} */ (captureJson('gh', ['api', ...args]));
 /** @typedef {{tag_name: string, draft: boolean, prerelease: boolean, target_commitish?: string}} Release */
-/** @typedef {{number: number, merged_at: string | null, merge_commit_sha?: string, base: {ref: string}, head: {ref: string, sha: string}, user?: {login: string}, labels?: Array<{name: string}>}} Pull */
+/** @typedef {{number: number, state?: string, merged_at: string | null, merge_commit_sha?: string, base: {ref: string}, head: {ref: string, sha: string}, user?: {login: string}, labels?: Array<{name: string}>}} Pull */
 
 /**
  * @param {string} runtime
@@ -99,7 +99,7 @@ export function closeUndeliverableOtaReleasePrs(execute = run) {
       'api',
       '--paginate',
       '--slurp',
-      `repos/${repository()}/pulls?state=open&base=main&head=${encodeURIComponent(`${owner}:${otaReleaseBranch}`)}&per_page=100`,
+      `repos/${repository()}/pulls?state=all&base=main&head=${encodeURIComponent(`${owner}:${otaReleaseBranch}`)}&per_page=100`,
     ]),
   );
   if (
@@ -127,8 +127,33 @@ export function closeUndeliverableOtaReleasePrs(execute = run) {
       continue;
     }
     const number = String(pull.number);
-    // Label first: if closing then fails, the PR is still open and the next
-    // planning run retries both, instead of leaving a closed pending release.
+    if (
+      pull.merged_at ||
+      (pull.state === 'closed' &&
+        !pull.labels?.some((label) => label.name === 'autorelease: pending-mobile-ota'))
+    )
+      continue;
+    if (pull.state !== 'closed')
+      execute('gh', [
+        'pr',
+        'close',
+        number,
+        '--repo',
+        repository(),
+        '--comment',
+        'Closed automatically: main gained native mobile changes after this OTA release PR ' +
+          'was planned, so merging it would produce an OTA version that cannot be published. ' +
+          'The native mobile release PR delivers these changes; OTA planning opens a new ' +
+          'release PR once that native runtime reaches Staging.',
+      ]);
+    // A merge can win the race with close. Its pending label still owns publication.
+    /** @type {unknown} */
+    const confirmation = JSON.parse(
+      execute('gh', ['api', `repos/${repository()}/pulls/${number}`]),
+    );
+    const confirmed = /** @type {Pull} */ (confirmation);
+    if (confirmed.state !== 'closed' || confirmed.merged_at !== null) continue;
+    // Include closed pending PRs in the listing so a failed cleanup is retried.
     execute('gh', [
       'pr',
       'edit',
@@ -137,18 +162,6 @@ export function closeUndeliverableOtaReleasePrs(execute = run) {
       repository(),
       '--remove-label',
       'autorelease: pending-mobile-ota',
-    ]);
-    execute('gh', [
-      'pr',
-      'close',
-      number,
-      '--repo',
-      repository(),
-      '--comment',
-      'Closed automatically: main gained native mobile changes after this OTA release PR ' +
-        'was planned, so merging it would produce an OTA version that cannot be published. ' +
-        'The native mobile release PR delivers these changes; OTA planning opens a new ' +
-        'release PR once that native runtime reaches Staging.',
     ]);
     closed.push(pull.number);
   }
