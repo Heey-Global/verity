@@ -374,6 +374,39 @@ describe('LiveHub domain-event topics', () => {
     w.hub.close();
   });
 
+  // A read begun before the user left describes that stay: answering once
+  // they are back, it must not note a project they lost while away.
+  it('ignores a read begun before the user left, even after they returned', async () => {
+    let clock = Date.now();
+    const w = world({ now: () => clock });
+    let answer!: () => void;
+    const access = w.hub.deps.access;
+    const readNow = access.overviewScope.bind(access);
+    vi.spyOn(access, 'overviewScope').mockImplementationOnce(async (userId) => {
+      const stale = await readNow(userId);
+      return new Promise((resolve) => (answer = () => resolve(stale)));
+    });
+    const first = w.connect('bob');
+    void first.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    first.close();
+    w.readable.get('bob')!.delete('p2');
+    const again = w.connect('bob');
+    await again.client({ k: 'topics.sub', topics: [{ topic: 'collection:projects' }] });
+    answer();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    clock += 60_000;
+    w.bus!.publish('collection:projects', {
+      t: 'project.unlisted',
+      projectId: 'p2',
+      rev: 1,
+      gone: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(again.of('domain')).toEqual([]);
+    w.hub.close();
+  });
+
   it('refuses a collection it does not know', async () => {
     const w = world();
     const alice = w.connect('alice');

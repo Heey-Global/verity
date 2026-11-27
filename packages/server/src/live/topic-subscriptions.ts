@@ -137,7 +137,8 @@ export class TopicSubscriptions {
       // otherwise leave the client unaware that it is missing records.
       if (!sub.overflowed) {
         sub.overflowed = true;
-        this.opts.send({ k: 'resync', topic: record.topic, cursor: record.cursor });
+        // Inside the publisher's call: a send that throws must not reach it.
+        this.trySend({ k: 'resync', topic: record.topic, cursor: record.cursor });
       }
       return;
     }

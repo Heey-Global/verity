@@ -568,6 +568,9 @@ export class LiveHub {
   /** Every project a user's scope reads held while they had a connection
    * open, by user. */
   private readonly held = new Map<string, Set<string>>();
+  /** Open connections, and departures, by user. */
+  private readonly userConnections = new Map<string, number>();
+  private readonly userEpochs = new Map<string, number>();
   private readonly scopeReads = new Map<
     string,
     { since: number; promise: Promise<LiveOverviewScope> }
@@ -590,6 +593,8 @@ export class LiveHub {
   attach(socket: LiveSocket, identity: LiveIdentity): void {
     const connection = new LiveConnection(this, socket, identity);
     this.connections.add(connection);
+    const key = connection.userKey;
+    this.userConnections.set(key, (this.userConnections.get(key) ?? 0) + 1);
     connection.start();
   }
 
@@ -598,10 +603,18 @@ export class LiveHub {
     // Who held what matters only to a user's open connections; subscribing
     // again reads the scope anew.
     const key = connection.userKey;
-    if (!this.isConnected(key)) {
-      this.held.delete(key);
-      this.scopes.delete(key);
+    const left = (this.userConnections.get(key) ?? 1) - 1;
+    if (left > 0) {
+      this.userConnections.set(key, left);
+      return;
     }
+    this.userConnections.delete(key);
+    this.held.delete(key);
+    this.scopes.delete(key);
+    this.scopeReads.delete(key);
+    // A read begun before the user left belongs to that stay, even if it
+    // answers once they are back.
+    this.userEpochs.set(key, (this.userEpochs.get(key) ?? 0) + 1);
   }
 
   /** A device was revoked, logged out or expired: its sockets stop now. */
@@ -714,12 +727,10 @@ export class LiveHub {
     const key = userId ?? '';
     const cached = this.scopes.get(key);
     if (freshAfter === undefined && cached !== undefined && this.now() - cached.at < SCOPE_TTL_MS) {
-      this.recordHeld(key, cached.scope);
       return cached.scope;
     }
     // Read after the record was published: it already shows what it brought.
     if (freshAfter !== undefined && cached !== undefined && cached.since >= freshAfter) {
-      this.recordHeld(key, cached.scope);
       return cached.scope;
     }
     // One read per user at a time: an event reaches all of a user's devices
@@ -729,6 +740,7 @@ export class LiveHub {
       return reading.promise;
     }
     const at = this.now();
+    const epoch = this.userEpochs.get(key) ?? 0;
     const entry = {
       since: this.deps.domainEvents?.head ?? 0,
       promise: Promise.resolve(undefined as unknown as LiveOverviewScope),
@@ -736,9 +748,11 @@ export class LiveHub {
     entry.promise = this.deps.access
       .overviewScope(userId)
       .then((scope) => {
-        // A read that answers after the user left must not bring back what
-        // their leaving forgot: neither the scope nor who held what.
-        if (!this.isConnected(key)) return scope;
+        // A read that answers after the user left, or that began before they
+        // left and came back, must not bring back what their leaving forgot:
+        // neither the scope nor who held what. Only such a read fills the
+        // cache, so a cache hit has been recorded already.
+        if (!this.isConnected(key) || (this.userEpochs.get(key) ?? 0) !== epoch) return scope;
         // A read that began earlier and answered later must not replace one
         // that began after it.
         const cachedNow = this.scopes.get(key);
@@ -755,8 +769,7 @@ export class LiveHub {
     return entry.promise;
   }
 
-  /** Note the projects a scope holds for a connected user, whether it was
-   * read now or taken from the cache. */
+  /** Note the projects a scope read for a connected user holds. */
   private recordHeld(key: string, scope: LiveOverviewScope): void {
     if (scope.all || !this.isConnected(key)) return;
     const held = this.held.get(key) ?? new Set<string>();
@@ -765,7 +778,7 @@ export class LiveHub {
   }
 
   private isConnected(key: string): boolean {
-    return [...this.connections].some((connection) => connection.userKey === key);
+    return (this.userConnections.get(key) ?? 0) > 0;
   }
 
   /** Whether any scope read for a user held the project: who held a project
