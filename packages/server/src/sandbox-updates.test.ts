@@ -1109,6 +1109,9 @@ describe('createSandboxUpdateChecker.statusAll', () => {
 });
 
 describe('trustInspections', () => {
+  // One record throughout: `project()` stamps a fresh `stateChangedAt`, which
+  // the held inspection's key rightly treats as a new container.
+  const fixed = project({ stateChangedAt: new Date('2026-11-27T07:00:00Z') });
   function trustSource() {
     let following = true;
     const listeners = new Set<(projectId: string | undefined) => void>();
@@ -1138,26 +1141,26 @@ describe('trustInspections', () => {
     });
     const t = trustSource();
     const stop = checker.trustInspections!(t.source);
-    await checker.statusAll([project()]);
-    await checker.statusAll([project()]);
-    await checker.status(project());
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
+    await checker.status(fixed);
     expect(inspectContainer).toHaveBeenCalledTimes(1);
 
     t.change('p1');
-    await checker.statusAll([project()]);
+    await checker.statusAll([fixed]);
     expect(inspectContainer).toHaveBeenCalledTimes(2);
     t.change(undefined);
-    await checker.statusAll([project()]);
+    await checker.statusAll([fixed]);
     expect(inspectContainer).toHaveBeenCalledTimes(3);
     t.setFollowing(false);
-    await checker.statusAll([project()]);
-    await checker.statusAll([project()]);
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
     expect(inspectContainer).toHaveBeenCalledTimes(5);
 
     t.setFollowing(true);
     stop();
-    await checker.statusAll([project()]);
-    await checker.statusAll([project()]);
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
     expect(inspectContainer).toHaveBeenCalledTimes(7);
   });
 
@@ -1178,12 +1181,12 @@ describe('trustInspections', () => {
     });
     const t = trustSource();
     checker.trustInspections!(t.source);
-    const first = checker.statusAll([project()]);
+    const first = checker.statusAll([fixed]);
     await vi.waitFor(() => expect(release).toBeDefined());
     t.change('p1');
     release();
     await first;
-    await checker.statusAll([project()]);
+    await checker.statusAll([fixed]);
     expect(inspectContainer).toHaveBeenCalledTimes(2);
   });
 
@@ -1209,6 +1212,26 @@ describe('trustInspections', () => {
     expect(inspectContainer).toHaveBeenCalledTimes(3);
   });
 
+  // Only the container's facts are held; a new image published as the target
+  // must still show as an update without any container event.
+  it('compares a held inspection with the current target on every read', async () => {
+    let target = DEFAULT_IMAGE;
+    const inspectContainer = vi.fn(async () => inspect({ image: DEFAULT_IMAGE }));
+    const checker = createSandboxUpdateChecker({
+      docker: docker(inspectContainer),
+      defaultProjectImage: async () => target,
+      toolkitFeatureRef: TOOLKIT,
+      targetTtlMs: 0,
+    });
+    checker.trustInspections!(trustSource().source);
+    await expect(checker.status(fixed)).resolves.toMatchObject({ state: 'current' });
+    target = 'ghcr.io/heey-global/verity/verity-sandbox:next';
+    // The held inspection now meets another target: the answer moves with it.
+    const after = await checker.status(fixed);
+    expect(after.state).not.toBe('current');
+    expect(inspectContainer).toHaveBeenCalledTimes(1);
+  });
+
   it('asks again after an inspect that failed', async () => {
     const inspectContainer = vi
       .fn<DockerClient['inspectContainer']>()
@@ -1220,9 +1243,9 @@ describe('trustInspections', () => {
       toolkitFeatureRef: TOOLKIT,
     });
     checker.trustInspections!(trustSource().source);
-    await checker.statusAll([project()]);
-    await checker.statusAll([project()]);
-    await checker.statusAll([project()]);
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
+    await checker.statusAll([fixed]);
     expect(inspectContainer).toHaveBeenCalledTimes(2);
   });
 });

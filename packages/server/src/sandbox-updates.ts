@@ -278,7 +278,7 @@ export function createSandboxUpdateChecker(args: {
     const unchanged =
       asked.all === generation && asked.project === (generations.get(project.id) ?? 0);
     // A failed inspect says nothing the next read should repeat.
-    const failed = !inspection.ok && inspection.status.reason === 'container inspect failed';
+    const failed = !inspection.ok && inspection.transient === true;
     if (trusted && unchanged && !failed && trust?.following() === true) {
       held.delete(project.id);
       held.set(project.id, { key: heldKey(project), inspection });
@@ -294,7 +294,7 @@ export function createSandboxUpdateChecker(args: {
       if (error instanceof DockerError && error.kind === 'container_not_found') {
         return { ok: false, status: unknown('container is not running') };
       }
-      return { ok: false, status: unknown('container inspect failed') };
+      return { ok: false, status: unknown('container inspect failed'), transient: true };
     }
     if (!inspected.running) return { ok: false, status: unknown('container is not running') };
     return { ok: true, inspected };
@@ -382,8 +382,12 @@ export function createSandboxUpdateChecker(args: {
   };
 }
 
+/** What a container showed: only facts about the container, never the
+ * comparison with the target, which every read makes afresh. `transient`
+ * marks a failure that says nothing the next read should repeat. */
 type Inspection =
-  { ok: true; inspected: ContainerInspect } | { ok: false; status: SandboxUpdateStatus };
+  | { ok: true; inspected: ContainerInspect }
+  | { ok: false; status: SandboxUpdateStatus; transient?: true };
 
 async function resolveSigningBrokerTokenHash(
   source: (() => Promise<string | null | undefined>) | undefined,
