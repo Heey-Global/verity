@@ -774,8 +774,6 @@ describe('project state writers', () => {
     expect(silent).toEqual([]);
   });
 
-  // The overview drops a hidden or deleted project only through the change
-  // feed; a silent writer would leave it on every other device's Home.
   // Who may read a project changes in these writers; a silent one leaves the
   // person's other devices with the old overview, and a removed member's
   // stream open, until something unrelated reads again.
@@ -804,6 +802,8 @@ describe('project state writers', () => {
     expect(silent).toEqual([]);
   });
 
+  // The overview drops a hidden or deleted project only through the change
+  // feed; a silent writer would leave it on every other device's Home.
   it('announces every store method that hides or deletes a project', () => {
     const silent: string[] = [];
     let writers = 0;

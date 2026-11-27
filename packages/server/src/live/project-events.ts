@@ -122,12 +122,18 @@ export function installProjectEvents(
       // the permission check must not be announced over.
       const project = await store.getProject(id);
       const listed = readable && project !== undefined && listedInProjectCollection(project);
-      domainEvents.publish(PROJECTS_COLLECTION_TOPIC, {
-        t: listed ? 'project.listed' : 'project.unlisted',
-        projectId: id,
-        rev: revisions.next(),
-        userId,
-      });
+      domainEvents.publish(
+        PROJECTS_COLLECTION_TOPIC,
+        listed
+          ? { t: 'project.listed', projectId: id, rev: revisions.next(), userId }
+          : {
+              t: 'project.unlisted',
+              projectId: id,
+              rev: revisions.next(),
+              userId,
+              ...(project === undefined ? { gone: true } : {}),
+            },
+      );
     }
   };
 
