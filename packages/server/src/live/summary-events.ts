@@ -147,20 +147,36 @@ export function installSummaryEvents(
     if (change.topics.some((topic) => ROW_TOPICS.has(topic))) schedule(change.sessionId);
   });
   // The provisioner's reconciler classifies sandboxes without a hint of its
-  // own; each session of the project names the condition in its row.
+  // own; each session of the project names the condition in its row. The
+  // projects one pass reclassifies share one read of the sessions.
+  let changedProjects: Set<string> | undefined;
+  const announceProjects = (): void => {
+    const projectIds = changedProjects;
+    changedProjects = undefined;
+    if (projectIds === undefined || closed) return;
+    void deps.eventStore
+      .listSessions()
+      .then((sessions) => {
+        for (const session of sessions)
+          if (session.projectId !== null && projectIds.has(session.projectId))
+            schedule(session.sessionId);
+      })
+      .catch((error: unknown) => {
+        app.log.warn(
+          { err: error, projectIds: [...projectIds] },
+          'verity: sandbox sessions not announced',
+        );
+      });
+  };
   const disconnected = deps.provisioner?.disconnectedSandboxProjects?.();
   const stopObservingSandboxes =
     disconnected instanceof ObservedSet
       ? (disconnected as ObservedSet<string>).observe((projectId) => {
-          void deps.eventStore
-            .listSessions()
-            .then((sessions) => {
-              for (const session of sessions)
-                if (session.projectId === projectId) schedule(session.sessionId);
-            })
-            .catch((error: unknown) => {
-              app.log.warn({ err: error, projectId }, 'verity: sandbox sessions not announced');
-            });
+          if (changedProjects === undefined) {
+            changedProjects = new Set();
+            timers.setTimeout(announceProjects, 0);
+          }
+          changedProjects.add(projectId);
         })
       : undefined;
   lifecycle.onClose(() => {

@@ -75,6 +75,7 @@ function setup(
   const record = (topic: `session:${string}` | `project:${string}`) =>
     domainEvents.subscribe(topic, undefined, (r) => published.push(r));
   return {
+    ctx,
     summaryRevision: installed.summaryRevision,
     published,
     record,
@@ -214,23 +215,50 @@ describe('session.summary', () => {
     w.record('session:s1');
     w.record('session:s2');
     w.record('session:s3');
+    const settle = async () => {
+      w.advance(0);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      w.advance(300);
+    };
     disconnected.add('p1');
     // Classified again on the next tick: no change, nothing to announce.
     disconnected.add('p1');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    w.advance(300);
+    await settle();
     await vi.waitFor(() => expect(w.published).toHaveLength(2));
     expect(w.published.map((r) => r.topic).sort()).toEqual(['session:s1', 'session:s2']);
     disconnected.delete('p1');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    w.advance(300);
+    await settle();
     await vi.waitFor(() => expect(w.published).toHaveLength(4));
     w.close();
     disconnected.add('p1');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    w.advance(300);
+    await settle();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(w.published).toHaveLength(4);
+  });
+
+  // A reconcile pass may reclassify every project at once, after a restart;
+  // each must not cost a read of every session.
+  it('reads the sessions once for the projects one pass reclassifies', async () => {
+    const disconnected = new ObservedSet<string>();
+    const sessions = [
+      { sessionId: 's1', projectId: 'p1' },
+      { sessionId: 's3', projectId: 'p2' },
+    ] as unknown as SessionRecord[];
+    const w = setup([summary()], new Set(), { disconnected, sessions });
+    const listSessions = vi.spyOn(
+      w.ctx.deps.eventStore as { listSessions: () => Promise<SessionRecord[]> },
+      'listSessions',
+    );
+    w.record('session:s1');
+    w.record('session:s3');
+    disconnected.add('p1');
+    disconnected.add('p2');
+    w.advance(0);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    w.advance(300);
+    await vi.waitFor(() => expect(w.published).toHaveLength(2));
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    w.close();
   });
 
   it('keeps Wiki maintenance sessions to their own topic', async () => {
