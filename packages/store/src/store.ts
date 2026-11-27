@@ -775,10 +775,13 @@ export class EventStore implements EventSink {
     () => this.cipher,
     () => this.projectChanges,
   );
-  private readonly projectLifecycle = new ProjectLifecycleStore(
+  private readonly projectLifecycle: ProjectLifecycleStore = new ProjectLifecycleStore(
     () => this.db,
     (id) => this.getProject(id),
     this.projectChanges,
+    () => this.listProjects(),
+    (owner, repo, forgeConnectionId) =>
+      this.listProjectsByOwnerRepo(owner, repo, forgeConnectionId),
   );
 
   get calendarWatch(): CalendarWatchStore {
@@ -2007,13 +2010,7 @@ export class EventStore implements EventSink {
     repo: string,
     forgeConnectionId?: string | null,
   ): Promise<ProjectRecord | undefined> {
-    // Lookup-form mirrors the persistence-form (lowercase, §19.0/§19.2): a row
-    // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
-    // caller can pass the raw GitHub-display form without having to know about
-    // our persistence normalisation.
-    // Several projects may share a repository; this answers its first one.
-    // Callers that must not guess use listProjectsByOwnerRepo.
-    return (await this.listProjectsByOwnerRepo(owner, repo, forgeConnectionId))[0];
+    return this.projectLifecycle.getProjectByOwnerRepo(owner, repo, forgeConnectionId);
   }
 
   /** Every project of one repository, hidden ones included, first instance first. */
@@ -2081,7 +2078,7 @@ export class EventStore implements EventSink {
   }
 
   async reorderProjects(ids: string[]): Promise<ProjectRecord[]> {
-    return this.projectLifecycle.reorderProjects(ids, () => this.listProjects());
+    return this.projectLifecycle.reorderProjects(ids);
   }
 
   /**

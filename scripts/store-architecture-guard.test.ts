@@ -157,6 +157,22 @@ it('allows Google connections to forward their session and project lookups', () 
   ).toEqual(['connections']);
 });
 
+it('allows the project lifecycle store to forward reads and receive the change feed', () => {
+  const source = (feed: string) => `
+    class EventStore {
+      lifecycle = new ProjectLifecycleStore(
+        () => this.db,
+        (id) => this.getProject(id),
+        ${feed},
+        () => this.listProjects(),
+        (owner, repo, connection) => this.listProjectsByOwnerRepo(owner, repo, connection),
+      );
+    }
+  `;
+  expect(facadeImplementations(source('this.projectChanges'))).toEqual({});
+  expect(Object.keys(facadeImplementations(source('this.otherFeed')))).toEqual(['lifecycle']);
+});
+
 it('allows plan implementation to use the existing append and projection stores', () => {
   const source = (store: string, projection: string) =>
     'class EventStore { plan = new ' +
