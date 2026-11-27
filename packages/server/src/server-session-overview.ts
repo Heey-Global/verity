@@ -70,6 +70,9 @@ export interface ServerSessionOverviewOptions {
   vulnerabilitySessions: Pick<ReturnType<typeof createVulnerabilitySessionMonitor>, 'attention'>;
   /** Told every pull request status the session cache presents (ADR 0033). */
   onPrStatus?: (session: SessionRecord, status: PullRequestStatus | null) => void;
+  /** Told a worktree whose git read found a branch other than the one last
+   * announced for it, whichever read it was (ADR 0033). */
+  onBranchChange?: (worktree: string) => void;
 }
 
 export interface ServerSessionOverview {
@@ -118,6 +121,9 @@ export interface ServerSessionOverview {
     worktree: string,
   ) => Promise<string | undefined>;
   summarizeSession: (session: SessionRecord) => Promise<SessionSummary>;
+  /** Reads the session's branch from git now, past the cache's age, without
+   * waking a sleeping sandbox. A changed branch is announced like any other. */
+  refreshBranch: (session: SessionRecord) => Promise<void>;
   readBranchMetadata: (branches: GitBranchService, worktree: string) => Promise<BranchMetadata>;
   localMergeTarget: (
     session: SessionRecord,
@@ -145,6 +151,7 @@ export function createServerSessionOverview({
   describePushSession,
   vulnerabilitySessions,
   onPrStatus,
+  onBranchChange,
 }: ServerSessionOverviewOptions): ServerSessionOverview {
   // A session's live status badge. The event log lags the conductor: between a
   // turn being dispatched and claude emitting its first `status: running` event,
@@ -243,6 +250,28 @@ export function createServerSessionOverview({
    */
   const branchTtlMs = deps.branchCacheTtlMs ?? BRANCH_TTL_MS;
   const branchCache = new Map<string, { branch: string; at: number }>();
+  /** The branch last announced per worktree. Kept apart from the cache, which
+   * an invalidation empties: reading the same branch again is no change. */
+  const announcedBranch = new Map<string, string>();
+  /** Stores a branch git answered and announces it when it differs from the
+   * one announced last. The first after a start counts: list reads gave no
+   * branch until it. No branch (a detached HEAD) is not announced, but the
+   * branch checked out after it is. */
+  const rememberBranch = (worktree: string, branch: string): void => {
+    branchCache.set(worktree, { branch, at: Date.now() });
+    if (branch === '') {
+      announcedBranch.delete(worktree);
+      return;
+    }
+    if (announcedBranch.get(worktree) === branch) return;
+    announcedBranch.set(worktree, branch);
+    try {
+      onBranchChange?.(worktree);
+    } catch (err) {
+      // The read succeeded; a failed announcement must not count as its failure.
+      app.log.warn({ err, worktree }, 'branch change not announced');
+    }
+  };
   // A fleet-wide list must not launch one Docker exec per retained worktree at once:
   // each lane runs at most two git reads. The list's speculative refreshes get their
   // own lane, so at most four run in total; sharing one queue put the
@@ -327,7 +356,7 @@ export function createServerSessionOverview({
     token.read
       .then((branch) => {
         if (token.disowned) return;
-        branchCache.set(worktree, { branch, at: Date.now() });
+        rememberBranch(worktree, branch);
       })
       .catch(() => {
         // A FAILED read has to advance the clock too. Leaving the entry stale
@@ -394,8 +423,7 @@ export function createServerSessionOverview({
       .then((value) => {
         if (!token.disowned) {
           branchMetadata.set(worktree, { value, at: Date.now() });
-          if (branches.metadata)
-            branchCache.set(worktree, { branch: value.current, at: Date.now() });
+          if (branches.metadata) rememberBranch(worktree, value.current);
         }
       })
       .catch(() => undefined)
@@ -455,6 +483,10 @@ export function createServerSessionOverview({
     }
     return cached?.branch || undefined;
   };
+  const refreshBranch = async (session: SessionRecord): Promise<void> => {
+    const branches = await branchesForSession(session);
+    if (branches !== undefined) await readBranch(branches, session.worktree, true);
+  };
   /** Evict labels for worktrees that no longer exist, so a long-lived server does
    *  not keep one entry per session ever created — and a recreated worktree can
    *  never be answered from the deleted one's label. Same lifecycle and same call
@@ -463,6 +495,9 @@ export function createServerSessionOverview({
    *  prune, but it also could not have opened one, so the map stays bounded by the
    *  worktrees this process actually served. */
   const pruneBranchCache = (liveWorktrees: ReadonlySet<string>): void => {
+    for (const worktree of announcedBranch.keys()) {
+      if (!liveWorktrees.has(worktree)) announcedBranch.delete(worktree);
+    }
     for (const worktree of new Set([
       ...branchCache.keys(),
       ...branchMetadata.keys(),
@@ -1301,6 +1336,7 @@ export function createServerSessionOverview({
     branchesForSession,
     currentBranchCached,
     summarizeSession,
+    refreshBranch,
     readBranchMetadata,
     localMergeTarget,
     prCleanupPending,
