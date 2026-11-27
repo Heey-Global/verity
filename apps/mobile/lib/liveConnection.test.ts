@@ -1,5 +1,6 @@
 import { AppState } from 'react-native';
 import type { LiveResource, LiveServerFrame, VerityClient } from '@verity/mobile';
+import { createCoverageRechecks } from './coverageRechecks';
 import { liveConnectionFor, stopLiveConnection, subscribeLiveRefresh } from './liveConnection';
 import { createWebSocket } from './socket';
 
@@ -136,6 +137,27 @@ it('watches again when coverage ends without a read', async () => {
   ]);
   release();
   detach();
+});
+
+it('asks again when what the view shows changes', async () => {
+  let covered = true;
+  const rechecks = createCoverageRechecks();
+  const detach = subscribeLiveRefresh(client, jest.fn(), (path) => path === '/sessions', [], {
+    covered: () => covered,
+    coverageChanged: rechecks.register,
+  });
+  read({ path: '/sessions' });
+  expect(sent.filter((frame) => frame.k === 'watch')).toEqual([]);
+  // A session without a project was listed: no topic changed.
+  covered = false;
+  rechecks.run();
+  expect(sent.filter((frame) => frame.k === 'watch')).toEqual([
+    { k: 'watch', resource: { path: '/sessions' } },
+  ]);
+  detach();
+  covered = true;
+  rechecks.run();
+  expect(sent.filter((frame) => frame.k === 'unwatch')).toHaveLength(1);
 });
 
 it('keeps one refresh pending when changes arrive during a slow request', async () => {

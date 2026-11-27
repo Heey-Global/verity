@@ -77,6 +77,10 @@ export function subscribeLiveRefresh(
      * resource it last read again.
      */
     covered?: (path: string, connection: LiveConnection) => boolean;
+    /** Registers the check to run when what the view shows changed, which
+     * the coverage depends on as well: a listed session without a project
+     * changes no topic. Returns the unregistration. */
+    coverageChanged?: (recheck: () => void) => () => void;
   } = {},
 ): () => void {
   // Lightweight test/demo clients may implement only the API calls they use.
@@ -143,13 +147,13 @@ export function subscribeLiveRefresh(
   const detachReads = client.observeReads(observe);
   // Coverage can end without a read: a topic past the limit, one that fails
   // or that its last view released.
+  const recheck = (): void => {
+    if (disposed) return;
+    for (const resource of [...observed.values()]) observe(resource);
+  };
   const detachCoverage =
-    options.covered === undefined
-      ? undefined
-      : connection.onTopicsChanged(() => {
-          if (disposed) return;
-          for (const resource of [...observed.values()]) observe(resource);
-        });
+    options.covered === undefined ? undefined : connection.onTopicsChanged(recheck);
+  const detachShown = options.coverageChanged?.(recheck);
   const detachHints = connection.onHints((hints) => {
     if (
       hints.some(({ sessionId, topics }) => {
@@ -195,6 +199,7 @@ export function subscribeLiveRefresh(
     clearInterval(fallback);
     detachReads();
     detachCoverage?.();
+    detachShown?.();
     detachHints();
     detachState();
     for (const subscription of subscriptions.values()) subscription.detach();

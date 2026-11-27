@@ -193,8 +193,9 @@ A topic counts as followed once the server answered its subscription and
 while it is not retrying after an error. A project past the topic limit is
 not followed, so a long list keeps watching for it. The connection reports
 every change of what it follows — a topic subscribed, answered, ended,
-failed or dropped with the socket — and the views ask again then, so one
-that loses coverage watches again without waiting for a read. The routes stay observable for version 1 clients and
+failed or dropped with the socket — and the views ask again then, and when
+what they show changes, so one that loses coverage watches again without
+waiting for a read. The routes stay observable for version 1 clients and
 for these fallbacks.
 
 ## Consequences

@@ -14,6 +14,7 @@ import { useSessionList } from './useSessionList';
 
 type Coverage = (path: string, connection: LiveConnection) => boolean;
 const mockRefreshes: { filter: (path: string) => boolean; covered?: Coverage }[] = [];
+const mockRecheck = jest.fn();
 jest.mock('../lib/client', () => ({ getVerityBaseUrl: () => 'https://core.example' }));
 jest.mock('../lib/liveConnection', () => ({
   useLiveHints: () => undefined,
@@ -22,11 +23,15 @@ jest.mock('../lib/liveConnection', () => ({
     _refresh: unknown,
     filter: (path: string) => boolean,
     _resources: unknown,
-    options: { covered?: Coverage } = {},
+    options: { covered?: Coverage; coverageChanged?: (recheck: () => void) => () => void } = {},
   ) => {
+    const unregister = options.coverageChanged?.(mockRecheck);
     const entry = { filter, ...(options.covered ? { covered: options.covered } : {}) };
     mockRefreshes.push(entry);
-    return () => mockRefreshes.splice(mockRefreshes.indexOf(entry), 1);
+    return () => {
+      unregister?.();
+      mockRefreshes.splice(mockRefreshes.indexOf(entry), 1);
+    };
   },
   liveConnectionFor: () => ({
     connectionState: 'connected',
@@ -73,6 +78,7 @@ beforeEach(() => {
   jest.spyOn(AppState, 'addEventListener').mockReturnValue({ remove: jest.fn() });
   Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
   mockRefreshes.length = 0;
+  mockRecheck.mockClear();
 });
 afterEach(() => jest.restoreAllMocks());
 
@@ -112,6 +118,8 @@ describe('live coverage of the overview views', () => {
     // A project past the topic limit: the list keeps watching for it.
     expect(covered('/projects', connection(all.slice(0, 2)))).toBe(false);
     expect(covered('/projects', connection(all.slice(1)))).toBe(false);
+    // Listed projects change coverage before their topics are subscribed.
+    expect(mockRecheck).toHaveBeenCalled();
     unmount();
   });
 
@@ -140,6 +148,8 @@ describe('live coverage of the overview views', () => {
     // Nothing listed: sessions that appear arrive as hints.
     sessions = [];
     expect(covered('/sessions', connection([]))).toBe(true);
+    // A listed session without a project changes no topic: the list asks.
+    expect(mockRecheck).toHaveBeenCalled();
     unmount();
   });
 });
