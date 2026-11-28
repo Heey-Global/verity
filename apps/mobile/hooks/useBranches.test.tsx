@@ -140,6 +140,30 @@ describe('useBranches live updates', () => {
     expect(result.current.pullRequests).toEqual([row]);
   });
 
+  // A read that failed must not leave Merge on the row it no longer refreshed.
+  it('shows the status a read names on the kept row of the same pull request', async () => {
+    const good = { ...branches('open', 'success').pullRequest!, mergeable: true };
+    const row = {
+      ...good,
+      repository: { id: 'app', name: 'app', owner: 'example', repo: 'repo', isDefault: true },
+    };
+    const failed = { ...good, pipeline: 'unknown' as const, mergeable: null };
+    const getBranches = jest
+      .fn()
+      .mockResolvedValueOnce({ ...branches(), pullRequest: good, pullRequests: [row] })
+      .mockResolvedValueOnce({ ...branches(), pullRequest: failed, pullRequests: null });
+    const client = { getBranches } as unknown as VerityClient;
+    const { result } = renderHook(() => useBranches(client, 'rows-failed'));
+    await act(async () => {});
+    expect(result.current.pullRequests[0]).toMatchObject({ mergeable: true });
+    await changed();
+    expect(result.current.pullRequests[0]).toMatchObject({
+      pipeline: 'unknown',
+      mergeable: null,
+      repository: { id: 'app' },
+    });
+  });
+
   it('aborts the previous identity and ignores its late response', async () => {
     const old = deferred<BranchList>();
     const next = deferred<BranchList>();

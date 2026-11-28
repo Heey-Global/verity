@@ -145,6 +145,11 @@ it('keeps the last observed status while a slow PR refresh is out', async () => 
       pullRequests: [{ number: 119, pipeline: 'success', mergeable: true }],
     });
     expect(pending.pullRequest).not.toHaveProperty('observationFailed');
+    // A read that never settles must not keep offering Merge.
+    now = 200_000;
+    expect((await server.inject({ url })).json()).toMatchObject({
+      pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+    });
   } finally {
     releaseLookup(failingPr());
     await server.close();
@@ -178,6 +183,11 @@ it('masks the last observed status once a PR refresh has failed', async () => {
     ...serverDeps(),
     branchPrStatus,
     pullRequestCacheNow: () => now,
+    projectPullRequests: {
+      list: vi.fn().mockResolvedValue({ webUrl: '', pulls: [] }),
+      status: vi.fn().mockResolvedValue(null),
+      merge: vi.fn().mockResolvedValue(false),
+    },
   });
   const url = '/sessions/s1/branches';
   try {
@@ -187,6 +197,7 @@ it('masks the last observed status once a PR refresh has failed', async () => {
     now = 60_000;
     expect((await server.inject({ url })).json()).toMatchObject({
       pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+      pullRequests: [{ number: 119, mergeable: null, observationFailed: true }],
     });
   } finally {
     await server.close();

@@ -50,6 +50,10 @@ interface ReadOptions {
  * session at once, or one reopening it, cost one forge read. */
 export const FRESH_MIN_MS = 2_000;
 
+/** How old an observation may be and still be shown as it is while its
+ * refresh is out. A read that never settles must not keep offering Merge. */
+export const PENDING_STATUS_MAX_AGE_MS = 120_000;
+
 function foregroundInterval(entry: Entry): number {
   const { status } = entry;
   if (status === null) return 5_000;
@@ -234,5 +238,10 @@ export function createSessionPrCache(options: {
   /** Cached presentation snapshot; get() retains the raw status for automation. */
   const peek = (worktree: string): PullRequestStatus | null | undefined =>
     entries.get(worktree)?.visibleStatus;
-  return { get, peek, isDue, invalidate, prune };
+  /** How long ago the status {@link peek} returns was observed. */
+  const age = (worktree: string): number | undefined => {
+    const entry = entries.get(worktree);
+    return entry === undefined ? undefined : now() - entry.at;
+  };
+  return { get, peek, age, isDue, invalidate, prune };
 }

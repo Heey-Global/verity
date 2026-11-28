@@ -40,7 +40,11 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionLinkRoutes } from './session-link-routes.js';
 import { registerSessionMergeRoutes } from './session-merge-routes.js';
-import { FRESH_MIN_MS } from './session-pr-cache.js';
+import {
+  FRESH_MIN_MS,
+  PENDING_STATUS_MAX_AGE_MS,
+  unavailablePullRequestStatus,
+} from './session-pr-cache.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { branchReadQuery, sessionParams } from './session-route-schemas.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
@@ -633,10 +637,20 @@ export function installSessionRoutes(
       // finishes invalidates this list, so the session reads the new status a
       // moment later. Masking it as unknown left a lone Refresh in place of a
       // Merge the overview was still offering. A read that actually failed is
-      // already stored masked by the cache.
+      // already stored masked by the cache; one that has not settled for
+      // {@link PENDING_STATUS_MAX_AGE_MS} is masked here.
       const observed = sessionPrCache.peek(session.worktree);
+      const stale =
+        rawPullRequest === undefined &&
+        observed &&
+        (sessionPrCache.age(session.worktree) ?? 0) > PENDING_STATUS_MAX_AGE_MS;
       // `undefined` while a first read is out: the list then names no status.
-      const pullRequest = rawPullRequest !== undefined ? (observed ?? null) : observed;
+      const pullRequest =
+        rawPullRequest !== undefined
+          ? (observed ?? null)
+          : stale
+            ? unavailablePullRequestStatus(observed)
+            : observed;
       const pullRequests = await readRepositoryPRs(pullRequest);
       const currentPr =
         pullRequest !== undefined
