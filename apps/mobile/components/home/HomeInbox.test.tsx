@@ -1035,7 +1035,7 @@ it('places the server widget last, below Shared knowledge', async () => {
     disk: null,
   } as never);
   await renderInbox([question], client);
-  expect(await screen.findByText('CPU · 8 cores')).toBeOnTheScreen();
+  expect(await screen.findByTestId('host-figures')).toBeOnTheScreen();
   const order = screen.UNSAFE_root.findAll(
     (node) =>
       typeof node.type === 'string' &&

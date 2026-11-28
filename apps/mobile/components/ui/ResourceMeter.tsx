@@ -12,6 +12,37 @@ const busy = (share: number | null) => share !== null && share >= RESOURCE_BUSY_
 const clamp = (share: number) => Math.min(100, Math.max(0, Number.isFinite(share) ? share : 0));
 
 /**
+ * One measured resource as a single figure — its icon and current share — for
+ * the collapsed form of a set of meters (docs/design-system.md § 5.5c). A share
+ * from 90 % takes `attention`, icon and figure alike.
+ */
+export function ResourceFigure({
+  icon,
+  label,
+  share,
+}: {
+  icon: IconName;
+  /** The spoken name: `CPU`, `RAM`, `Disk`. */
+  label: string;
+  share: number | null;
+}) {
+  const { theme } = useUnistyles();
+  const warn = busy(share);
+  return (
+    <View
+      style={styles.figure}
+      accessible
+      accessibilityLabel={`${label} ${share === null ? 'not measured' : `${Math.round(share)} percent`}`}
+    >
+      <Icon name={icon} size={14} color={warn ? theme.colors.attention : theme.colors.textMuted} />
+      <Text variant="bodySmall" tone={warn ? 'attention' : 'default'} style={styles.value}>
+        {share === null ? '–' : `${Math.round(share)}%`}
+      </Text>
+    </View>
+  );
+}
+
+/**
  * One measured resource of a machine (docs/design-system.md § 5.5c): an icon and
  * label on the left, the current share on the right, and under them either the
  * recent history as bars (`history`, for something that moves from minute to
@@ -101,6 +132,7 @@ const styles = StyleSheet.create((theme) => ({
   meter: { gap: theme.spacing.sm, paddingTop: theme.spacing.sm },
   head: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   label: { flex: 1 },
+  figure: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   value: { fontVariant: ['tabular-nums'] },
   // A meter is a state, never an action: the bars are `textMuted`, the current
   // one `text`, and a busy reading `attention`, each in a faint full column.

@@ -22,7 +22,14 @@ const reading = (overrides: Partial<Resources> = {}): Resources => ({
 
 it('shows CPU, memory and disk with their sizes', async () => {
   render(<HostResources load={() => Promise.resolve(reading())} />);
-  expect(await screen.findByText('Server')).toBeOnTheScreen();
+  // Collapsed: one row with the three figures.
+  expect(await screen.findByTestId('host-figures')).toBeOnTheScreen();
+  expect(
+    screen.getByLabelText('Server, CPU 12 percent, RAM 29 percent, Disk 90 percent'),
+  ).toBeOnTheScreen();
+  expect(screen.queryByTestId('host-cpu')).not.toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Server'));
+  expect(screen.queryByTestId('host-figures')).not.toBeOnTheScreen();
   expect(screen.getByText('CPU · 4 cores')).toBeOnTheScreen();
   expect(screen.getByText('RAM · 2.2 / 7.7 GB')).toBeOnTheScreen();
   expect(screen.getByText('Disk · 419.0 / 465.0 GB')).toBeOnTheScreen();
@@ -40,7 +47,8 @@ it('leaves out what the server cannot measure', async () => {
       load={() => Promise.resolve(reading({ cpu: { percent: null, cores: 4 }, disk: null }))}
     />,
   );
-  expect(await screen.findByText('CPU · 4 cores')).toBeOnTheScreen();
+  fireEvent.press(await screen.findByText('Server'));
+  expect(screen.getByText('CPU · 4 cores')).toBeOnTheScreen();
   expect(screen.getByText('–')).toBeOnTheScreen();
   expect(screen.queryByTestId('host-disk')).not.toBeOnTheScreen();
 });
@@ -57,6 +65,8 @@ it('collects one bar per reading and keeps only the last slots', async () => {
     await act(async () => {
       await jest.advanceTimersByTimeAsync(2500);
     });
+    // Collected while collapsed, shown once opened.
+    fireEvent.press(screen.getByText('Server'));
     expect(filled()).toBe(3);
     await act(async () => {
       await jest.advanceTimersByTimeAsync(1000 * (HISTORY_SLOTS + 5));
@@ -169,7 +179,8 @@ it('drops the reading and stops when a later refresh is refused', async () => {
 it('starts over when the loader changes', async () => {
   const first = () => Promise.resolve(reading({ cpu: { percent: 70, cores: 4 } }));
   const view = render(<HostResources load={first} intervalMs={60_000} />);
-  expect(await screen.findByText('70%')).toBeOnTheScreen();
+  fireEvent.press(await screen.findByText('Server'));
+  expect(screen.getByText('70%')).toBeOnTheScreen();
   let answer: (value: Resources) => void = () => undefined;
   const second = () =>
     new Promise<Resources>((resolve) => {

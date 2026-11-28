@@ -25,7 +25,7 @@ const RESOURCES = {
 };
 
 /** Phone, the end of Home: the last results, Shared knowledge, then the server. */
-export default function HomePhoneMockup() {
+export function HomeEnd({ expanded }: { expanded: boolean }) {
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -62,12 +62,22 @@ export default function HomePhoneMockup() {
           </Group>
         </View>
         <View style={styles.server}>
-          <HostResourcesCard resources={RESOURCES} history={{ cpu: CPU, memory: MEMORY }} />
+          <HostResourcesCard
+            resources={RESOURCES}
+            history={{ cpu: CPU, memory: MEMORY }}
+            expanded={expanded}
+            onToggle={ignore}
+          />
         </View>
       </ScrollView>
       <HomeTabBar tab="home" onChange={ignore} count={3} bottomInset={0} />
     </View>
   );
+}
+
+/** Expanded after a tap: a meter each, CPU and memory with their history. */
+export default function HomePhoneMockup() {
+  return <HomeEnd expanded />;
 }
 
 const styles = StyleSheet.create((theme) => ({

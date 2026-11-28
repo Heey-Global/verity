@@ -1,14 +1,16 @@
-// The server's machine at a glance, last on Home: CPU and memory with their
-// last few minutes, and the disk that holds Verity's data. A disk that fills
+// The server's machine at a glance, last on Home: one row with CPU, memory and
+// disk that opens to CPU and memory with their last few minutes and the disk
+// that holds Verity's data. A disk that fills
 // over days shows up here long before anything fails. Administrators only; for
 // anyone else the server refuses and nothing is shown.
 import { usedPercent, VerityApiError, type HostResources as Resources } from '@verity/mobile';
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { createVerityClient } from '../../lib/client';
-import { Card, CardHead, ResourceMeter } from '../ui';
+import { Icon } from '../Icon';
+import { Group, ResourceFigure, ResourceMeter, Row } from '../ui';
 
 /** Readings kept for the history strips: five minutes at the default interval. */
 export const HISTORY_SLOTS = 30;
@@ -16,6 +18,14 @@ export const HISTORY_SLOTS = 30;
 const gigabytes = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)}`;
 const amount = (used: { usedBytes: number; totalBytes: number }) =>
   `${gigabytes(used.usedBytes)} / ${gigabytes(used.totalBytes)} GB`;
+
+const spokenShare = (name: string, share: number | null) =>
+  share === null ? `${name} not measured` : `${name} ${Math.round(share)} percent`;
+/** The row is one element for VoiceOver, so it names every figure itself. */
+const spoken = (cpu: number | null, memory: number | null, disk: number | null) =>
+  ['Server', spokenShare('CPU', cpu), spokenShare('RAM', memory)]
+    .concat(disk === null ? [] : [spokenShare('Disk', disk)])
+    .join(', ');
 
 type History = { cpu: (number | null)[]; memory: (number | null)[] };
 const append = (list: (number | null)[], value: number | null) =>
@@ -37,6 +47,9 @@ export function HostResources({
 }) {
   const [resources, setResources] = useState<Resources | null>(null);
   const [history, setHistory] = useState<History>({ cpu: [], memory: [] });
+  // Collapsed by default: one quiet row at the end of Home. The history keeps
+  // being collected meanwhile, so the strips are filled when it is opened.
+  const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -87,54 +100,105 @@ export function HostResources({
   return (
     // The room above belongs to the widget, so Home has no gap when it is hidden.
     <View style={styles.spaced} testID="host-resources">
-      <HostResourcesCard resources={resources} history={history} />
+      <HostResourcesCard
+        resources={resources}
+        history={history}
+        expanded={expanded}
+        onToggle={() => setExpanded((open) => !open)}
+      />
     </View>
   );
 }
 
-/** One reading with the history collected so far, drawn as the Home card. */
+/**
+ * One reading with the history collected so far, drawn as the Home card:
+ * collapsed, a single row with the three figures; expanded, a meter each.
+ */
 export function HostResourcesCard({
   resources,
   history,
+  expanded,
+  onToggle,
 }: {
   resources: Resources;
   history: { cpu: readonly (number | null)[]; memory: readonly (number | null)[] };
+  expanded: boolean;
+  onToggle: () => void;
 }) {
+  const { theme } = useUnistyles();
+  const memory = usedPercent(resources.memory);
+  const disk = resources.disk === null ? null : usedPercent(resources.disk);
   return (
-    <Card stacked>
-      <CardHead
-        title="Server"
-        subtitle="Live · last 5 minutes"
-        leading={{ icon: 'server', quiet: true }}
-      />
-      <ResourceMeter
-        testID="host-cpu"
-        icon="cpu"
-        label={`CPU · ${resources.cpu.cores} cores`}
-        share={resources.cpu.percent}
-        history={history.cpu}
-        slots={HISTORY_SLOTS}
-      />
-      <ResourceMeter
-        testID="host-memory"
-        icon="layers"
-        label={`RAM · ${amount(resources.memory)}`}
-        share={usedPercent(resources.memory)}
-        history={history.memory}
-        slots={HISTORY_SLOTS}
-      />
-      {resources.disk === null ? null : (
-        <ResourceMeter
-          testID="host-disk"
-          icon="hard-drive"
-          label={`Disk · ${amount(resources.disk)}`}
-          share={usedPercent(resources.disk)}
+    <Group>
+      <View>
+        <Row
+          title="Server"
+          subtitle={expanded ? 'Live · last 5 minutes' : undefined}
+          leading={{ icon: 'server', quiet: true }}
+          onPress={onToggle}
+          expanded={expanded}
+          accessibilityHint={expanded ? 'Collapse details' : 'Expand details'}
+          // Collapsed, the figures take the line under the title: beside it,
+          // the trailing side is capped and would cut the last one off.
+          tag={
+            expanded ? undefined : (
+              <View style={styles.figures} testID="host-figures">
+                <ResourceFigure icon="cpu" label="CPU" share={resources.cpu.percent} />
+                <ResourceFigure icon="layers" label="RAM" share={memory} />
+                {resources.disk === null ? null : (
+                  <ResourceFigure icon="hard-drive" label="Disk" share={disk} />
+                )}
+              </View>
+            )
+          }
+          accessibilityLabel={spoken(resources.cpu.percent, memory, disk)}
+          trailing={
+            <Icon
+              name={expanded ? 'chevron-up' : 'chevron-down'}
+              size={18}
+              color={theme.colors.textMuted}
+            />
+          }
         />
-      )}
-    </Card>
+        {expanded ? (
+          <View style={styles.meters}>
+            <ResourceMeter
+              testID="host-cpu"
+              icon="cpu"
+              label={`CPU · ${resources.cpu.cores} cores`}
+              share={resources.cpu.percent}
+              history={history.cpu}
+              slots={HISTORY_SLOTS}
+            />
+            <ResourceMeter
+              testID="host-memory"
+              icon="layers"
+              label={`RAM · ${amount(resources.memory)}`}
+              share={memory}
+              history={history.memory}
+              slots={HISTORY_SLOTS}
+            />
+            {resources.disk === null ? null : (
+              <ResourceMeter
+                testID="host-disk"
+                icon="hard-drive"
+                label={`Disk · ${amount(resources.disk)}`}
+                share={disk}
+              />
+            )}
+          </View>
+        ) : null}
+      </View>
+    </Group>
   );
 }
 
 const styles = StyleSheet.create((theme) => ({
   spaced: { paddingTop: theme.spacing.lg },
+  figures: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.lg },
+  meters: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: theme.spacing.lg,
+    gap: theme.spacing.md,
+  },
 }));

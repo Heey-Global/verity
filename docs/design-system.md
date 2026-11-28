@@ -355,7 +355,9 @@ title; a log list keeps them dense and scannable.
   the fill `text`, and any reading from 90 % `attention` — the figure too. Every slot is a
   full-height column in a `neutral` tint of `text`, so the strip shows its 0–100 % scale
   and its full width from the first reading.
-- Meters stack in a stacked `Card` under a `CardHead` that names the machine.
+- Collapsed, a set of meters is one row naming the machine, with one `ResourceFigure` per
+  resource (icon and share in `BodySmall`) and a chevron; tapping it opens the meters
+  below the row, and the history keeps being collected while it is closed.
 
 ### 5.6 Sheet
 
