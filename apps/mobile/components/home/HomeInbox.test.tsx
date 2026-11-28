@@ -13,12 +13,13 @@ jest.mock('expo-crypto', () => {
 const mockCapture = { scope: 'account' as string | null };
 jest.mock('../../lib/tasksStore', () => ({ taskAccountScope: () => mockCapture.scope }));
 
-import type {
-  InboxItem,
-  ProjectRecord,
-  SessionSummary,
-  UpcomingMeeting,
-  VerityClient,
+import {
+  VerityApiError,
+  type InboxItem,
+  type ProjectRecord,
+  type SessionSummary,
+  type UpcomingMeeting,
+  type VerityClient,
 } from '@verity/mobile';
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
 import { Alert, StyleSheet } from 'react-native';
@@ -77,6 +78,10 @@ function fakeClient(meetings: Promise<UpcomingMeeting[]> = Promise.resolve([])) 
       dismissed ? [key] : [],
     ),
     setProjectInboxDismissed: jest.fn(async () => [] as string[]),
+    // Not an administrator: the server widget asks once and stays hidden.
+    getHostResources: jest.fn(() =>
+      Promise.reject(new VerityApiError(403, 'Administrator access required')),
+    ),
   };
 }
 
@@ -1017,4 +1022,24 @@ it('leads every Needs you entry with the session tile and its corner mark', asyn
   const card = within(needs.getByTestId('inbox-item-permission'));
   expect(card.getByTestId('work-agent-permission')).toBeOnTheScreen();
   expect(card.getByLabelText('Waiting for you')).toBeOnTheScreen();
+});
+
+// The server widget once landed under the project list instead of here; it
+// belongs on Home, below everything else, Shared knowledge included.
+it('places the server widget last, below Shared knowledge', async () => {
+  const client = fakeClient();
+  client.getHostResources.mockResolvedValue({
+    observedAt: '2026-11-28T09:08:00.000Z',
+    cpu: { percent: 46, cores: 8 },
+    memory: { usedBytes: 5, totalBytes: 16 },
+    disk: null,
+  } as never);
+  await renderInbox([question], client);
+  expect(await screen.findByTestId('host-figures')).toBeOnTheScreen();
+  const order = screen.UNSAFE_root.findAll(
+    (node) =>
+      typeof node.type === 'string' &&
+      (node.props.testID === 'home-shared-knowledge' || node.props.testID === 'host-resources'),
+  ).map((node) => node.props.testID as string);
+  expect(order).toEqual(['home-shared-knowledge', 'host-resources']);
 });

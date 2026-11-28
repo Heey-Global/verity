@@ -19,6 +19,7 @@ export { InlineEdit } from './InlineEdit';
 export { HintBox, TextField } from './TextField';
 export { Toggle } from './Toggle';
 export { UsageRing, type UsageRingLevel } from './UsageRing';
+export { ResourceFigure, ResourceMeter } from './ResourceMeter';
 export { CaptureField } from './CaptureField';
 
 export { useTextPrompt } from './TextPrompt';

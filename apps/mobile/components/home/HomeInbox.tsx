@@ -15,6 +15,7 @@ import { RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { FeedCard, useInboxFeed } from '../inbox/InboxFeed';
+import { HostResources } from './HostResources';
 import { Group, Row, Text } from '../ui';
 import { taskAccountScope } from '../../lib/tasksStore';
 import { syncWatchInbox } from '../../lib/watchCapture';
@@ -30,7 +31,8 @@ const MEETING_REFRESH_MS = 5 * 60_000;
 const CLOCK_TICK_MS = 30_000;
 /**
  * Home: the same live work sections as the project view, across all projects
- * and with their context, then a quiet way to Shared knowledge. Verity herself
+ * and with their context, then a quiet way to Shared knowledge and, for
+ * administrators, the server's machine at a glance. Verity herself
  * is reached through the floating V (docs/design-system.md § 5.8 "Home presence").
  *
  * {@link ProjectWork} owns session placement and rows in both views;
@@ -75,6 +77,8 @@ export function HomeInbox({
   onOpenSharedKnowledge: () => void;
 }) {
   const meetings = useUpcomingMeetings(client);
+  // Stable per client: a new loader per render would restart the widget's polling.
+  const loadHostResources = useCallback(() => client.getHostResources(), [client]);
   const now = useClock(CLOCK_TICK_MS);
   const workSessions = useMemo(() => {
     const archived = new Set(
@@ -189,6 +193,8 @@ export function HomeInbox({
           />
         </Group>
       </View>
+      {/* Below everything: the server's machine, for administrators only. */}
+      <HostResources load={loadHostResources} />
     </ScrollView>
   );
 }

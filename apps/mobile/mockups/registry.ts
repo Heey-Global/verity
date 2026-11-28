@@ -13,6 +13,7 @@ import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
 import { dopplerConnectionsSpec } from './doppler-connections';
 import { homeAnswersSpec } from './home-answers';
+import { homeServerWidgetSpec } from './home-server-widget';
 import { homeVerityEntrySpec } from './home-verity-entry';
 import { fileExplorerSpec } from './file-explorer';
 import { instructionSourcesSpec } from './instruction-sources';
@@ -34,6 +35,7 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  homeServerWidgetSpec,
   permissionOverviewSpec,
   assistantHandoffResultsSpec,
   nativeMcpAppsSpec,
