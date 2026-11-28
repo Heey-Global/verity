@@ -131,18 +131,20 @@ export function createServerApp(deps: ServerDeps): {
   // synchronous and only adds a reply decorator and hooks to this instance.
   // Bypassing `register` also skips its version check and leaves the plugin
   // unrecorded for `hasPlugin`; no plugin here declares a dependency on it.
+  let compressApplied = false;
   let compressFailure: Error | undefined;
   const compressResult: unknown = compressPlugin(
     app,
     { global: false, globalDecompression: false, encodings: ['gzip', 'deflate'] },
     (error) => {
+      compressApplied = true;
       compressFailure = error ?? undefined;
     },
   );
   if (compressFailure !== undefined) throw compressFailure;
   // A release with an asynchronous body would add its hook after the routes
   // again; refuse to boot rather than lose compression without a sign.
-  if (compressResult !== undefined || !app.hasReplyDecorator('compress'))
+  if (!compressApplied || compressResult !== undefined || !app.hasReplyDecorator('compress'))
     throw new Error('verity: @fastify/compress did not apply synchronously');
 
   // Session file uploads are streamed directly to disk. Returning the raw request
