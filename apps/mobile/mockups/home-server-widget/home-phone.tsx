@@ -32,20 +32,20 @@ export function HomeEnd({ expanded }: { expanded: boolean }) {
         <SectionHeader title="Results · 3" variant="eyebrow" flush />
         <Group>
           <Row
-            title="Release Checker"
-            subtitle="Verity · PR #3025 · merged"
+            title="Release notes check"
+            subtitle="Website · PR #128 · merged"
             leading={{ icon: 'git-pull-request', quiet: true }}
             onPress={ignore}
           />
           <Row
-            title="Restic-Diagnose für heey-docs"
-            subtitle="K8s · Claude Opus 5.5"
+            title="Backup diagnosis"
+            subtitle="Infrastructure · Claude Opus 5.5"
             leading={{ icon: 'message-square', quiet: true }}
             onPress={ignore}
           />
           <Row
-            title="QA"
-            subtitle="PulseCI - Curtis · Claude Opus 5.5"
+            title="Flaky test triage"
+            subtitle="Mobile app · Claude Opus 5.5"
             leading={{ icon: 'message-square', quiet: true }}
             onPress={ignore}
           />
