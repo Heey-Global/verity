@@ -6,7 +6,7 @@ import { Text } from './Text';
 import { tint } from './tint';
 
 /** From here a share reads as a warning (docs/design-system.md § 5.5c). */
-export const RESOURCE_BUSY_PERCENT = 90;
+const RESOURCE_BUSY_PERCENT = 90;
 
 const busy = (share: number | null) => share !== null && share >= RESOURCE_BUSY_PERCENT;
 const clamp = (share: number) => Math.min(100, Math.max(0, Number.isFinite(share) ? share : 0));
