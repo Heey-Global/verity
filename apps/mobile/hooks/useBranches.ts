@@ -299,13 +299,12 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
               setPreviewable(res.previewable ?? []);
               setCurrentPr(res.currentPr ?? null);
               setPullRequest(res.pullRequest ?? null);
-              setRepositoryPullRequests(
-                res.pullRequests === null
-                  ? (pullRequests?.map((row) =>
-                      row.phase === 'open' ? { ...row, mergeable: null, pipeline: 'unknown' } : row,
-                    ) ?? null)
-                  : pullRequests,
-              );
+              // `null`: the rows were not read in time. The server invalidates
+              // the list once they are, so the last rows stay as they were
+              // until then; masking them as unknown left a lone Refresh where
+              // Home still offered Merge. Rows whose read failed arrive masked
+              // from the server.
+              setRepositoryPullRequests(pullRequests);
               setOwner(res.owner);
               setRepo(res.repo);
               setCodeHost(res.codeHost);
@@ -589,7 +588,6 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     if (otherPr && visible.current && enabled) void load({ silent: true });
   }, [otherPr, heldNumber, load, enabled]);
   const shownPr = heldPr !== undefined && !otherPr ? heldPr : pullRequest;
-  // `null` rows (the server could not observe them) keep their masking below.
   const shownRows = useMemo(
     () =>
       shownPr === pullRequest || shownPr === null || repositoryPullRequests == null
@@ -608,15 +606,9 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
     previewable,
     currentPr,
     pullRequest: shownPr,
-    pullRequests:
-      shownRows ??
-      (shownPr === null
-        ? []
-        : [
-            shownRows === null && shownPr.phase === 'open'
-              ? { ...shownPr, mergeable: null, pipeline: 'unknown' }
-              : shownPr,
-          ]),
+    // Rows not read yet: the pull request the status names stands in for its
+    // row, with the status Home shows, until the list read brings the rows.
+    pullRequests: shownRows ?? (shownPr === null ? [] : [shownPr]),
     owner,
     repo,
     codeHost,

@@ -118,6 +118,28 @@ describe('useBranches live updates', () => {
     expect(result.current.pullRequests).toEqual([row]);
   });
 
+  // A list read that returns before its repository rows answers them as
+  // `null`; the server invalidates the list once they arrive. Masking the last
+  // rows as unknown meanwhile left a lone Refresh in place of Merge.
+  it('keeps the last repository rows while a read has not brought them', async () => {
+    const row = {
+      ...branches('open', 'success').pullRequest!,
+      mergeable: true,
+      repository: { id: 'api', name: 'api', owner: 'example', repo: 'api', isDefault: false },
+    };
+    const getBranches = jest
+      .fn()
+      .mockResolvedValueOnce({ ...branches('open', 'success'), pullRequests: [row] })
+      .mockResolvedValueOnce({ ...branches('open', 'success'), pullRequests: null });
+    const client = { getBranches } as unknown as VerityClient;
+    const { result } = renderHook(() => useBranches(client, 'rows-pending'));
+    await act(async () => {});
+    expect(result.current.pullRequests).toEqual([row]);
+    await changed();
+    expect(getBranches).toHaveBeenCalledTimes(2);
+    expect(result.current.pullRequests).toEqual([row]);
+  });
+
   it('aborts the previous identity and ignores its late response', async () => {
     const old = deferred<BranchList>();
     const next = deferred<BranchList>();

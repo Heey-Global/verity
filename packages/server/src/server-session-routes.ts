@@ -40,7 +40,7 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionLinkRoutes } from './session-link-routes.js';
 import { registerSessionMergeRoutes } from './session-merge-routes.js';
-import { FRESH_MIN_MS, unavailablePullRequestStatus } from './session-pr-cache.js';
+import { FRESH_MIN_MS } from './session-pr-cache.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { branchReadQuery, sessionParams } from './session-route-schemas.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
@@ -628,13 +628,16 @@ export function installSessionRoutes(
           ctx.resources.invalidate(`/sessions/${key}/branches`, 'pr-read');
         });
       }
-      const cachedStatus = sessionPrCache.peek(session.worktree);
+      // While the forge read is still out, the last observation is shown as it
+      // is: it is what Home and the project page show, and the read that
+      // finishes invalidates this list, so the session reads the new status a
+      // moment later. Masking it as unknown left a lone Refresh in place of a
+      // Merge the overview was still offering. A read that actually failed is
+      // already stored masked by the cache.
       const pullRequest =
         rawPullRequest !== undefined
-          ? (cachedStatus ?? null)
-          : cachedStatus
-            ? unavailablePullRequestStatus(cachedStatus)
-            : cachedStatus;
+          ? (sessionPrCache.peek(session.worktree) ?? null)
+          : sessionPrCache.peek(session.worktree);
       const pullRequests = await readRepositoryPRs(pullRequest);
       const currentPr =
         pullRequest !== undefined

@@ -201,9 +201,9 @@ describe('useBranches with the shared overview store', () => {
     shared.unmount();
   });
 
-  // Rows the server could not observe stay masked as unknown, whichever copy
-  // of the status is shown.
-  it('keeps unobserved repository rows masked when the store status is shown', async () => {
+  // Rows the list read has not brought yet: the bar showed the status as
+  // unknown, a lone Refresh, while Home offered Merge on the same status.
+  it('shows rows not read yet with the status the overview shows', async () => {
     const shared = withListedSession();
     const getBranches = jest.fn().mockResolvedValue({ ...branches(pr(42)), pullRequests: null });
     const client = { getBranches } as unknown as VerityClient;
@@ -215,7 +215,7 @@ describe('useBranches with the shared overview store', () => {
         .event({ t: 'pr.status', sessionId: 's1', rev: 1, pr: pr(42, 'success') }),
     );
     expect(result.current.pullRequest?.pipeline).toBe('success');
-    expect(result.current.pullRequests[0]).toMatchObject({ pipeline: 'unknown', mergeable: null });
+    expect(result.current.pullRequests).toEqual([result.current.pullRequest]);
     unmount();
     shared.unmount();
   });

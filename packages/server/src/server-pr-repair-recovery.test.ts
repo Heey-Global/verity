@@ -93,7 +93,11 @@ it('returns branch metadata before a slow PR lookup and exposes the PR after it 
   }
 });
 
-it('marks cached checks and mergeability as unknown during a slow PR refresh', async () => {
+// Home and the project page keep showing the last observation while a refresh
+// is out; the session's bar masked it as unknown instead and offered a lone
+// Refresh where the overview still offered Merge. The finished read
+// invalidates the list, so the session reads the new status right after.
+it('keeps the last observed status while a slow PR refresh is out', async () => {
   await createExistingSession('s1');
   await ctx.store.upsertProject({
     id: 'p1',
@@ -135,12 +139,12 @@ it('marks cached checks and mergeability as unknown during a slow PR refresh', a
       pullRequests: [{ number: 119, pipeline: 'success', mergeable: true }],
     });
     now = 60_000;
-    expect((await server.inject({ url })).json()).toMatchObject({
-      pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
-      pullRequests: [
-        { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
-      ],
+    const pending = (await server.inject({ url })).json();
+    expect(pending).toMatchObject({
+      pullRequest: { number: 119, pipeline: 'success', mergeable: true },
+      pullRequests: [{ number: 119, pipeline: 'success', mergeable: true }],
     });
+    expect(pending.pullRequest).not.toHaveProperty('observationFailed');
   } finally {
     releaseLookup(failingPr());
     await server.close();
