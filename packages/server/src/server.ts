@@ -3,7 +3,7 @@ import { installProjectEvents } from './live/project-events.js';
 import { createPrEvents } from './live/pr-events.js';
 import { installSummaryEvents } from './live/summary-events.js';
 import { installBranchEvents } from './live/branch-events.js';
-import { DomainEventBus } from './live/domain-events.js';
+import { DomainEventBus, sessionOpen } from './live/domain-events.js';
 import { installAssistantHandoffNotices } from './assistant-handoff-notify.js';
 import { installChangeSubmissions } from './change-submissions.js';
 import {
@@ -290,6 +290,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     onPrStatus: createPrEvents(app, ctx),
     // Bound below, once the session rows it announces are installed.
     onBranchChange: (worktree) => branchChanged(worktree),
+    isSessionOpen: (sessionId) => sessionOpen(ctx.domainEvents, sessionId),
   });
   const { summaryRevision, announce } = installSummaryEvents(app, ctx, summarizeSessions);
   const branchChanged = installBranchEvents(app, ctx, refreshBranch, announce);

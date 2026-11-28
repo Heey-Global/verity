@@ -96,8 +96,8 @@ export function createEmbeddedRepositoryPullRequests(
         pulls: rows.map((pull, index) => ({ ...pull, status: statuses[index] ?? null })),
       };
     },
-    status: async (project, branch, number) =>
-      readProjectStatus(project, branch, await isDefaultRepository(project), number, true),
+    status: async (project, branch, number, options) =>
+      readProjectStatus(project, branch, await isDefaultRepository(project), number, true, options),
     defaultBranch: async (project) => {
       const key = JSON.stringify([
         project.id,

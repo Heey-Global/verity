@@ -6,6 +6,7 @@ import {
 } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import type { ForgeStatusReadOptions } from './forge-status-cache.js';
 import { isSafeRefName } from './branches.js';
 import {
   ForgeMergePermissionError,
@@ -25,11 +26,13 @@ export type DiscoveredPullRequest = ForgeDiscoveryPage['pulls'][number] & {
 export interface ProjectPullRequestBackend {
   /** Every open pull request; throws when the list itself cannot be read. */
   list(project: ProjectRecord): Promise<{ webUrl: string; pulls: DiscoveredPullRequest[] }>;
-  /** Fresh status of the pull request whose head is `branch`. */
+  /** Status of the pull request whose head is `branch`; a `background` read
+   *  (the server's own sweep) accepts an older observation. */
   status(
     project: ProjectRecord,
     branch: string,
     number?: number,
+    options?: ForgeStatusReadOptions,
   ): Promise<PullRequestStatus | null>;
   defaultBranch?(project: ProjectRecord): Promise<string>;
   hasOpenPullRequest?(project: ProjectRecord, branch: string): Promise<boolean>;

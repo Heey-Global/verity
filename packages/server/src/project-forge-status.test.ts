@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ProjectRecord } from '@verity/store';
 import { createForgejoForgeProvider } from './forgejo-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
+import type { ForgeProvider } from './forge-provider.js';
 import type { HttpFetch } from './github.js';
 import { ForgejoTransport } from './forgejo-transport.js';
 import { createProjectForgeStatusReader } from './project-forge-status.js';
@@ -138,4 +139,23 @@ it('distinguishes a cold failed observation from a confirmed miss', async () => 
   const read = () => reader.readProjectStatus(project, 'feature', true, undefined, true);
   await expect(read()).rejects.toThrow('Forge pull request status unavailable');
   await expect(read()).rejects.toThrow('Forge pull request status unavailable');
+});
+
+// The sweep's background mark has to reach the shared cache; a reader that
+// dropped it would keep the sweep at a viewer's cadence with nothing failing.
+it('answers a background read from an observation a viewer would read past', async () => {
+  vi.useFakeTimers({ now: 0 });
+  const prStatusForBranch = vi.fn(async () => null);
+  const provider = {
+    mintProjectToken: async () => 'token',
+    repositoryPrService: () => ({ prStatusForBranch }),
+  } as unknown as ForgeProvider;
+  const reader = createProjectForgeStatusReader(async () => provider);
+  const project = { id: 'p', kind: 'github', owner: 'o', repo: 'r' } as ProjectRecord;
+  await reader.readProjectStatus(project, 'feature', true, undefined, true, { background: true });
+  vi.setSystemTime(60_000);
+  await reader.readProjectStatus(project, 'feature', true, undefined, true, { background: true });
+  expect(prStatusForBranch).toHaveBeenCalledTimes(1);
+  await reader.readProjectStatus(project, 'feature', true, undefined, true);
+  expect(prStatusForBranch).toHaveBeenCalledTimes(2);
 });

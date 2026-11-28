@@ -7,7 +7,8 @@ import { conditionalJsonRoute } from './conditional-json.js';
 
 async function appWith(body: () => unknown) {
   const app = Fastify();
-  // Registered like createServerApp: compression is opt-in per route.
+  // Compression is opt-in per route, as in createServerApp (which applies the
+  // plugin synchronously; `server-compression.test.ts` covers that order).
   await app.register(compressPlugin, { global: false, encodings: ['gzip', 'deflate'] });
   app.get('/overview', conditionalJsonRoute, async () => body());
   app.get('/missing', conditionalJsonRoute, async (_request, reply) => {
