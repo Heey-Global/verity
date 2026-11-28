@@ -876,7 +876,7 @@ jobs:
           name: native-staging-${{ env.MOBILE_TAG }}
           path: native-candidates
       # renovate: datasource=github-actions depName=sigstore/cosign-installer
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
         with:
           cosign-release: v3.1.4
       - name: Record verified staging build
@@ -1445,7 +1445,7 @@ jobs:
       # renovate: datasource=github-actions depName=sigstore/cosign-installer
       - name: Install release signature verifier
         if: ${{ !inputs['backend-artifact-only'] }}
-        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
         with:
           cosign-release: v3.1.4
 
@@ -1955,7 +1955,7 @@ jobs:
 
       # A retry reuses the immutable index and its valid existing provenance.
       # renovate: datasource=github-actions depName=sigstore/cosign-installer
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
       - name: Detect existing Server provenance
         id: existing-provenance
         env:
@@ -1984,7 +1984,7 @@ jobs:
           push-to-registry: true
 
       # renovate: datasource=github-actions depName=sigstore/cosign-installer
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
 
       - name: Sign the Server image
         shell: bash
@@ -2046,7 +2046,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # renovate: datasource=github-actions depName=sigstore/cosign-installer
-      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
 
       # renovate: datasource=github-actions depName=oras-project/setup-oras
       - uses: oras-project/setup-oras@ac735097e22fe643015b0d19645f7c9a69942128 # v2.0.4
@@ -2383,7 +2383,7 @@ jobs:
 
       # renovate: datasource=github-actions depName=sigstore/cosign-installer
       - name: Install release signature verifier
-        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
         with:
           cosign-release: v3.1.4
 
@@ -2621,7 +2621,7 @@ jobs:
 
       # renovate: datasource=github-actions depName=sigstore/cosign-installer
       - name: Install release signature verifier
-        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
         with:
           cosign-release: v3.1.4
 
