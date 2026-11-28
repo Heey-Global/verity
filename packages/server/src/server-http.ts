@@ -129,13 +129,19 @@ export function createServerApp(deps: ServerDeps): {
   // route's `compress` option was silently ignored: the routes answered in
   // full, uncompressed, while everything still worked. The plugin body is
   // synchronous and only adds a reply decorator and hooks to this instance.
-  compressPlugin(
+  let compressFailure: Error | undefined;
+  const compressResult: unknown = compressPlugin(
     app,
     { global: false, globalDecompression: false, encodings: ['gzip', 'deflate'] },
     (error) => {
-      if (error) throw error;
+      compressFailure = error ?? undefined;
     },
   );
+  if (compressFailure !== undefined) throw compressFailure;
+  // A release with an asynchronous body would add its hook after the routes
+  // again; refuse to boot rather than lose compression without a sign.
+  if (compressResult !== undefined || !app.hasReplyDecorator('compress'))
+    throw new Error('verity: @fastify/compress did not apply synchronously');
 
   // Session file uploads are streamed directly to disk. Returning the raw request
   // stream from this parser intentionally avoids Fastify's buffered body limit.
