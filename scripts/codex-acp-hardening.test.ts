@@ -86,10 +86,36 @@ it.each([
   fixture + initialOptionsFixture,
   fixture.replace(', settleTrackerReady)', ')'),
   fixture.replace('request.configOptions);', 'request.changedOptions);'),
+  // A partially hardened copy, or one with a site re-added next to the markers.
+  fixture.replace(
+    'if (request.configOptions?.length) await this.applyInitialConfigOptions(sessionState, request.configOptions);',
+    '/* Verity discards client-supplied initial configOptions. */',
+  ),
+  trustFixture +
+    '\n// initial options\n/* Verity discards client-supplied initial configOptions. */'.repeat(2) +
+    initialOptionsFixture,
 ])('refuses changed or missing initial-config application sites', (source) => {
   const result = patch(source);
   expect(result.status).not.toBe(0);
   expect(result.stderr).toContain('refusing an unhardened adapter');
+});
+
+it('re-hardens an installed copy whose trust expression a probe restored', () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+      import { hardenCodexAcpSource } from ${JSON.stringify(installer)};
+      const once = hardenCodexAcpSource(${JSON.stringify(fixture)});
+      const restored = once.replace('trust_level: "untrusted"', 'trust_level: "trusted"');
+      if (hardenCodexAcpSource(restored) !== once) throw new Error('Re-hardening changed the result');
+    `,
+    ],
+    { encoding: 'utf8' },
+  );
+  expect(result.status, result.stderr).toBe(0);
 });
 
 it('discards initial options before they can change the pinned mode', () => {

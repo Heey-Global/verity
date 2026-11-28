@@ -65,15 +65,20 @@ export function hardenCodexAcpSource(source) {
   const initialOptions =
     /if \(request\.configOptions\?\.length\) await this\.applyInitialConfigOptions\(sessionState, request\.configOptions(?:, settleTrackerReady)?\);/g;
   const optionMatches = [...source.matchAll(initialOptions)];
-  if (
-    optionMatches.length !== 2 ||
-    optionMatches.filter((match) => match[0].includes(', settleTrackerReady')).length !== 1
-  )
+  // An image copy already carries both removals; probes re-harden such copies
+  // after restoring only the trust expression. Any mixed state is refused.
+  const discarded = source.split(DISCARDED_INITIAL_OPTIONS).length - 1;
+  const unhardened =
+    optionMatches.length === 2 &&
+    optionMatches.filter((match) => match[0].includes(', settleTrackerReady')).length === 1;
+  if (!(discarded === 0 ? unhardened : discarded === 2 && optionMatches.length === 0))
     throw new Error('Unsupported Codex ACP initial-config code; refusing an unhardened adapter');
   return source
     .replace(automaticTrust, (match) => match.replace('"trusted"', '"untrusted"'))
-    .replace(initialOptions, '/* Verity discards client-supplied initial configOptions. */');
+    .replace(initialOptions, DISCARDED_INITIAL_OPTIONS);
 }
+
+const DISCARDED_INITIAL_OPTIONS = '/* Verity discards client-supplied initial configOptions. */';
 
 // Corepack links `pnpm` and `yarn`, which base images often ship themselves
 // (Node images include Yarn 1). Overwriting those would silently swap the
