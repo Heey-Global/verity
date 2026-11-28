@@ -71,7 +71,7 @@
     "@react-native/jest-preset": "0.86.3",
     "@testing-library/react-native": "13.3.3",
     "@types/jest": "29.5.14",
-    "@types/react": "19.3.0",
+    "@types/react": "19.3.1",
     "@types/react-dom": "19.3.0",
     "babel-preset-expo": "~57.0.0",
     "jest": "29.7.0",
