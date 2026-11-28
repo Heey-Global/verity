@@ -120,13 +120,22 @@ export function createServerApp(deps: ServerDeps): {
   // Install the limiter's manual API. The auth hook below invokes it only after
   // a protected request has failed bearer-token verification.
   app.register(rateLimitPlugin, { global: false });
-  // Opt in only large history reads: global compression would also transform
-  // credential responses and opaque brokered HTTP payloads.
-  app.register(compressPlugin, {
-    global: false,
-    globalDecompression: false,
-    encodings: ['gzip', 'deflate'],
-  });
+  // Opt in per route (history, overview reads, the web app): global compression
+  // would also transform credential responses and opaque brokered HTTP payloads.
+  //
+  // Applied synchronously rather than through `app.register`. A registered
+  // plugin only runs at the next boot step, after `buildServer` has declared
+  // every route in this tick, so its `onRoute` hook never saw them and each
+  // route's `compress` option was silently ignored: the routes answered in
+  // full, uncompressed, while everything still worked. The plugin body is
+  // synchronous and only adds a reply decorator and hooks to this instance.
+  compressPlugin(
+    app,
+    { global: false, globalDecompression: false, encodings: ['gzip', 'deflate'] },
+    (error) => {
+      if (error) throw error;
+    },
+  );
 
   // Session file uploads are streamed directly to disk. Returning the raw request
   // stream from this parser intentionally avoids Fastify's buffered body limit.
