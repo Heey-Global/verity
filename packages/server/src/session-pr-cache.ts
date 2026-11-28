@@ -259,7 +259,8 @@ export function createSessionPrCache(options: {
   /** How long the read now out for `worktree` has been asked for. */
   const pendingFor = (worktree: string): number | undefined => {
     const running = pending.get(worktree);
-    return running === undefined || running.disowned ? undefined : now() - running.since;
+    // A replaced read still counts: the forge has not answered it either.
+    return running === undefined ? undefined : now() - running.since;
   };
   return { get, peek, age, pendingFor, isDue, invalidate, prune };
 }
