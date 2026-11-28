@@ -47,6 +47,10 @@ it('reads unwatched sessions in the background and a viewed branch list as a vie
         background: true,
       }),
     );
+    // Only the route reads as a viewer; a sweep that did would read open state too.
+    expect(status).not.toHaveBeenCalledWith(expect.anything(), 'feature', undefined, {
+      background: false,
+    });
     status.mockClear();
     await server.inject({ url: '/sessions/s1/branches' });
     expect(status).toHaveBeenCalledWith(expect.anything(), 'feature', undefined, {

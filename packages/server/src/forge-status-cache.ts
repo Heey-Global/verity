@@ -27,6 +27,9 @@ export interface ForgeStatusReadOptions {
  * sweep the largest consumer of the forge's API quota. Background reads accept
  * an older answer, except where a repair or notification waits on CI. A viewer's
  * read still decides by the short cadence, so opening a session sees fresh state.
+ * Nothing acts on a background answer alone: a repair re-reads its pull request
+ * without the mark right before it dispatches, ready notifications follow the
+ * session status cache, and a merge names the head commit it was shown.
  */
 function freshFor(entry: Entry, background: boolean): number {
   const { value, failures } = entry;
