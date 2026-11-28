@@ -502,3 +502,29 @@ it('counts a refresh as out since the first read the forge has not answered', as
   now = 45_000;
   expect(cache.pendingFor(session.worktree)).toBe(35_000);
 });
+
+// A busy agent turn replaces reads faster than the forge answers them. The
+// forge is healthy as long as it answers one of them, replaced or not.
+it('counts a refresh as out only since the forge last answered', async () => {
+  let now = 0;
+  const first = deferred<PullRequestStatus | null>();
+  const load = vi
+    .fn<() => Promise<PullRequestStatus | null>>()
+    .mockResolvedValueOnce(pr)
+    .mockReturnValueOnce(first.promise)
+    .mockReturnValue(new Promise<PullRequestStatus | null>(() => undefined));
+  const cache = createSessionPrCache({ load, now: () => now });
+  await cache.get(session);
+  now = 10_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  now = 20_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  now = 28_000;
+  first.resolve(pr);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+  now = 45_000;
+  expect(cache.pendingFor(session.worktree)).toBe(17_000);
+});

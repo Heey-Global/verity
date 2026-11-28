@@ -123,6 +123,8 @@ export function createSessionPrCache(options: {
     resolve(status: PullRequestStatus | null): void;
   }
   const pending = new Map<string, PendingRead>();
+  /** When the forge last answered a read of the worktree, kept or replaced. */
+  const answered = new Map<string, number>();
   const queued: PendingRead[] = [];
   let active = false;
   const startNext = (): void => {
@@ -189,6 +191,9 @@ export function createSessionPrCache(options: {
         status = previous?.status ? unavailablePullRequestStatus(previous.status) : null;
         failures = Math.min(5, (previous?.failures ?? 0) + 1);
       }
+      answered.delete(key);
+      answered.set(key, now());
+      while (answered.size > 4096) answered.delete(answered.keys().next().value!);
       if (!token.disowned) {
         const visibleStatus = options.present
           ? await options
@@ -256,11 +261,15 @@ export function createSessionPrCache(options: {
     const entry = entries.get(worktree);
     return entry === undefined ? undefined : now() - entry.observedAt;
   };
-  /** How long the read now out for `worktree` has been asked for. */
+  /** How long the forge has left the read now out for `worktree` without an
+   * answer: since that read, or one it replaced, was asked, or since the
+   * forge last answered one of them if that was later. Activity replacing
+   * reads faster than the forge answers must not make a healthy forge look
+   * hung, nor a hung one look fresh. */
   const pendingFor = (worktree: string): number | undefined => {
     const running = pending.get(worktree);
-    // A replaced read still counts: the forge has not answered it either.
-    return running === undefined ? undefined : now() - running.since;
+    if (running === undefined) return undefined;
+    return now() - Math.max(running.since, answered.get(worktree) ?? -Infinity);
   };
   return { get, peek, age, pendingFor, isDue, invalidate, prune };
 }
