@@ -454,3 +454,103 @@ describe('fresh reads for an opened session', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 });
+
+// The branch list shows an observation as it is only while it is younger than
+// a bound. Activity moves the read time back to ask again soon; were the age
+// taken from it, every pending refresh after agent activity would look stale
+// and the session would show a lone Refresh again.
+it('ages an observation from its read, not from an invalidation or a pending read', async () => {
+  let now = 0;
+  const later = deferred<PullRequestStatus | null>();
+  const load = vi
+    .fn<() => Promise<PullRequestStatus | null>>()
+    .mockResolvedValueOnce(pr)
+    .mockReturnValue(later.promise);
+  const cache = createSessionPrCache({ load, now: () => now });
+  expect(cache.age(session.worktree)).toBeUndefined();
+  await cache.get(session);
+  now = 10_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  expect(cache.age(session.worktree)).toBe(10_000);
+  // The route masks by how long the refresh is out, not by the age alone.
+  now = 25_000;
+  expect(cache.pendingFor(session.worktree)).toBe(15_000);
+  later.resolve(pr);
+  await vi.waitFor(() => expect(cache.pendingFor(session.worktree)).toBeUndefined());
+});
+
+// Agent activity replaces a read that is still out. Restarting the clock with
+// each replacement would let a forge that never answers keep Merge on screen.
+it('counts a refresh as out since the first read the forge has not answered', async () => {
+  let now = 0;
+  const hung = new Promise<PullRequestStatus | null>(() => undefined);
+  const load = vi
+    .fn<() => Promise<PullRequestStatus | null>>()
+    .mockResolvedValueOnce(pr)
+    .mockReturnValue(hung);
+  const cache = createSessionPrCache({ load, now: () => now });
+  await cache.get(session);
+  now = 10_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  now = 20_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  now = 45_000;
+  expect(cache.pendingFor(session.worktree)).toBe(35_000);
+});
+
+// A busy agent turn replaces reads faster than the forge answers them. The
+// forge is healthy as long as it answers one of them, replaced or not.
+it('counts a refresh as out only since the forge last answered', async () => {
+  let now = 0;
+  const first = deferred<PullRequestStatus | null>();
+  const load = vi
+    .fn<() => Promise<PullRequestStatus | null>>()
+    .mockResolvedValueOnce(pr)
+    .mockReturnValueOnce(first.promise)
+    .mockReturnValue(new Promise<PullRequestStatus | null>(() => undefined));
+  const cache = createSessionPrCache({ load, now: () => now });
+  await cache.get(session);
+  now = 10_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  now = 20_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  now = 28_000;
+  first.resolve(pr);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+  now = 45_000;
+  expect(cache.pendingFor(session.worktree)).toBe(17_000);
+});
+
+// An error is no answer: a replaced read that failed must not make a hung
+// refresh look fresh and keep Merge on screen.
+it('does not count a failed replaced read as an answer', async () => {
+  let now = 0;
+  const first = deferred<PullRequestStatus | null>();
+  const load = vi
+    .fn<() => Promise<PullRequestStatus | null>>()
+    .mockResolvedValueOnce(pr)
+    .mockReturnValueOnce(first.promise.then(() => Promise.reject(new Error('forge down'))))
+    .mockReturnValue(new Promise<PullRequestStatus | null>(() => undefined));
+  const cache = createSessionPrCache({ load, now: () => now });
+  await cache.get(session);
+  now = 10_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  now = 20_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  now = 28_000;
+  first.resolve(null);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+  now = 45_000;
+  expect(cache.pendingFor(session.worktree)).toBe(35_000);
+});

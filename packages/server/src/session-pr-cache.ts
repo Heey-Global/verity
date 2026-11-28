@@ -4,7 +4,10 @@ import type { PullRequestStatus } from './forge-provider.js';
 interface Entry {
   status: PullRequestStatus | null;
   visibleStatus: PullRequestStatus | null;
+  /** When the read finished; moved back by an invalidation to read again soon. */
   at: number;
+  /** When `visibleStatus` was observed; an invalidation leaves it. */
+  observedAt: number;
   quietReads: number;
   failures: number;
   /** When this head commit was first seen open without any checks. */
@@ -49,6 +52,14 @@ interface ReadOptions {
 /** The shortest spacing of reads asked for fresh, so devices opening the same
  * session at once, or one reopening it, cost one forge read. */
 export const FRESH_MIN_MS = 2_000;
+
+/** How long a refresh may be out while the last observation is shown as it
+ * is. A read that never settles must not keep offering Merge. */
+export const PENDING_READ_MAX_MS = 30_000;
+
+/** The oldest observation shown as it is while a refresh is out, however
+ * recently that refresh began. */
+export const PENDING_STATUS_MAX_AGE_MS = 10 * 60_000;
 
 function foregroundInterval(entry: Entry): number {
   const { status } = entry;
@@ -105,11 +116,15 @@ export function createSessionPrCache(options: {
   interface PendingRead {
     disowned: boolean;
     priority: boolean;
+    /** When the read was asked for, queued or running. */
+    since: number;
     promise: Promise<PullRequestStatus | null>;
     run(): Promise<void>;
     resolve(status: PullRequestStatus | null): void;
   }
   const pending = new Map<string, PendingRead>();
+  /** When the forge last answered a read of the worktree, kept or replaced. */
+  const answered = new Map<string, number>();
   const queued: PendingRead[] = [];
   let active = false;
   const startNext = (): void => {
@@ -148,6 +163,9 @@ export function createSessionPrCache(options: {
     const token: PendingRead = {
       disowned: false,
       priority: readOptions.priority === true,
+      // A read invalidated while still out is replaced, not settled: the
+      // forge has not answered since the first of them was asked.
+      since: running?.disowned === true ? running.since : now(),
       promise: new Promise((done) => {
         resolve = done;
       }),
@@ -168,6 +186,11 @@ export function createSessionPrCache(options: {
         if (status?.observationFailed === true) {
           status = unavailablePullRequestStatus(status);
           failures = Math.min(5, (previous?.failures ?? 0) + 1);
+        } else {
+          // Only a status is an answer; an error says nothing about health.
+          answered.delete(key);
+          answered.set(key, now());
+          while (answered.size > 4096) answered.delete(answered.keys().next().value!);
         }
       } catch {
         status = previous?.status ? unavailablePullRequestStatus(previous.status) : null;
@@ -196,6 +219,7 @@ export function createSessionPrCache(options: {
           status,
           visibleStatus,
           at,
+          observedAt: at,
           quietReads: status === null ? Math.min(5, (previous?.quietReads ?? 0) + 1) : 0,
           failures,
           ...(since === undefined ? {} : { noChecksSince: since }),
@@ -227,12 +251,29 @@ export function createSessionPrCache(options: {
     return true;
   };
   const prune = (live: ReadonlySet<string>): void => {
-    for (const key of new Set([...entries.keys(), ...pending.keys()])) {
-      if (!live.has(key)) invalidate(key);
+    for (const key of new Set([...entries.keys(), ...pending.keys(), ...answered.keys()])) {
+      if (live.has(key)) continue;
+      invalidate(key);
+      answered.delete(key);
     }
   };
   /** Cached presentation snapshot; get() retains the raw status for automation. */
   const peek = (worktree: string): PullRequestStatus | null | undefined =>
     entries.get(worktree)?.visibleStatus;
-  return { get, peek, isDue, invalidate, prune };
+  /** How long ago the status {@link peek} returns was observed. */
+  const age = (worktree: string): number | undefined => {
+    const entry = entries.get(worktree);
+    return entry === undefined ? undefined : now() - entry.observedAt;
+  };
+  /** How long the forge has left the read now out for `worktree` without an
+   * answer: since that read, or one it replaced, was asked, or since the
+   * forge last answered one of them if that was later. Activity replacing
+   * reads faster than the forge answers must not make a healthy forge look
+   * hung, nor a hung one look fresh. */
+  const pendingFor = (worktree: string): number | undefined => {
+    const running = pending.get(worktree);
+    if (running === undefined) return undefined;
+    return now() - Math.max(running.since, answered.get(worktree) ?? -Infinity);
+  };
+  return { get, peek, age, pendingFor, isDue, invalidate, prune };
 }

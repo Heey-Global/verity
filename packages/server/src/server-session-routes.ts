@@ -40,7 +40,12 @@ import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.
 import { registerSessionControlRoutes } from './session-control-routes.js';
 import { registerSessionLinkRoutes } from './session-link-routes.js';
 import { registerSessionMergeRoutes } from './session-merge-routes.js';
-import { FRESH_MIN_MS, unavailablePullRequestStatus } from './session-pr-cache.js';
+import {
+  FRESH_MIN_MS,
+  PENDING_READ_MAX_MS,
+  PENDING_STATUS_MAX_AGE_MS,
+  unavailablePullRequestStatus,
+} from './session-pr-cache.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { branchReadQuery, sessionParams } from './session-route-schemas.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
@@ -628,14 +633,46 @@ export function installSessionRoutes(
           ctx.resources.invalidate(`/sessions/${key}/branches`, 'pr-read');
         });
       }
-      const cachedStatus = sessionPrCache.peek(session.worktree);
+      // While the forge read is still out, the last observation is shown as it
+      // is: it is what Home and the project page show, and the read that
+      // finishes invalidates this list, so the session reads the new status a
+      // moment later. Masking it as unknown left a lone Refresh in place of a
+      // Merge the overview was still offering. A read that actually failed is
+      // already stored masked by the cache; one out for longer than
+      // {@link PENDING_READ_MAX_MS}, or an observation older than
+      // {@link PENDING_STATUS_MAX_AGE_MS}, is masked here. A session nobody had
+      // open is read in the background every few minutes, so its observation
+      // is often minutes old when someone opens it; that alone is no reason.
+      const observed = sessionPrCache.peek(session.worktree);
+      const stale =
+        rawPullRequest === undefined &&
+        observed &&
+        ((sessionPrCache.pendingFor(session.worktree) ?? 0) > PENDING_READ_MAX_MS ||
+          (sessionPrCache.age(session.worktree) ?? 0) > PENDING_STATUS_MAX_AGE_MS);
+      // `undefined` while a first read is out: the list then names no status.
       const pullRequest =
         rawPullRequest !== undefined
-          ? (cachedStatus ?? null)
-          : cachedStatus
-            ? unavailablePullRequestStatus(cachedStatus)
-            : cachedStatus;
-      const pullRequests = await readRepositoryPRs(pullRequest);
+          ? (observed ?? null)
+          : stale
+            ? unavailablePullRequestStatus(observed)
+            : observed;
+      const repositoryRows = await readRepositoryPRs(pullRequest);
+      // Rows are reused for a few seconds: one read before the status above
+      // was masked must not keep offering Merge on the same pull request.
+      const pullRequests =
+        stale && pullRequest
+          ? repositoryRows?.map((row) =>
+              row.status.repository.isDefault && row.status.number === pullRequest.number
+                ? {
+                    ...row,
+                    status: {
+                      ...unavailablePullRequestStatus(row.status),
+                      repository: row.status.repository,
+                    },
+                  }
+                : row,
+            )
+          : repositoryRows;
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)

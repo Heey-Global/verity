@@ -93,7 +93,11 @@ it('returns branch metadata before a slow PR lookup and exposes the PR after it 
   }
 });
 
-it('marks cached checks and mergeability as unknown during a slow PR refresh', async () => {
+// Home and the project page keep showing the last observation while a refresh
+// is out; the session's bar masked it as unknown instead and offered a lone
+// Refresh where the overview still offered Merge. The finished read
+// invalidates the list, so the session reads the new status right after.
+it('keeps the last observed status while a slow PR refresh is out', async () => {
   await createExistingSession('s1');
   await ctx.store.upsertProject({
     id: 'p1',
@@ -134,7 +138,17 @@ it('marks cached checks and mergeability as unknown during a slow PR refresh', a
       pullRequest: { pipeline: 'success', mergeable: true },
       pullRequests: [{ number: 119, pipeline: 'success', mergeable: true }],
     });
-    now = 60_000;
+    // A session read only in the background: its observation is minutes old
+    // when someone opens it, which alone must not mask it.
+    now = 300_000;
+    const pending = (await server.inject({ url })).json();
+    expect(pending).toMatchObject({
+      pullRequest: { number: 119, pipeline: 'success', mergeable: true },
+      pullRequests: [{ number: 119, pipeline: 'success', mergeable: true }],
+    });
+    expect(pending.pullRequest).not.toHaveProperty('observationFailed');
+    // A read that never settles must not keep offering Merge.
+    now = 340_000;
     expect((await server.inject({ url })).json()).toMatchObject({
       pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
       pullRequests: [
@@ -143,6 +157,56 @@ it('marks cached checks and mergeability as unknown during a slow PR refresh', a
     });
   } finally {
     releaseLookup(failingPr());
+    await server.close();
+  }
+});
+
+// Shown unmasked only while a read is out: a read that failed must never
+// leave Merge on the last observation.
+it('masks the last observed status once a PR refresh has failed', async () => {
+  await createExistingSession('s1');
+  await ctx.store.upsertProject({
+    id: 'p1',
+    owner: 'team',
+    repo: 'app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await ctx.store.setSessionProject('s1', 'p1');
+  branchSvc.current.mockResolvedValue('feature');
+  branchSvc.switchable.mockResolvedValue(['main']);
+  let now = 0;
+  const branchPrStatus = vi
+    .fn()
+    .mockResolvedValueOnce({
+      ...failingPr(),
+      pipeline: 'success',
+      checks: { completed: 1, total: 1, failed: 0, successful: 1, pending: 0 },
+    })
+    .mockRejectedValue(new Error('forge unavailable'));
+  const server = buildServer({
+    ...serverDeps(),
+    branchPrStatus,
+    pullRequestCacheNow: () => now,
+    projectPullRequests: {
+      list: vi.fn().mockResolvedValue({ webUrl: '', pulls: [] }),
+      status: vi.fn().mockResolvedValue(null),
+      merge: vi.fn().mockResolvedValue(false),
+    },
+  });
+  const url = '/sessions/s1/branches';
+  try {
+    expect((await server.inject({ url })).json()).toMatchObject({
+      pullRequest: { pipeline: 'success', mergeable: true },
+    });
+    now = 60_000;
+    expect((await server.inject({ url })).json()).toMatchObject({
+      pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+      pullRequests: [
+        { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+      ],
+    });
+  } finally {
     await server.close();
   }
 });
