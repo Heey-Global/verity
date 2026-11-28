@@ -528,3 +528,29 @@ it('counts a refresh as out only since the forge last answered', async () => {
   now = 45_000;
   expect(cache.pendingFor(session.worktree)).toBe(17_000);
 });
+
+// An error is no answer: a replaced read that failed must not make a hung
+// refresh look fresh and keep Merge on screen.
+it('does not count a failed replaced read as an answer', async () => {
+  let now = 0;
+  const first = deferred<PullRequestStatus | null>();
+  const load = vi
+    .fn<() => Promise<PullRequestStatus | null>>()
+    .mockResolvedValueOnce(pr)
+    .mockReturnValueOnce(first.promise.then(() => Promise.reject(new Error('forge down'))))
+    .mockReturnValue(new Promise<PullRequestStatus | null>(() => undefined));
+  const cache = createSessionPrCache({ load, now: () => now });
+  await cache.get(session);
+  now = 10_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  now = 20_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  now = 28_000;
+  first.resolve(null);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+  now = 45_000;
+  expect(cache.pendingFor(session.worktree)).toBe(35_000);
+});

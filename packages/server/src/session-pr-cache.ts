@@ -186,14 +186,16 @@ export function createSessionPrCache(options: {
         if (status?.observationFailed === true) {
           status = unavailablePullRequestStatus(status);
           failures = Math.min(5, (previous?.failures ?? 0) + 1);
+        } else {
+          // Only a status is an answer; an error says nothing about health.
+          answered.delete(key);
+          answered.set(key, now());
+          while (answered.size > 4096) answered.delete(answered.keys().next().value!);
         }
       } catch {
         status = previous?.status ? unavailablePullRequestStatus(previous.status) : null;
         failures = Math.min(5, (previous?.failures ?? 0) + 1);
       }
-      answered.delete(key);
-      answered.set(key, now());
-      while (answered.size > 4096) answered.delete(answered.keys().next().value!);
       if (!token.disowned) {
         const visibleStatus = options.present
           ? await options
@@ -249,8 +251,10 @@ export function createSessionPrCache(options: {
     return true;
   };
   const prune = (live: ReadonlySet<string>): void => {
-    for (const key of new Set([...entries.keys(), ...pending.keys()])) {
-      if (!live.has(key)) invalidate(key);
+    for (const key of new Set([...entries.keys(), ...pending.keys(), ...answered.keys()])) {
+      if (live.has(key)) continue;
+      invalidate(key);
+      answered.delete(key);
     }
   };
   /** Cached presentation snapshot; get() retains the raw status for automation. */
