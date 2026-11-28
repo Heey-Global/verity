@@ -634,10 +634,9 @@ export function installSessionRoutes(
       // moment later. Masking it as unknown left a lone Refresh in place of a
       // Merge the overview was still offering. A read that actually failed is
       // already stored masked by the cache.
-      const pullRequest =
-        rawPullRequest !== undefined
-          ? (sessionPrCache.peek(session.worktree) ?? null)
-          : sessionPrCache.peek(session.worktree);
+      const observed = sessionPrCache.peek(session.worktree);
+      // `undefined` while a first read is out: the list then names no status.
+      const pullRequest = rawPullRequest !== undefined ? (observed ?? null) : observed;
       const pullRequests = await readRepositoryPRs(pullRequest);
       const currentPr =
         pullRequest !== undefined

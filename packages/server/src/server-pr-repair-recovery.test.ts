@@ -151,6 +151,48 @@ it('keeps the last observed status while a slow PR refresh is out', async () => 
   }
 });
 
+// Shown unmasked only while a read is out: a read that failed must never
+// leave Merge on the last observation.
+it('masks the last observed status once a PR refresh has failed', async () => {
+  await createExistingSession('s1');
+  await ctx.store.upsertProject({
+    id: 'p1',
+    owner: 'team',
+    repo: 'app',
+    containerName: 'app',
+    state: 'active',
+  });
+  await ctx.store.setSessionProject('s1', 'p1');
+  branchSvc.current.mockResolvedValue('feature');
+  branchSvc.switchable.mockResolvedValue(['main']);
+  let now = 0;
+  const branchPrStatus = vi
+    .fn()
+    .mockResolvedValueOnce({
+      ...failingPr(),
+      pipeline: 'success',
+      checks: { completed: 1, total: 1, failed: 0, successful: 1, pending: 0 },
+    })
+    .mockRejectedValue(new Error('forge unavailable'));
+  const server = buildServer({
+    ...serverDeps(),
+    branchPrStatus,
+    pullRequestCacheNow: () => now,
+  });
+  const url = '/sessions/s1/branches';
+  try {
+    expect((await server.inject({ url })).json()).toMatchObject({
+      pullRequest: { pipeline: 'success', mergeable: true },
+    });
+    now = 60_000;
+    expect((await server.inject({ url })).json()).toMatchObject({
+      pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+    });
+  } finally {
+    await server.close();
+  }
+});
+
 it('recovers a completed repair after task updates hide its completion from the projection tail', async () => {
   await createExistingSession('s1');
   await ctx.store.upsertProject({
