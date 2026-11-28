@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.112.0](https://github.com/Heey-Global/verity/compare/v4.111.0...v4.112.0) (2026-11-28)
+
+
+### Features
+
+* **network-shares:** let agents create folders and rename, move and delete items ([#3032](https://github.com/Heey-Global/verity/issues/3032)) ([955aaaf](https://github.com/Heey-Global/verity/commit/955aaafae88e1e8d9872c8d30bcd2a4c9adccbfe))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#3043](https://github.com/Heey-Global/verity/issues/3043)) ([0afd851](https://github.com/Heey-Global/verity/commit/0afd8519510436806fb80c72635d3c45436dbe12))
+* **deps:** update gvisor runtime to v20261123 ([#3045](https://github.com/Heey-Global/verity/issues/3045)) ([8f833d9](https://github.com/Heey-Global/verity/commit/8f833d9bfd2e08534c4b881cdcbc9811feeeae63))
+* **server:** compress opted-in responses and read unwatched pull requests at a background cadence ([#3046](https://github.com/Heey-Global/verity/issues/3046)) ([e764900](https://github.com/Heey-Global/verity/commit/e764900774e287f2b00b1a7d24b942f1763bff8e))
+
 ## [4.111.0](https://github.com/Heey-Global/verity/compare/v4.110.0...v4.111.0) (2026-11-27)
 
 
