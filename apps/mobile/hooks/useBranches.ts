@@ -302,8 +302,9 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
               // `null`: the rows were not read in time. Their last state is
               // shown as unknown until the list is read again, except the
               // default repository's row of the pull request this read names:
-              // it takes that status, which the server bounds in age. Masking
-              // that row too left a lone Refresh where Home offered Merge.
+              // it takes that status, which the server masks once its refresh
+              // has been out too long. Masking that row too left a lone
+              // Refresh where Home offered Merge.
               const primary = res.pullRequest;
               setRepositoryPullRequests(
                 res.pullRequests === null

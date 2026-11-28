@@ -161,7 +161,9 @@ export function createSessionPrCache(options: {
     const token: PendingRead = {
       disowned: false,
       priority: readOptions.priority === true,
-      since: now(),
+      // A read invalidated while still out is replaced, not settled: the
+      // forge has not answered since the first of them was asked.
+      since: running?.disowned === true ? running.since : now(),
       promise: new Promise((done) => {
         resolve = done;
       }),

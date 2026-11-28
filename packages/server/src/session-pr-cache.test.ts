@@ -480,3 +480,25 @@ it('ages an observation from its read, not from an invalidation or a pending rea
   later.resolve(pr);
   await vi.waitFor(() => expect(cache.pendingFor(session.worktree)).toBeUndefined());
 });
+
+// Agent activity replaces a read that is still out. Restarting the clock with
+// each replacement would let a forge that never answers keep Merge on screen.
+it('counts a refresh as out since the first read the forge has not answered', async () => {
+  let now = 0;
+  const hung = new Promise<PullRequestStatus | null>(() => undefined);
+  const load = vi
+    .fn<() => Promise<PullRequestStatus | null>>()
+    .mockResolvedValueOnce(pr)
+    .mockReturnValue(hung);
+  const cache = createSessionPrCache({ load, now: () => now });
+  await cache.get(session);
+  now = 10_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  now = 20_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  now = 45_000;
+  expect(cache.pendingFor(session.worktree)).toBe(35_000);
+});
