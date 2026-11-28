@@ -231,3 +231,49 @@ describe('branch-scoped invalidation', () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('background cadence', () => {
+  const quiet: PullRequestStatus = {
+    ...status,
+    pipeline: 'success',
+    mergeable: true,
+    checks: { completed: 1, total: 1, failed: 0, pending: 0, successful: 1 },
+  };
+  /** Forge reads of one branch over ten minutes of 30-second sweeps. */
+  const sweepReads = async (value: PullRequestStatus | null, background: boolean) => {
+    let now = 0;
+    const cache = createForgeStatusCache(() => now);
+    const load = vi.fn(async () => value);
+    for (; now < 600_000; now += 30_000)
+      await cache.read(id, 'feature', load, true, { background });
+    return load.mock.calls.length;
+  };
+
+  // The sweep reads every branch of every session, watched or not. At a
+  // viewer's cadence each pass re-read a branch without a pull request (5 s)
+  // and a quiet open one (30 s), so the sweep alone spent most of the quota.
+  it('reads quiet branches a quarter as often as a viewer would', async () => {
+    expect(await sweepReads(null, false)).toBe(20);
+    expect(await sweepReads(null, true)).toBe(5);
+    expect(await sweepReads(quiet, false)).toBe(20);
+    expect(await sweepReads(quiet, true)).toBe(5);
+  });
+
+  // A repair or a ready notification waits for CI to finish.
+  it('keeps following running CI at every sweep', async () => {
+    expect(await sweepReads({ ...quiet, pipeline: 'running' }, true)).toBe(20);
+  });
+
+  // Opening a session must not show the sweep's older answer.
+  it('lets a viewer read past an observation the sweep would still accept', async () => {
+    let now = 0;
+    const cache = createForgeStatusCache(() => now);
+    const load = vi.fn(async () => quiet);
+    await cache.read(id, 'feature', load, true, { background: true });
+    now = 60_000;
+    await cache.read(id, 'feature', load, true, { background: true });
+    expect(load).toHaveBeenCalledTimes(1);
+    await cache.read(id, 'feature', load, true);
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+});

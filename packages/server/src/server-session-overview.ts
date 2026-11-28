@@ -73,6 +73,10 @@ export interface ServerSessionOverviewOptions {
   /** Told a worktree whose git read found a branch other than the one last
    * announced for it, whichever read it was (ADR 0033). */
   onBranchChange?: (worktree: string) => void;
+  /** Whether a device has the session open (its topic subscribed). The sweep
+   * reads such a session's pull requests at a viewer's cadence and every other
+   * session's at the slower background one. */
+  isSessionOpen?: (sessionId: string) => boolean;
 }
 
 export interface ServerSessionOverview {
@@ -152,6 +156,7 @@ export function createServerSessionOverview({
   vulnerabilitySessions,
   onPrStatus,
   onBranchChange,
+  isSessionOpen,
 }: ServerSessionOverviewOptions): ServerSessionOverview {
   // A session's live status badge. The event log lags the conductor: between a
   // turn being dispatched and claude emitting its first `status: running` event,
@@ -548,7 +553,9 @@ export function createServerSessionOverview({
   const resolvePullRequests = createSessionRepositoryPullRequests(deps, branchesForSession);
   const observedPullRequests = new Map<string, string>();
   const observePullRequests = async (session: SessionRecord) => {
-    const rows = await resolvePullRequests(session);
+    const rows = await resolvePullRequests(session, undefined, undefined, undefined, undefined, {
+      background: isSessionOpen?.(session.sessionId) !== true,
+    });
     if (!rows) return rows;
     const snapshot = JSON.stringify(
       rows

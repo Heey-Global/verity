@@ -9,8 +9,33 @@ export interface ForgeStatusIdentity {
 interface Entry {
   value: PullRequestStatus | null;
   checkedAt: number;
-  nextReadAt: number;
   failures: number;
+}
+
+/** Whether a read serves someone looking (a session, a project page) or only
+ * the server's own sweep for repairs and notifications. */
+export interface ForgeStatusReadOptions {
+  background?: boolean;
+}
+
+/**
+ * How long an observation answers reads before the forge is asked again.
+ *
+ * The sweep re-reads every branch of every session every 30 s, whether or not
+ * anyone looks; with the cadence a viewer gets, a branch without a pull request
+ * (5 s) and a quiet open one (30 s) were re-read on every pass, which made the
+ * sweep the largest consumer of the forge's API quota. Background reads accept
+ * an older answer, except where a repair or notification waits on CI. A viewer's
+ * read still decides by the short cadence, so opening a session sees fresh state.
+ */
+function freshFor(entry: Entry, background: boolean): number {
+  const { value, failures } = entry;
+  if (failures) return Math.min(300_000, 30_000 * 2 ** Math.min(failures - 1, 4));
+  if (!value) return background ? 120_000 : 5_000;
+  if (value.phase !== 'open') return 300_000;
+  if (value.pipeline === 'running' || value.pipeline === 'pending' || value.checks.total === 0)
+    return background ? 30_000 : 15_000;
+  return background ? 120_000 : 30_000;
 }
 
 /** One repository read serves UI and supervision; stale failures cannot authorize repairs. */
@@ -69,6 +94,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
       branch: string,
       load: (observationScope: object) => Promise<PullRequestStatus | null>,
       reportUnavailable = false,
+      { background = false }: ForgeStatusReadOptions = {},
     ): Promise<PullRequestStatus | null> {
       const scopeKey = scope(id);
       let observation = scopes.get(scopeKey);
@@ -89,7 +115,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
           throw new Error('Forge pull request status unavailable');
         return value;
       };
-      if (previous && now() < previous.nextReadAt)
+      if (previous && now() < previous.checkedAt + freshFor(previous, background))
         return structuredClone(check(previous.value, previous.failures));
       generation.readers++;
       pruneScopes();
@@ -113,18 +139,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
           value = unknown(previous?.value ?? null);
           failures = (previous?.failures ?? 0) + 1;
         }
-        const ttl = failures
-          ? Math.min(300_000, 30_000 * 2 ** Math.min(failures - 1, 4))
-          : !value
-            ? 5_000
-            : value.phase !== 'open'
-              ? 300_000
-              : value.pipeline === 'running' ||
-                  value.pipeline === 'pending' ||
-                  value.checks.total === 0
-                ? 15_000
-                : 30_000;
-        const entry = { value, failures, checkedAt: now(), nextReadAt: now() + ttl };
+        const entry = { value, failures, checkedAt: now() };
         if (!generation.valid) return unknown(value);
         if ((branchEpochs.get(headKey) ?? 0) !== epoch) return value;
         entries.set(key, entry);

@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { ProjectRecord } from '@verity/store';
 import type { ForgeProvider, PullRequestStatus } from './forge-provider.js';
-import { createForgeStatusCache, type ForgeStatusIdentity } from './forge-status-cache.js';
+import {
+  createForgeStatusCache,
+  type ForgeStatusIdentity,
+  type ForgeStatusReadOptions,
+} from './forge-status-cache.js';
 
 /** Owns the same observation generation across UI, supervision and provider snapshots. */
 export function createProjectForgeStatusReader(
@@ -31,6 +35,7 @@ export function createProjectForgeStatusReader(
     remember = true,
     number?: number,
     reportUnavailable = false,
+    options: ForgeStatusReadOptions = {},
   ): Promise<PullRequestStatus | null> => {
     if (project.kind === 'local' || project.kind === 'control_plane') return null;
     const provider = await providerFor(project);
@@ -50,6 +55,7 @@ export function createProjectForgeStatusReader(
       (observationScope) =>
         provider.repositoryPrService!(project, observationScope).prStatusForBranch(branch, number),
       reportUnavailable,
+      options,
     );
   };
   return {

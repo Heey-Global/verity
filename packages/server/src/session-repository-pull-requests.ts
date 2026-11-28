@@ -51,6 +51,7 @@ export function createSessionRepositoryPullRequests(
     signal: AbortSignal,
     repositoryId?: string,
     pullRequestNumber?: number,
+    background = false,
   ) => {
     if (!session.projectId || !projectPullRequests) return undefined;
     const project = await untilAborted(eventStore.getProject(session.projectId), signal);
@@ -107,7 +108,7 @@ export function createSessionRepositoryPullRequests(
               ? await projectPullRequests.defaultBranch(target).catch(() => null)
               : (repository.defaultBranch ?? 'main');
             const readStatus = (head: string, number?: number) =>
-              projectPullRequests.status(target, head, number);
+              projectPullRequests.status(target, head, number, { background });
             const statuses = new Map<number, { status: PullRequestStatus; head?: string }>();
             const failed = new Set<number>();
             let discoveryFailed = false;
@@ -210,6 +211,8 @@ export function createSessionRepositoryPullRequests(
     signal?: AbortSignal,
     repositoryId?: string,
     pullRequestNumber?: number,
+    /** The server's own sweep, which accepts older observations. */
+    options: { background?: boolean } = {},
   ) => {
     const deadline = new AbortController();
     const readSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
@@ -219,7 +222,14 @@ export function createSessionRepositoryPullRequests(
       15_000,
     );
     try {
-      return await resolve(session, legacy, readSignal, repositoryId, pullRequestNumber);
+      return await resolve(
+        session,
+        legacy,
+        readSignal,
+        repositoryId,
+        pullRequestNumber,
+        options.background === true,
+      );
     } finally {
       clearTimeout(timer);
     }
