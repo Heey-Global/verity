@@ -661,10 +661,8 @@ export function installSessionRoutes(
                 ? {
                     ...row,
                     status: {
-                      ...row.status,
-                      pipeline: 'unknown' as const,
-                      mergeable: null,
-                      observationFailed: true,
+                      ...unavailablePullRequestStatus(row.status),
+                      repository: row.status.repository,
                     },
                   }
                 : row,
