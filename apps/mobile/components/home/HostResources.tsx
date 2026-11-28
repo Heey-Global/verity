@@ -21,7 +21,7 @@ type History = { cpu: (number | null)[]; memory: (number | null)[] };
 const append = (list: (number | null)[], value: number | null) =>
   [...list, value].slice(-HISTORY_SLOTS);
 // At module scope: a default created per render would restart the polling
-// effect after every reading and turn the 15-second refresh into a busy loop.
+// effect after every reading and turn the 10-second refresh into a busy loop.
 function loadFromActiveServer(): Promise<Resources> | null {
   const client = createVerityClient();
   return client === null ? null : client.getHostResources();
@@ -67,6 +67,12 @@ export function HostResources({
             return;
           }
           // Anything else is transient: keep the last reading and try again.
+          // The missed reading leaves an empty slot, so the strips keep
+          // covering the last five minutes.
+          setHistory((previous) => ({
+            cpu: append(previous.cpu, null),
+            memory: append(previous.memory, null),
+          }));
           timer = setTimeout(poll, intervalMs);
         });
     };
