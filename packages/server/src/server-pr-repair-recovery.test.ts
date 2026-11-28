@@ -138,7 +138,9 @@ it('keeps the last observed status while a slow PR refresh is out', async () => 
       pullRequest: { pipeline: 'success', mergeable: true },
       pullRequests: [{ number: 119, pipeline: 'success', mergeable: true }],
     });
-    now = 60_000;
+    // A session read only in the background: its observation is minutes old
+    // when someone opens it, which alone must not mask it.
+    now = 300_000;
     const pending = (await server.inject({ url })).json();
     expect(pending).toMatchObject({
       pullRequest: { number: 119, pipeline: 'success', mergeable: true },
@@ -146,10 +148,12 @@ it('keeps the last observed status while a slow PR refresh is out', async () => 
     });
     expect(pending.pullRequest).not.toHaveProperty('observationFailed');
     // A read that never settles must not keep offering Merge.
-    now = 200_000;
+    now = 340_000;
     expect((await server.inject({ url })).json()).toMatchObject({
       pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
-      pullRequests: [{ number: 119, mergeable: null, observationFailed: true }],
+      pullRequests: [
+        { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+      ],
     });
   } finally {
     releaseLookup(failingPr());
@@ -198,7 +202,9 @@ it('masks the last observed status once a PR refresh has failed', async () => {
     now = 60_000;
     expect((await server.inject({ url })).json()).toMatchObject({
       pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
-      pullRequests: [{ number: 119, mergeable: null, observationFailed: true }],
+      pullRequests: [
+        { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+      ],
     });
   } finally {
     await server.close();

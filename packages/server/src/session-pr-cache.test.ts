@@ -474,5 +474,9 @@ it('ages an observation from its read, not from an invalidation or a pending rea
   void cache.get(session);
   await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
   expect(cache.age(session.worktree)).toBe(10_000);
+  // The route masks by how long the refresh is out, not by the age alone.
+  now = 25_000;
+  expect(cache.pendingFor(session.worktree)).toBe(15_000);
   later.resolve(pr);
+  await vi.waitFor(() => expect(cache.pendingFor(session.worktree)).toBeUndefined());
 });

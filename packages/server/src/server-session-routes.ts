@@ -42,6 +42,7 @@ import { registerSessionLinkRoutes } from './session-link-routes.js';
 import { registerSessionMergeRoutes } from './session-merge-routes.js';
 import {
   FRESH_MIN_MS,
+  PENDING_READ_MAX_MS,
   PENDING_STATUS_MAX_AGE_MS,
   unavailablePullRequestStatus,
 } from './session-pr-cache.js';
@@ -637,13 +638,17 @@ export function installSessionRoutes(
       // finishes invalidates this list, so the session reads the new status a
       // moment later. Masking it as unknown left a lone Refresh in place of a
       // Merge the overview was still offering. A read that actually failed is
-      // already stored masked by the cache; one that has not settled for
-      // {@link PENDING_STATUS_MAX_AGE_MS} is masked here.
+      // already stored masked by the cache; one out for longer than
+      // {@link PENDING_READ_MAX_MS}, or an observation older than
+      // {@link PENDING_STATUS_MAX_AGE_MS}, is masked here. A session nobody had
+      // open is read in the background every few minutes, so its observation
+      // is often minutes old when someone opens it; that alone is no reason.
       const observed = sessionPrCache.peek(session.worktree);
       const stale =
         rawPullRequest === undefined &&
         observed &&
-        (sessionPrCache.age(session.worktree) ?? 0) > PENDING_STATUS_MAX_AGE_MS;
+        ((sessionPrCache.pendingFor(session.worktree) ?? 0) > PENDING_READ_MAX_MS ||
+          (sessionPrCache.age(session.worktree) ?? 0) > PENDING_STATUS_MAX_AGE_MS);
       // `undefined` while a first read is out: the list then names no status.
       const pullRequest =
         rawPullRequest !== undefined

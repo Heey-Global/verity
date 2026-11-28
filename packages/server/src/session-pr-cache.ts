@@ -53,9 +53,13 @@ interface ReadOptions {
  * session at once, or one reopening it, cost one forge read. */
 export const FRESH_MIN_MS = 2_000;
 
-/** How old an observation may be and still be shown as it is while its
- * refresh is out. A read that never settles must not keep offering Merge. */
-export const PENDING_STATUS_MAX_AGE_MS = 120_000;
+/** How long a refresh may be out while the last observation is shown as it
+ * is. A read that never settles must not keep offering Merge. */
+export const PENDING_READ_MAX_MS = 30_000;
+
+/** The oldest observation shown as it is while a refresh is out, however
+ * recently that refresh began. */
+export const PENDING_STATUS_MAX_AGE_MS = 10 * 60_000;
 
 function foregroundInterval(entry: Entry): number {
   const { status } = entry;
@@ -112,6 +116,8 @@ export function createSessionPrCache(options: {
   interface PendingRead {
     disowned: boolean;
     priority: boolean;
+    /** When the read was asked for, queued or running. */
+    since: number;
     promise: Promise<PullRequestStatus | null>;
     run(): Promise<void>;
     resolve(status: PullRequestStatus | null): void;
@@ -155,6 +161,7 @@ export function createSessionPrCache(options: {
     const token: PendingRead = {
       disowned: false,
       priority: readOptions.priority === true,
+      since: now(),
       promise: new Promise((done) => {
         resolve = done;
       }),
@@ -247,5 +254,10 @@ export function createSessionPrCache(options: {
     const entry = entries.get(worktree);
     return entry === undefined ? undefined : now() - entry.observedAt;
   };
-  return { get, peek, age, isDue, invalidate, prune };
+  /** How long the read now out for `worktree` has been asked for. */
+  const pendingFor = (worktree: string): number | undefined => {
+    const running = pending.get(worktree);
+    return running === undefined || running.disowned ? undefined : now() - running.since;
+  };
+  return { get, peek, age, pendingFor, isDue, invalidate, prune };
 }
