@@ -194,9 +194,7 @@ export function HomeInbox({
         </Group>
       </View>
       {/* Below everything: the server's machine, for administrators only. */}
-      <View style={styles.hostResources} testID="home-host-resources">
-        <HostResources load={loadHostResources} />
-      </View>
+      <HostResources load={loadHostResources} />
     </ScrollView>
   );
 }
@@ -262,5 +260,4 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
   },
   sharedKnowledge: { paddingTop: theme.spacing.xl },
-  hostResources: { paddingTop: theme.spacing.lg },
 }));

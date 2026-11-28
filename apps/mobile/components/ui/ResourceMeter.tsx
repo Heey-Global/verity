@@ -16,8 +16,8 @@ const clamp = (share: number) => Math.min(100, Math.max(0, Number.isFinite(share
  * label on the left, the current share on the right, and under them either the
  * recent history as bars (`history`, for something that moves from minute to
  * minute, like CPU) or one fill bar (`fill`, for something that grows over days,
- * like a disk). Empty history slots draw as a faint baseline, so the strip has
- * its full width from the first reading.
+ * like a disk). Every history slot is a faint full-height column, so the strip
+ * shows its scale and its full width from the first reading.
  */
 export function ResourceMeter({
   icon,

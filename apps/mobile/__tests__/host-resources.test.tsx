@@ -64,7 +64,7 @@ it('collects one bar per reading and keeps only the last slots', async () => {
   }
 });
 
-// A member who is not an administrator is refused; asking every 15 seconds for
+// A member who is not an administrator is refused; asking every 10 seconds for
 // a screen they will never see would only cost battery.
 it('shows nothing and stops asking when the server refuses', async () => {
   jest.useFakeTimers();
@@ -159,4 +159,22 @@ it('drops the reading and stops when a later refresh is refused', async () => {
   } finally {
     jest.useRealTimers();
   }
+});
+
+// Home hands the widget a new loader when it switches servers; the old
+// machine's figures must not stay up or share a strip with the new one.
+it('starts over when the loader changes', async () => {
+  const first = () => Promise.resolve(reading({ cpu: { percent: 70, cores: 4 } }));
+  const view = render(<HostResources load={first} intervalMs={60_000} />);
+  expect(await screen.findByText('70%')).toBeOnTheScreen();
+  let answer: (value: Resources) => void = () => undefined;
+  const second = () =>
+    new Promise<Resources>((resolve) => {
+      answer = resolve;
+    });
+  view.rerender(<HostResources load={second} intervalMs={60_000} />);
+  expect(screen.queryByText('70%')).not.toBeOnTheScreen();
+  await act(async () => answer(reading({ cpu: { percent: 20, cores: 4 } })));
+  expect(screen.getByText('20%')).toBeOnTheScreen();
+  expect(screen.getAllByTestId('host-cpu-bar')).toHaveLength(1);
 });

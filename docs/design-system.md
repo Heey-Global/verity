@@ -351,9 +351,10 @@ title; a log list keeps them dense and scannable.
 - Under it, something that moves from minute to minute (CPU, memory) shows its recent
   readings as a strip of thin bars, oldest left; something that grows over days (a disk)
   shows one rounded fill bar on a `neutral` tint of `text`.
-- A meter is a state, never an action: earlier bars are `textFaint`, the current bar and
-  the fill `text`, and any reading from 90 % `attention` — the figure too. Slots without a
-  reading yet draw as a faint baseline, so the strip has its full width from the start.
+- A meter is a state, never an action: earlier bars are `textMuted`, the current bar and
+  the fill `text`, and any reading from 90 % `attention` — the figure too. Every slot is a
+  full-height column in a `neutral` tint of `text`, so the strip shows its 0–100 % scale
+  and its full width from the first reading.
 - Meters stack in a stacked `Card` under a `CardHead` that names the machine.
 
 ### 5.6 Sheet

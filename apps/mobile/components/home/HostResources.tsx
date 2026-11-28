@@ -4,6 +4,8 @@
 // anyone else the server refuses and nothing is shown.
 import { usedPercent, VerityApiError, type HostResources as Resources } from '@verity/mobile';
 import { useEffect, useState } from 'react';
+import { View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
 import { createVerityClient } from '../../lib/client';
 import { Card, CardHead, ResourceMeter } from '../ui';
@@ -38,6 +40,10 @@ export function HostResources({
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // A new loader is a new server: its figures must not stand in for, or be
+    // charted after, those of the previous one.
+    setResources(null);
+    setHistory({ cpu: [], memory: [] });
     const poll = () => {
       const request = load();
       if (request === null) return;
@@ -72,7 +78,12 @@ export function HostResources({
   }, [load, intervalMs]);
 
   if (resources === null) return null;
-  return <HostResourcesCard resources={resources} history={history} />;
+  return (
+    // The room above belongs to the widget, so Home has no gap when it is hidden.
+    <View style={styles.spaced} testID="host-resources">
+      <HostResourcesCard resources={resources} history={history} />
+    </View>
+  );
 }
 
 /** One reading with the history collected so far, drawn as the Home card. */
@@ -117,3 +128,7 @@ export function HostResourcesCard({
     </Card>
   );
 }
+
+const styles = StyleSheet.create((theme) => ({
+  spaced: { paddingTop: theme.spacing.lg },
+}));

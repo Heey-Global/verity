@@ -1027,12 +1027,19 @@ it('leads every Needs you entry with the session tile and its corner mark', asyn
 // The server widget once landed under the project list instead of here; it
 // belongs on Home, below everything else, Shared knowledge included.
 it('places the server widget last, below Shared knowledge', async () => {
-  await renderInbox([question]);
+  const client = fakeClient();
+  client.getHostResources.mockResolvedValue({
+    observedAt: '2026-11-28T09:08:00.000Z',
+    cpu: { percent: 46, cores: 8 },
+    memory: { usedBytes: 5, totalBytes: 16 },
+    disk: null,
+  } as never);
+  await renderInbox([question], client);
+  expect(await screen.findByText('CPU · 8 cores')).toBeOnTheScreen();
   const order = screen.UNSAFE_root.findAll(
     (node) =>
       typeof node.type === 'string' &&
-      (node.props.testID === 'home-shared-knowledge' ||
-        node.props.testID === 'home-host-resources'),
+      (node.props.testID === 'home-shared-knowledge' || node.props.testID === 'host-resources'),
   ).map((node) => node.props.testID as string);
-  expect(order).toEqual(['home-shared-knowledge', 'home-host-resources']);
+  expect(order).toEqual(['home-shared-knowledge', 'host-resources']);
 });
