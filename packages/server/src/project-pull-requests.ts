@@ -1,4 +1,3 @@
-import type { ForgeStatusReadOptions } from './forge-status-cache.js';
 import {
   projectForRepository,
   type EventStore,
@@ -7,6 +6,7 @@ import {
 } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import type { ForgeStatusReadOptions } from './forge-status-cache.js';
 import { isSafeRefName } from './branches.js';
 import {
   ForgeMergePermissionError,

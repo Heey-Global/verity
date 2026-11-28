@@ -1,5 +1,5 @@
-import type { ForgeStatusReadOptions } from './forge-status-cache.js';
 import { projectForRepository, type ProjectRecord, type SessionRecord } from '@verity/store';
+import type { ForgeStatusReadOptions } from './forge-status-cache.js';
 import type { GitBranchService } from './branches.js';
 import type { PullRequestStatus } from './forge-provider.js';
 import type { ServerDeps } from './server-deps.js';
