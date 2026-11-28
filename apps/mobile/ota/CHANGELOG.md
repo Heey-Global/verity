@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.97.3](https://github.com/Heey-Global/verity/compare/mobile-v1.97.2...mobile-v1.97.3) (2026-11-28)
+
+
+### Features
+
+* **mobile:** move the server widget to the end of Home and draw it as meters ([#3048](https://github.com/Heey-Global/verity/issues/3048)) ([294e125](https://github.com/Heey-Global/verity/commit/294e125faa6cfd49cce54c4bb6dae4473604078b))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#3043](https://github.com/Heey-Global/verity/issues/3043)) ([0afd851](https://github.com/Heey-Global/verity/commit/0afd8519510436806fb80c72635d3c45436dbe12))
+* **live:** keep the last pull request status while a refresh is out ([#3049](https://github.com/Heey-Global/verity/issues/3049)) ([1ee8695](https://github.com/Heey-Global/verity/commit/1ee8695d0f5501ce89d320e835f2ed5ff67821d3))
+
 ## [1.97.2](https://github.com/Heey-Global/verity/compare/mobile-v1.97.1...mobile-v1.97.2) (2026-11-27)
 
 
