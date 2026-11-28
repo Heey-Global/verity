@@ -1,23 +1,21 @@
 {
   "schema": 1,
-  "version": "1.95.7",
-  "runtime": "1.95.0",
+  "version": "1.97.2",
+  "runtime": "1.97.0",
   "channel": "production",
-  "commit": "c83acffa16ae72fecd1e57362fa284bcfbba7763",
-  "tag": "mobile-v1.95.7",
-  "branch": "staging-mobile-v1.95.7-c83acffa16ae72fecd1e57362fa284bcfbba7763",
-  "baseline": "mobile-v1.95.5",
-  "group": "f6646849-1eb0-450a-b065-1ff26a180f05",
+  "commit": "6287c750b2e69051007d96fc97e80a0bc28e0d16",
+  "tag": "mobile-v1.97.2",
+  "branch": "staging-mobile-v1.97.2-6287c750b2e69051007d96fc97e80a0bc28e0d16",
+  "baseline": "mobile-v1.97.0",
+  "group": "b682bc46-5511-43a3-8342-dc8e367d7254",
   "notes": [
-    "share one overview store and topic subscription across views (#2944)",
-    "keep approval buttons reachable above long requests (#2943)",
-    "show active sessions ahead of mockup reviews (#2941)",
-    "publish pull request status as domain events (#2936)",
-    "leave dropped and older done tasks out of the default list (#2935)",
-    "publish sandbox lifecycle, update and project changes as domain events (#2930)",
-    "load only the tasks a view shows, and only while it is open (#2928)",
-    "publish answered requests and Quick Actions as domain events (#2923)",
-    "stop hidden session screens from polling secret approvals (#2925)",
-    "domain-event topics on the live connection (protocol 2) (#2915)"
+    "let agents create folders and rename, move and delete items (#3032)",
+    "stop watching overview routes that topics cover live (#3031)",
+    "close undeliverable OTA release PRs and surface OTA update status (#3025)",
+    "treat a new account as a new target and harden the follow-ups (#3027)",
+    "announce changes that reach the overview only as invalidations (#3028)",
+    "announce branch changes of open sessions in their session row (#3022)",
+    "give agents SMB folders granted per project (#3015)",
+    "announce server attention to administrators on a server topic (#3016)"
   ]
 }
