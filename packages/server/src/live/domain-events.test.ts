@@ -93,18 +93,19 @@ describe('DomainEventBus', () => {
     bus.publish('project:p1', update(1));
     expect(seen).toEqual([]);
   });
-});
 
-// The repair sweep reads an open session's pull requests at a viewer's cadence
-// and every other one's at the background cadence. A key that missed the
-// screen's subscription would quietly slow the open session to the latter.
-it('tells an open session by its screen subscribing the session topic', () => {
-  const bus = new DomainEventBus();
-  expect(sessionOpen(bus, 's1')).toBe(false);
-  const { unsubscribe } = bus.subscribe('session:s1', undefined, () => undefined);
-  expect(sessionOpen(bus, 's1')).toBe(true);
-  expect(sessionOpen(bus, 's2')).toBe(false);
-  bus.subscribe('project:s1', undefined, () => undefined);
-  unsubscribe();
-  expect(sessionOpen(bus, 's1')).toBe(false);
+  // The repair sweep reads an open session's pull requests at a viewer's cadence
+  // and every other one's at the background cadence. A key that missed the
+  // screen's subscription would quietly slow the open session to the latter.
+  it('tells an open session by its screen subscribing the session topic', () => {
+    const bus = new DomainEventBus();
+    expect(sessionOpen(bus, 's1')).toBe(false);
+    const { unsubscribe } = bus.subscribe('session:s1', undefined, () => undefined);
+    expect(sessionOpen(bus, 's1')).toBe(true);
+    expect(sessionOpen(bus, 's2')).toBe(false);
+    const project = bus.subscribe('project:s1', undefined, () => undefined);
+    unsubscribe();
+    expect(sessionOpen(bus, 's1')).toBe(false);
+    project.unsubscribe();
+  });
 });
