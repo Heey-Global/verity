@@ -4,7 +4,10 @@ import type { PullRequestStatus } from './forge-provider.js';
 interface Entry {
   status: PullRequestStatus | null;
   visibleStatus: PullRequestStatus | null;
+  /** When the read finished; moved back by an invalidation to read again soon. */
   at: number;
+  /** When `visibleStatus` was observed; an invalidation leaves it. */
+  observedAt: number;
   quietReads: number;
   failures: number;
   /** When this head commit was first seen open without any checks. */
@@ -200,6 +203,7 @@ export function createSessionPrCache(options: {
           status,
           visibleStatus,
           at,
+          observedAt: at,
           quietReads: status === null ? Math.min(5, (previous?.quietReads ?? 0) + 1) : 0,
           failures,
           ...(since === undefined ? {} : { noChecksSince: since }),
@@ -241,7 +245,7 @@ export function createSessionPrCache(options: {
   /** How long ago the status {@link peek} returns was observed. */
   const age = (worktree: string): number | undefined => {
     const entry = entries.get(worktree);
-    return entry === undefined ? undefined : now() - entry.at;
+    return entry === undefined ? undefined : now() - entry.observedAt;
   };
   return { get, peek, age, isDue, invalidate, prune };
 }

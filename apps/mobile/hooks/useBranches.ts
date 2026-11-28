@@ -299,20 +299,21 @@ export function useBranches(client: VerityClient, sessionId: string, enabled = t
               setPreviewable(res.previewable ?? []);
               setCurrentPr(res.currentPr ?? null);
               setPullRequest(res.pullRequest ?? null);
-              // `null`: the rows were not read in time. The server invalidates
-              // the list once they are, so the last rows stay until then;
-              // masking them as unknown left a lone Refresh where Home still
-              // offered Merge. The default repository's row of the pull
-              // request this read names takes its status, so a failed read
-              // shows there too.
+              // `null`: the rows were not read in time. Their last state is
+              // shown as unknown until the list is read again, except the
+              // default repository's row of the pull request this read names:
+              // it takes that status, which the server bounds in age. Masking
+              // that row too left a lone Refresh where Home offered Merge.
               const primary = res.pullRequest;
               setRepositoryPullRequests(
-                res.pullRequests === null && pullRequests != null && primary
-                  ? pullRequests.map((row) =>
-                      row.repository.isDefault && row.number === primary.number
+                res.pullRequests === null
+                  ? (pullRequests?.map((row) =>
+                      primary && row.repository.isDefault && row.number === primary.number
                         ? withStatus(row, pullRequestStatus(primary))
-                        : row,
-                    )
+                        : row.phase === 'open'
+                          ? { ...row, mergeable: null, pipeline: 'unknown' as const }
+                          : row,
+                    ) ?? null)
                   : pullRequests,
               );
               setOwner(res.owner);

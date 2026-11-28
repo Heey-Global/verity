@@ -651,7 +651,25 @@ export function installSessionRoutes(
           : stale
             ? unavailablePullRequestStatus(observed)
             : observed;
-      const pullRequests = await readRepositoryPRs(pullRequest);
+      const repositoryRows = await readRepositoryPRs(pullRequest);
+      // Rows are reused for a few seconds: one read before the status above
+      // was masked must not keep offering Merge on the same pull request.
+      const pullRequests =
+        stale && pullRequest
+          ? repositoryRows?.map((row) =>
+              row.status.repository.isDefault && row.status.number === pullRequest.number
+                ? {
+                    ...row,
+                    status: {
+                      ...row.status,
+                      pipeline: 'unknown' as const,
+                      mergeable: null,
+                      observationFailed: true,
+                    },
+                  }
+                : row,
+            )
+          : repositoryRows;
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)

@@ -454,3 +454,25 @@ describe('fresh reads for an opened session', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 });
+
+// The branch list shows an observation as it is only while it is younger than
+// a bound. Activity moves the read time back to ask again soon; were the age
+// taken from it, every pending refresh after agent activity would look stale
+// and the session would show a lone Refresh again.
+it('ages an observation from its read, not from an invalidation or a pending read', async () => {
+  let now = 0;
+  const later = deferred<PullRequestStatus | null>();
+  const load = vi
+    .fn<() => Promise<PullRequestStatus | null>>()
+    .mockResolvedValueOnce(pr)
+    .mockReturnValue(later.promise);
+  const cache = createSessionPrCache({ load, now: () => now });
+  expect(cache.age(session.worktree)).toBeUndefined();
+  await cache.get(session);
+  now = 10_000;
+  cache.invalidate(session.worktree, true);
+  void cache.get(session);
+  await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  expect(cache.age(session.worktree)).toBe(10_000);
+  later.resolve(pr);
+});

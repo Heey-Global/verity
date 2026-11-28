@@ -119,25 +119,35 @@ describe('useBranches live updates', () => {
   });
 
   // A list read that returns before its repository rows answers them as
-  // `null`; the server invalidates the list once they arrive. Masking the last
-  // rows as unknown meanwhile left a lone Refresh in place of Merge.
-  it('keeps the last repository rows while a read has not brought them', async () => {
-    const row = {
-      ...branches('open', 'success').pullRequest!,
-      mergeable: true,
+  // `null`. The default repository's row of the pull request the read names
+  // follows that status; masking it left a lone Refresh in place of Merge.
+  // Rows of other repositories stay unknown until they are read again.
+  it('keeps the named pull request row while a read has not brought the rows', async () => {
+    const good = { ...branches('open', 'success').pullRequest!, mergeable: true };
+    const main = {
+      ...good,
+      repository: { id: 'app', name: 'app', owner: 'example', repo: 'repo', isDefault: true },
+    };
+    const api = {
+      ...good,
+      number: 7,
       repository: { id: 'api', name: 'api', owner: 'example', repo: 'api', isDefault: false },
     };
     const getBranches = jest
       .fn()
-      .mockResolvedValueOnce({ ...branches('open', 'success'), pullRequests: [row] })
-      .mockResolvedValueOnce({ ...branches('open', 'success'), pullRequests: null });
+      .mockResolvedValueOnce({ ...branches(), pullRequest: good, pullRequests: [main, api] })
+      .mockResolvedValueOnce({ ...branches(), pullRequest: good, pullRequests: null });
     const client = { getBranches } as unknown as VerityClient;
     const { result } = renderHook(() => useBranches(client, 'rows-pending'));
     await act(async () => {});
-    expect(result.current.pullRequests).toEqual([row]);
     await changed();
     expect(getBranches).toHaveBeenCalledTimes(2);
-    expect(result.current.pullRequests).toEqual([row]);
+    expect(result.current.pullRequests[0]).toMatchObject({ number: 42, mergeable: true });
+    expect(result.current.pullRequests[1]).toMatchObject({
+      number: 7,
+      pipeline: 'unknown',
+      mergeable: null,
+    });
   });
 
   // A read that failed must not leave Merge on the row it no longer refreshed.

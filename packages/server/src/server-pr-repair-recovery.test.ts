@@ -149,6 +149,7 @@ it('keeps the last observed status while a slow PR refresh is out', async () => 
     now = 200_000;
     expect((await server.inject({ url })).json()).toMatchObject({
       pullRequest: { number: 119, pipeline: 'unknown', mergeable: null, observationFailed: true },
+      pullRequests: [{ number: 119, mergeable: null, observationFailed: true }],
     });
   } finally {
     releaseLookup(failingPr());
