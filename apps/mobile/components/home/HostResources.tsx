@@ -22,12 +22,14 @@ const amount = (used: { usedBytes: number; totalBytes: number }) =>
 const spokenShare = (name: string, share: number | null) =>
   share === null ? `${name} not measured` : `${name} ${Math.round(share)} percent`;
 /** The row is one element for VoiceOver, so it names every figure itself. */
-const spoken = (cpu: number | null, memory: number | null, disk: number | null) =>
+const spoken = (cpu: number | null, memory: number | null, disk: number | null | undefined) =>
   ['Server', spokenShare('CPU', cpu), spokenShare('RAM', memory)]
-    .concat(disk === null ? [] : [spokenShare('Disk', disk)])
+    .concat(disk === undefined ? [] : [spokenShare('Disk', disk)])
     .join(', ');
 
 type History = { cpu: (number | null)[]; memory: (number | null)[] };
+/** One shared empty history: resetting to it again is no state change. */
+const NO_HISTORY: History = { cpu: [], memory: [] };
 const append = (list: (number | null)[], value: number | null) =>
   [...list, value].slice(-HISTORY_SLOTS);
 // At module scope: a default created per render would restart the polling
@@ -46,7 +48,7 @@ export function HostResources({
   intervalMs?: number;
 }) {
   const [resources, setResources] = useState<Resources | null>(null);
-  const [history, setHistory] = useState<History>({ cpu: [], memory: [] });
+  const [history, setHistory] = useState<History>(NO_HISTORY);
   // Collapsed by default: one quiet row at the end of Home. The history keeps
   // being collected meanwhile, so the strips are filled when it is opened.
   const [expanded, setExpanded] = useState(false);
@@ -56,7 +58,7 @@ export function HostResources({
     // A new loader is a new server: its figures must not stand in for, or be
     // charted after, those of the previous one.
     setResources(null);
-    setHistory({ cpu: [], memory: [] });
+    setHistory(NO_HISTORY);
     const poll = () => {
       const request = load();
       if (request === null) return;
@@ -76,7 +78,7 @@ export function HostResources({
           // rather than leave stale figures up, and stop asking.
           if (error instanceof VerityApiError && error.status === 403) {
             setResources(null);
-            setHistory({ cpu: [], memory: [] });
+            setHistory(NO_HISTORY);
             return;
           }
           // Anything else is transient: keep the last reading and try again.
@@ -151,7 +153,11 @@ export function HostResourcesCard({
               </View>
             )
           }
-          accessibilityLabel={spoken(resources.cpu.percent, memory, disk)}
+          accessibilityLabel={spoken(
+            resources.cpu.percent,
+            memory,
+            resources.disk === null ? undefined : disk,
+          )}
           trailing={
             <Icon
               name={expanded ? 'chevron-up' : 'chevron-down'}
