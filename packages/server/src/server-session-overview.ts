@@ -553,9 +553,15 @@ export function createServerSessionOverview({
   const resolvePullRequests = createSessionRepositoryPullRequests(deps, branchesForSession);
   const observedPullRequests = new Map<string, string>();
   const observePullRequests = async (session: SessionRecord) => {
-    const rows = await resolvePullRequests(session, undefined, undefined, undefined, undefined, {
-      background: isSessionOpen?.(session.sessionId) !== true,
-    });
+    const options = { background: isSessionOpen?.(session.sessionId) !== true };
+    const rows = await resolvePullRequests(
+      session,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      options,
+    );
     if (!rows) return rows;
     const snapshot = JSON.stringify(
       rows

@@ -1,3 +1,4 @@
+import type { ForgeStatusReadOptions } from './forge-status-cache.js';
 import { projectForRepository, type ProjectRecord, type SessionRecord } from '@verity/store';
 import type { GitBranchService } from './branches.js';
 import type { PullRequestStatus } from './forge-provider.js';
@@ -212,7 +213,7 @@ export function createSessionRepositoryPullRequests(
     repositoryId?: string,
     pullRequestNumber?: number,
     /** The server's own sweep, which accepts older observations. */
-    options: { background?: boolean } = {},
+    options: ForgeStatusReadOptions = {},
   ) => {
     const deadline = new AbortController();
     const readSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;

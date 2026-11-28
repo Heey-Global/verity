@@ -1,3 +1,4 @@
+import type { ForgeStatusReadOptions } from './forge-status-cache.js';
 import {
   projectForRepository,
   type EventStore,
@@ -31,7 +32,7 @@ export interface ProjectPullRequestBackend {
     project: ProjectRecord,
     branch: string,
     number?: number,
-    options?: { background?: boolean },
+    options?: ForgeStatusReadOptions,
   ): Promise<PullRequestStatus | null>;
   defaultBranch?(project: ProjectRecord): Promise<string>;
   hasOpenPullRequest?(project: ProjectRecord, branch: string): Promise<boolean>;

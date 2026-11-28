@@ -1,4 +1,5 @@
 import {
+  domainTopic,
   parseDomainTopic,
   type DomainEvent,
   type DomainTopic,
@@ -188,4 +189,10 @@ export class DomainEventBus {
       return;
     }
   }
+}
+
+/** Whether a device has the session open: its screen subscribes the session
+ * topic for as long as it shows the session (ADR 0033). */
+export function sessionOpen(bus: Pick<DomainEventBus, 'watching'>, sessionId: string): boolean {
+  return bus.watching(domainTopic('session', sessionId));
 }
