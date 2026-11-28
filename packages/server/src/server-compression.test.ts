@@ -33,4 +33,14 @@ it('compresses an opted-in read of the assembled server', async () => {
   expect(zipped.headers['content-encoding']).toBe('gzip');
   expect(zipped.rawPayload.length).toBeLessThan(plain.rawPayload.length);
   expect(JSON.parse(gunzipSync(zipped.rawPayload).toString('utf8'))).toEqual(plain.json());
+
+  // Not opted in: compression stays a per-route choice, never a global one.
+  const picker = await app.inject({
+    method: 'GET',
+    url: '/github/repositories',
+    headers: { 'accept-encoding': 'gzip, deflate, br' },
+  });
+  expect(picker.statusCode).toBe(200);
+  expect(picker.rawPayload.length).toBeGreaterThan(1024);
+  expect(picker.headers['content-encoding']).toBeUndefined();
 });

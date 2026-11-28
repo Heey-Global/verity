@@ -129,6 +129,8 @@ export function createServerApp(deps: ServerDeps): {
   // route's `compress` option was silently ignored: the routes answered in
   // full, uncompressed, while everything still worked. The plugin body is
   // synchronous and only adds a reply decorator and hooks to this instance.
+  // Bypassing `register` also skips its version check and leaves the plugin
+  // unrecorded for `hasPlugin`; no plugin here declares a dependency on it.
   let compressFailure: Error | undefined;
   const compressResult: unknown = compressPlugin(
     app,
