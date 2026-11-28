@@ -29,6 +29,9 @@ it('shows CPU, memory and disk with their sizes', async () => {
   expect(screen.getByText('12%')).toBeOnTheScreen();
   expect(screen.getByText('29%')).toBeOnTheScreen();
   expect(screen.getByText('90%')).toBeOnTheScreen();
+  // The disk grows over days: one fill bar, not a strip of minutes.
+  expect(screen.getByTestId('host-disk-fill')).toBeOnTheScreen();
+  expect(screen.queryByTestId('host-disk-history')).not.toBeOnTheScreen();
 });
 
 it('leaves out what the server cannot measure', async () => {
