@@ -60,8 +60,8 @@
     "render:mockups": "node scripts/render-mockups.mjs"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.110.1",
-    "@agentclientprotocol/codex-acp": "2.10.0",
+    "@agentclientprotocol/claude-agent-acp": "0.112.0",
+    "@agentclientprotocol/codex-acp": "2.12.0",
     "@devcontainers/cli": "0.91.0",
     "@eslint/js": "10.0.1",
     "@expo/plist": "0.10.2",

@@ -8,9 +8,13 @@ const installer = new URL(
   import.meta.url,
 ).href;
 // The security-sensitive expression from the pinned adapter's createSessionConfig.
-const fixture = `projects: Object.fromEntries(sessionRoots.map((root) => [root, {
+const trustFixture = `projects: Object.fromEntries(sessionRoots.map((root) => [root, {
         trust_level: "trusted"
       }]))`;
+const initialOptionsFixture = `
+if (request.configOptions?.length) await this.applyInitialConfigOptions(sessionState, request.configOptions);
+if (request.configOptions?.length) await this.applyInitialConfigOptions(sessionState, request.configOptions, settleTrackerReady);`;
+const fixture = trustFixture + '\n// initial options\n' + initialOptionsFixture;
 
 function patch(source: string) {
   return spawnSync(
@@ -21,7 +25,7 @@ function patch(source: string) {
       `
     import { hardenCodexAcpSource } from ${JSON.stringify(installer)};
     const source = hardenCodexAcpSource(${JSON.stringify(source)});
-    console.log(JSON.stringify(Function('sessionRoots', 'return ({' + source + '})')(['/work/project'])));
+    console.log(JSON.stringify(Function('sessionRoots', 'return ({' + source.split('// initial options')[0] + '})')(['/work/project'])));
   `,
     ],
     { encoding: 'utf8' },
@@ -49,7 +53,7 @@ it.each(['', fixture + ',' + fixture, fixture.replace('trust_level', 'renamed_tr
   },
 );
 
-it.each(['2.6.1', '2.7.0', '2.9.0', '2.10.1', '99.0.0'])(
+it.each(['2.6.1', '2.7.0', '2.9.0', '2.10.0', '2.10.1', '2.11.0', '2.11.1', '2.12.1', '99.0.0'])(
   'requires the pinned adapter to match the audited security version (rejects %s)',
   (version) => {
     const manifest = JSON.parse(
@@ -76,6 +80,64 @@ it.each(['2.6.1', '2.7.0', '2.9.0', '2.10.1', '99.0.0'])(
     expect(refused.stderr).toContain('requires audited adapter version');
   },
 );
+
+it.each([
+  trustFixture,
+  fixture + initialOptionsFixture,
+  fixture.replace(', settleTrackerReady)', ')'),
+  fixture.replace('request.configOptions);', 'request.changedOptions);'),
+  // A partially hardened copy, or one with a site re-added next to the markers.
+  fixture.replace(
+    'if (request.configOptions?.length) await this.applyInitialConfigOptions(sessionState, request.configOptions);',
+    '/* Verity discards client-supplied initial configOptions. */',
+  ),
+  trustFixture +
+    '\n// initial options\n/* Verity discards client-supplied initial configOptions. */'.repeat(2) +
+    initialOptionsFixture,
+])('refuses changed or missing initial-config application sites', (source) => {
+  const result = patch(source);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain('refusing an unhardened adapter');
+});
+
+it('re-hardens an installed copy whose trust expression a probe restored', () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+      import { hardenCodexAcpSource } from ${JSON.stringify(installer)};
+      const once = hardenCodexAcpSource(${JSON.stringify(fixture)});
+      const restored = once.replace('trust_level: "untrusted"', 'trust_level: "trusted"');
+      if (hardenCodexAcpSource(restored) !== once) throw new Error('Re-hardening changed the result');
+    `,
+    ],
+    { encoding: 'utf8' },
+  );
+  expect(result.status, result.stderr).toBe(0);
+});
+
+it('discards initial options before they can change the pinned mode', () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `
+      import { hardenCodexAcpSource } from ${JSON.stringify(installer)};
+      const source = hardenCodexAcpSource(${JSON.stringify(fixture)});
+      const body = source.split('// initial options')[1];
+      const run = Object.getPrototypeOf(async function () {}).constructor(
+        'request', 'sessionState', 'settleTrackerReady', body);
+      await run.call({ applyInitialConfigOptions() { throw new Error('Mode override reached'); } },
+        { configOptions: [{ configId: 'mode', value: 'full-access' }] }, {}, () => {});
+    `,
+    ],
+    { encoding: 'utf8' },
+  );
+  expect(result.status, result.stderr).toBe(0);
+});
 
 it('hardens the installed pinned adapter rather than only a source fixture', () => {
   const require = createRequire(import.meta.url);

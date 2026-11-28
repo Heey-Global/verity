@@ -60,8 +60,25 @@ export function hardenCodexAcpSource(source) {
   const matches = [...source.matchAll(automaticTrust)];
   if (matches.length !== 1)
     throw new Error('Unsupported Codex ACP project-trust code; refusing an unhardened adapter');
-  return source.replace(automaticTrust, (match) => match.replace('"trusted"', '"untrusted"'));
+  // Initial mode options must not override the mode pinned by the spawn broker.
+  // Both creation and history loading started applying these options in 2.12.0.
+  const initialOptions =
+    /if \(request\.configOptions\?\.length\) await this\.applyInitialConfigOptions\(sessionState, request\.configOptions(?:, settleTrackerReady)?\);/g;
+  const optionMatches = [...source.matchAll(initialOptions)];
+  // An image copy already carries both removals; probes re-harden such copies
+  // after restoring only the trust expression. Any mixed state is refused.
+  const discarded = source.split(DISCARDED_INITIAL_OPTIONS).length - 1;
+  const unhardened =
+    optionMatches.length === 2 &&
+    optionMatches.filter((match) => match[0].includes(', settleTrackerReady')).length === 1;
+  if (!(discarded === 0 ? unhardened : discarded === 2 && optionMatches.length === 0))
+    throw new Error('Unsupported Codex ACP initial-config code; refusing an unhardened adapter');
+  return source
+    .replace(automaticTrust, (match) => match.replace('"trusted"', '"untrusted"'))
+    .replace(initialOptions, DISCARDED_INITIAL_OPTIONS);
 }
+
+const DISCARDED_INITIAL_OPTIONS = '/* Verity discards client-supplied initial configOptions. */';
 
 // Corepack links `pnpm` and `yarn`, which base images often ship themselves
 // (Node images include Yarn 1). Overwriting those would silently swap the
@@ -106,14 +123,14 @@ export function installCli(
   if (dependencies.length !== 1) throw new Error('CLI bundle must contain exactly one dependency');
   const [name, pinned] = dependencies[0];
   const version = override ?? pinned;
-  // Audited for 2.10.0: the project-trust expression, hook configuration and
-  // built-in modes are unchanged from 2.7.0. INITIAL_AGENT_MODE still takes
-  // precedence over permission profiles. New, load and resume discard initial
-  // configOptions. createSessionConfig only adds client-supplied MCP servers
-  // (stdio now requires an absolute command; MCP-over-ACP needs the client's
-  // bridge) and expands the adapter's own dotted config keys.
-  if (id === 'codex-acp' && version !== '2.10.0')
-    throw new Error('Codex ACP security hardening requires audited adapter version 2.10.0');
+  // Audited 2.10.0 -> 2.12.0: project trust, hook/plugin loading and built-in
+  // modes retain their controls; INITIAL_AGENT_MODE precedes permission profiles.
+  // 2.12.0 newly applies initial configOptions on new/load/resume/fork: hardening
+  // removes both application sites so they cannot override the pinned mode.
+  // MCP merging remains confined to mcp_servers/features; dotted keys come from
+  // the adapter's own config. Session options/rewind add no policy overrides.
+  if (id === 'codex-acp' && version !== '2.12.0')
+    throw new Error('Codex ACP security hardening requires audited adapter version 2.12.0');
   if (!/^\d+\.\d+\.\d+(?:-[\da-zA-Z.-]+)?(?:\+[\da-zA-Z.-]+)?$/.test(version)) {
     throw new Error('CLI version must be exact');
   }
