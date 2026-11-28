@@ -1,37 +1,23 @@
-// The server's machine at a glance, closing the Home project list: CPU, memory
-// and the disk that holds Verity's data. A disk that fills over days shows up
-// here long before anything fails. Administrators only; for anyone else the
-// server refuses and nothing is shown.
+// The server's machine at a glance, last on Home: CPU and memory with their
+// last few minutes, and the disk that holds Verity's data. A disk that fills
+// over days shows up here long before anything fails. Administrators only; for
+// anyone else the server refuses and nothing is shown.
 import { usedPercent, VerityApiError, type HostResources as Resources } from '@verity/mobile';
 import { useEffect, useState } from 'react';
 
 import { createVerityClient } from '../../lib/client';
-import { Group, Row, Text } from '../ui';
-import { Disclosure } from '../ui/Disclosure';
+import { Card, CardHead, ResourceMeter } from '../ui';
 
-/** From here a value reads as a warning. */
-const BUSY_PERCENT = 90;
+/** Readings kept for the history strips: five minutes at the default interval. */
+export const HISTORY_SLOTS = 30;
 
-const percent = (value: number | null) => (value === null ? '–' : `${Math.round(value)} %`);
-const gigabytes = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+const gigabytes = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)}`;
+const amount = (used: { usedBytes: number; totalBytes: number }) =>
+  `${gigabytes(used.usedBytes)} / ${gigabytes(used.totalBytes)} GB`;
 
-export function hostResourcesSummary(resources: Resources): string {
-  const parts = [
-    `CPU ${percent(resources.cpu.percent)}`,
-    `RAM ${percent(usedPercent(resources.memory))}`,
-  ];
-  if (resources.disk) parts.push(`Disk ${percent(usedPercent(resources.disk))}`);
-  return parts.join(' · ');
-}
-
-function Value({ share, detail }: { share: number | null; detail: string }) {
-  return (
-    <Text variant="subtitle" tone={share !== null && share >= BUSY_PERCENT ? 'attention' : 'muted'}>
-      {`${percent(share)} · ${detail}`}
-    </Text>
-  );
-}
-
+type History = { cpu: (number | null)[]; memory: (number | null)[] };
+const append = (list: (number | null)[], value: number | null) =>
+  [...list, value].slice(-HISTORY_SLOTS);
 // At module scope: a default created per render would restart the polling
 // effect after every reading and turn the 15-second refresh into a busy loop.
 function loadFromActiveServer(): Promise<Resources> | null {
@@ -41,13 +27,14 @@ function loadFromActiveServer(): Promise<Resources> | null {
 
 export function HostResources({
   load = loadFromActiveServer,
-  intervalMs = 15_000,
+  intervalMs = 10_000,
 }: {
   /** Null when there is no server to ask. */
   load?: () => Promise<Resources> | null;
   intervalMs?: number;
 }) {
   const [resources, setResources] = useState<Resources | null>(null);
+  const [history, setHistory] = useState<History>({ cpu: [], memory: [] });
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -58,6 +45,10 @@ export function HostResources({
         .then((next) => {
           if (!active) return;
           setResources(next);
+          setHistory((previous) => ({
+            cpu: append(previous.cpu, next.cpu.percent),
+            memory: append(previous.memory, usedPercent(next.memory)),
+          }));
           timer = setTimeout(poll, intervalMs);
         })
         .catch((error: unknown) => {
@@ -66,6 +57,7 @@ export function HostResources({
           // rather than leave stale figures up, and stop asking.
           if (error instanceof VerityApiError && error.status === 403) {
             setResources(null);
+            setHistory({ cpu: [], memory: [] });
             return;
           }
           // Anything else is transient: keep the last reading and try again.
@@ -80,36 +72,48 @@ export function HostResources({
   }, [load, intervalMs]);
 
   if (resources === null) return null;
-  const memory = usedPercent(resources.memory);
-  const disk = resources.disk === null ? null : usedPercent(resources.disk);
+  return <HostResourcesCard resources={resources} history={history} />;
+}
+
+/** One reading with the history collected so far, drawn as the Home card. */
+export function HostResourcesCard({
+  resources,
+  history,
+}: {
+  resources: Resources;
+  history: { cpu: readonly (number | null)[]; memory: readonly (number | null)[] };
+}) {
   return (
-    <Group>
-      <Disclosure title="Server" subtitle={hostResourcesSummary(resources)}>
-        <Row
-          title="CPU"
-          trailing={<Value share={resources.cpu.percent} detail={`${resources.cpu.cores} cores`} />}
+    <Card stacked>
+      <CardHead
+        title="Server"
+        subtitle="Live · last 5 minutes"
+        leading={{ icon: 'server', quiet: true }}
+      />
+      <ResourceMeter
+        testID="host-cpu"
+        icon="cpu"
+        label={`CPU · ${resources.cpu.cores} cores`}
+        share={resources.cpu.percent}
+        history={history.cpu}
+        slots={HISTORY_SLOTS}
+      />
+      <ResourceMeter
+        testID="host-memory"
+        icon="layers"
+        label={`RAM · ${amount(resources.memory)}`}
+        share={usedPercent(resources.memory)}
+        history={history.memory}
+        slots={HISTORY_SLOTS}
+      />
+      {resources.disk === null ? null : (
+        <ResourceMeter
+          testID="host-disk"
+          icon="hard-drive"
+          label={`Disk · ${amount(resources.disk)}`}
+          share={usedPercent(resources.disk)}
         />
-        <Row
-          title="Memory"
-          trailing={
-            <Value
-              share={memory}
-              detail={`${gigabytes(resources.memory.usedBytes)} of ${gigabytes(resources.memory.totalBytes)}`}
-            />
-          }
-        />
-        {resources.disk === null ? null : (
-          <Row
-            title="Disk"
-            trailing={
-              <Value
-                share={disk}
-                detail={`${gigabytes(resources.disk.usedBytes)} of ${gigabytes(resources.disk.totalBytes)}`}
-              />
-            }
-          />
-        )}
-      </Disclosure>
-    </Group>
+      )}
+    </Card>
   );
 }

@@ -1,4 +1,4 @@
-// The server's machine at a glance below the Home project list. Observed: a
+// The server's machine at a glance, last on Home. Observed: a
 // data disk filled over two weeks with nothing on screen until the server
 // stopped; the reading here is what shows it coming.
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
@@ -9,7 +9,7 @@ jest.mock('../lib/client', () => ({
   createVerityClient: () => ({ getHostResources: mockGetHostResources }),
 }));
 
-import { HostResources, hostResourcesSummary } from '../components/home/HostResources';
+import { HISTORY_SLOTS, HostResources } from '../components/home/HostResources';
 
 const GiB = 1024 ** 3;
 const reading = (overrides: Partial<Resources> = {}): Resources => ({
@@ -20,19 +20,48 @@ const reading = (overrides: Partial<Resources> = {}): Resources => ({
   ...overrides,
 });
 
-it('summarises CPU, memory and disk and details them on tap', async () => {
+it('shows CPU, memory and disk with their sizes', async () => {
   render(<HostResources load={() => Promise.resolve(reading())} />);
-  expect(await screen.findByText('CPU 12 % · RAM 29 % · Disk 90 %')).toBeOnTheScreen();
-  fireEvent.press(screen.getByText('Server'));
-  expect(screen.getByText('12 % · 4 cores')).toBeOnTheScreen();
-  expect(screen.getByText('29 % · 2.2 GB of 7.7 GB')).toBeOnTheScreen();
-  expect(screen.getByText('90 % · 419.0 GB of 465.0 GB')).toBeOnTheScreen();
+  expect(await screen.findByText('Server')).toBeOnTheScreen();
+  expect(screen.getByText('CPU · 4 cores')).toBeOnTheScreen();
+  expect(screen.getByText('RAM · 2.2 / 7.7 GB')).toBeOnTheScreen();
+  expect(screen.getByText('Disk · 419.0 / 465.0 GB')).toBeOnTheScreen();
+  expect(screen.getByText('12%')).toBeOnTheScreen();
+  expect(screen.getByText('29%')).toBeOnTheScreen();
+  expect(screen.getByText('90%')).toBeOnTheScreen();
 });
 
-it('leaves out what the server cannot measure', () => {
-  expect(hostResourcesSummary(reading({ cpu: { percent: null, cores: 4 }, disk: null }))).toBe(
-    'CPU – · RAM 29 %',
+it('leaves out what the server cannot measure', async () => {
+  render(
+    <HostResources
+      load={() => Promise.resolve(reading({ cpu: { percent: null, cores: 4 }, disk: null }))}
+    />,
   );
+  expect(await screen.findByText('CPU · 4 cores')).toBeOnTheScreen();
+  expect(screen.getByText('–')).toBeOnTheScreen();
+  expect(screen.queryByTestId('host-disk')).not.toBeOnTheScreen();
+});
+
+// The strips are the point of the CPU and memory meters: each reading must add
+// a bar, and the strip must stop at its slots rather than grow off the card.
+it('collects one bar per reading and keeps only the last slots', async () => {
+  jest.useFakeTimers();
+  try {
+    let n = 0;
+    const load = jest.fn(() => Promise.resolve(reading({ cpu: { percent: ++n, cores: 4 } })));
+    render(<HostResources load={load} intervalMs={1000} />);
+    const filled = () => screen.queryAllByTestId('host-cpu-bar').length;
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(2500);
+    });
+    expect(filled()).toBe(3);
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1000 * (HISTORY_SLOTS + 5));
+    });
+    expect(filled()).toBe(HISTORY_SLOTS);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 // A member who is not an administrator is refused; asking every 15 seconds for
@@ -66,11 +95,11 @@ it('keeps the last reading through a failed refresh and keeps refreshing', async
     await act(async () => {
       await jest.advanceTimersByTimeAsync(1100);
     });
-    expect(screen.getByText('CPU 12 % · RAM 29 % · Disk 90 %')).toBeOnTheScreen();
+    expect(screen.getByText('12%')).toBeOnTheScreen();
     await act(async () => {
       await jest.advanceTimersByTimeAsync(1100);
     });
-    expect(screen.getByText('CPU 55 % · RAM 29 % · Disk 90 %')).toBeOnTheScreen();
+    expect(screen.getByText('55%')).toBeOnTheScreen();
   } finally {
     jest.useRealTimers();
   }
@@ -86,7 +115,7 @@ it('asks the active server once per interval with the default loader', async () 
     await act(async () => {
       await jest.advanceTimersByTimeAsync(2500);
     });
-    expect(screen.getByText('CPU 12 % · RAM 29 % · Disk 90 %')).toBeOnTheScreen();
+    expect(screen.getByText('12%')).toBeOnTheScreen();
     expect(mockGetHostResources).toHaveBeenCalledTimes(3);
   } finally {
     jest.useRealTimers();
@@ -106,7 +135,7 @@ it('retries a failure before the first reading', async () => {
     await act(async () => {
       await jest.advanceTimersByTimeAsync(1100);
     });
-    expect(screen.getByText('CPU 12 % · RAM 29 % · Disk 90 %')).toBeOnTheScreen();
+    expect(screen.getByText('12%')).toBeOnTheScreen();
   } finally {
     jest.useRealTimers();
   }

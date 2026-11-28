@@ -343,6 +343,19 @@ title; a log list keeps them dense and scannable.
 - The ring is decoration for the text beside it; the group around it carries the spoken
   label with figure, reset and pace for every window.
 
+### 5.5c Resource meter
+
+- One measured resource of a machine (`ResourceMeter`): a `textMuted` icon and a
+  `BodySmall` label naming the resource and its size (`RAM · 5.0 / 15.5 GB`), the current
+  share right-aligned in `Row` with tabular figures (`46%`).
+- Under it, something that moves from minute to minute (CPU, memory) shows its recent
+  readings as a strip of thin bars, oldest left; something that grows over days (a disk)
+  shows one rounded fill bar on a `neutral` tint of `text`.
+- A meter is a state, never an action: earlier bars are `textFaint`, the current bar and
+  the fill `text`, and any reading from 90 % `attention` — the figure too. Slots without a
+  reading yet draw as a faint baseline, so the strip has its full width from the start.
+- Meters stack in a stacked `Card` under a `CardHead` that names the machine.
+
 ### 5.6 Sheet
 
 - One bottom-sheet component for every overlay that slides up.
